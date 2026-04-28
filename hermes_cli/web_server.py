@@ -484,7 +484,7 @@ class GitHubCommentBody(BaseModel):
     issue_number: int | None = None
     pr_number: int | None = None
     body: str
-    approved: bool = False
+    approval_id: str | None = None
     installation_id: int | None = None
 
 
@@ -494,6 +494,33 @@ class GitHubPreparePullRequestBody(BaseModel):
     head: str
     base: str = "main"
     body: str = ""
+    approval_id: str | None = None
+
+
+class CodeApprovalCreateBody(BaseModel):
+    kind: str
+    risk_class: str
+    title: str
+    description: str | None = None
+    requested_action: str
+    requested_payload: dict[str, Any] = {}
+    resource_type: str | None = None
+    resource_id: str | None = None
+    workspace_id: str | None = None
+    code_session_id: str | None = None
+    orchestrated_run_id: str | None = None
+    artifact_id: str | None = None
+    github_repo_full_name: str | None = None
+    github_issue_number: int | None = None
+    github_pr_number: int | None = None
+    requested_by: str | None = None
+    expires_at: float | None = None
+    metadata: dict[str, Any] = {}
+
+
+class CodeApprovalDecisionBody(BaseModel):
+    actor: str | None = None
+    reason: str | None = None
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -1018,6 +1045,175 @@ async def assess_code_command_policy(payload: PolicyAssessCommandRequest):
         raise HTTPException(status_code=500, detail="Execution policy unavailable")
 
 
+@app.get("/api/code/approvals")
+async def get_code_approvals(
+    status: str | None = None,
+    kind: str | None = None,
+    risk_class: str | None = None,
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    orchestrated_run_id: str | None = None,
+    github_repo_full_name: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        approvals = service.list_requests(
+            status=status,
+            kind=kind,
+            risk_class=risk_class,
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            github_repo_full_name=github_repo_full_name,
+            limit=_code_limit(limit, default=100, maximum=500),
+            offset=_code_offset(offset),
+        )
+        return {
+            "approvals": approvals,
+            "limit": _code_limit(limit, default=100, maximum=500),
+            "offset": _code_offset(offset),
+        }
+    except Exception:
+        _log.exception("GET /api/code/approvals failed")
+        raise HTTPException(status_code=500, detail="Code approvals unavailable")
+
+
+@app.post("/api/code/approvals")
+async def create_code_approval(payload: CodeApprovalCreateBody):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceError, ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        approval = service.create_request(
+            kind=payload.kind,
+            risk_class=payload.risk_class,
+            title=payload.title,
+            description=payload.description,
+            requested_action=payload.requested_action,
+            requested_payload=payload.requested_payload or {},
+            resource_type=payload.resource_type,
+            resource_id=payload.resource_id,
+            workspace_id=payload.workspace_id,
+            code_session_id=payload.code_session_id,
+            orchestrated_run_id=payload.orchestrated_run_id,
+            artifact_id=payload.artifact_id,
+            github_repo_full_name=payload.github_repo_full_name,
+            github_issue_number=payload.github_issue_number,
+            github_pr_number=payload.github_pr_number,
+            requested_by=payload.requested_by,
+            expires_at=payload.expires_at,
+            metadata=payload.metadata or {},
+        )
+        return {"approval": approval}
+    except ApprovalGovernanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/approvals failed")
+        raise HTTPException(status_code=500, detail="Failed to create code approval")
+
+
+@app.get("/api/code/approvals/summary")
+async def get_code_approval_summary(
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    orchestrated_run_id: str | None = None,
+    github_repo_full_name: str | None = None,
+):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        summary = service.summary(
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            github_repo_full_name=github_repo_full_name,
+        )
+        return {"summary": summary}
+    except Exception:
+        _log.exception("GET /api/code/approvals/summary failed")
+        raise HTTPException(status_code=500, detail="Approval summary unavailable")
+
+
+@app.post("/api/code/approvals/expire")
+async def expire_code_approvals(limit: int = 500):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        expired = service.expire_pending(limit=max(1, min(int(limit), 2000)))
+        return {"expired": expired.get("expired", []), "count": int(expired.get("count", 0))}
+    except Exception:
+        _log.exception("POST /api/code/approvals/expire failed")
+        raise HTTPException(status_code=500, detail="Failed to expire approvals")
+
+
+@app.get("/api/code/approvals/{approval_id}")
+async def get_code_approval(approval_id: str):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        approval = service.get_request(approval_id)
+        if not approval:
+            raise HTTPException(status_code=404, detail=f"Approval not found: {approval_id}")
+        return {"approval": approval}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/code/approvals/%s failed", approval_id)
+        raise HTTPException(status_code=500, detail="Code approval unavailable")
+
+
+@app.post("/api/code/approvals/{approval_id}/approve")
+async def approve_code_approval(approval_id: str, payload: CodeApprovalDecisionBody):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceError, ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        approval = service.approve_request(approval_id, approved_by=payload.actor)
+        return {"approval": approval}
+    except ApprovalGovernanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/approvals/%s/approve failed", approval_id)
+        raise HTTPException(status_code=500, detail="Failed to approve request")
+
+
+@app.post("/api/code/approvals/{approval_id}/reject")
+async def reject_code_approval(approval_id: str, payload: CodeApprovalDecisionBody):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceError, ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        approval = service.reject_request(approval_id, rejected_by=payload.actor, reason=payload.reason)
+        return {"approval": approval}
+    except ApprovalGovernanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/approvals/%s/reject failed", approval_id)
+        raise HTTPException(status_code=500, detail="Failed to reject request")
+
+
+@app.post("/api/code/approvals/{approval_id}/cancel")
+async def cancel_code_approval(approval_id: str, payload: CodeApprovalDecisionBody):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceError, ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        approval = service.cancel_request(approval_id, cancelled_by=payload.actor, reason=payload.reason)
+        return {"approval": approval}
+    except ApprovalGovernanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/approvals/%s/cancel failed", approval_id)
+        raise HTTPException(status_code=500, detail="Failed to cancel request")
+
+
 @app.get("/api/code/workspaces/{workspace_id}/git/capabilities")
 async def get_workspace_git_capabilities(workspace_id: str):
     try:
@@ -1293,6 +1489,11 @@ async def github_chatops_run(command_id: str):
 
 @app.post("/api/code/github/comments")
 async def github_comments(body: GitHubCommentBody):
+    from hermes_cli.code.approval_governance import (
+        ApprovalGovernanceError,
+        ApprovalGovernanceService,
+        ApprovalKind,
+    )
     from hermes_cli.code.execution_policy import policy_engine
     from hermes_cli.code.github_integration import GitHubAPIError, GitHubIntegrationService, redact_github_secrets
 
@@ -1302,13 +1503,46 @@ async def github_comments(body: GitHubCommentBody):
     if not body.body.strip():
         raise HTTPException(status_code=400, detail="comment body must not be empty")
 
-    assessment = policy_engine.assess_command("curl https://api.github.com/repos/x/issues/y/comments")
-    if assessment.get("requires_approval") and not body.approved:
+    assessment = policy_engine.assess_github_write("github.comment.post")
+    service = ApprovalGovernanceService()
+    expected_payload = {
+        "repo_full_name": body.repo_full_name,
+        "issue_number": int(target_number),
+        "body": body.body,
+    }
+    resource_type = "github_issue_or_pr"
+    resource_id = f"{body.repo_full_name}#{int(target_number)}"
+
+    if not body.approval_id:
+        approval = service.create_request(
+            kind=ApprovalKind.GITHUB_COMMENT,
+            risk_class=str(assessment.get("risk_class")),
+            title=f"GitHub comment write: {body.repo_full_name}#{int(target_number)}",
+            description="Posting a GitHub comment requires explicit approval.",
+            requested_action="github.comment.post",
+            requested_payload=expected_payload,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            github_repo_full_name=body.repo_full_name,
+            github_issue_number=int(target_number),
+            metadata={"risk_tags": assessment.get("risk_tags", [])},
+        )
+        _record_code_event(
+            "github.write.approval_required",
+            payload={
+                "approval_id": approval.get("id"),
+                "kind": ApprovalKind.GITHUB_COMMENT,
+                "repo_full_name": body.repo_full_name,
+                "issue_number": int(target_number),
+            },
+            source="github",
+        )
         return {
-            "approval_required": True,
-            "approved": False,
-            "risk_class": assessment.get("risk_class"),
-            "message": "GitHub comment write requires explicit approval.",
+            "requires_approval": True,
+            "approval_id": approval.get("id"),
+            "status": approval.get("status"),
+            "risk_class": approval.get("risk_class"),
+            "message": "GitHub comment write requires approval before execution.",
             "prepared": {
                 "repo_full_name": body.repo_full_name,
                 "issue_number": int(target_number),
@@ -1317,39 +1551,238 @@ async def github_comments(body: GitHubCommentBody):
         }
 
     try:
+        validated = service.validate_for_execution(
+            body.approval_id,
+            expected_kind=ApprovalKind.GITHUB_COMMENT,
+            expected_requested_action="github.comment.post",
+            expected_resource_type=resource_type,
+            expected_resource_id=resource_id,
+            expected_github_repo_full_name=body.repo_full_name,
+            expected_github_issue_number=int(target_number),
+            expected_requested_payload=expected_payload,
+        )
+    except ApprovalGovernanceError as exc:
+        _record_code_event(
+            "github.write.rejected",
+            payload={
+                "approval_id": body.approval_id,
+                "kind": ApprovalKind.GITHUB_COMMENT,
+                "repo_full_name": body.repo_full_name,
+                "issue_number": int(target_number),
+                "error": str(exc),
+            },
+            source="github",
+            level="warning",
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
         comment = GitHubIntegrationService().post_issue_comment(
             repo_full_name=body.repo_full_name,
             issue_number=int(target_number),
             body=body.body,
             installation_id=body.installation_id,
         )
+        service.mark_executed(
+            body.approval_id,
+            metadata={"github_comment_id": (comment or {}).get("id")},
+        )
     except GitHubAPIError as exc:
+        try:
+            service.mark_failed(body.approval_id, reason=exc.message)
+        except Exception:
+            pass
+        _record_code_event(
+            "github.write.failed",
+            payload={
+                "approval_id": body.approval_id,
+                "kind": ApprovalKind.GITHUB_COMMENT,
+                "repo_full_name": body.repo_full_name,
+                "issue_number": int(target_number),
+                "error": exc.message,
+            },
+            source="github",
+            level="error",
+        )
         raise HTTPException(status_code=400, detail=exc.message)
     except Exception:
+        try:
+            service.mark_failed(body.approval_id, reason="GitHub comment request failed")
+        except Exception:
+            pass
+        _record_code_event(
+            "github.write.failed",
+            payload={
+                "approval_id": body.approval_id,
+                "kind": ApprovalKind.GITHUB_COMMENT,
+                "repo_full_name": body.repo_full_name,
+                "issue_number": int(target_number),
+                "error": "GitHub comment request failed",
+            },
+            source="github",
+            level="error",
+        )
         _log.exception("POST /api/code/github/comments failed")
         raise HTTPException(status_code=500, detail="GitHub comment request failed")
 
+    _record_code_event(
+        "github.write.executed",
+        payload={
+            "approval_id": body.approval_id,
+            "kind": ApprovalKind.GITHUB_COMMENT,
+            "repo_full_name": body.repo_full_name,
+            "issue_number": int(target_number),
+        },
+        source="github",
+    )
     _record_code_event(
         "github.comment.posted",
         payload={"repo_full_name": body.repo_full_name, "issue_number": int(target_number)},
         source="github",
     )
-    return {"approval_required": False, "approved": True, "comment": comment}
+    return {
+        "requires_approval": False,
+        "approval_id": body.approval_id,
+        "status": "executed",
+        "approved": True,
+        "approval": validated,
+        "comment": comment,
+    }
 
 
 @app.post("/api/code/github/pull-requests/prepare")
 async def github_pull_request_prepare(body: GitHubPreparePullRequestBody):
+    from hermes_cli.code.approval_governance import (
+        ApprovalGovernanceError,
+        ApprovalGovernanceService,
+        ApprovalKind,
+    )
     from hermes_cli.code.artifact_ledger import ArtifactLedger
+    from hermes_cli.code.execution_policy import policy_engine
     from hermes_cli.code.github_integration import GitHubIntegrationService
 
-    prepared = GitHubIntegrationService().prepare_pull_request(body.model_dump())
-    artifact = ArtifactLedger().create_artifact(
-        "implementation_plan",
-        json.dumps(prepared, indent=2),
-        title=f"Prepared GitHub PR: {body.title}",
-        metadata={"source": "github_pull_request_prepare", "repo_full_name": body.repo_full_name},
+    assessment = policy_engine.assess_github_write("github.pull_request.prepare")
+    service = ApprovalGovernanceService()
+    expected_payload = {
+        "repo_full_name": body.repo_full_name,
+        "title": body.title,
+        "head": body.head,
+        "base": body.base,
+        "body": body.body,
+    }
+    resource_type = "github_repo"
+    resource_id = body.repo_full_name
+
+    if not body.approval_id:
+        approval = service.create_request(
+            kind=ApprovalKind.GITHUB_PR_PREPARE,
+            risk_class=str(assessment.get("risk_class")),
+            title=f"Prepare GitHub PR metadata: {body.repo_full_name}",
+            description="Preparing/storing PR metadata requires approval.",
+            requested_action="github.pull_request.prepare",
+            requested_payload=expected_payload,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            github_repo_full_name=body.repo_full_name,
+            metadata={"risk_tags": assessment.get("risk_tags", [])},
+        )
+        _record_code_event(
+            "github.write.approval_required",
+            payload={
+                "approval_id": approval.get("id"),
+                "kind": ApprovalKind.GITHUB_PR_PREPARE,
+                "repo_full_name": body.repo_full_name,
+            },
+            source="github",
+        )
+        return {
+            "requires_approval": True,
+            "approval_id": approval.get("id"),
+            "status": approval.get("status"),
+            "risk_class": approval.get("risk_class"),
+            "prepared": {
+                "repo_full_name": body.repo_full_name,
+                "title": body.title,
+                "head": body.head,
+                "base": body.base,
+                "body": body.body,
+                "auto_push": False,
+                "auto_merge": False,
+            },
+        }
+
+    try:
+        validated = service.validate_for_execution(
+            body.approval_id,
+            expected_kind=ApprovalKind.GITHUB_PR_PREPARE,
+            expected_requested_action="github.pull_request.prepare",
+            expected_resource_type=resource_type,
+            expected_resource_id=resource_id,
+            expected_github_repo_full_name=body.repo_full_name,
+            expected_requested_payload=expected_payload,
+        )
+    except ApprovalGovernanceError as exc:
+        _record_code_event(
+            "github.write.rejected",
+            payload={
+                "approval_id": body.approval_id,
+                "kind": ApprovalKind.GITHUB_PR_PREPARE,
+                "repo_full_name": body.repo_full_name,
+                "error": str(exc),
+            },
+            source="github",
+            level="warning",
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        prepared = GitHubIntegrationService().prepare_pull_request(body.model_dump())
+        artifact = ArtifactLedger().create_artifact(
+            "implementation_plan",
+            json.dumps(prepared, indent=2),
+            title=f"Prepared GitHub PR: {body.title}",
+            metadata={"source": "github_pull_request_prepare", "repo_full_name": body.repo_full_name},
+        )
+        service.mark_executed(
+            body.approval_id,
+            metadata={"artifact_id": artifact.get("id"), "prepared_pr_id": prepared.get("id")},
+        )
+    except Exception:
+        try:
+            service.mark_failed(body.approval_id, reason="GitHub pull request prepare failed")
+        except Exception:
+            pass
+        _record_code_event(
+            "github.write.failed",
+            payload={
+                "approval_id": body.approval_id,
+                "kind": ApprovalKind.GITHUB_PR_PREPARE,
+                "repo_full_name": body.repo_full_name,
+                "error": "GitHub pull request prepare failed",
+            },
+            source="github",
+            level="error",
+        )
+        _log.exception("POST /api/code/github/pull-requests/prepare failed")
+        raise HTTPException(status_code=500, detail="GitHub pull request prepare failed")
+
+    _record_code_event(
+        "github.write.executed",
+        payload={
+            "approval_id": body.approval_id,
+            "kind": ApprovalKind.GITHUB_PR_PREPARE,
+            "repo_full_name": body.repo_full_name,
+        },
+        source="github",
     )
-    return {"prepared": prepared, "artifact": artifact}
+    return {
+        "requires_approval": False,
+        "approval_id": body.approval_id,
+        "status": "executed",
+        "approval": validated,
+        "prepared": prepared,
+        "artifact": artifact,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -24,7 +24,7 @@ used for new UI work.
 - Create P0 `ArtifactLedger` artifacts and `AgentOrchestrator` runs from
   ChatOps requests.
 - Prepare PR metadata (no auto-push, no auto-merge).
-- Support GitHub comments endpoint with explicit approval gate behavior.
+- Support GitHub write safety via persistent Code Mode approval requests.
 
 ## GitHub App Setup
 
@@ -68,7 +68,7 @@ Do not commit `.env` values.
 - Installation tokens are cached in memory with expiry metadata.
 - Webhook processing requires valid `X-Hub-Signature-256`.
 - Sensitive values are redacted from errors/log-safe strings.
-- GitHub write actions are approval-gated or prepare-only.
+- GitHub write actions require approved persistent approval requests.
 - P1 does not auto-merge, force-push, delete branches, or modify repository
   settings/permissions.
 
@@ -86,6 +86,16 @@ Do not commit `.env` values.
 - `POST /api/code/github/comments`
 - `POST /api/code/github/pull-requests/prepare`
 
+GitHub write endpoints now follow a two-step flow:
+
+1. Call without `approval_id` to receive `requires_approval: true` and a new
+   persistent `approval_id`.
+2. Approve the request via `/api/code/approvals/{approval_id}/approve`, then
+   call the same write endpoint with `approval_id` to execute once.
+
+Replay protection verifies action kind + resource + payload binding; executed
+approvals cannot be reused.
+
 `/api/code/github/webhooks` is public only for GitHub delivery. It is protected
 by webhook HMAC validation, not by dashboard session token.
 
@@ -99,7 +109,7 @@ Minimal CLI support:
 
 ## Schema
 
-P1 extends schema to `v14` with:
+P2 extends schema to `v15` with:
 
 - `github_app_installations`
 - `github_repositories`
@@ -109,6 +119,7 @@ P1 extends schema to `v14` with:
 - `github_webhook_deliveries`
 - `github_chatops_commands`
 - `github_status_reports`
+- `code_approval_requests`
 
 ## Local Webhook Testing
 

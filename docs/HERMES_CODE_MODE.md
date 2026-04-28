@@ -1,7 +1,8 @@
 # Hermes Code Mode
 
 Hermes Code Mode now includes the base console, P0 Engineering Control Plane,
-and P1 GitHub integration foundation, adapted to the current architecture.
+P1 GitHub integration foundation, and P2 approval governance, adapted to the
+current architecture.
 
 ## Included Capabilities
 
@@ -27,6 +28,9 @@ and P1 GitHub integration foundation, adapted to the current architecture.
   - `github_webhooks`
   - `github_sync`
   - `github_chatops`
+- P2 approval governance service:
+  - `approval_governance`
+  - persistent approval lifecycle for Code Mode actions
 
 ## Execution Policy Risk Classes
 
@@ -118,15 +122,27 @@ P1 GitHub endpoints:
 - `POST /api/code/github/comments`
 - `POST /api/code/github/pull-requests/prepare`
 
+P2 approval endpoints:
+
+- `GET /api/code/approvals`
+- `POST /api/code/approvals`
+- `GET /api/code/approvals/{approval_id}`
+- `POST /api/code/approvals/{approval_id}/approve`
+- `POST /api/code/approvals/{approval_id}/reject`
+- `POST /api/code/approvals/{approval_id}/cancel`
+- `POST /api/code/approvals/expire`
+- `GET /api/code/approvals/summary`
+
 ## State / Schema
 
-Code Mode state lives in `state.db`, schema version `14`.
+Code Mode state lives in `state.db`, schema version `15`.
 
 Code Mode + P0 tables:
 
 - `code_workspaces`
 - `code_sessions`
 - `code_events`
+- `code_approval_requests`
 - `code_artifacts`
 - `code_orchestrated_runs`
 - `code_run_transitions`
@@ -172,6 +188,7 @@ Then use `/code` or `/web` in the CLI.
 - `hermesWeb/` UI integration.
 - Autonomous coding loop from GitHub events.
 - Auto-merge / force-push / destructive GitHub write flows.
+- HermesWeb approval panel (dashboard UI) for lifecycle actions.
 
 `hermesWeb/` is absent in this checkout, and no large frontend work was added
 under deprecated `web/`.

@@ -4480,10 +4480,12 @@ class HermesCLI:
                 "State: "
                 f"{counts.get('code_workspaces', 0)} workspace(s), "
                 f"{counts.get('code_sessions', 0)} session(s), "
-                f"{counts.get('code_events', 0)} event(s)"
+                f"{counts.get('code_events', 0)} event(s), "
+                f"{counts.get('code_approval_requests', 0)} approval request(s)"
             ),
             "",
             "Commands: /workspace, /session, /web, /approvals, /skills-code, /github",
+            "Approval Governance: /api/code/approvals/*",
         ]
         if state_status.get("error"):
             lines.insert(-2, f"State Note: {state_status['error']}")
@@ -4574,14 +4576,70 @@ class HermesCLI:
         self._console_print("\n".join(lines), highlight=False, markup=False)
 
     def _handle_code_approvals_command(self, _cmd: str):
+        backend_status, _payload = self._code_mode_backend_probe()
+        if backend_status == "online":
+            try:
+                import urllib.request
+
+                url = f"{self._code_mode_dashboard_url()}/api/code/approvals/summary"
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=1.0) as resp:
+                    if resp.status == 200:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        summary = data.get("summary") or {}
+                        by_status = summary.get("status") or {}
+                        by_kind = summary.get("kind") or {}
+                        pending = int(by_status.get("pending", 0) or 0)
+                        github_pending = int(by_kind.get("github_comment", 0) or 0)
+                        github_pending += int(by_kind.get("github_pr_prepare", 0) or 0)
+                        github_pending += int(by_kind.get("github_check_update", 0) or 0)
+                        github_pending += int(by_kind.get("github_status_update", 0) or 0)
+                        self._console_print(
+                            "\n".join(
+                                [
+                                    "Code Mode Approvals",
+                                    "",
+                                    f"Backend: {backend_status}",
+                                    f"Pending approvals: {pending}",
+                                    f"Pending GitHub write approvals: {github_pending}",
+                                    f"Approved: {int(by_status.get('approved', 0) or 0)}",
+                                    f"Executed: {int(by_status.get('executed', 0) or 0)}",
+                                    "",
+                                    "Use /code for backend status and /github for integration status.",
+                                ]
+                            ),
+                            highlight=False,
+                            markup=False,
+                        )
+                        return
+            except Exception as exc:
+                if "401" in str(exc):
+                    self._console_print(
+                        "\n".join(
+                            [
+                                "Code Mode Approvals",
+                                "",
+                                f"Backend: {backend_status}",
+                                "Approval summary endpoint requires dashboard auth.",
+                                "Use the dashboard session for /api/code/approvals/* operations.",
+                            ]
+                        ),
+                        highlight=False,
+                        markup=False,
+                    )
+                    return
+
         self._console_print(
-            "\n".join([
-                "Code Mode Approvals",
-                "",
-                "P0 execution policy is available.",
-                "Risk classes include safe_readonly, network, git_write, secret_sensitive, destructive.",
-                "Use /code for backend status; policy assessments are exposed via /api/code/policy/assess-command.",
-            ]),
+            "\n".join(
+                [
+                    "Code Mode Approvals",
+                    "",
+                    f"Backend: {backend_status}",
+                    "P0 execution policy is available.",
+                    "Risk classes include safe_readonly, network, git_write, secret_sensitive, destructive.",
+                    "Use /code for backend status; policy assessments are exposed via /api/code/policy/assess-command.",
+                ]
+            ),
             highlight=False,
             markup=False,
         )

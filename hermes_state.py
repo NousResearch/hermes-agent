@@ -34,7 +34,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -148,6 +148,59 @@ CREATE INDEX IF NOT EXISTS idx_code_events_workspace
 
 CREATE INDEX IF NOT EXISTS idx_code_events_session
     ON code_events(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS code_approval_requests (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    risk_class TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    requested_action TEXT NOT NULL,
+    requested_payload_json TEXT NOT NULL DEFAULT '{}',
+    resource_type TEXT,
+    resource_id TEXT,
+    workspace_id TEXT,
+    code_session_id TEXT,
+    orchestrated_run_id TEXT,
+    artifact_id TEXT,
+    github_repo_full_name TEXT,
+    github_issue_number INTEGER,
+    github_pr_number INTEGER,
+    requested_by TEXT,
+    approved_by TEXT,
+    rejected_by TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    expires_at REAL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    resolved_at REAL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (workspace_id) REFERENCES code_workspaces(id) ON DELETE SET NULL,
+    FOREIGN KEY (code_session_id) REFERENCES code_sessions(id) ON DELETE SET NULL,
+    FOREIGN KEY (orchestrated_run_id) REFERENCES code_orchestrated_runs(id) ON DELETE SET NULL,
+    FOREIGN KEY (artifact_id) REFERENCES code_artifacts(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_approvals_status_created
+    ON code_approval_requests(status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_code_approvals_kind_created
+    ON code_approval_requests(kind, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_code_approvals_risk_created
+    ON code_approval_requests(risk_class, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_code_approvals_workspace_created
+    ON code_approval_requests(workspace_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_code_approvals_session_created
+    ON code_approval_requests(code_session_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_code_approvals_run_created
+    ON code_approval_requests(orchestrated_run_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_code_approvals_github_repo_created
+    ON code_approval_requests(github_repo_full_name, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS code_artifacts (
     id TEXT PRIMARY KEY,
@@ -1102,6 +1155,68 @@ class SessionDB:
                 except Exception:
                     pass
 
+            if current_version < 15:
+                # v15: add persistent approval governance table for Code Mode.
+                try:
+                    cursor.executescript(
+                        """
+                        CREATE TABLE IF NOT EXISTS code_approval_requests (
+                            id TEXT PRIMARY KEY,
+                            kind TEXT NOT NULL,
+                            risk_class TEXT NOT NULL,
+                            title TEXT NOT NULL,
+                            description TEXT,
+                            requested_action TEXT NOT NULL,
+                            requested_payload_json TEXT NOT NULL DEFAULT '{}',
+                            resource_type TEXT,
+                            resource_id TEXT,
+                            workspace_id TEXT,
+                            code_session_id TEXT,
+                            orchestrated_run_id TEXT,
+                            artifact_id TEXT,
+                            github_repo_full_name TEXT,
+                            github_issue_number INTEGER,
+                            github_pr_number INTEGER,
+                            requested_by TEXT,
+                            approved_by TEXT,
+                            rejected_by TEXT,
+                            status TEXT NOT NULL DEFAULT 'pending',
+                            expires_at REAL,
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL,
+                            resolved_at REAL,
+                            metadata_json TEXT NOT NULL DEFAULT '{}',
+                            FOREIGN KEY (workspace_id) REFERENCES code_workspaces(id) ON DELETE SET NULL,
+                            FOREIGN KEY (code_session_id) REFERENCES code_sessions(id) ON DELETE SET NULL,
+                            FOREIGN KEY (orchestrated_run_id) REFERENCES code_orchestrated_runs(id) ON DELETE SET NULL,
+                            FOREIGN KEY (artifact_id) REFERENCES code_artifacts(id) ON DELETE SET NULL
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_code_approvals_status_created
+                            ON code_approval_requests(status, created_at DESC);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_approvals_kind_created
+                            ON code_approval_requests(kind, created_at DESC);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_approvals_risk_created
+                            ON code_approval_requests(risk_class, created_at DESC);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_approvals_workspace_created
+                            ON code_approval_requests(workspace_id, created_at DESC);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_approvals_session_created
+                            ON code_approval_requests(code_session_id, created_at DESC);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_approvals_run_created
+                            ON code_approval_requests(orchestrated_run_id, created_at DESC);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_approvals_github_repo_created
+                            ON code_approval_requests(github_repo_full_name, created_at DESC);
+                        """
+                    )
+                except Exception:
+                    pass
+
             if current_version < SCHEMA_VERSION:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -1722,27 +1837,41 @@ class SessionDB:
             return {
                 "mode": "unconfigured",
                 "schema_version": None,
-                "tables": {"code_workspaces": False, "code_sessions": False, "code_events": False},
+                "tables": {
+                    "code_workspaces": False,
+                    "code_sessions": False,
+                    "code_events": False,
+                    "code_approval_requests": False,
+                },
             }
         with self._lock:
+            tracked = ("code_workspaces", "code_sessions", "code_events", "code_approval_requests")
+            tables: dict[str, bool] = {}
             counts = {}
-            for name in ("code_workspaces", "code_sessions", "code_events"):
-                cursor = self._conn.execute(f"SELECT COUNT(1) AS c FROM {name}")
-                counts[name] = int(cursor.fetchone()["c"])
+            for name in tracked:
+                exists = bool(
+                    self._conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
+                        (name,),
+                    ).fetchone()
+                )
+                tables[name] = exists
+                if exists:
+                    cursor = self._conn.execute(f"SELECT COUNT(1) AS c FROM {name}")
+                    counts[name] = int(cursor.fetchone()["c"])
+                else:
+                    counts[name] = 0
             cursor = self._conn.execute("SELECT version FROM schema_version LIMIT 1")
             row = cursor.fetchone()
         return {
             "mode": "enabled" if counts else "unknown",
             "schema_version": row["version"] if row else None,
-            "tables": {
-                "code_workspaces": True,
-                "code_sessions": True,
-                "code_events": True,
-            },
+            "tables": tables,
             "counts": counts,
             "workspace_count": counts.get("code_workspaces", 0),
             "session_count": counts.get("code_sessions", 0),
             "event_count": counts.get("code_events", 0),
+            "approval_count": counts.get("code_approval_requests", 0),
         }
 
     def _code_list_rows(
@@ -1869,6 +1998,191 @@ class SessionDB:
             return event_id
 
         return self._execute_write(_do)
+
+    @staticmethod
+    def _decode_json_value(raw: Any, default: Any) -> Any:
+        if raw is None or raw == "":
+            return default
+        try:
+            return json.loads(raw)
+        except Exception:
+            return default
+
+    def create_code_approval_request(self, request: dict[str, Any]) -> str:
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO code_approval_requests (
+                    id, kind, risk_class, title, description, requested_action, requested_payload_json,
+                    resource_type, resource_id, workspace_id, code_session_id, orchestrated_run_id,
+                    artifact_id, github_repo_full_name, github_issue_number, github_pr_number,
+                    requested_by, approved_by, rejected_by, status, expires_at,
+                    created_at, updated_at, resolved_at, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request["id"],
+                    request["kind"],
+                    request["risk_class"],
+                    request.get("title") or request["kind"],
+                    request.get("description"),
+                    request.get("requested_action") or request["kind"],
+                    json.dumps(request.get("requested_payload") or {}),
+                    request.get("resource_type"),
+                    request.get("resource_id"),
+                    request.get("workspace_id"),
+                    request.get("code_session_id"),
+                    request.get("orchestrated_run_id"),
+                    request.get("artifact_id"),
+                    request.get("github_repo_full_name"),
+                    request.get("github_issue_number"),
+                    request.get("github_pr_number"),
+                    request.get("requested_by"),
+                    request.get("approved_by"),
+                    request.get("rejected_by"),
+                    request.get("status", "pending"),
+                    request.get("expires_at"),
+                    request["created_at"],
+                    request["updated_at"],
+                    request.get("resolved_at"),
+                    json.dumps(request.get("metadata") or {}),
+                ),
+            )
+            return request["id"]
+
+        return self._execute_write(_do)
+
+    def _hydrate_code_approval_row(self, row: sqlite3.Row | dict[str, Any] | None) -> Optional[dict[str, Any]]:
+        if not row:
+            return None
+        result = dict(row)
+        result["requested_payload"] = self._decode_json_value(result.pop("requested_payload_json", "{}"), {})
+        result["metadata"] = self._decode_json_value(result.pop("metadata_json", "{}"), {})
+        return result
+
+    def get_code_approval_request(self, approval_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM code_approval_requests WHERE id = ? LIMIT 1",
+                (approval_id,),
+            )
+            row = cursor.fetchone()
+        return self._hydrate_code_approval_row(row)
+
+    def list_code_approval_requests(
+        self,
+        *,
+        status: str | None = None,
+        kind: str | None = None,
+        risk_class: str | None = None,
+        workspace_id: str | None = None,
+        code_session_id: str | None = None,
+        orchestrated_run_id: str | None = None,
+        github_repo_full_name: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        if not self._code_tables_exist():
+            return []
+        filters = []
+        params: list[Any] = []
+        if status:
+            filters.append("status = ?")
+            params.append(status)
+        if kind:
+            filters.append("kind = ?")
+            params.append(kind)
+        if risk_class:
+            filters.append("risk_class = ?")
+            params.append(risk_class)
+        if workspace_id:
+            filters.append("workspace_id = ?")
+            params.append(workspace_id)
+        if code_session_id:
+            filters.append("code_session_id = ?")
+            params.append(code_session_id)
+        if orchestrated_run_id:
+            filters.append("orchestrated_run_id = ?")
+            params.append(orchestrated_run_id)
+        if github_repo_full_name:
+            filters.append("github_repo_full_name = ?")
+            params.append(github_repo_full_name)
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT * FROM code_approval_requests {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                tuple(params + [limit, offset]),
+            )
+            rows = cursor.fetchall()
+        return [self._hydrate_code_approval_row(row) or {} for row in rows]
+
+    def update_code_approval_request(self, approval_id: str, updates: dict[str, Any]) -> bool:
+        if not updates:
+            return False
+        fields = []
+        params: list[Any] = []
+        for key, value in updates.items():
+            if key == "requested_payload":
+                fields.append("requested_payload_json = ?")
+                params.append(json.dumps(value or {}))
+            elif key == "metadata":
+                fields.append("metadata_json = ?")
+                params.append(json.dumps(value or {}))
+            else:
+                fields.append(f"{key} = ?")
+                params.append(value)
+        params.append(approval_id)
+
+        def _do(conn):
+            cursor = conn.execute(
+                f"UPDATE code_approval_requests SET {', '.join(fields)} WHERE id = ?",
+                tuple(params),
+            )
+            return bool(cursor.rowcount)
+
+        return bool(self._execute_write(_do))
+
+    def summarize_code_approval_requests(
+        self,
+        *,
+        workspace_id: str | None = None,
+        code_session_id: str | None = None,
+        orchestrated_run_id: str | None = None,
+        github_repo_full_name: str | None = None,
+    ) -> dict[str, dict[str, int]]:
+        if not self._code_tables_exist():
+            return {"status": {}, "risk_class": {}, "kind": {}}
+
+        filters = []
+        params: list[Any] = []
+        if workspace_id:
+            filters.append("workspace_id = ?")
+            params.append(workspace_id)
+        if code_session_id:
+            filters.append("code_session_id = ?")
+            params.append(code_session_id)
+        if orchestrated_run_id:
+            filters.append("orchestrated_run_id = ?")
+            params.append(orchestrated_run_id)
+        if github_repo_full_name:
+            filters.append("github_repo_full_name = ?")
+            params.append(github_repo_full_name)
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+
+        summary: dict[str, dict[str, int]] = {"status": {}, "risk_class": {}, "kind": {}}
+        with self._lock:
+            for column, key in (("status", "status"), ("risk_class", "risk_class"), ("kind", "kind")):
+                cursor = self._conn.execute(
+                    f"SELECT {column} AS bucket, COUNT(1) AS c FROM code_approval_requests {where_sql} GROUP BY {column}",
+                    tuple(params),
+                )
+                summary[key] = {
+                    str(row["bucket"]): int(row["c"])
+                    for row in cursor.fetchall()
+                    if row["bucket"] is not None
+                }
+        return summary
 
     def create_code_artifact(self, artifact: dict[str, Any]) -> str:
         artifact_id = artifact["id"]

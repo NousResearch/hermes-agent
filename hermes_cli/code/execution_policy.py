@@ -209,6 +209,15 @@ class ExecutionPolicyEngine:
             "blocked": risk_class in self.BLOCKED,
         }
 
+    def assess_github_write(self, action: str) -> dict[str, Any]:
+        return {
+            "action": action,
+            "risk_class": RiskClass.GIT_WRITE,
+            "risk_tags": [RiskClass.NETWORK, RiskClass.GIT_WRITE],
+            "requires_approval": True,
+            "blocked": False,
+        }
+
     def redact(self, text: str) -> str:
         return redact_secrets(text)
 

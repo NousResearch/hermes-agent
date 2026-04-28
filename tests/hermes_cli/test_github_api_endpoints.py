@@ -127,10 +127,16 @@ def test_github_comments_endpoint_approval_flow(monkeypatch, clients):
     auth, _unauth = clients
     from hermes_cli.code.github_integration import GitHubIntegrationService
 
+    calls = {"count": 0}
+
+    def _fake_post(self, repo_full_name, issue_number, body, installation_id=None):
+        calls["count"] += 1
+        return {"id": calls["count"], "body": body}
+
     monkeypatch.setattr(
         GitHubIntegrationService,
         "post_issue_comment",
-        lambda self, repo_full_name, issue_number, body, installation_id=None: {"id": 1, "body": body},
+        _fake_post,
     )
 
     pending = auth.post(
@@ -139,28 +145,118 @@ def test_github_comments_endpoint_approval_flow(monkeypatch, clients):
             "repo_full_name": "acme/repo",
             "issue_number": 7,
             "body": "hello",
-            "approved": False,
         },
     )
     assert pending.status_code == 200
-    assert pending.json()["approval_required"] is True
+    payload = pending.json()
+    assert payload["requires_approval"] is True
+    approval_id = payload["approval_id"]
+    assert approval_id
 
-    approved = auth.post(
+    approve = auth.post(f"/api/code/approvals/{approval_id}/approve", json={"actor": "local"})
+    assert approve.status_code == 200
+
+    executed = auth.post(
         "/api/code/github/comments",
         json={
             "repo_full_name": "acme/repo",
             "issue_number": 7,
             "body": "hello",
-            "approved": True,
+            "approval_id": approval_id,
         },
     )
-    assert approved.status_code == 200
-    assert approved.json()["approval_required"] is False
+    assert executed.status_code == 200
+    assert executed.json()["requires_approval"] is False
+    assert executed.json()["status"] == "executed"
+    assert calls["count"] == 1
+
+
+def test_github_comments_rejected_expired_executed_or_mismatch_do_not_execute(monkeypatch, clients):
+    auth, _unauth = clients
+    from hermes_cli.code.github_integration import GitHubIntegrationService
+    from hermes_state import SessionDB
+
+    calls = {"count": 0}
+
+    def _fake_post(self, repo_full_name, issue_number, body, installation_id=None):
+        calls["count"] += 1
+        return {"id": 77, "body": body}
+
+    monkeypatch.setattr(GitHubIntegrationService, "post_issue_comment", _fake_post)
+
+    pending = auth.post(
+        "/api/code/github/comments",
+        json={"repo_full_name": "acme/repo", "issue_number": 9, "body": "token=abc123"},
+    )
+    approval_id = pending.json()["approval_id"]
+
+    # Rejected: should not execute
+    reject = auth.post(f"/api/code/approvals/{approval_id}/reject", json={"actor": "local", "reason": "deny"})
+    assert reject.status_code == 200
+    rejected_call = auth.post(
+        "/api/code/github/comments",
+        json={"repo_full_name": "acme/repo", "issue_number": 9, "body": "token=abc123", "approval_id": approval_id},
+    )
+    assert rejected_call.status_code == 400
+    assert calls["count"] == 0
+    assert "abc123" not in str(rejected_call.json())
+
+    # Approved + expired: should not execute
+    pending2 = auth.post(
+        "/api/code/github/comments",
+        json={"repo_full_name": "acme/repo", "issue_number": 11, "body": "hello-expired"},
+    )
+    approval_id2 = pending2.json()["approval_id"]
+    auth.post(f"/api/code/approvals/{approval_id2}/approve", json={"actor": "local"})
+    db = SessionDB()
+    try:
+        db.update_code_approval_request(approval_id2, {"expires_at": time.time() - 10})
+    finally:
+        db.close()
+    expired_call = auth.post(
+        "/api/code/github/comments",
+        json={"repo_full_name": "acme/repo", "issue_number": 11, "body": "hello-expired", "approval_id": approval_id2},
+    )
+    assert expired_call.status_code == 400
+    assert calls["count"] == 0
+
+    # Approved then executed cannot be reused
+    pending3 = auth.post(
+        "/api/code/github/comments",
+        json={"repo_full_name": "acme/repo", "issue_number": 12, "body": "hello-reuse"},
+    )
+    approval_id3 = pending3.json()["approval_id"]
+    auth.post(f"/api/code/approvals/{approval_id3}/approve", json={"actor": "local"})
+    first_exec = auth.post(
+        "/api/code/github/comments",
+        json={"repo_full_name": "acme/repo", "issue_number": 12, "body": "hello-reuse", "approval_id": approval_id3},
+    )
+    assert first_exec.status_code == 200
+    second_exec = auth.post(
+        "/api/code/github/comments",
+        json={"repo_full_name": "acme/repo", "issue_number": 12, "body": "hello-reuse", "approval_id": approval_id3},
+    )
+    assert second_exec.status_code == 400
+    assert calls["count"] == 1
+
+    # Kind/resource mismatch: approved approval for repo A cannot be replayed for repo B
+    pending4 = auth.post(
+        "/api/code/github/comments",
+        json={"repo_full_name": "acme/repo", "issue_number": 13, "body": "hello-match"},
+    )
+    approval_id4 = pending4.json()["approval_id"]
+    auth.post(f"/api/code/approvals/{approval_id4}/approve", json={"actor": "local"})
+    mismatch = auth.post(
+        "/api/code/github/comments",
+        json={"repo_full_name": "acme/other", "issue_number": 13, "body": "hello-match", "approval_id": approval_id4},
+    )
+    assert mismatch.status_code == 400
+    assert calls["count"] == 1
 
 
 def test_github_pull_request_prepare_endpoint(clients):
     auth, _unauth = clients
-    resp = auth.post(
+    pending = auth.post(
         "/api/code/github/pull-requests/prepare",
         json={
             "repo_full_name": "acme/repo",
@@ -170,7 +266,28 @@ def test_github_pull_request_prepare_endpoint(clients):
             "body": "desc",
         },
     )
+    assert pending.status_code == 200
+    payload = pending.json()
+    assert payload["requires_approval"] is True
+    approval_id = payload["approval_id"]
+    assert approval_id
+
+    approve = auth.post(f"/api/code/approvals/{approval_id}/approve", json={"actor": "local"})
+    assert approve.status_code == 200
+
+    resp = auth.post(
+        "/api/code/github/pull-requests/prepare",
+        json={
+            "repo_full_name": "acme/repo",
+            "title": "feat: x",
+            "head": "feature/x",
+            "base": "main",
+            "body": "desc",
+            "approval_id": approval_id,
+        },
+    )
     assert resp.status_code == 200
     payload = resp.json()
+    assert payload["requires_approval"] is False
     assert payload["prepared"]["auto_push"] is False
     assert payload["prepared"]["auto_merge"] is False

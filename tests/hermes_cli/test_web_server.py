@@ -2,6 +2,7 @@
 
 import os
 import json
+import time
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -338,7 +339,7 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["mode"] == "code_mode"
-        assert data["schema_version"] == 14
+        assert data["schema_version"] == 15
         assert "state" in data
 
     def test_code_workspaces_requires_auth(self):
@@ -509,6 +510,70 @@ class TestWebServerEndpoints:
         )
         assert bootstrap_resp.status_code == 200
         assert bootstrap_resp.json()["result"]["created"] is False
+
+    def test_code_approvals_endpoints(self):
+        create = self.client.post(
+            "/api/code/approvals",
+            json={
+                "kind": "generic",
+                "risk_class": "git_write",
+                "title": "Need approval",
+                "description": "desc",
+                "requested_action": "generic.action",
+                "requested_payload": {"token": "secret", "arg": "x"},
+                "resource_type": "resource",
+                "resource_id": "r-1",
+                "github_repo_full_name": "acme/repo",
+            },
+        )
+        assert create.status_code == 200
+        approval = create.json()["approval"]
+        approval_id = approval["id"]
+        assert approval["status"] == "pending"
+        assert approval["requested_payload"]["token"] == "[REDACTED]"
+
+        listing = self.client.get("/api/code/approvals?status=pending")
+        assert listing.status_code == 200
+        assert any(item["id"] == approval_id for item in listing.json()["approvals"])
+
+        fetched = self.client.get(f"/api/code/approvals/{approval_id}")
+        assert fetched.status_code == 200
+        assert fetched.json()["approval"]["id"] == approval_id
+
+        summary = self.client.get("/api/code/approvals/summary")
+        assert summary.status_code == 200
+        assert summary.json()["summary"]["status"]["pending"] >= 1
+
+        approved = self.client.post(f"/api/code/approvals/{approval_id}/approve", json={"actor": "local"})
+        assert approved.status_code == 200
+        assert approved.json()["approval"]["status"] == "approved"
+
+        cancelled = self.client.post(f"/api/code/approvals/{approval_id}/cancel", json={"actor": "local", "reason": "stop"})
+        assert cancelled.status_code == 200
+        assert cancelled.json()["approval"]["status"] == "cancelled"
+
+    def test_code_approvals_expire_endpoint(self):
+        create = self.client.post(
+            "/api/code/approvals",
+            json={
+                "kind": "generic",
+                "risk_class": "git_write",
+                "title": "Expire me",
+                "requested_action": "generic.action",
+                "requested_payload": {"arg": "x"},
+                "expires_at": time.time() - 5,
+            },
+        )
+        assert create.status_code == 200
+        approval_id = create.json()["approval"]["id"]
+
+        expired = self.client.post("/api/code/approvals/expire")
+        assert expired.status_code == 200
+        assert expired.json()["count"] >= 1
+
+        fetched = self.client.get(f"/api/code/approvals/{approval_id}")
+        assert fetched.status_code == 200
+        assert fetched.json()["approval"]["status"] == "expired"
 
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""

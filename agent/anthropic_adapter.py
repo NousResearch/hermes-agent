@@ -202,19 +202,33 @@ def _forbids_sampling_params(model: str) -> bool:
 
 
 # Beta headers for enhanced features (sent with ALL auth types).
-# As of Opus 4.7 (2026-04-16), both of these are GA on Claude 4.6+ — the
+# As of Opus 4.7 (2026-04-16), the first two are GA on Claude 4.6+ — the
 # beta headers are still accepted (harmless no-op) but not required. Kept
 # here so older Claude (4.5, 4.1) + third-party Anthropic-compat endpoints
 # that still gate on the headers continue to get the enhanced features.
-# Migration guide: remove these if you no longer support ≤4.5 models.
+#
+# ``context-1m-2025-08-07`` unlocks the 1M context window on Claude Opus 4.6/4.7
+# and Sonnet 4.6 when served via AWS Bedrock or Azure AI Foundry. 1M is GA on
+# native Anthropic (api.anthropic.com) for Opus 4.6+, but Bedrock/Azure still
+# gate it behind this beta header as of 2026-04 — without it Bedrock caps Opus
+# at 200K even though model_metadata.py advertises 1M. The header is a harmless
+# no-op on endpoints where 1M is GA.
+#
+# Migration guide: remove these if you no longer support ≤4.5 models or once
+# Bedrock/Azure promote 1M to GA.
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
+    "context-1m-2025-08-07",
 ]
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
 # fall back to the provider's default response path.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
+# 1M context beta — see comment on _COMMON_BETAS above. Stripped for
+# Bearer-auth (MiniMax) endpoints since they host their own models and
+# unknown Anthropic beta headers risk request rejection.
+_CONTEXT_1M_BETA = "context-1m-2025-08-07"
 
 # Fast mode beta — enables the ``speed: "fast"`` request parameter for
 # significantly higher output token throughput on Opus 4.6 (~2.5x).
@@ -357,9 +371,14 @@ def _common_betas_for_base_url(base_url: str | None) -> list[str]:
     that include Anthropic's ``fine-grained-tool-streaming`` beta — every
     tool-use message triggers a connection error.  Strip that beta for
     Bearer-auth endpoints while keeping all other betas intact.
+
+    The ``context-1m-2025-08-07`` beta is also stripped for Bearer-auth
+    endpoints — MiniMax hosts its own models, not Claude, so the header is
+    irrelevant at best and risks request rejection at worst.
     """
     if _requires_bearer_auth(base_url):
-        return [b for b in _COMMON_BETAS if b != _TOOL_STREAMING_BETA]
+        _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
+        return [b for b in _COMMON_BETAS if b not in _stripped]
     return _COMMON_BETAS
 
 
@@ -456,6 +475,13 @@ def build_anthropic_bedrock_client(region: str):
     Claude feature parity: prompt caching, thinking budgets, adaptive
     thinking, fast mode — features not available via the Converse API.
 
+    Attaches the common Anthropic beta headers as client-level defaults so
+    that Bedrock-hosted Claude models get the same enhanced features as
+    native Anthropic. The ``context-1m-2025-08-07`` beta in particular
+    unlocks the 1M context window for Opus 4.6/4.7 on Bedrock — without
+    it, Bedrock caps these models at 200K even though the Anthropic API
+    serves them with 1M natively.
+
     Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
     """
     if _anthropic_sdk is None:
@@ -473,6 +499,7 @@ def build_anthropic_bedrock_client(region: str):
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,
         timeout=Timeout(timeout=900.0, connect=10.0),
+        default_headers={"anthropic-beta": ",".join(_COMMON_BETAS)},
     )
 
 

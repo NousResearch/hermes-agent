@@ -15013,6 +15013,26 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     )
 
 
+def _resolve_plugin_api_path(plugin: Dict[str, Any]) -> Optional[Path]:
+    """Return a plugin API path only when it stays inside the plugin directory."""
+    api_file_name = plugin.get("_api_file")
+    if not api_file_name:
+        return None
+    try:
+        base = Path(plugin["_dir"]).resolve()
+        api_path = (base / str(api_file_name)).resolve()
+    except Exception:
+        return None
+    if not api_path.is_relative_to(base):
+        _log.warning(
+            "Plugin %s declares api=%s outside plugin directory; ignoring",
+            plugin.get("name", "<unknown>"),
+            api_file_name,
+        )
+        return None
+    return api_path
+
+
 def _mount_plugin_api_routes():
     """Import and mount backend API routes from plugins that declare them.
 
@@ -15045,7 +15065,8 @@ def _mount_plugin_api_routes():
 
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
-        if not api_file_name:
+        api_path = _resolve_plugin_api_path(plugin)
+        if not api_path:
             continue
         plugin_name = plugin.get("name", "")
         # Gate: user plugins must be in plugins.enabled and not in

@@ -599,3 +599,111 @@ class TestStopRun:
                 body = await events_resp.text()
                 # Stream should have received run.failed and closed
                 assert "run.failed" in body or "stream closed" in body
+
+# ---------------------------------------------------------------------------
+# Regression tests: isolation and resource bounds
+# ---------------------------------------------------------------------------
+
+
+def test_run_event_queue_is_bounded_and_drops_oldest():
+    adapter = _make_adapter()
+    q = asyncio.Queue(maxsize=1)
+
+    adapter._put_run_event_nowait(q, {"event": "old"})
+    adapter._put_run_event_nowait(q, {"event": "new"})
+
+    assert q.qsize() == 1
+    assert q.get_nowait()["event"] == "new"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_uses_session_task_id(monkeypatch):
+    adapter = _make_adapter()
+    seen = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def run_conversation(self, user_message, conversation_history=None, task_id=None):
+            seen["task_id"] = task_id
+            return {"final_response": "ok"}
+
+    monkeypatch.setattr(adapter, "_create_agent", lambda **_: FakeAgent())
+
+    await adapter._run_agent("hi", [], session_id="session-123")
+
+    assert seen["task_id"] == "session-123"
+    assert seen["task_id"] != "default"
+
+
+@pytest.mark.asyncio
+async def test_orphan_sweep_interrupts_agent_and_cancels_task(monkeypatch):
+    adapter = _make_adapter()
+    adapter._RUN_STREAM_TTL = -1
+    q = asyncio.Queue(maxsize=1)
+    agent = MagicMock()
+    task = MagicMock()
+    task.done.return_value = False
+
+    adapter._run_streams["run_old"] = q
+    adapter._run_streams_created["run_old"] = 0
+    adapter._active_run_agents["run_old"] = agent
+    adapter._active_run_tasks["run_old"] = task
+
+    sleeps = 0
+
+    async def fake_sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps > 1:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr("gateway.platforms.api_server.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await adapter._sweep_orphaned_runs()
+
+    agent.interrupt.assert_called_once_with("Run event stream was not consumed")
+    task.cancel.assert_called_once()
+    assert "run_old" not in adapter._run_streams
+    assert "run_old" not in adapter._run_streams_created
+    assert "run_old" not in adapter._active_run_agents
+    assert "run_old" not in adapter._active_run_tasks
+
+
+@pytest.mark.asyncio
+async def test_orphan_sweep_does_not_cancel_consumed_run(monkeypatch):
+    adapter = _make_adapter()
+    adapter._RUN_STREAM_TTL = -1
+    q = asyncio.Queue(maxsize=1)
+    agent = MagicMock()
+    task = MagicMock()
+    task.done.return_value = False
+
+    adapter._run_streams["run_connected"] = q
+    # No _run_streams_created entry: _handle_run_events removes it after a
+    # successful SSE subscription, so connected long-running streams are not
+    # considered orphaned.
+    adapter._active_run_agents["run_connected"] = agent
+    adapter._active_run_tasks["run_connected"] = task
+
+    sleeps = 0
+
+    async def fake_sleep(_seconds):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps > 1:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr("gateway.platforms.api_server.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await adapter._sweep_orphaned_runs()
+
+    agent.interrupt.assert_not_called()
+    task.cancel.assert_not_called()
+    assert adapter._run_streams["run_connected"] is q
+    assert adapter._active_run_agents["run_connected"] is agent
+    assert adapter._active_run_tasks["run_connected"] is task

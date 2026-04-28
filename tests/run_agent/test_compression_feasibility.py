@@ -171,6 +171,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
     mock_client = MagicMock()
     mock_client.base_url = "http://custom-endpoint:8080/v1"
     mock_client.api_key = "sk-custom"
+    mock_client.provider = ""
     mock_get_client.return_value = (mock_client, "custom/big-model")
 
     agent._emit_status = lambda msg: None
@@ -181,7 +182,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
         base_url="http://custom-endpoint:8080/v1",
         api_key="sk-custom",
         config_context_length=1_000_000,
-        provider="openrouter",
+        provider="",
     )
 
 
@@ -194,6 +195,7 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
     mock_client = MagicMock()
     mock_client.base_url = "http://custom:8080/v1"
     mock_client.api_key = "sk-test"
+    mock_client.provider = ""
     mock_get_client.return_value = (mock_client, "custom/model")
 
     agent._emit_status = lambda msg: None
@@ -204,7 +206,7 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
         base_url="http://custom:8080/v1",
         api_key="sk-test",
         config_context_length=None,
-        provider="openrouter",
+        provider="",
     )
 
 
@@ -233,6 +235,7 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
     mock_client = MagicMock()
     mock_client.base_url = "http://custom-endpoint:8080/v1"
     mock_client.api_key = "sk-custom"
+    mock_client.provider = ""
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
@@ -259,6 +262,63 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         config_context_length=1_000_000,
         provider="",
     )
+
+
+def test_init_prefers_provider_specific_context_override_when_base_urls_match():
+    """When multiple providers share a base_url, AIAgent should use the entry
+    matching the active provider instead of the first base_url match."""
+
+    class _StubCompressor:
+        def __init__(self, *args, **kwargs):
+            self.context_length = kwargs.get("config_context_length") or 128_000
+            self.threshold_tokens = 64_000
+            self.threshold_percent = 0.50
+
+        def get_tool_schemas(self):
+            return []
+
+        def on_session_start(self, *args, **kwargs):
+            return None
+
+    cfg = {
+        "providers": {
+            "provider-a": {
+                "name": "Provider A",
+                "base_url": "https://shared-gateway.example/v1",
+                "models": {
+                    "reasoning-model-a": {"context_length": 400_000},
+                },
+            },
+            "provider-b": {
+                "name": "Provider B",
+                "base_url": "https://shared-gateway.example/v1",
+                "models": {
+                    "chat-model-b": {"context_length": 204_800},
+                },
+            },
+        },
+    }
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("run_agent.ContextCompressor", new=_StubCompressor),
+        patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(None, None)),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://shared-gateway.example/v1",
+            provider="provider-b",
+            model="chat-model-b",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent._config_context_length == 204_800
+    assert agent.context_compressor.context_length == 204_800
 
 
 @patch("agent.auxiliary_client.get_text_auxiliary_client")

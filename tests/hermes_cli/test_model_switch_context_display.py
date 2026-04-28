@@ -75,19 +75,29 @@ class TestResolveDisplayContextLength:
             )
         assert ctx == 200_000
 
-    def test_prefers_resolver_even_when_model_info_has_larger_value(self):
-        """Invariant: provider-aware resolver is authoritative, even if models.dev
-        reports a bigger window."""
-        fake_mi = _FakeModelInfo(2_000_000)
+    def test_prefers_explicit_config_context_override_for_custom_provider(self):
+        fake_mi = _FakeModelInfo(128_000)
         with patch(
-            "agent.model_metadata.get_model_context_length", return_value=128_000
-        ):
+            "agent.model_metadata.get_model_context_length",
+            return_value=204_800,
+        ) as mock_get_ctx:
             ctx = resolve_display_context_length(
-                "capped-model",
-                "capped-provider",
+                "chat-model-b",
+                "provider-b",
+                base_url="https://shared-gateway.example/v1",
+                api_key="sk-test",
                 model_info=fake_mi,
+                config_context_length=204_800,
             )
-        assert ctx == 128_000
+        assert ctx == 204_800
+        mock_get_ctx.assert_called_once_with(
+            "chat-model-b",
+            base_url="https://shared-gateway.example/v1",
+            api_key="sk-test",
+            config_context_length=204_800,
+            provider="provider-b",
+            custom_providers=None,
+        )
 
     def test_custom_providers_override_honored(self):
         """Regression for #15779: /model switch onto a custom provider must

@@ -5513,9 +5513,57 @@ class HermesCLI:
         if result.api_mode:
             self.api_mode = result.api_mode
 
+        # Recompute the effective config override for the newly selected runtime.
+        # This mirrors AIAgent init so /model confirmation text stays aligned with
+        # the live agent when providers share a base_url but have different
+        # per-model context lengths.
+        _display_ctx = None
+        try:
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            _cfg = load_config()
+            _model_cfg = _cfg.get("model", {}) if isinstance(_cfg, dict) else {}
+            _raw_ctx = _model_cfg.get("context_length") if isinstance(_model_cfg, dict) else None
+            if _raw_ctx is not None:
+                try:
+                    _display_ctx = int(_raw_ctx)
+                except (TypeError, ValueError):
+                    _display_ctx = None
+            if _display_ctx is None:
+                _custom_providers = get_compatible_custom_providers(_cfg)
+                _normalized_base_url = (result.base_url or self.base_url or "").rstrip("/")
+                _normalized_provider = (result.target_provider or "").strip().lower()
+                for _cp_entry in _custom_providers:
+                    if not isinstance(_cp_entry, dict):
+                        continue
+                    _cp_url = str(_cp_entry.get("base_url", "") or "").rstrip("/")
+                    if _cp_url and _cp_url != _normalized_base_url:
+                        continue
+                    _cp_provider_key = str(_cp_entry.get("provider_key", "") or "").strip().lower()
+                    if _normalized_provider and _cp_provider_key and _cp_provider_key != _normalized_provider:
+                        continue
+                    _cp_models = _cp_entry.get("models", {})
+                    if not isinstance(_cp_models, dict):
+                        continue
+                    _cp_model_cfg = _cp_models.get(result.new_model, {})
+                    if not isinstance(_cp_model_cfg, dict):
+                        continue
+                    _cp_ctx = _cp_model_cfg.get("context_length")
+                    if _cp_ctx is None:
+                        continue
+                    try:
+                        _display_ctx = int(_cp_ctx)
+                    except (TypeError, ValueError):
+                        _display_ctx = None
+                    else:
+                        break
+        except Exception:
+            _display_ctx = None
+        self._config_context_length = _display_ctx
+
         # Apply to running agent (in-place swap)
         if self.agent is not None:
             try:
+                self.agent._config_context_length = _display_ctx
                 self.agent.switch_model(
                     new_model=result.new_model,
                     new_provider=result.target_provider,
@@ -5551,6 +5599,7 @@ class HermesCLI:
             base_url=result.base_url or self.base_url or "",
             api_key=result.api_key or self.api_key or "",
             model_info=mi,
+            config_context_length=_display_ctx,
         )
         if ctx:
             _cprint(f"    Context: {ctx:,} tokens")

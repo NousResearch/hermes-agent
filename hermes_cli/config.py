@@ -782,7 +782,6 @@ DEFAULT_CONFIG = {
         "first_turn_only": True,
         "code_task_only": False,
         "max_chars": 12000,
-        "delegation_max_chars": 6000,
         "packet_timeout_seconds": 25,
     },
 

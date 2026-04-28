@@ -21,7 +21,6 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_CHARS = 12_000
-_DEFAULT_DELEGATION_MAX_CHARS = 6_000
 _DEFAULT_TIMEOUT_SECONDS = 8.0
 _SAFE_ENV_KEYS = {
     "PATH",
@@ -54,7 +53,6 @@ class LeanCtxConfig:
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
     packet_timeout_seconds: float = 25.0
     max_chars: int = _DEFAULT_MAX_CHARS
-    delegation_max_chars: int = _DEFAULT_DELEGATION_MAX_CHARS
     max_task_chars: int = 4_000
     max_sessions: int = 1_024
     first_turn_only: bool = True
@@ -121,29 +119,6 @@ class LeanCtxBootstrapProvider:
             if len(self._bootstrapped_sessions) > self.config.max_sessions:
                 self._bootstrapped_sessions.pop(next(iter(self._bootstrapped_sessions)), None)
         return context
-
-    def context_for_delegation(
-        self,
-        *,
-        parent_session_id: str,
-        goal: str,
-        existing_context: str,
-        workspace_root: Path,
-    ) -> str:
-        task = _clip_task(
-            "\n".join(part for part in (goal, existing_context) if part).strip(),
-            self.config.max_task_chars,
-        )
-        if self.config.code_task_only and not _looks_like_code_task(task):
-            return ""
-        root = _resolve_root(workspace_root, self.default_workspace_root)
-        return self._build_packet(
-            task=task or _clip_task(goal, self.config.max_task_chars),
-            root=root,
-            max_chars=self.config.delegation_max_chars,
-            include_symbols=False,
-            header="LEAN-CTX DELEGATION CONTEXT",
-        )
 
     def _build_packet(
         self,
@@ -276,7 +251,6 @@ def _load_config(cfg: dict[str, Any]) -> LeanCtxConfig:
         timeout_seconds=float(raw.get("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS)),
         packet_timeout_seconds=float(raw.get("packet_timeout_seconds", 25.0)),
         max_chars=int(raw.get("max_chars", _DEFAULT_MAX_CHARS)),
-        delegation_max_chars=int(raw.get("delegation_max_chars", _DEFAULT_DELEGATION_MAX_CHARS)),
         max_task_chars=int(raw.get("max_task_chars", 4_000)),
         max_sessions=int(raw.get("max_sessions", 1_024)),
         first_turn_only=bool(raw.get("first_turn_only", True)),

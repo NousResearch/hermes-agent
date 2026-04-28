@@ -99,7 +99,6 @@ lean_ctx:
   first_turn_only: true
   code_task_only: false
   max_chars: 12000
-  delegation_max_chars: 6000
   packet_timeout_seconds: 25
 ```
 

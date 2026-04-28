@@ -29,7 +29,6 @@ from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
     as_completed,
 )
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
@@ -633,45 +632,6 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
         if os.path.isabs(text) and os.path.isdir(text):
             return text
     return None
-
-
-def _augment_task_context_with_bootstrap(
-    task_list: List[Dict[str, Any]],
-    *,
-    parent_agent,
-) -> List[Dict[str, Any]]:
-    manager = getattr(parent_agent, "_context_bootstrap_manager", None)
-    if manager is None:
-        return task_list
-
-    workspace_hint = _resolve_workspace_hint(parent_agent)
-    workspace_root = Path(workspace_hint) if workspace_hint else Path.cwd()
-    parent_session_id = getattr(parent_agent, "session_id", "") or ""
-    augmented: List[Dict[str, Any]] = []
-    for task in task_list:
-        current_context = str(task.get("context") or "")
-        try:
-            bootstrap_context = manager.context_for_delegation(
-                parent_session_id=parent_session_id,
-                goal=str(task.get("goal") or ""),
-                existing_context=current_context,
-                workspace_root=workspace_root,
-            )
-        except Exception as exc:
-            logger.debug("delegate_task context bootstrap failed: %s", exc)
-            augmented.append(task)
-            continue
-        if not bootstrap_context:
-            augmented.append(task)
-            continue
-        next_task = dict(task)
-        next_task["context"] = (
-            f"{bootstrap_context}\n\n{current_context}".strip()
-            if current_context
-            else bootstrap_context
-        )
-        augmented.append(next_task)
-    return augmented
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
@@ -1943,7 +1903,7 @@ def delegate_task(
                 f"delegate_task calls, or increase "
                 f"delegation.max_concurrent_children in config.yaml."
             )
-        task_list = [dict(t) for t in tasks]
+        task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
             {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
@@ -1953,11 +1913,6 @@ def delegate_task(
 
     if not task_list:
         return tool_error("No tasks provided.")
-
-    task_list = _augment_task_context_with_bootstrap(
-        task_list,
-        parent_agent=parent_agent,
-    )
 
     # Validate each task has a goal
     for i, task in enumerate(task_list):

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class ContextBootstrapProvider(Protocol):
-    """Provider interface for first-turn and delegation context packets."""
+    """Provider interface for first-turn context packets."""
 
     name: str
 
@@ -34,17 +34,6 @@ class ContextBootstrapProvider(Protocol):
         conversation_history: list[dict[str, Any]] | None = None,
     ) -> str:
         """Return ephemeral context for the current parent turn."""
-
-    def context_for_delegation(
-        self,
-        *,
-        parent_session_id: str,
-        goal: str,
-        existing_context: str,
-        workspace_root: Path,
-    ) -> str:
-        """Return a bounded context packet to prepend to a delegated task."""
-
 
 class ContextBootstrapManager:
     """Small fan-out wrapper around configured context bootstrap providers."""
@@ -77,35 +66,6 @@ class ContextBootstrapManager:
             if context and context.strip():
                 parts.append(context.strip())
         return "\n\n".join(parts)
-
-    def context_for_delegation(
-        self,
-        *,
-        parent_session_id: str,
-        goal: str,
-        existing_context: str,
-        workspace_root: Path,
-    ) -> str:
-        parts: list[str] = []
-        for provider in self.providers:
-            try:
-                context = provider.context_for_delegation(
-                    parent_session_id=parent_session_id,
-                    goal=goal,
-                    existing_context=existing_context,
-                    workspace_root=workspace_root,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Delegation context bootstrap provider %s failed: %s",
-                    provider.name,
-                    exc,
-                )
-                continue
-            if context and context.strip():
-                parts.append(context.strip())
-        return "\n\n".join(parts)
-
 
 def build_context_bootstrap_manager(
     cfg: dict[str, Any] | None,

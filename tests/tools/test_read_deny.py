@@ -177,9 +177,16 @@ class TestReadFileToolDenialMessage:
         ``is_read_denied``, closing the bypass.
         """
         monkeypatch.setenv("HOME", str(tmp_path))
-        # Force ``_resolve_path_for_task`` to use ``HOME`` as the
-        # terminal cwd via ``TERMINAL_CWD`` (the env-var fallback used
-        # when no live terminal is bound to the task_id).
+
+        # Force ``_resolve_path_for_task`` down the predictable
+        # TERMINAL_CWD branch by stubbing the live-tracking lookup.
+        # Without this, an xdist worker that ran an earlier terminal-tool
+        # test can leave ``_file_ops_cache`` / ``_active_environments``
+        # populated under ``"default"``, and ``_resolve_container_task_id``
+        # will resolve our task_id back to that stale entry — making the
+        # test pass on a clean worker (local) and fail on a hot one (CI).
+        import tools.file_tools as ft
+        monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
 
         ssh_dir = tmp_path / ".ssh"
@@ -191,7 +198,7 @@ class TestReadFileToolDenialMessage:
         # Pass a *task-relative* path — this is the bypass shape.  It
         # must resolve to ``$HOME/.ssh/id_ed25519`` (a deny-list path)
         # and hit the deny guard, not the file contents.
-        result = read_file_tool(".ssh/id_ed25519", task_id="test_relative_ssh")
+        result = read_file_tool(".ssh/id_ed25519", task_id="test_relative_ssh_deny_bypass")
         parsed = json.loads(result)
 
         assert "error" in parsed

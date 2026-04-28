@@ -813,7 +813,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
                 return
 
-            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=30)
+            # Discord's per-app command-management bucket is ~5 writes / 20 s,
+            # so a mass-prune-plus-upsert reconcile (e.g. 77 orphans + 30
+            # desired = 107 writes) takes several minutes of forced waits.
+            # A flat 30 s budget blew up reliably under bucket pressure and
+            # left slash commands broken for ~60 min until the bucket fully
+            # recovered. Use a wide ceiling; the cap still guards against a
+            # true hang. (#16713)
+            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
             logger.info(
                 "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
                 self.name,
@@ -825,7 +832,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 summary["deleted"],
             )
         except asyncio.TimeoutError:
-            logger.warning("[%s] Slash command sync timed out after 30s", self.name)
+            logger.warning(
+                "[%s] Slash command sync timed out — Discord rate-limit bucket "
+                "may be saturated; will retry on next reconnect",
+                self.name,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as e:  # pragma: no cover - defensive logging

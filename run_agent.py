@@ -1703,18 +1703,21 @@ class AIAgent:
         self._turns_since_memory = 0
         self._iters_since_skill = 0
         # Circuit breaker: detect and break infinite tool-call loops.
-        # Circuit breaker: detect and break infinite tool-call loops.
-        # Tracks consecutive calls to the same tool (regardless of success/failure).
-        # Used as a trigger point — when threshold reached, ask compression model
-        # to judge if the agent is looping/repeating useless work.
+        # Disabled by default. Enable via config.yaml:
+        #   circuit_breaker:
+        #     enabled: true
+        #     consecutive_threshold: 5    # calls before asking compression model
+        #     failure_threshold: 5        # consecutive failures before breaker
+        _cb_cfg = _agent_cfg.get("circuit_breaker", {})
+        self._circuit_breaker_enabled = bool(_cb_cfg.get("enabled", False))
         self._consecutive_tool_calls: dict[str, int] = {}
-        self._consecutive_threshold: int = 5
+        self._consecutive_threshold: int = int(_cb_cfg.get("consecutive_threshold", 5))
         
         # Per-tool failure retry counter: tracks consecutive failures
         # for a tool regardless of argument changes.  Prevents the LLM
         # from retrying different variations of a failing tool call.
         self._tool_failure_count: dict[str, int] = {}
-        self._tool_failure_threshold: int = 5
+        self._tool_failure_threshold: int = int(_cb_cfg.get("failure_threshold", 5))
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -2614,7 +2617,7 @@ class AIAgent:
     def _check_tool_failure(self, tool_name: str, result: str) -> str | None:
         """Check tool result and decide if the agent is looping.
 
-        Two-layer circuit breaker:
+        Two-layer circuit breaker (disabled by default, enable via config.yaml):
         1. Consecutive call check: If same tool called N times in a row,
            ask compression model to judge if the agent is looping/repeating.
         2. Failure check: If tool keeps returning errors, track failures.
@@ -2624,19 +2627,20 @@ class AIAgent:
         """
         import json
 
-        # ── Layer 1: Consecutive call check ──
-        # If same tool called N times consecutively, ask compression model
-        consecutive = self._consecutive_tool_calls.get(tool_name, 0)
-        if consecutive >= self._consecutive_threshold:
-            # Ask compression model to judge; if unavailable, let main model self-reflect
-            loop_msg = self._check_tool_loop(tool_name, result)
-            if loop_msg is not None:
-                return loop_msg
-            # Not looping — reset counter and allow
-            self._consecutive_tool_calls[tool_name] = 0
+        # ── Layer 1: Consecutive call check (config-gated) ──
+        if self._circuit_breaker_enabled:
+            consecutive = self._consecutive_tool_calls.get(tool_name, 0)
+            if consecutive >= self._consecutive_threshold:
+                # Ask compression model to judge; if unavailable, let main model self-reflect
+                loop_msg = self._check_tool_loop(tool_name, result)
+                if loop_msg is not None:
+                    return loop_msg
+                # Not looping — reset counter and allow
+                self._consecutive_tool_calls[tool_name] = 0
 
-        # ── Layer 2: Failure check ──
-        # Check if the result indicates a tool error
+        # ── Layer 2: Failure check (config-gated) ──
+        if not self._circuit_breaker_enabled:
+            return None
         try:
             data = json.loads(result)
         except (json.JSONDecodeError, TypeError):
@@ -9585,9 +9589,10 @@ class AIAgent:
         # ── Circuit breaker: track consecutive calls (before execution) ──
         # Count consecutive calls to the same tool. When threshold reached,
         # _check_tool_failure will ask the compression model to judge if looping.
-        self._consecutive_tool_calls[function_name] = (
-            self._consecutive_tool_calls.get(function_name, 0) + 1
-        )
+        if self._circuit_breaker_enabled:
+            self._consecutive_tool_calls[function_name] = (
+                self._consecutive_tool_calls.get(function_name, 0) + 1
+            )
 
         # ── Failure retry counter: detect consecutive tool failures ──────
         # After execution, check if the tool result indicates failure.
@@ -10182,9 +10187,10 @@ class AIAgent:
                     pass  # never block tool execution
 
             # ── Circuit breaker: track consecutive calls (before execution) ──
-            self._consecutive_tool_calls[function_name] = (
-                self._consecutive_tool_calls.get(function_name, 0) + 1
-            )
+            if self._circuit_breaker_enabled:
+                self._consecutive_tool_calls[function_name] = (
+                    self._consecutive_tool_calls.get(function_name, 0) + 1
+                )
             tool_start_time = time.time()
 
             if _block_msg is not None:

@@ -167,6 +167,34 @@ class TestSendMessageTool:
             media_files=[],
         )
 
+    def test_resolved_slack_root_channel_id_is_explicit_target(self):
+        config, slack_cfg = _make_config(Platform.SLACK)
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "slack:C0AK908M3JS",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.SLACK,
+            slack_cfg,
+            "C0AK908M3JS",
+            "hello",
+            thread_id=None,
+            media_files=[],
+        )
+
     def test_resolved_slack_topic_name_preserves_thread_id(self):
         config, slack_cfg = _make_config(Platform.SLACK)
 

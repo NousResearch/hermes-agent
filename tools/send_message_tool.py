@@ -323,6 +323,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _SLACK_THREAD_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+        if re.fullmatch(r"[A-Z0-9]+", target_ref.strip()):
+            return target_ref.strip(), None, True
     if platform_name == "weixin":
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:

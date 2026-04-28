@@ -238,6 +238,15 @@ class MemoryManager:
                     provider.name,
                 )
 
+        # Namespace validation — warn if tool names don't follow convention
+        for schema in schemas:
+            tool_name = schema.get("name", "")
+            if provider.name != "builtin" and not tool_name.startswith(provider.name[:4]):
+                logger.warning(
+                    "Provider '%s' tool '%s' does not follow naming convention '<provider>_<action>'.",
+                    provider.name, tool_name,
+                )
+
         ext_count = sum(1 for p in self._providers if p.name != "builtin")
         total_tools = len(self._tool_to_provider)
         logger.info(
@@ -367,6 +376,15 @@ class MemoryManager:
                     "Memory provider '%s' get_tool_schemas() failed: %s",
                     provider.name, e,
                 )
+
+        TOOL_BUDGET_WARN_THRESHOLD = 20
+        total_memory_tools = len(self._tool_to_provider)
+        if total_memory_tools > TOOL_BUDGET_WARN_THRESHOLD:
+            logger.warning(
+                "Memory tool budget: %d tools registered (threshold: %d). May degrade tool-calling accuracy.",
+                total_memory_tools, TOOL_BUDGET_WARN_THRESHOLD,
+            )
+
         return schemas
 
     def get_all_tool_names(self) -> set:

@@ -707,6 +707,14 @@ DEFAULT_CONFIG = {
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
         "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
+        # Gateway runtime-metadata footer appended to the FINAL message of a turn
+        # (disabled by default to keep replies minimal). When enabled, renders
+        # e.g. `model · 68% · ~/projects/hermes`. Per-platform overrides go under
+        # display.platforms.<platform>.runtime_footer.
+        "runtime_footer": {
+            "enabled": False,
+            "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
+        },
     },
 
     # Web dashboard settings

@@ -663,10 +663,13 @@ class TelegramAdapter(BasePlatformAdapter):
         """Opt-in: LLM-rename a newly-discovered DM topic to a short title.
 
         Telegram clients auto-name DM topics from the verbatim first user
-        message, which often produces long sentences (e.g. "想討論下下個禮
-        拜同 ABC 公司開會嘅 agenda?"). When ``auto_rename_dm_topics`` is
-        enabled, the auxiliary title-generation LLM produces a clean 3-7
-        word label and ``editForumTopic`` is called.
+        message, which often produces long sentences (e.g. "Can we discuss
+        next week's meeting agenda with ABC Company?") instead of short
+        labels. When ``auto_rename_dm_topics`` is enabled, the auxiliary
+        title-generation LLM produces a clean 3-7 word label and
+        ``editForumTopic`` is called. The model is whatever
+        ``auxiliary.title_generation`` resolves to — the same model used
+        for session-title generation, configurable per-deployment.
         """
         if not self._bot:
             return
@@ -714,8 +717,8 @@ class TelegramAdapter(BasePlatformAdapter):
         ]
 
         def _call_sync():
-            # max_tokens kept generous — reasoning models (DeepSeek-R1,
-            # MiniMax-M2, etc.) consume a lot of budget inside <think> blocks
+            # max_tokens kept generous — reasoning models that emit
+            # <think> blocks consume a lot of budget inside the trace
             # before emitting the actual title; a low cap returns empty.
             return call_llm(
                 task="title_generation",
@@ -747,8 +750,8 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not title:
             return ""
-        # Reasoning models (DeepSeek-R1, MiniMax-M2, etc.) emit
-        # <think>...</think> blocks. Strip closed and unterminated tags.
+        # Reasoning models commonly emit <think>...</think> blocks before
+        # the actual answer. Strip closed and unterminated tags.
         title = re.sub(
             r"<think\b[^>]*>.*?(?:</think>|\Z)",
             "",

@@ -383,9 +383,9 @@ Topics created outside of the config (e.g., manually in the Telegram client UI, 
 
 ### Auto-rename via LLM (opt-in)
 
-Telegram clients auto-name DM topics from the verbatim first user message — typing `想討論下下個禮拜同 ABC 公司開會嘅 agenda?` produces a long sentence-shaped topic name instead of a short label.
+Telegram clients auto-name DM topics from the verbatim first user message — a question like `Can we discuss next week's meeting agenda with ABC Company?` becomes a long sentence-shaped topic name instead of a short label.
 
-Enable `auto_rename_dm_topics` to have Hermes generate a clean 3-7 word title via the auxiliary title-generation LLM and apply it via `editForumTopic`:
+Enable `auto_rename_dm_topics` to have Hermes generate a clean 3-7 word title and apply it via `editForumTopic`:
 
 ```yaml
 platforms:
@@ -399,7 +399,9 @@ platforms:
 | `auto_rename_dm_topics: false` | ✓ | Topic name is whatever the Telegram client created; Hermes still seeds and caches it |
 | `auto_rename_dm_topics: true` |   | After caching, Hermes calls the auxiliary title model and renames via `editForumTopic` |
 
-The rename runs in the background after the topic is discovered, so it never delays the user's first reply. Reasoning models (DeepSeek-R1, MiniMax-M2, etc.) are supported — `<think>...</think>` traces are stripped from the output, and unterminated reasoning blocks are rejected to prevent garbage names. Each rename costs one auxiliary-model call.
+The rename runs in the background after the topic is discovered, so it never delays the user's first reply.
+
+The model used is whatever `auxiliary.title_generation` resolves to — the same auxiliary slot used by session-title generation, configurable per-deployment via `hermes model` (or directly in `config.yaml`). With the default `auto` setting it routes to the main provider, so there is no hard dependency on any specific model vendor. Reasoning models that emit `<think>...</think>` traces (DeepSeek-R1, Qwen QwQ, and similar) are supported — closed and unterminated traces are stripped from the output, and any residual XML-like markup is rejected, so a bad LLM response can never become a topic name. Each rename costs one auxiliary-model call.
 
 ## Group Forum Topic Skill Binding
 

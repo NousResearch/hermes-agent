@@ -371,7 +371,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "big-pickle",
     ],
     "opencode-go": [
-        "kimi-k2.6",
         "kimi-k2.5",
         "glm-5.1",
         "glm-5",

@@ -2301,6 +2301,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 # the chat tab generates on mount; entries auto-evict when the last subscriber
 # drops AND the publisher has disconnected.
 _event_channels: dict[str, set] = {}
+_event_last_session_info: dict[str, str] = {}
 _event_lock = asyncio.Lock()
 
 
@@ -2354,6 +2355,14 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
 async def _broadcast_event(channel: str, payload: str) -> None:
     """Fan out one publisher frame to every subscriber on `channel`."""
+    try:
+        frame = json.loads(payload)
+        if isinstance(frame, dict) and frame.get("type") == "session.info":
+            async with _event_lock:
+                _event_last_session_info[channel] = payload
+    except Exception:
+        pass
+
     async with _event_lock:
         subs = list(_event_channels.get(channel, ()))
 
@@ -2571,6 +2580,13 @@ async def events_ws(ws: WebSocket) -> None:
 
     async with _event_lock:
         _event_channels.setdefault(channel, set()).add(ws)
+        last_session_info = _event_last_session_info.get(channel)
+
+    if last_session_info:
+        try:
+            await ws.send_text(last_session_info)
+        except Exception:
+            pass
 
     try:
         while True:
@@ -2589,6 +2605,7 @@ async def events_ws(ws: WebSocket) -> None:
 
                 if not subs:
                     _event_channels.pop(channel, None)
+                    _event_last_session_info.pop(channel, None)
 
 
 def mount_spa(application: FastAPI):

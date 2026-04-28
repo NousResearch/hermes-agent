@@ -230,16 +230,20 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       const live = getUiState()
 
-      if (!live.sid) {
-        composerActions.pushHistory(full)
-        composerActions.enqueue(full)
-        composerActions.clearIn()
-
-        return
-      }
-
       const editIdx = composerRefs.queueEditRef.current
       composerActions.clearIn()
+
+      if (!live.sid) {
+        composerActions.pushHistory(full)
+
+        if (hasInterpolation(full)) {
+          patchUiState({ busy: true })
+
+          return interpolate(full, send)
+        }
+
+        return send(full)
+      }
 
       if (editIdx !== null) {
         composerActions.replaceQueue(editIdx, full)

@@ -20,9 +20,9 @@ import type { SkillInfo, ToolsetInfo } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@nous-research/ui";
+import { Badge, Button, ListItem, Switch } from "@nous-research/ui";
+import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
@@ -207,13 +207,15 @@ export default function SkillsPage() {
           onChange={(e) => setSearch(e.target.value)}
         />
         {search && (
-          <button
-            type="button"
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          <Button
+            ghost
+            size="xs"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             onClick={() => setSearch("")}
+            aria-label={t.common.clear}
           >
-            <X className="h-3 w-3" />
-          </button>
+            <X />
+          </Button>
         )}
       </div>,
     );
@@ -297,22 +299,13 @@ export default function SkillsPage() {
                         const isActive = activeCategory === key;
 
                         return (
-                          <button
+                          <ListItem
                             key={key}
-                            type="button"
+                            active={isActive}
                             onClick={() =>
                               setActiveCategory(isActive ? null : key)
                             }
-                            className={`
-                            group flex items-center gap-2 px-2 py-1
-                            rounded-sm text-left text-[11px] cursor-pointer
-                            transition-colors
-                            ${
-                              isActive
-                                ? "bg-foreground/10 text-foreground"
-                                : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
-                            }
-                          `}
+                            className="rounded-sm px-2 py-1 text-[11px]"
                           >
                             <span className="flex-1 truncate">{name}</span>
                             <span
@@ -324,7 +317,7 @@ export default function SkillsPage() {
                             >
                               {count}
                             </span>
-                          </button>
+                          </ListItem>
                         );
                       })}
                     </div>
@@ -535,24 +528,18 @@ function SkillRow({
 
 function PanelItem({ active, icon: Icon, label, onClick }: PanelItemProps) {
   return (
-    <button
-      type="button"
+    <ListItem
+      active={active}
       onClick={onClick}
-      className={`
-        group flex items-center gap-2 px-2.5 py-1.5
-        font-mondwest text-[0.7rem] tracking-[0.08em] uppercase
-        rounded-sm text-left cursor-pointer whitespace-nowrap
-        transition-colors
-        ${
-          active
-            ? "bg-foreground/90 text-background"
-            : "text-muted-foreground hover:text-foreground hover:bg-foreground/10"
-        }
-      `}
+      className={cn(
+        "rounded-sm whitespace-nowrap px-2.5 py-1.5",
+        "font-mondwest text-[0.7rem] tracking-[0.08em] uppercase",
+        active && "bg-foreground/90 text-background hover:text-background",
+      )}
     >
       <Icon className="h-3.5 w-3.5 shrink-0" />
       <span className="flex-1 truncate">{label}</span>
-    </button>
+    </ListItem>
   );
 }
 

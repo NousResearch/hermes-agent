@@ -36,7 +36,7 @@ import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { Toast } from "@/components/Toast";
-import { Button } from "@nous-research/ui";
+import { Button, ListItem } from "@nous-research/ui";
 import { Badge } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -105,11 +105,11 @@ function ToolCallBlock({
 
   return (
     <div className="mt-2 border border-warning/20 bg-warning/5">
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 px-3 py-2 text-xs text-warning cursor-pointer hover:bg-warning/10 transition-colors"
+      <ListItem
         onClick={() => setOpen(!open)}
         aria-label={`${open ? t.common.collapse : t.common.expand} tool call ${toolCall.function.name}`}
+        aria-expanded={open}
+        className="px-3 py-2 text-xs text-warning hover:bg-warning/10 hover:text-warning"
       >
         {open ? (
           <ChevronDown className="h-3 w-3" />
@@ -120,7 +120,7 @@ function ToolCallBlock({
           {toolCall.function.name}
         </span>
         <span className="text-warning/50 ml-auto">{toolCall.id}</span>
-      </button>
+      </ListItem>
       {open && (
         <pre className="border-t border-warning/20 px-3 py-2 text-xs text-warning/80 overflow-x-auto whitespace-pre-wrap font-mono">
           {args}
@@ -455,13 +455,15 @@ export default function SessionsPage() {
           className="h-8 pr-7 pl-8 text-xs"
         />
         {search && (
-          <button
-            type="button"
-            className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
+          <Button
+            ghost
+            size="xs"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             onClick={() => setSearch("")}
+            aria-label={t.common.clear}
           >
-            <X className="h-3 w-3" />
-          </button>
+            <X />
+          </Button>
         )}
       </div>,
     );
@@ -475,6 +477,7 @@ export default function SessionsPage() {
     searching,
     setAfterTitle,
     setEnd,
+    t.common.clear,
     t.sessions.searchPlaceholder,
     total,
   ]);

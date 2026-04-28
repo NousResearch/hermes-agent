@@ -1,4 +1,4 @@
-import { Button } from "@nous-research/ui";
+import { Button, ListItem } from "@nous-research/ui";
 import { Input } from "@/components/ui/input";
 import type { GatewayClient } from "@/lib/gatewayClient";
 import { Check, Loader2, Search, X } from "lucide-react";
@@ -280,14 +280,12 @@ function ProviderColumn({
       {providers.map((p) => {
         const active = p.slug === selectedSlug;
         return (
-          <button
+          <ListItem
             key={p.slug}
-            type="button"
+            active={active}
             onClick={() => onSelect(p.slug)}
-            className={`w-full text-left px-3 py-2 text-xs border-l-2 transition-colors cursor-pointer flex items-start gap-2 ${
-              active
-                ? "bg-primary/10 border-l-primary text-foreground"
-                : "border-l-transparent text-muted-foreground hover:text-foreground hover:bg-muted/40"
+            className={`items-start text-xs border-l-2 ${
+              active ? "border-l-primary" : "border-l-transparent"
             }`}
           >
             <div className="flex-1 min-w-0">
@@ -299,7 +297,7 @@ function ProviderColumn({
                 {p.slug} · {p.total_models ?? p.models?.length ?? 0} models
               </div>
             </div>
-          </button>
+          </ListItem>
         );
       })}
     </div>
@@ -360,23 +358,19 @@ function ModelColumn({
             m === currentModel && provider.slug === currentProviderSlug;
 
           return (
-            <button
+            <ListItem
               key={m}
-              type="button"
+              active={active}
               onClick={() => onSelect(m)}
               onDoubleClick={() => onConfirm(m)}
-              className={`w-full text-left px-3 py-1.5 text-xs font-mono transition-colors cursor-pointer flex items-center gap-2 ${
-                active
-                  ? "bg-primary/15 text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-              }`}
+              className="px-3 py-1.5 text-xs font-mono"
             >
               <Check
                 className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
               />
               <span className="flex-1 truncate">{m}</span>
               {isCurrent && <CurrentTag />}
-            </button>
+            </ListItem>
           );
         })
       )}

@@ -110,7 +110,24 @@ def _get_process_start_time(pid: int) -> Optional[int]:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text().split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        return None
+        pass
+
+    # Fallback for macOS/BSD: use ps to get the process start time.
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "lstart="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            dt = datetime.strptime(result.stdout.strip(), "%a %b %d %H:%M:%S %Y")
+            return int(dt.timestamp())
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, OSError):
+        pass
+
+    return None
 
 
 def get_process_start_time(pid: int) -> Optional[int]:
@@ -123,12 +140,25 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
         raw = cmdline_path.read_bytes()
+        if raw:
+            return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
     except (FileNotFoundError, PermissionError, OSError):
-        return None
+        pass
 
-    if not raw:
-        return None
-    return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+    # Fallback for macOS/BSD: use ps to get the command line.
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+    return None
 
 
 def _looks_like_gateway_process(pid: int) -> bool:

@@ -651,3 +651,208 @@ class TestTakeoverMarker:
 
         # We are not the target — must NOT consume as planned
         assert result is False
+
+
+class TestGetProcessStartTime:
+    """Unit tests for _get_process_start_time Linux and macOS code paths."""
+
+    def test_linux_reads_proc_stat(self, monkeypatch):
+        stat_content = " ".join(["0"] * 21 + ["98765"] + ["0"] * 10)
+        original_read_text = status.Path.read_text
+
+        def mock_read_text(path_self, *args, **kwargs):
+            if str(path_self) == "/proc/42/stat":
+                return stat_content
+            return original_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(status.Path, "read_text", mock_read_text)
+        assert status._get_process_start_time(42) == 98765
+
+    def test_macos_falls_back_to_ps(self, monkeypatch):
+        original_read_text = status.Path.read_text
+
+        def mock_read_text(path_self, *args, **kwargs):
+            if "/proc/" in str(path_self):
+                raise FileNotFoundError
+            return original_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(status.Path, "read_text", mock_read_text)
+
+        fake_result = SimpleNamespace(returncode=0, stdout="Mon Jan  6 10:30:00 2025\n", stderr="")
+        monkeypatch.setattr(status.subprocess, "run", lambda *a, **kw: fake_result)
+
+        result = status._get_process_start_time(42)
+        assert result is not None
+        assert isinstance(result, int)
+
+    def test_macos_ps_called_with_correct_args(self, monkeypatch):
+        original_read_text = status.Path.read_text
+
+        def mock_read_text(path_self, *args, **kwargs):
+            if "/proc/" in str(path_self):
+                raise FileNotFoundError
+            return original_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(status.Path, "read_text", mock_read_text)
+
+        calls = []
+
+        def capture_run(*args, **kwargs):
+            calls.append((args, kwargs))
+            return SimpleNamespace(returncode=0, stdout="Mon Jan  6 10:30:00 2025\n", stderr="")
+
+        monkeypatch.setattr(status.subprocess, "run", capture_run)
+
+        status._get_process_start_time(99)
+        assert len(calls) == 1
+        assert calls[0][0][0] == ["ps", "-p", "99", "-o", "lstart="]
+
+    def test_returns_none_when_both_paths_fail(self, monkeypatch):
+        original_read_text = status.Path.read_text
+
+        def mock_read_text(path_self, *args, **kwargs):
+            if "/proc/" in str(path_self):
+                raise FileNotFoundError
+            return original_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(status.Path, "read_text", mock_read_text)
+        monkeypatch.setattr(status.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError))
+
+        assert status._get_process_start_time(42) is None
+
+    def test_returns_none_when_ps_returns_empty(self, monkeypatch):
+        original_read_text = status.Path.read_text
+
+        def mock_read_text(path_self, *args, **kwargs):
+            if "/proc/" in str(path_self):
+                raise FileNotFoundError
+            return original_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(status.Path, "read_text", mock_read_text)
+        monkeypatch.setattr(
+            status.subprocess, "run",
+            lambda *a, **kw: SimpleNamespace(returncode=1, stdout="", stderr=""),
+        )
+
+        assert status._get_process_start_time(42) is None
+
+    def test_consistent_results_for_same_lstart(self, monkeypatch):
+        original_read_text = status.Path.read_text
+
+        def mock_read_text(path_self, *args, **kwargs):
+            if "/proc/" in str(path_self):
+                raise FileNotFoundError
+            return original_read_text(path_self, *args, **kwargs)
+
+        monkeypatch.setattr(status.Path, "read_text", mock_read_text)
+
+        fake_result = SimpleNamespace(returncode=0, stdout="Mon Jan  6 10:30:00 2025\n", stderr="")
+        monkeypatch.setattr(status.subprocess, "run", lambda *a, **kw: fake_result)
+
+        first = status._get_process_start_time(42)
+        second = status._get_process_start_time(42)
+        assert first == second
+
+
+class TestReadProcessCmdline:
+    """Unit tests for _read_process_cmdline Linux and macOS code paths."""
+
+    def test_linux_reads_proc_cmdline(self, monkeypatch):
+        original_read_bytes = status.Path.read_bytes
+
+        def mock_read_bytes(path_self):
+            if str(path_self) == "/proc/42/cmdline":
+                return b"python\x00-m\x00hermes_cli.main\x00gateway"
+            return original_read_bytes(path_self)
+
+        monkeypatch.setattr(status.Path, "read_bytes", mock_read_bytes)
+        assert status._read_process_cmdline(42) == "python -m hermes_cli.main gateway"
+
+    def test_macos_falls_back_to_ps(self, monkeypatch):
+        original_read_bytes = status.Path.read_bytes
+
+        def mock_read_bytes(path_self):
+            if "/proc/" in str(path_self):
+                raise FileNotFoundError
+            return original_read_bytes(path_self)
+
+        monkeypatch.setattr(status.Path, "read_bytes", mock_read_bytes)
+
+        fake_result = SimpleNamespace(
+            returncode=0,
+            stdout="python -m hermes_cli.main gateway\n",
+            stderr="",
+        )
+        monkeypatch.setattr(status.subprocess, "run", lambda *a, **kw: fake_result)
+
+        assert status._read_process_cmdline(42) == "python -m hermes_cli.main gateway"
+
+    def test_macos_ps_called_with_correct_args(self, monkeypatch):
+        original_read_bytes = status.Path.read_bytes
+
+        def mock_read_bytes(path_self):
+            if "/proc/" in str(path_self):
+                raise FileNotFoundError
+            return original_read_bytes(path_self)
+
+        monkeypatch.setattr(status.Path, "read_bytes", mock_read_bytes)
+
+        calls = []
+
+        def capture_run(*args, **kwargs):
+            calls.append((args, kwargs))
+            return SimpleNamespace(returncode=0, stdout="/usr/bin/python gateway\n", stderr="")
+
+        monkeypatch.setattr(status.subprocess, "run", capture_run)
+
+        status._read_process_cmdline(77)
+        assert len(calls) == 1
+        assert calls[0][0][0] == ["ps", "-p", "77", "-o", "command="]
+
+    def test_returns_none_when_both_paths_fail(self, monkeypatch):
+        original_read_bytes = status.Path.read_bytes
+
+        def mock_read_bytes(path_self):
+            if "/proc/" in str(path_self):
+                raise FileNotFoundError
+            return original_read_bytes(path_self)
+
+        monkeypatch.setattr(status.Path, "read_bytes", mock_read_bytes)
+        monkeypatch.setattr(status.subprocess, "run", lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError))
+
+        assert status._read_process_cmdline(42) is None
+
+    def test_returns_none_when_ps_returns_empty(self, monkeypatch):
+        original_read_bytes = status.Path.read_bytes
+
+        def mock_read_bytes(path_self):
+            if "/proc/" in str(path_self):
+                raise FileNotFoundError
+            return original_read_bytes(path_self)
+
+        monkeypatch.setattr(status.Path, "read_bytes", mock_read_bytes)
+        monkeypatch.setattr(
+            status.subprocess, "run",
+            lambda *a, **kw: SimpleNamespace(returncode=1, stdout="", stderr=""),
+        )
+
+        assert status._read_process_cmdline(42) is None
+
+    def test_linux_empty_cmdline_falls_through_to_ps(self, monkeypatch):
+        original_read_bytes = status.Path.read_bytes
+
+        def mock_read_bytes(path_self):
+            if str(path_self) == "/proc/42/cmdline":
+                return b""
+            return original_read_bytes(path_self)
+
+        monkeypatch.setattr(status.Path, "read_bytes", mock_read_bytes)
+
+        fake_result = SimpleNamespace(
+            returncode=0,
+            stdout="python gateway\n",
+            stderr="",
+        )
+        monkeypatch.setattr(status.subprocess, "run", lambda *a, **kw: fake_result)
+
+        assert status._read_process_cmdline(42) == "python gateway"

@@ -1706,12 +1706,18 @@ def _resolve_copilot_catalog_api_key() -> str:
       1. ``resolve_api_key_provider_credentials("copilot")`` — env vars
          (``COPILOT_GITHUB_TOKEN`` / ``GH_TOKEN`` / ``GITHUB_TOKEN``) plus
          the ``gh auth token`` CLI fallback.
-      2. ``read_credential_pool("copilot")`` — OAuth ``access_token`` saved
-         in ``auth.json`` by ``hermes auth add copilot`` (device-code flow).
+      2. ``read_credential_pool("copilot")`` — a token (typically a
+         ``gho_*`` from device-code login, or a fine-grained PAT) stored in
+         ``auth.json`` under ``credential_pool.copilot[]``. The pool is
+         populated by ``hermes auth add copilot`` and by ``_seed_from_env``
+         when the env var is set in ``~/.hermes/.env``.
 
-    Without (2), users whose only Copilot credential is the OAuth token
-    Hermes itself stores see the ``/model`` picker fall back to a stale
-    hardcoded list because the live catalog fetch silently 401s.
+    Without (2), users whose only Copilot credential is in the pool see
+    the ``/model`` picker fall back to a stale hardcoded list because the
+    live catalog fetch silently 401s. To avoid wedging on a malformed pool
+    entry, each candidate is exchanged via ``exchange_copilot_token`` —
+    only entries that actually exchange successfully are returned, so a
+    later valid entry is reachable when an earlier one is unsupported.
     """
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
@@ -1726,7 +1732,7 @@ def _resolve_copilot_catalog_api_key() -> str:
     try:
         from hermes_cli.auth import read_credential_pool
         from hermes_cli.copilot_auth import (
-            get_copilot_api_token,
+            exchange_copilot_token,
             validate_copilot_token,
         )
 
@@ -1739,7 +1745,12 @@ def _resolve_copilot_catalog_api_key() -> str:
             valid, _ = validate_copilot_token(raw)
             if not valid:
                 continue
-            return get_copilot_api_token(raw)
+            try:
+                api_token, _expires_at = exchange_copilot_token(raw)
+            except Exception:
+                continue
+            if api_token:
+                return api_token
     except Exception:
         pass
 

@@ -3431,9 +3431,10 @@ def _(rid, params: dict) -> dict:
 
 @method("reload.env")
 def _(rid, params: dict) -> dict:
-    """Re-read ~/.hermes/.env into the gateway process — TUI parity with
-    classic CLI's ``/reload`` (cli.py).  Newly added API keys take effect
-    on the next agent call without restarting the TUI.
+    """Re-read ``~/.hermes/.env`` into the gateway process via
+    ``hermes_cli.config.reload_env``, matching classic CLI's ``/reload``
+    handler.  Newly added API keys take effect on the next agent call
+    without restarting the TUI.
 
     The credential pool / provider routing for any *already-constructed*
     agent does not auto-rebuild — that's the same behaviour as classic

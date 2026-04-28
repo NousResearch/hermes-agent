@@ -81,6 +81,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `AWS_REGION` | AWS region for Bedrock inference (e.g. `us-east-1`, `eu-central-1`). Read by boto3. |
 | `AWS_PROFILE` | AWS named profile for Bedrock authentication (reads `~/.aws/credentials`). Leave unset to use default boto3 credential chain. |
 | `BEDROCK_BASE_URL` | Override Bedrock runtime base URL (default: `https://bedrock-runtime.us-east-1.amazonaws.com`; usually leave unset and use `AWS_REGION` instead) |
+| `AWS_BEARER_TOKEN_BEDROCK` | AWS Bedrock API key (native short/long-term) or bearer token for custom AI-gateway endpoints. See [Bedrock guide](../guides/aws-bedrock.md). |
+| `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` | Custom Bedrock runtime endpoint URL (e.g. `https://ai-gateway.example.com/bedrock`). Overrides `bedrock.runtime_endpoint` in config.yaml. |
 | `HERMES_QWEN_BASE_URL` | Qwen Portal base URL override (default: `https://portal.qwen.ai/v1`) |
 | `OPENCODE_ZEN_API_KEY` | OpenCode Zen API key — pay-as-you-go access to curated models ([opencode.ai](https://opencode.ai/auth)) |
 | `OPENCODE_ZEN_BASE_URL` | Override OpenCode Zen base URL |

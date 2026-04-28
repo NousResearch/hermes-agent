@@ -139,12 +139,56 @@ hermes gateway start
 
 The gateway reads `config.yaml` and uses the same Bedrock provider configuration.
 
+## Custom Endpoint (AI Gateway Proxies)
+
+Some organizations deploy AI gateway proxies that expose a Bedrock-compatible API with bearer token authentication instead of AWS SigV4. Hermes supports this via option 3 in the `hermes model` picker.
+
+### Setup
+
+```bash
+hermes model
+# → Choose "More providers..." → "AWS Bedrock"
+# → Choose "3. Custom Bedrock endpoint (Bearer token)"
+# → Enter your gateway URL and bearer token
+```
+
+The wizard stores the endpoint URL in `config.yaml` and the bearer token in `.env` (as a secret).
+
+### Configuration
+
+After setup, `~/.hermes/config.yaml` will contain:
+
+```yaml
+bedrock:
+  region: us-east-1
+  runtime_endpoint: https://ai-gateway.example.com/bedrock
+```
+
+And `~/.hermes/.env` will contain:
+
+```
+AWS_BEARER_TOKEN_BEDROCK=<your-token>
+```
+
+### Switching Back to IAM
+
+When you switch back to standard IAM auth (option 1 or 2 in `hermes model`), Hermes automatically clears `bedrock.runtime_endpoint` from the config so traffic returns to the standard AWS endpoint.
+
+### Power-User Override
+
+For scripting or CI, you can override the endpoint via environment variable — this takes priority over `config.yaml`:
+
+```bash
+export AWS_ENDPOINT_URL_BEDROCK_RUNTIME=https://ai-gateway.example.com/bedrock
+export AWS_BEARER_TOKEN_BEDROCK=<your-token>
+```
+
 ## Troubleshooting
 
 ### "No API key found" / "No AWS credentials"
 
 Hermes checks for credentials in this order:
-1. `AWS_BEARER_TOKEN_BEDROCK`
+1. `AWS_BEARER_TOKEN_BEDROCK` (native AWS Bedrock API key or custom endpoint bearer token)
 2. `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`
 3. `AWS_PROFILE`
 4. EC2 instance metadata (IMDS)

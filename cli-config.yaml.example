@@ -96,6 +96,16 @@ model:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
+# AWS Bedrock Configuration (only applies when using the Bedrock provider)
+# =============================================================================
+# bedrock:
+#   region: us-east-1                    # AWS region (or set AWS_REGION env var)
+#   runtime_endpoint: ""                 # Custom Bedrock runtime endpoint URL
+#                                        # (e.g. AI gateway proxy). Leave empty
+#                                        # for the standard AWS endpoint.
+#                                        # Env override: AWS_ENDPOINT_URL_BEDROCK_RUNTIME
+
+# =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
 # Control how requests are routed across providers on OpenRouter.

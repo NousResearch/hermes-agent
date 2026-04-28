@@ -110,6 +110,7 @@ export default function LogsPage() {
         </div>
         <Button
           type="button"
+          size="sm"
           outlined
           onClick={fetchLogs}
           disabled={loading}

@@ -367,6 +367,7 @@ export default function AnalyticsPage() {
             <Button
               key={p.label}
               type="button"
+              size="sm"
               outlined={days !== p.days}
               onClick={() => setDays(p.days)}
             >
@@ -376,6 +377,7 @@ export default function AnalyticsPage() {
         </div>
         <Button
           type="button"
+          size="sm"
           outlined
           onClick={load}
           disabled={loading}

@@ -71,6 +71,57 @@ _CLONE_ALL_STRIP = [
     "processes.json",
 ]
 
+# Exclusive platform credentials that must never be copied between profiles.
+# These are one-to-one identity bindings — a Weixin token maps to one bot,
+# a Telegram bot token can only getUpdates from one process at a time, etc.
+# When cloned, the new profile's .env must not contain these keys.
+_EXCLUSIVE_PLATFORM_KEYS: tuple[str, ...] = (
+    "TELEGRAM_BOT_TOKEN",
+    "DISCORD_BOT_TOKEN",
+    "SLACK_APP_TOKEN",
+    "WHATSAPP_BUSINESS_ACCOUNT_ID",
+    "WHATSAPP_BUSINESS_APP_SECRET",
+    "WHATSAPP_BUSINESS_ACCESS_TOKEN",
+    "SIGNAL_PHONE_NUMBER",
+    "WEIXIN_TOKEN",
+    "WEIXIN_ACCOUNT_ID",
+    "FEISHU_APP_TOKEN",
+    "FEISHU_APP_SECRET",
+    "DINGTALK_ROBOT_SECRET",
+    "DINGTALK_ROBOT_CODE",
+    "QQBOT_APPID",
+    "QQBOT_TOKEN",
+)
+
+# config.yaml paths that hold exclusive platform credentials (YAML dotted notation).
+# These nodes are force-disabled (enabled: false) and credential values erased
+# when cloning so the new profile does not reuse the source's identity.
+_EXCLUSIVE_PLATFORM_CONFIG_PATHS: tuple[str, ...] = (
+    "platforms.telegram.enabled",
+    "platforms.telegram.bot_token",
+    "platforms.discord.enabled",
+    "platforms.discord.bot_token",
+    "platforms.slack.enabled",
+    "platforms.slack.app_token",
+    "platforms.whatsapp.enabled",
+    "platforms.whatsapp.business_account_id",
+    "platforms.whatsapp.access_token",
+    "platforms.signal.enabled",
+    "platforms.signal.phone_number",
+    "platforms.weixin.enabled",
+    "platforms.weixin.token",
+    "platforms.weixin.account_id",
+    "platforms.feishu.enabled",
+    "platforms.feishu.app_token",
+    "platforms.feishu.app_secret",
+    "platforms.dingtalk.enabled",
+    "platforms.dingtalk.robot_secret",
+    "platforms.dingtalk.robot_code",
+    "platforms.qqbot.enabled",
+    "platforms.qqbot.appid",
+    "platforms.qqbot.token",
+)
+
 # Directories/files to exclude when exporting the default (~/.hermes) profile.
 # The default profile contains infrastructure (repo checkout, worktrees, DBs,
 # caches, binaries) that named profiles don't have.  We exclude those so the
@@ -111,6 +162,77 @@ _HERMES_SUBCOMMANDS = frozenset({
     "mcp", "sessions", "insights", "version", "update", "uninstall",
     "profile", "plugins", "honcho", "acp",
 })
+
+
+# ---------------------------------------------------------------------------
+# Credential stripping for --clone
+# ---------------------------------------------------------------------------
+
+def _strip_env_exclusive_credentials(src_path: Path, dst_path: Path) -> list[str]:
+    """Remove exclusive platform credential keys from a cloned .env file.
+
+    Returns a list of the keys that were removed (for logging).
+    """
+    if not src_path.exists():
+        return []
+    skipped_keys: list[str] = []
+    lines: list[str] = []
+    for line in src_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            lines.append(line)
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        if key in _EXCLUSIVE_PLATFORM_KEYS:
+            skipped_keys.append(key)
+            lines.append(f"# CLONED-EXCLUDED: {line}")
+        else:
+            lines.append(line)
+    if skipped_keys:
+        dst_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return skipped_keys
+
+
+def _strip_config_exclusive_credentials(src_path: Path, dst_path: Path) -> list[str]:
+    """Force-disable exclusive platform entries in a cloned config.yaml.
+
+    Sets ``enabled: false`` and erases credential fields so the new profile
+    does not reuse the source's messaging identity (#17080).
+    """
+    if not src_path.exists():
+        return []
+    import yaml
+    try:
+        cfg = yaml.safe_load(src_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return []
+
+    disabled_paths: list[str] = []
+    platforms = cfg.get("platforms", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(platforms, dict):
+        return []
+
+    for path_str in _EXCLUSIVE_PLATFORM_CONFIG_PATHS:
+        parts = path_str.split(".")
+        if len(parts) != 3 or parts[0] != "platforms":
+            continue
+        platform_name, field = parts[1], parts[2]
+        if platform_name not in platforms:
+            continue
+        plat = platforms[platform_name]
+        if not isinstance(plat, dict):
+            continue
+        if field == "enabled":
+            if plat.get("enabled") is True:
+                plat["enabled"] = False
+                disabled_paths.append(path_str)
+        elif field in plat and plat[field] not in (None, "", False):
+            plat[field] = None
+            disabled_paths.append(path_str)
+
+    if disabled_paths:
+        dst_path.write_text(yaml.dump(cfg, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return disabled_paths
 
 
 # ---------------------------------------------------------------------------
@@ -439,8 +561,25 @@ def create_profile(
         if source_dir is not None:
             for filename in _CLONE_CONFIG_FILES:
                 src = source_dir / filename
-                if src.exists():
-                    shutil.copy2(src, profile_dir / filename)
+                if not src.exists():
+                    continue
+                dst = profile_dir / filename
+                shutil.copy2(src, dst)
+
+                # Strip exclusive platform credentials from .env and config.yaml.
+                # These are one-to-one identity bindings (Telegram token, Weixin token,
+                # etc.) that must not be shared between profiles (#17080).
+                if filename == ".env":
+                    skipped = _strip_env_exclusive_credentials(src, dst)
+                    if skipped:
+                        print(f"  ⚠ Skipped exclusive platform credentials in .env: {', '.join(skipped)}")
+                        print("    → Set them in the new profile's .env before enabling platforms.")
+                elif filename == "config.yaml":
+                    disabled = _strip_config_exclusive_credentials(src, dst)
+                    if disabled:
+                        platforms_disabled = sorted({p.split(".")[1] for p in disabled})
+                        print(f"  ⚠ Disabled exclusive platforms in config.yaml: {', '.join(platforms_disabled)}")
+                        print("    → Enable and configure them in the new profile's config.yaml.")
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:

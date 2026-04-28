@@ -1073,6 +1073,12 @@ class HonchoSessionManager:
 
         return target_peer_id, None
 
+    def _legacy_default_user_peer_id(self, peer_id: str) -> str | None:
+        """Return the pre-runtime-ID default-session user peer ID, if applicable."""
+        if not peer_id or peer_id.startswith("user-default-"):
+            return None
+        return self._sanitize_id(f"user-default-{peer_id}")
+
     def get_peer_card(self, session_key: str, peer: str = "user") -> list[str]:
         """
         Fetch a peer card — a curated list of key facts.
@@ -1090,10 +1096,26 @@ class HonchoSessionManager:
             card = self._fetch_peer_card(observer_peer_id, target=target_peer_id)
             if card:
                 return card
-            # Some backends store cards directly on the target peer, not the
-            # observer-target slot. Fall back so honcho_profile still works.
+
+            # Honcho can store a stable profile card on the target peer itself
+            # even when the observer-target card is empty. set_peer_card() writes
+            # this way, and some self-hosted v3 backends expose migrated cards
+            # only through the target peer's own card endpoint.
+            profile_peer_id = target_peer_id or observer_peer_id
             if target_peer_id:
-                return self._fetch_peer_card(target_peer_id)
+                card = self._fetch_peer_card(profile_peer_id)
+                if card:
+                    return card
+
+            # Older Hermes sessions derived CLI user peers from "default:<name>"
+            # (for example user-default-w0lf). Runtime user IDs now resolve to
+            # the bare user ID (w0lf), so preserve access to migrated cards.
+            if profile_peer_id == session.user_peer_id:
+                legacy_peer_id = self._legacy_default_user_peer_id(profile_peer_id)
+                if legacy_peer_id:
+                    card = self._fetch_peer_card(legacy_peer_id)
+                    if card:
+                        return card
             return []
         except Exception as e:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)

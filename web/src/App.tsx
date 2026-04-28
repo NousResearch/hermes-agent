@@ -160,7 +160,10 @@ function resolveIcon(name: string): ComponentType<{ className?: string }> {
   return ICON_MAP[name] ?? Puzzle;
 }
 
-function buildNavItems(builtIn: NavItem[], manifests: PluginManifest[]): NavItem[] {
+function buildNavItems(
+  builtIn: NavItem[],
+  manifests: PluginManifest[],
+): NavItem[] {
   const items = [...builtIn];
 
   for (const manifest of manifests) {
@@ -425,18 +428,22 @@ export default function App() {
           >
             <div
               className={cn(
-                "flex h-14 shrink-0 items-center justify-between gap-2 px-5",
+                "flex h-14 shrink-0 items-center justify-between gap-2",
                 "border-b border-current/20",
               )}
             >
-              <Typography
-                className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-                style={{ mixBlendMode: "plus-lighter" }}
-              >
-                Hermes
-                <br />
-                Agent
-              </Typography>
+              <div className="flex items-center gap-2">
+                <PluginSlot name="header-left" />
+
+                <Typography
+                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
+                  style={{ mixBlendMode: "plus-lighter" }}
+                >
+                  Hermes
+                  <br />
+                  Agent
+                </Typography>
+              </div>
 
               <button
                 type="button"
@@ -451,8 +458,6 @@ export default function App() {
                 <X className="h-4 w-4" />
               </button>
             </div>
-
-            <PluginSlot name="header-left" />
 
             <nav
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
@@ -545,7 +550,8 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
-                  (isDocsRoute || isChatRoute) && "min-h-0 flex flex-1 flex-col",
+                  (isDocsRoute || isChatRoute) &&
+                    "min-h-0 flex flex-1 flex-col",
                 )}
               >
                 <Routes>
@@ -579,8 +585,9 @@ export default function App() {
                   or idle-disconnect after N minutes hidden; neither is
                   shipped today.
                 */}
-                {embeddedChat && !chatOverriddenByPlugin && (
-                  pluginsLoading ? (
+                {embeddedChat &&
+                  !chatOverriddenByPlugin &&
+                  (pluginsLoading ? (
                     // Direct /chat deep-link: plugin manifests haven't resolved
                     // yet, so we can't tell if a plugin is going to claim this
                     // route.  Show a lightweight placeholder instead of a
@@ -593,7 +600,10 @@ export default function App() {
                         aria-live="polite"
                       >
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                          <Loader2
+                            className="h-4 w-4 animate-spin"
+                            aria-hidden
+                          />
                           <span>Loading chat…</span>
                         </div>
                       </div>
@@ -609,8 +619,7 @@ export default function App() {
                     >
                       <ChatPage isActive={isChatRoute} />
                     </div>
-                  )
-                )}
+                  ))}
               </div>
               <PluginSlot name="post-main" />
             </div>

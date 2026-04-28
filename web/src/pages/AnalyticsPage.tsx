@@ -10,9 +10,9 @@ import {
 import { api } from "@/lib/api";
 import type { AnalyticsResponse, AnalyticsDailyEntry, AnalyticsModelEntry, AnalyticsSkillEntry } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
+import { Button } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
@@ -317,9 +317,7 @@ export default function AnalyticsPage() {
             <Button
               key={p.label}
               type="button"
-              variant={days === p.days ? "default" : "outline"}
-              size="sm"
-              className="h-7 min-w-0 text-xs"
+              outlined={days !== p.days}
               onClick={() => setDays(p.days)}
             >
               {p.label}
@@ -328,13 +326,11 @@ export default function AnalyticsPage() {
         </div>
         <Button
           type="button"
-          variant="outline"
-          size="sm"
+          outlined
           onClick={load}
           disabled={loading}
-          className="h-7 text-xs"
+          prefix={<RefreshCw />}
         >
-          <RefreshCw className="mr-1 h-3 w-3" />
           {t.common.refresh}
         </Button>
       </div>,

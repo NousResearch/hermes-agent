@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Copy, X, Check, Loader2 } from "lucide-react";
-import { H2 } from "@nous-research/ui";
+import { Button, H2 } from "@nous-research/ui";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/i18n";
 
@@ -254,7 +253,6 @@ export function OAuthLoginModal({
                   <Button
                     onClick={handleSubmitPkceCode}
                     disabled={!pkceCode.trim()}
-                    size="sm"
                   >
                     {t.oauth.submitCode}
                   </Button>
@@ -289,8 +287,7 @@ export function OAuthLoginModal({
                   }
                 </code>
                 <Button
-                  variant="outline"
-                  size="sm"
+                  outlined
                   onClick={() =>
                     handleCopyUserCode(
                       (
@@ -301,12 +298,12 @@ export function OAuthLoginModal({
                       ).user_code,
                     )
                   }
-                  className="text-xs"
+                  className="!p-2 aspect-square"
                 >
                   {codeCopied ? (
-                    <Check className="h-3 w-3" />
+                    <Check className="h-3.5 w-3.5" />
                   ) : (
-                    <Copy className="h-3 w-3" />
+                    <Copy className="h-3.5 w-3.5" />
                   )}
                 </Button>
               </div>
@@ -348,11 +345,10 @@ export function OAuthLoginModal({
                 {errorMsg || t.oauth.loginFailed}
               </div>
               <div className="flex justify-end gap-2">
-                <Button variant="outline" size="sm" onClick={handleClose}>
+                <Button outlined onClick={handleClose}>
                   {t.common.close}
                 </Button>
                 <Button
-                  size="sm"
                   onClick={() => {
                     if (start?.session_id) {
                       api.cancelOAuthSession(start.session_id).catch(() => {});

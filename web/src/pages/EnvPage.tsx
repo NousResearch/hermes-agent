@@ -21,9 +21,9 @@ import { Toast } from "@/components/Toast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { useToast } from "@/hooks/useToast";
 import { OAuthProvidersCard } from "@/components/OAuthProvidersCard";
+import { Button } from "@nous-research/ui";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
@@ -134,9 +134,8 @@ function EnvVarRow({
               {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
-          <Button size="sm" variant="outline" className="h-6 text-[0.6rem] px-2"
+          <Button outlined prefix={<Pencil />}
             onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}>
-            <Pencil className="h-2.5 w-2.5" />
             {t.common.set}
           </Button>
         </div>
@@ -159,9 +158,8 @@ function EnvVarRow({
               {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
-          <Button size="sm" variant="outline" className="h-7 text-[0.6rem]"
+          <Button outlined prefix={<Pencil />}
             onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}>
-            <Pencil className="h-3 w-3" />
             {t.common.set}
           </Button>
         </div>
@@ -206,26 +204,25 @@ function EnvVarRow({
           </div>
 
           {info.is_set && (
-            <Button size="sm" variant="ghost" onClick={() => onReveal(varKey)}
+            <Button outlined onClick={() => onReveal(varKey)}
               title={isRevealed ? t.env.hideValue : t.env.showValue}
-              aria-label={isRevealed ? `Hide ${varKey}` : `Reveal ${varKey}`}>
+              aria-label={isRevealed ? `Hide ${varKey}` : `Reveal ${varKey}`}
+              className="!p-2 aspect-square">
               {isRevealed
                 ? <EyeOff className="h-4 w-4" />
                 : <Eye className="h-4 w-4" />}
             </Button>
           )}
 
-          <Button size="sm" variant="outline"
+          <Button outlined prefix={<Pencil />}
             onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}>
-            <Pencil className="h-3 w-3" />
             {info.is_set ? t.common.replace : t.common.set}
           </Button>
 
           {info.is_set && (
-            <Button size="sm" variant="ghost"
-              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+            <Button outlined prefix={<Trash2 />}
+              className="text-destructive hover:!text-destructive"
               onClick={() => onClear(varKey)} disabled={saving === varKey || clearDialogOpen}>
-              <Trash2 className="h-3 w-3" />
               {saving === varKey ? "..." : t.common.clear}
             </Button>
           )}
@@ -238,13 +235,12 @@ function EnvVarRow({
             onChange={(e) => setEdits((prev) => ({ ...prev, [varKey]: e.target.value }))}
             placeholder={info.is_set ? t.env.replaceCurrentValue.replace("{preview}", info.redacted_value ?? "---") : t.env.enterValue}
             className="flex-1 font-mono-ui text-xs" />
-          <Button size="sm" onClick={() => onSave(varKey)}
+          <Button onClick={() => onSave(varKey)} prefix={<Save />}
             disabled={saving === varKey || !edits[varKey]}>
-            <Save className="h-3 w-3" />
             {saving === varKey ? "..." : t.common.save}
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => onCancelEdit(varKey)}>
-            <X className="h-3 w-3" /> {t.common.cancel}
+          <Button outlined prefix={<X />} onClick={() => onCancelEdit(varKey)}>
+            {t.common.cancel}
           </Button>
         </div>
       )}
@@ -537,7 +533,7 @@ export default function EnvPage() {
             {t.env.changesNote}
           </p>
         </div>
-        <Button variant="ghost" size="sm" onClick={() => setShowAdvanced(!showAdvanced)}>
+        <Button outlined onClick={() => setShowAdvanced(!showAdvanced)}>
           {showAdvanced ? t.env.hideAdvanced : t.env.showAdvanced}
         </Button>
       </div>

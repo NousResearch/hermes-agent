@@ -1,6 +1,20 @@
-import type { ToolsConfigureResponse } from '../../../gatewayTypes.js'
+import type {
+  BrowserManageResponse,
+  DelegationPauseResponse,
+  ProcessStopResponse,
+  ReloadMcpResponse,
+  RollbackDiffResponse,
+  RollbackListResponse,
+  RollbackRestoreResponse,
+  SlashExecResponse,
+  SpawnTreeListResponse,
+  SpawnTreeLoadResponse,
+  ToolsConfigureResponse
+} from '../../../gatewayTypes.js'
 import type { PanelSection } from '../../../types.js'
+import { applyDelegationStatus, getDelegationState } from '../../delegationStore.js'
 import { patchOverlayState } from '../../overlayStore.js'
+import { getSpawnHistory, pushDiskSnapshot, setDiffPair, type SpawnSnapshot } from '../../spawnHistoryStore.js'
 import type { SlashCommand } from '../types.js'
 
 interface SkillInfo {
@@ -43,6 +57,329 @@ interface SkillsBrowseResponse {
 
 export const opsCommands: SlashCommand[] = [
   {
+    help: 'stop background processes',
+    name: 'stop',
+    run: (_arg, ctx) => {
+      ctx.gateway
+        .rpc<ProcessStopResponse>('process.stop', {})
+        .then(
+          ctx.guarded<ProcessStopResponse>(r => {
+            const killed = Number(r.killed ?? 0)
+            const noun = killed === 1 ? 'process' : 'processes'
+            ctx.transcript.sys(`stopped ${killed} background ${noun}`)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    aliases: ['reload_mcp'],
+    help: 'reload MCP servers in the live session',
+    name: 'reload-mcp',
+    run: (_arg, ctx) => {
+      ctx.gateway
+        .rpc<ReloadMcpResponse>('reload.mcp', { session_id: ctx.sid })
+        .then(
+          ctx.guarded<ReloadMcpResponse>(r => {
+            ctx.transcript.sys(r.status === 'reloaded' ? 'MCP servers reloaded' : 'reload complete')
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'manage browser CDP connection [connect|disconnect|status]',
+    name: 'browser',
+    run: (arg, ctx) => {
+      const trimmed = arg.trim()
+      const [rawAction, ...rest] = trimmed ? trimmed.split(/\s+/) : ['status']
+      const action = (rawAction || 'status').toLowerCase()
+
+      if (!['connect', 'disconnect', 'status'].includes(action)) {
+        return ctx.transcript.sys('usage: /browser [connect|disconnect|status] [url]')
+      }
+
+      const payload: Record<string, unknown> = { action }
+
+      if (action === 'connect') {
+        payload.url = rest.join(' ').trim() || 'http://localhost:9222'
+      }
+
+      ctx.gateway
+        .rpc<BrowserManageResponse>('browser.manage', payload)
+        .then(
+          ctx.guarded<BrowserManageResponse>(r => {
+            if (action === 'status') {
+              return ctx.transcript.sys(
+                r.connected ? `browser connected: ${r.url || '(url unavailable)'}` : 'browser not connected'
+              )
+            }
+
+            if (action === 'connect') {
+              return ctx.transcript.sys(
+                r.connected ? `browser connected: ${r.url || '(url unavailable)'}` : 'browser connect failed'
+              )
+            }
+
+            ctx.transcript.sys('browser disconnected')
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'list, diff, or restore checkpoints',
+    name: 'rollback',
+    run: (arg, ctx) => {
+      if (!ctx.sid) {
+        return ctx.transcript.sys('no active session — nothing to rollback')
+      }
+
+      const trimmed = arg.trim()
+      const [first = '', ...rest] = trimmed.split(/\s+/).filter(Boolean)
+      const lower = first.toLowerCase()
+
+      if (!trimmed || lower === 'list' || lower === 'ls') {
+        return ctx.gateway
+          .rpc<RollbackListResponse>('rollback.list', { session_id: ctx.sid })
+          .then(
+            ctx.guarded<RollbackListResponse>(r => {
+              if (!r.enabled) {
+                return ctx.transcript.sys('checkpoints are not enabled')
+              }
+
+              const checkpoints = r.checkpoints ?? []
+
+              if (!checkpoints.length) {
+                return ctx.transcript.sys('no checkpoints found')
+              }
+
+              ctx.transcript.panel('Rollback checkpoints', [
+                {
+                  rows: checkpoints.map((c, idx) => [
+                    `${idx + 1}. ${c.hash.slice(0, 10)}`,
+                    [c.timestamp, c.message].filter(Boolean).join(' · ') || '(no metadata)'
+                  ])
+                }
+              ])
+            })
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      if (lower === 'diff') {
+        const hash = rest[0]
+
+        if (!hash) {
+          return ctx.transcript.sys('usage: /rollback diff <checkpoint>')
+        }
+
+        return ctx.gateway
+          .rpc<RollbackDiffResponse>('rollback.diff', { hash, session_id: ctx.sid })
+          .then(
+            ctx.guarded<RollbackDiffResponse>(r => {
+              const body = (r.rendered || r.diff || '').trim()
+
+              if (!body && !r.stat) {
+                return ctx.transcript.sys('no changes since this checkpoint')
+              }
+
+              const text = [r.stat || '', body].filter(Boolean).join('\n\n')
+              ctx.transcript.page(text, 'Rollback diff')
+            })
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      const hash = first
+      const filePath = rest.join(' ').trim()
+
+      return ctx.gateway
+        .rpc<RollbackRestoreResponse>('rollback.restore', {
+          ...(filePath ? { file_path: filePath } : {}),
+          hash,
+          session_id: ctx.sid
+        })
+        .then(
+          ctx.guarded<RollbackRestoreResponse>(r => {
+            if (!r.success) {
+              return ctx.transcript.sys(`rollback failed: ${r.error || r.message || 'unknown error'}`)
+            }
+
+            const target = filePath || 'workspace'
+            const detail = r.reason || r.message || r.restored_to || 'restored'
+            ctx.transcript.sys(`rollback restored ${target}: ${detail}`)
+
+            if ((r.history_removed ?? 0) > 0) {
+              ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))
+            }
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    aliases: ['tasks'],
+    help: 'open the spawn-tree dashboard (live audit + kill/pause controls)',
+    name: 'agents',
+    run: (arg, ctx) => {
+      const sub = arg.trim().toLowerCase()
+
+      // Stay compatible with the gateway `/agents [pause|resume|status]` CLI —
+      // explicit subcommands skip the overlay and act directly so scripts and
+      // multi-step flows can drive it without entering interactive mode.
+      if (sub === 'pause' || sub === 'resume' || sub === 'unpause') {
+        const paused = sub === 'pause'
+        ctx.gateway.gw
+          .request<DelegationPauseResponse>('delegation.pause', { paused })
+          .then(r => {
+            applyDelegationStatus({ paused: r?.paused })
+            ctx.transcript.sys(`delegation · ${r?.paused ? 'paused' : 'resumed'}`)
+          })
+          .catch(ctx.guardedErr)
+
+        return
+      }
+
+      if (sub === 'status') {
+        const d = getDelegationState()
+        ctx.transcript.sys(
+          `delegation · ${d.paused ? 'paused' : 'active'} · caps d${d.maxSpawnDepth ?? '?'}/${d.maxConcurrentChildren ?? '?'}`
+        )
+
+        return
+      }
+
+      patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+    }
+  },
+
+  {
+    help: 'replay a completed spawn tree · `/replay [N|last|list|load <path>]`',
+    name: 'replay',
+    run: (arg, ctx) => {
+      const history = getSpawnHistory()
+      const raw = arg.trim()
+      const lower = raw.toLowerCase()
+
+      // ── Disk-backed listing ─────────────────────────────────────
+      if (lower === 'list' || lower === 'ls') {
+        ctx.gateway
+          .rpc<SpawnTreeListResponse>('spawn_tree.list', {
+            limit: 30,
+            session_id: ctx.sid ?? 'default'
+          })
+          .then(
+            ctx.guarded<SpawnTreeListResponse>(r => {
+              const entries = r.entries ?? []
+
+              if (!entries.length) {
+                return ctx.transcript.sys('no archived spawn trees on disk for this session')
+              }
+
+              const rows: [string, string][] = entries.map(e => {
+                const ts = e.finished_at ? new Date(e.finished_at * 1000).toLocaleString() : '?'
+                const label = e.label || `${e.count} subagents`
+
+                return [`${ts} · ${e.count}×`, `${label}\n  ${e.path}`]
+              })
+
+              ctx.transcript.panel('Archived spawn trees', [{ rows }])
+            })
+          )
+          .catch(ctx.guardedErr)
+
+        return
+      }
+
+      // ── Disk-backed load by path ─────────────────────────────────
+      if (lower.startsWith('load ')) {
+        const path = raw.slice(5).trim()
+
+        if (!path) {
+          return ctx.transcript.sys('usage: /replay load <path>')
+        }
+
+        ctx.gateway
+          .rpc<SpawnTreeLoadResponse>('spawn_tree.load', { path })
+          .then(
+            ctx.guarded<SpawnTreeLoadResponse>(r => {
+              if (!r.subagents?.length) {
+                return ctx.transcript.sys('snapshot empty or unreadable')
+              }
+
+              // Push onto the in-memory history so the overlay picks it up
+              // by index 1 just like any other snapshot.
+              pushDiskSnapshot(r, path)
+              patchOverlayState({ agents: true, agentsInitialHistoryIndex: 1 })
+            })
+          )
+          .catch(ctx.guardedErr)
+
+        return
+      }
+
+      // ── In-memory nav (same-session) ─────────────────────────────
+      if (!history.length) {
+        return ctx.transcript.sys('no completed spawn trees this session · try /replay list')
+      }
+
+      let index = 1
+
+      if (raw && lower !== 'last') {
+        const parsed = parseInt(raw, 10)
+
+        if (Number.isNaN(parsed) || parsed < 1 || parsed > history.length) {
+          return ctx.transcript.sys(`replay: index out of range 1..${history.length} · use /replay list for disk`)
+        }
+
+        index = parsed
+      }
+
+      patchOverlayState({ agents: true, agentsInitialHistoryIndex: index })
+    }
+  },
+
+  {
+    help: 'diff two completed spawn trees · `/replay-diff <baseline> <candidate>` (indexes from /replay list or history N)',
+    name: 'replay-diff',
+    run: (arg, ctx) => {
+      const parts = arg.trim().split(/\s+/).filter(Boolean)
+
+      if (parts.length !== 2) {
+        return ctx.transcript.sys('usage: /replay-diff <a> <b>  (e.g. /replay-diff 1 2 for last two)')
+      }
+
+      const [a, b] = parts
+      const history = getSpawnHistory()
+
+      const resolve = (token: string): null | SpawnSnapshot => {
+        const n = parseInt(token!, 10)
+
+        if (Number.isFinite(n) && n >= 1 && n <= history.length) {
+          return history[n - 1] ?? null
+        }
+
+        return null
+      }
+
+      const baseline = resolve(a!)
+      const candidate = resolve(b!)
+
+      if (!baseline || !candidate) {
+        return ctx.transcript.sys(`replay-diff: could not resolve indices · history has ${history.length} entries`)
+      }
+
+      setDiffPair({ baseline, candidate })
+      patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+    }
+  },
+
+  {
     help: 'browse, inspect, install skills',
     name: 'skills',
     run: (arg, ctx) => {
@@ -55,7 +392,7 @@ export const opsCommands: SlashCommand[] = [
       const [sub, ...rest] = text.split(/\s+/)
       const query = rest.join(' ').trim()
       const { rpc } = ctx.gateway
-      const { page, panel, sys } = ctx.transcript
+      const { panel, sys } = ctx.transcript
 
       if (sub === 'list') {
         rpc<SkillsListResponse>('skills.manage', { action: 'list' })
@@ -207,10 +544,25 @@ export const opsCommands: SlashCommand[] = [
   {
     help: 'enable or disable tools (client-side history reset on change)',
     name: 'tools',
-    run: (arg, ctx) => {
+    run: (arg, ctx, cmd) => {
       const [subcommand, ...names] = arg.trim().split(/\s+/).filter(Boolean)
 
       if (subcommand !== 'disable' && subcommand !== 'enable') {
+        ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+          .then(r => {
+            if (ctx.stale()) {
+              return
+            }
+
+            const body = r?.output || '/tools: no output'
+            const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+            const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+
+            long ? ctx.transcript.page(text, 'Tools') : ctx.transcript.sys(text)
+          })
+          .catch(ctx.guardedErr)
+
         return
       }
 

@@ -1,4 +1,4 @@
-import { Box, Text, useInput } from '@hermes/ink'
+import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
@@ -6,7 +6,11 @@ import type { SessionListItem, SessionListResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
+import { OverlayHint, useOverlayKeys, windowOffset } from './overlayControls.js'
+
 const VISIBLE = 15
+const MIN_WIDTH = 60
+const MAX_WIDTH = 120
 
 const age = (ts: number) => {
   const d = (Date.now() / 1000 - ts) / 86400
@@ -28,8 +32,13 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
 
+  const { stdout } = useStdout()
+  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+
+  useOverlayKeys({ onClose: onCancel })
+
   useEffect(() => {
-    gw.request<SessionListResponse>('session.list', { limit: 20 })
+    gw.request<SessionListResponse>('session.list', { limit: 200 })
       .then(raw => {
         const r = asRpcResult<SessionListResponse>(raw)
 
@@ -51,10 +60,6 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   }, [gw])
 
   useInput((ch, key) => {
-    if (key.escape) {
-      return onCancel()
-    }
-
     if (key.upArrow && sel > 0) {
       setSel(s => s - 1)
     }
@@ -82,7 +87,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
     return (
       <Box flexDirection="column">
         <Text color={t.color.label}>error: {err}</Text>
-        <Text color={t.color.dim}>Esc to cancel</Text>
+        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
       </Box>
     )
   }
@@ -91,47 +96,52 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
     return (
       <Box flexDirection="column">
         <Text color={t.color.dim}>no previous sessions</Text>
-        <Text color={t.color.dim}>Esc to cancel</Text>
+        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
       </Box>
     )
   }
 
-  const off = Math.max(0, Math.min(sel - Math.floor(VISIBLE / 2), items.length - VISIBLE))
+  const offset = windowOffset(items.length, sel, VISIBLE)
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width={width}>
       <Text bold color={t.color.amber}>
         Resume Session
       </Text>
 
-      {off > 0 && <Text color={t.color.dim}> ↑ {off} more</Text>}
+      {offset > 0 && <Text color={t.color.dim}> ↑ {offset} more</Text>}
 
-      {items.slice(off, off + VISIBLE).map((s, vi) => {
-        const i = off + vi
+      {items.slice(offset, offset + VISIBLE).map((s, vi) => {
+        const i = offset + vi
+        const selected = sel === i
 
         return (
           <Box key={s.id}>
-            <Text color={sel === i ? t.color.label : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
+            <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected}>
+              {selected ? '▸ ' : '  '}
+            </Text>
 
             <Box width={30}>
-              <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
+              <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected}>
                 {String(i + 1).padStart(2)}. [{s.id}]
               </Text>
             </Box>
 
             <Box width={30}>
-              <Text color={t.color.dim}>
+              <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected}>
                 ({s.message_count} msgs, {age(s.started_at)}, {s.source || 'tui'})
               </Text>
             </Box>
 
-            <Text color={sel === i ? t.color.cornsilk : t.color.dim}>{s.title || s.preview || '(untitled)'}</Text>
+            <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected} wrap="truncate-end">
+              {s.title || s.preview || '(untitled)'}
+            </Text>
           </Box>
         )
       })}
 
-      {off + VISIBLE < items.length && <Text color={t.color.dim}> ↓ {items.length - off - VISIBLE} more</Text>}
-      <Text color={t.color.dim}>↑/↓ select · Enter resume · 1-9 quick · Esc cancel</Text>
+      {offset + VISIBLE < items.length && <Text color={t.color.dim}> ↓ {items.length - offset - VISIBLE} more</Text>}
+      <OverlayHint t={t}>↑/↓ select · Enter resume · 1-9 quick · Esc/q cancel</OverlayHint>
     </Box>
   )
 }

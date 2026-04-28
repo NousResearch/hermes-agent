@@ -3,6 +3,9 @@ import React from 'react'
 import { c as _c } from 'react/compiler-runtime'
 
 import type { Color, Styles } from '../styles.js'
+
+const ENV_ON_RE = /^(?:1|true|yes|on)$/i
+const ENV_OFF_RE = /^(?:0|false|no|off)$/i
 type BaseProps = {
   /**
    * Change text color. Accepts a raw color value (rgb, hex, ansi).
@@ -62,12 +65,32 @@ type WeightProps =
     }
 export type Props = BaseProps & WeightProps
 
+export function shouldUseAnsiDim(env: NodeJS.ProcessEnv = process.env): boolean {
+  const override = (env.HERMES_TUI_DIM ?? '').trim()
+
+  if (ENV_ON_RE.test(override)) {
+    return true
+  }
+
+  if (ENV_OFF_RE.test(override)) {
+    return false
+  }
+
+  return !env.VTE_VERSION
+}
+
 const memoizedStylesForWrap: Record<NonNullable<Styles['textWrap']>, Styles> = {
   wrap: {
     flexGrow: 0,
     flexShrink: 1,
     flexDirection: 'row',
     textWrap: 'wrap'
+  },
+  'wrap-char': {
+    flexGrow: 0,
+    flexShrink: 1,
+    flexDirection: 'row',
+    textWrap: 'wrap-char'
   },
   'wrap-trim': {
     flexGrow: 0,
@@ -137,6 +160,7 @@ export default function Text(t0: Props) {
   const strikethrough = t3 === undefined ? false : t3
   const inverse = t4 === undefined ? false : t4
   const wrap = t5 === undefined ? 'wrap' : t5
+  const effectiveDim = dim && shouldUseAnsiDim()
 
   if (children === undefined || children === null) {
     return null
@@ -168,11 +192,11 @@ export default function Text(t0: Props) {
 
   let t8
 
-  if ($[4] !== dim) {
-    t8 = dim && {
-      dim
+  if ($[4] !== effectiveDim) {
+    t8 = effectiveDim && {
+      dim: effectiveDim
     }
-    $[4] = dim
+    $[4] = effectiveDim
     $[5] = t8
   } else {
     t8 = $[5]

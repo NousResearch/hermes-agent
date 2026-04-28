@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from '@hermes/ink'
 import { useState } from 'react'
 
+import { isMac } from '../lib/platform.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
@@ -63,8 +64,8 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
 
       {OPTS.map((o, i) => (
         <Text key={o}>
-          <Text color={sel === i ? t.color.warn : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
-          <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
+          <Text bold={sel === i} color={sel === i ? t.color.warn : t.color.dim} inverse={sel === i}>
+            {sel === i ? '▸ ' : '  '}
             {i + 1}. {LABELS[o]}
           </Text>
         </Text>
@@ -128,7 +129,10 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
           <TextInput columns={Math.max(20, cols - 6)} onChange={setCustom} onSubmit={onAnswer} value={custom} />
         </Box>
 
-        <Text color={t.color.dim}>Enter send · Esc {choices.length ? 'back' : 'cancel'} · Ctrl+C cancel</Text>
+        <Text color={t.color.dim}>
+          Enter send · Esc {choices.length ? 'back' : 'cancel'} ·{' '}
+          {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : 'Ctrl+C cancel'}
+        </Text>
       </Box>
     )
   }
@@ -139,8 +143,8 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
 
       {[...choices, 'Other (type your answer)'].map((c, i) => (
         <Text key={i}>
-          <Text color={sel === i ? t.color.label : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
-          <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
+          <Text bold={sel === i} color={sel === i ? t.color.label : t.color.dim} inverse={sel === i}>
+            {sel === i ? '▸ ' : '  '}
             {i + 1}. {c}
           </Text>
         </Text>

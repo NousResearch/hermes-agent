@@ -11,6 +11,7 @@ the `platform_toolsets` key.
 
 import json as _json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -24,7 +25,8 @@ from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
 )
-from tools.tool_backend_helpers import managed_nous_tools_enabled
+from tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
+from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -66,25 +68,60 @@ CONFIGURABLE_TOOLSETS = [
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
+    ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
+    ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
+    ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
+    ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
 ]
 
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin"}
+
+# Platform-scoped toolsets: only appear in the `hermes tools` checklist for
+# these platforms, and only resolve/save for these platforms.  A toolset
+# absent from this map is available on every platform (current behaviour).
+#
+# Use this for tools whose APIs only make sense on one platform (Discord
+# server admin, Slack workspace admin, etc.).  Keeps every other platform's
+# checklist from filling up with irrelevant toggles.
+_TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
+    "discord": {"discord"},
+    "discord_admin": {"discord"},
+}
+
+
+def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
+    """Return True if ``ts_key`` is configurable on ``platform``.
+
+    Toolsets without a restriction entry are allowed everywhere (the default).
+    """
+    allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
+    return allowed is None or platform in allowed
 
 
 def _get_effective_configurable_toolsets():
     """Return CONFIGURABLE_TOOLSETS + any plugin-provided toolsets.
 
     Plugin toolsets are appended at the end so they appear after the
-    built-in toolsets in the TUI checklist.
+    built-in toolsets in the TUI checklist. A plugin whose toolset key
+    already appears in ``CONFIGURABLE_TOOLSETS`` is skipped — bundled
+    plugins (e.g. ``plugins/spotify``) share their toolset key with the
+    built-in entry, and we want the built-in label/description to win.
+    Without the dedupe, ``hermes tools`` → "reconfigure existing" would
+    list the same toolset twice.
     """
     result = list(CONFIGURABLE_TOOLSETS)
+    seen = {ts_key for ts_key, _, _ in result}
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
         discover_plugins()  # idempotent — ensures plugins are loaded
-        result.extend(get_plugin_toolsets())
+        for entry in get_plugin_toolsets():
+            if entry[0] in seen:
+                continue
+            seen.add(entry[0])
+            result.append(entry)
     except Exception:
         pass
     return result
@@ -180,6 +217,14 @@ TOOL_CATEGORIES = {
                     {"key": "GEMINI_API_KEY", "prompt": "Gemini API key", "url": "https://aistudio.google.com/app/apikey"},
                 ],
                 "tts_provider": "gemini",
+            },
+            {
+                "name": "KittenTTS",
+                "badge": "local · free",
+                "tag": "Lightweight local ONNX TTS (~25MB), no API key",
+                "env_vars": [],
+                "tts_provider": "kittentts",
+                "post_setup": "kittentts",
             },
         ],
     },
@@ -352,6 +397,18 @@ TOOL_CATEGORIES = {
             },
         ],
     },
+    "spotify": {
+        "name": "Spotify",
+        "icon": "🎵",
+        "providers": [
+            {
+                "name": "Spotify Web API",
+                "tag": "PKCE OAuth — opens the setup wizard",
+                "env_vars": [],
+                "post_setup": "spotify",
+            },
+        ],
+    },
     "rl": {
         "name": "RL Training",
         "icon": "🧪",
@@ -421,6 +478,65 @@ def _run_post_setup(post_setup_key: str):
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
+
+    elif post_setup_key == "kittentts":
+        try:
+            __import__("kittentts")
+            _print_success("    kittentts is already installed")
+            return
+        except ImportError:
+            pass
+        import subprocess
+        _print_info("    Installing kittentts (~25-80MB model, CPU-only)...")
+        wheel_url = (
+            "https://github.com/KittenML/KittenTTS/releases/download/"
+            "0.8.1/kittentts-0.8.1-py3-none-any.whl"
+        )
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-U", wheel_url, "soundfile", "--quiet"],
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode == 0:
+                _print_success("    kittentts installed")
+                _print_info("    Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo")
+                _print_info("    Models: KittenML/kitten-tts-nano-0.8-int8 (25MB), micro (41MB), mini (80MB)")
+            else:
+                _print_warning("    kittentts install failed:")
+                _print_info(f"      {result.stderr.strip()[:300]}")
+                _print_info(f"    Run manually: python -m pip install -U '{wheel_url}' soundfile")
+        except subprocess.TimeoutExpired:
+            _print_warning("    kittentts install timed out (>5min)")
+            _print_info(f"    Run manually: python -m pip install -U '{wheel_url}' soundfile")
+
+    elif post_setup_key == "spotify":
+        # Run the full `hermes auth spotify` flow — if the user has no
+        # client_id yet, this drops them into the interactive wizard
+        # (opens the Spotify dashboard, prompts for client_id, persists
+        # to ~/.hermes/.env), then continues straight into PKCE. If they
+        # already have an app, it skips the wizard and just does OAuth.
+        from types import SimpleNamespace
+        try:
+            from hermes_cli.auth import login_spotify_command
+        except Exception as exc:
+            _print_warning(f"    Could not load Spotify auth: {exc}")
+            _print_info("    Run manually: hermes auth spotify")
+            return
+        _print_info("    Starting Spotify login...")
+        try:
+            login_spotify_command(SimpleNamespace(
+                client_id=None, redirect_uri=None, scope=None,
+                no_browser=False, timeout=None,
+            ))
+            _print_success("    Spotify authenticated")
+        except SystemExit as exc:
+            # User aborted the wizard, or OAuth failed — don't fail the
+            # toolset enable; they can retry with `hermes auth spotify`.
+            _print_warning(f"    Spotify login did not complete: {exc}")
+            _print_info("    Run later: hermes auth spotify")
+        except Exception as exc:
+            _print_warning(f"    Spotify login failed: {exc}")
+            _print_info("    Run manually: hermes auth spotify")
 
     elif post_setup_key == "rl_training":
         try:
@@ -510,7 +626,7 @@ def _get_platform_tools(
     include_default_mcp_servers: bool = True,
 ) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
-    from toolsets import resolve_toolset
+    from toolsets import resolve_toolset, TOOLSETS
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
@@ -524,6 +640,8 @@ def _get_platform_tools(
     toolset_names = [str(ts) for ts in toolset_names]
 
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    plugin_ts_keys = _get_plugin_toolset_keys()
+    platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
 
     # If the saved list contains any configurable keys directly, the user
     # has explicitly configured this platform — use direct membership.
@@ -533,7 +651,10 @@ def _get_platform_tools(
     has_explicit_config = any(ts in configurable_keys for ts in toolset_names)
 
     if has_explicit_config:
-        enabled_toolsets = {ts for ts in toolset_names if ts in configurable_keys}
+        enabled_toolsets = {
+            ts for ts in toolset_names
+            if ts in configurable_keys and _toolset_allowed_for_platform(ts, platform)
+        }
     else:
         # No explicit config — fall back to resolving composite toolset names
         # (e.g. "hermes-cli") to individual tool names and reverse-mapping.
@@ -543,15 +664,68 @@ def _get_platform_tools(
 
         enabled_toolsets = set()
         for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
+            if not _toolset_allowed_for_platform(ts_key, platform):
+                continue
             ts_tools = set(resolve_toolset(ts_key))
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
 
-    # Plugin toolsets: enabled by default unless explicitly disabled.
+        default_off = set(_DEFAULT_OFF_TOOLSETS)
+        # Legacy safety: if the platform's own name matches a default-off
+        # toolset (e.g. `homeassistant` platform + `homeassistant` toolset),
+        # keep that toolset enabled on first install.  Skip this dodge for
+        # platform-restricted toolsets — those are always opt-in even on
+        # their own platform (e.g. `discord` + `discord` should stay OFF).
+        if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
+            default_off.remove(platform)
+        # Home Assistant is already runtime-gated by its check_fn (requires
+        # HASS_TOKEN to register any tools). When a user has configured
+        # HASS_TOKEN, they've explicitly opted in — don't also strip it via
+        # _DEFAULT_OFF_TOOLSETS, which would silently drop HA from platforms
+        # (e.g. cron) that run through _get_platform_tools without an
+        # explicit saved toolset list. Without this, Norbert's HA cron jobs
+        # regressed after #14798 made cron honor per-platform tool config.
+        if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
+            default_off.remove("homeassistant")
+        enabled_toolsets -= default_off
+
+    # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,
+    # feishu_drive).  These are part of the platform's default composite but
+    # absent from CONFIGURABLE_TOOLSETS, so they can't appear in the TUI
+    # checklist or in a user-saved config.  Must run in BOTH branches —
+    # otherwise saving via `hermes tools` (which flips has_explicit_config
+    # to True) silently drops them.
+    platform_tool_universe = set(resolve_toolset(PLATFORMS[platform]["default_toolset"]))
+    configurable_tool_universe = set()
+    for ck in configurable_keys:
+        configurable_tool_universe.update(resolve_toolset(ck))
+    claimed = set()
+    for ts_key in enabled_toolsets:
+        claimed.update(resolve_toolset(ts_key))
+    skip = configurable_keys | plugin_ts_keys | platform_default_keys
+    skip |= {k for k in TOOLSETS if k.startswith("hermes-")}
+    skip |= set(_DEFAULT_OFF_TOOLSETS) - {platform}
+    for ts_key, ts_def in TOOLSETS.items():
+        if ts_key in skip:
+            continue
+        if ts_def.get("includes"):
+            continue
+        ts_tools = set(resolve_toolset(ts_key))
+        if not ts_tools or not ts_tools.issubset(platform_tool_universe):
+            continue
+        if ts_tools.issubset(configurable_tool_universe):
+            continue
+        if not ts_tools.issubset(claimed):
+            enabled_toolsets.add(ts_key)
+            claimed.update(ts_tools)
+
+    # Plugin toolsets: enabled by default unless explicitly disabled, or
+    # unless the toolset is in _DEFAULT_OFF_TOOLSETS (e.g. spotify —
+    # shipped as a bundled plugin but user must opt in via `hermes tools`
+    # so we don't ship 7 Spotify tool schemas to users who don't use it).
     # A plugin toolset is "known" for a platform once `hermes tools`
     # has been saved for that platform (tracked via known_plugin_toolsets).
     # Unknown plugins default to enabled; known-but-absent = disabled.
-    plugin_ts_keys = _get_plugin_toolset_keys()
     if plugin_ts_keys:
         known_map = config.get("known_plugin_toolsets", {})
         known_for_platform = set(known_map.get(platform, []))
@@ -559,6 +733,9 @@ def _get_platform_tools(
             if pts in toolset_names:
                 # Explicitly listed in config — enabled
                 enabled_toolsets.add(pts)
+            elif pts in _DEFAULT_OFF_TOOLSETS:
+                # Opt-in plugin toolset — stay off until user picks it
+                continue
             elif pts not in known_for_platform:
                 # New plugin not yet seen by hermes tools — default enabled
                 enabled_toolsets.add(pts)
@@ -566,7 +743,6 @@ def _get_platform_tools(
 
     # Preserve any explicit non-configurable toolset entries (for example,
     # custom toolsets or MCP server names saved in platform_toolsets).
-    platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
     explicit_passthrough = {
         ts
         for ts in toolset_names
@@ -612,6 +788,14 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     """
     config.setdefault("platform_toolsets", {})
 
+    # Drop platform-scoped toolsets that don't apply here.  Prevents the
+    # "Configure all platforms" checklist (or a hand-edited config.yaml)
+    # from turning on, say, the `discord` toolset for Telegram.
+    enabled_toolset_keys = {
+        ts for ts in enabled_toolset_keys
+        if _toolset_allowed_for_platform(ts, platform)
+    }
+
     # Get the set of all configurable toolset keys (built-in + plugin)
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     plugin_keys = _get_plugin_toolset_keys()
@@ -626,6 +810,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
     if not isinstance(existing_toolsets, list):
         existing_toolsets = []
+    existing_toolsets = [str(ts) for ts in existing_toolsets]
 
     # Preserve any entries that are NOT configurable toolsets and NOT platform
     # defaults (i.e. only MCP server names should be preserved)
@@ -633,6 +818,11 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         entry for entry in existing_toolsets
         if entry not in configurable_keys and entry not in platform_default_keys
     }
+    # Opening `hermes tools` is the user's opt-in to reconfigure tools, so treat
+    # saving from the picker as consent to clear the "no_mcp" sentinel. The
+    # picker has no checkbox for no_mcp, so without this users who once set it
+    # by hand could never re-enable MCP servers through the UI.
+    preserved_entries.discard("no_mcp")
 
     # Merge preserved entries with new enabled toolsets
     config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
@@ -740,7 +930,7 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     return _tool_token_cache
 
 
-def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
+def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: str = "cli") -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_cli.curses_ui import curses_checklist
     from toolsets import resolve_toolset
@@ -748,7 +938,12 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
     # Pre-compute per-tool token counts (cached after first call).
     tool_tokens = _estimate_tool_tokens()
 
-    effective = _get_effective_configurable_toolsets()
+    effective_all = _get_effective_configurable_toolsets()
+    # Drop platform-scoped toolsets that don't apply to this platform.
+    effective = [
+        (k, l, d) for (k, l, d) in effective_all
+        if _toolset_allowed_for_platform(k, platform)
+    ]
 
     labels = []
     for ts_key, ts_label, ts_desc in effective:
@@ -804,6 +999,51 @@ def _configure_toolset(ts_key: str, config: dict):
         _configure_simple_requirements(ts_key)
 
 
+def _plugin_image_gen_providers() -> list[dict]:
+    """Build picker-row dicts from plugin-registered image gen providers.
+
+    Each returned dict looks like a regular ``TOOL_CATEGORIES`` provider
+    row but carries an ``image_gen_plugin_name`` marker so downstream
+    code (config writing, model picker) knows to route through the
+    plugin registry instead of the in-tree FAL backend.
+
+    FAL is skipped — it's already exposed by the hardcoded
+    ``TOOL_CATEGORIES["image_gen"]`` entries. When FAL gets ported to
+    a plugin in a follow-up PR, the hardcoded entries go away and this
+    function surfaces it alongside OpenAI automatically.
+    """
+    try:
+        from agent.image_gen_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        if getattr(provider, "name", None) == "fal":
+            # FAL has its own hardcoded rows today.
+            continue
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            continue
+        if not isinstance(schema, dict):
+            continue
+        rows.append(
+            {
+                "name": schema.get("name", provider.display_name),
+                "badge": schema.get("badge", ""),
+                "tag": schema.get("tag", ""),
+                "env_vars": schema.get("env_vars", []),
+                "image_gen_plugin_name": provider.name,
+            }
+        )
+    return rows
+
+
 def _visible_providers(cat: dict, config: dict) -> list[dict]:
     """Return provider entries visible for the current auth/config state."""
     features = get_nous_subscription_features(config)
@@ -814,6 +1054,12 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
         if provider.get("requires_nous_auth") and not features.nous_auth_present:
             continue
         visible.append(provider)
+
+    # Inject plugin-registered image_gen backends (OpenAI today, more
+    # later) so the picker lists them alongside FAL / Nous Subscription.
+    if cat.get("name") == "Image Generation":
+        visible.extend(_plugin_image_gen_providers())
+
     return visible
 
 
@@ -833,7 +1079,24 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
         browser_cfg = config.get("browser", {})
         return not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg
     if ts_key == "image_gen":
-        return not get_env_value("FAL_KEY")
+        # Satisfied when the in-tree FAL backend is configured OR any
+        # plugin-registered image gen provider is available.
+        if fal_key_is_configured():
+            return False
+        try:
+            from agent.image_gen_registry import list_providers
+            from hermes_cli.plugins import _ensure_plugins_discovered
+
+            _ensure_plugins_discovered()
+            for provider in list_providers():
+                try:
+                    if provider.is_available():
+                        return False
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return True
 
     return not _toolset_has_keys(ts_key, config)
 
@@ -908,6 +1171,11 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
 
 def _is_provider_active(provider: dict, config: dict) -> bool:
     """Check if a provider entry matches the currently active config."""
+    plugin_name = provider.get("image_gen_plugin_name")
+    if plugin_name:
+        image_cfg = config.get("image_gen", {})
+        return isinstance(image_cfg, dict) and image_cfg.get("provider") == plugin_name
+
     managed_feature = provider.get("managed_nous_feature")
     if managed_feature:
         features = get_nous_subscription_features(config)
@@ -915,6 +1183,13 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
         if feature is None:
             return False
         if managed_feature == "image_gen":
+            image_cfg = config.get("image_gen", {})
+            if isinstance(image_cfg, dict):
+                configured_provider = image_cfg.get("provider")
+                if configured_provider not in (None, "", "fal"):
+                    return False
+                if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
+                    return False
             return feature.managed_by_nous
         if provider.get("tts_provider"):
             return (
@@ -937,6 +1212,16 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
     if provider.get("web_backend"):
         current = config.get("web", {}).get("backend")
         return current == provider["web_backend"]
+    if provider.get("imagegen_backend"):
+        image_cfg = config.get("image_gen", {})
+        if not isinstance(image_cfg, dict):
+            return False
+        configured_provider = image_cfg.get("provider")
+        return (
+            provider["imagegen_backend"] == "fal"
+            and configured_provider in (None, "", "fal")
+            and not is_truthy_value(image_cfg.get("use_gateway"), default=False)
+        )
     return False
 
 
@@ -1052,6 +1337,100 @@ def _configure_imagegen_model(backend_name: str, config: dict) -> None:
     _print_success(f"  Model set to: {chosen}")
 
 
+def _plugin_image_gen_catalog(plugin_name: str):
+    """Return ``(catalog_dict, default_model_id)`` for a plugin provider.
+
+    ``catalog_dict`` is shaped like the legacy ``FAL_MODELS`` table —
+    ``{model_id: {"display", "speed", "strengths", "price", ...}}`` —
+    so the existing picker code paths work without change. Returns
+    ``({}, None)`` if the provider isn't registered or has no models.
+    """
+    try:
+        from agent.image_gen_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        provider = get_provider(plugin_name)
+    except Exception:
+        return {}, None
+    if provider is None:
+        return {}, None
+    try:
+        models = provider.list_models() or []
+        default = provider.default_model()
+    except Exception:
+        return {}, None
+    catalog = {m["id"]: m for m in models if isinstance(m, dict) and "id" in m}
+    return catalog, default
+
+
+def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None:
+    """Prompt the user to pick a model for a plugin-registered backend.
+
+    Writes selection to ``image_gen.model``. Mirrors
+    :func:`_configure_imagegen_model` but sources its catalog from the
+    plugin registry instead of :data:`IMAGEGEN_BACKENDS`.
+    """
+    catalog, default_model = _plugin_image_gen_catalog(plugin_name)
+    if not catalog:
+        return
+
+    cur_cfg = config.setdefault("image_gen", {})
+    if not isinstance(cur_cfg, dict):
+        cur_cfg = {}
+        config["image_gen"] = cur_cfg
+    current_model = cur_cfg.get("model") or default_model
+    if current_model not in catalog:
+        current_model = default_model
+
+    model_ids = list(catalog.keys())
+    ordered = [current_model] + [m for m in model_ids if m != current_model]
+
+    widths = {
+        "model": max(len(m) for m in model_ids),
+        "speed": max((len(catalog[m].get("speed", "")) for m in model_ids), default=6),
+        "strengths": max((len(catalog[m].get("strengths", "")) for m in model_ids), default=0),
+    }
+
+    print()
+    header = (
+        f"  {'Model':<{widths['model']}}  "
+        f"{'Speed':<{widths['speed']}}  "
+        f"{'Strengths':<{widths['strengths']}}  "
+        f"Price"
+    )
+    print(color(header, Colors.CYAN))
+
+    rows = []
+    for mid in ordered:
+        row = _format_imagegen_model_row(mid, catalog[mid], widths)
+        if mid == current_model:
+            row += "  ← currently in use"
+        rows.append(row)
+
+    idx = _prompt_choice(
+        f"  Choose {plugin_name} model:",
+        rows,
+        default=0,
+    )
+
+    chosen = ordered[idx]
+    cur_cfg["model"] = chosen
+    _print_success(f"  Model set to: {chosen}")
+
+
+def _select_plugin_image_gen_provider(plugin_name: str, config: dict) -> None:
+    """Persist a plugin-backed image generation provider selection."""
+    img_cfg = config.setdefault("image_gen", {})
+    if not isinstance(img_cfg, dict):
+        img_cfg = {}
+        config["image_gen"] = img_cfg
+    img_cfg["provider"] = plugin_name
+    img_cfg["use_gateway"] = False
+    _print_success(f"  image_gen.provider set to: {plugin_name}")
+    _configure_imagegen_model_for_plugin(plugin_name, config)
+
+
 def _configure_provider(provider: dict, config: dict):
     """Configure a single provider - prompt for API keys and set config."""
     env_vars = provider.get("env_vars", [])
@@ -1108,10 +1487,22 @@ def _configure_provider(provider: dict, config: dict):
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
+        # Plugin-registered image_gen provider: write image_gen.provider
+        # and route model selection to the plugin's own catalog.
+        plugin_name = provider.get("image_gen_plugin_name")
+        if plugin_name:
+            _select_plugin_image_gen_provider(plugin_name, config)
+            return
         # Imagegen backends prompt for model selection after backend pick.
         backend = provider.get("imagegen_backend")
         if backend:
             _configure_imagegen_model(backend, config)
+            # In-tree FAL is the only non-plugin backend today. Keep
+            # image_gen.provider clear so the dispatch shim falls through
+            # to the legacy FAL path.
+            img_cfg = config.setdefault("image_gen", {})
+            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in (None, "", "fal"):
+                img_cfg["provider"] = "fal"
         return
 
     # Prompt for each required env var
@@ -1146,10 +1537,17 @@ def _configure_provider(provider: dict, config: dict):
 
     if all_configured:
         _print_success(f"  {provider['name']} configured!")
+        plugin_name = provider.get("image_gen_plugin_name")
+        if plugin_name:
+            _select_plugin_image_gen_provider(plugin_name, config)
+            return
         # Imagegen backends prompt for model selection after env vars are in.
         backend = provider.get("imagegen_backend")
         if backend:
             _configure_imagegen_model(backend, config)
+            img_cfg = config.setdefault("image_gen", {})
+            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in (None, "", "fal"):
+                img_cfg["provider"] = "fal"
 
 
 def _configure_simple_requirements(ts_key: str):
@@ -1175,17 +1573,17 @@ def _configure_simple_requirements(ts_key: str):
                 _print_warning("    Skipped")
         elif idx == 1:
             base_url = _prompt("    OPENAI_BASE_URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
-            key_label = "    OPENAI_API_KEY" if "api.openai.com" in base_url.lower() else "    API key"
+            is_native_openai = base_url_hostname(base_url) == "api.openai.com"
+            key_label = "    OPENAI_API_KEY" if is_native_openai else "    API key"
             api_key = _prompt(key_label, password=True)
             if api_key and api_key.strip():
                 save_env_value("OPENAI_API_KEY", api_key.strip())
                 # Save vision base URL to config (not .env — only secrets go there)
-                from hermes_cli.config import load_config, save_config
                 _cfg = load_config()
                 _aux = _cfg.setdefault("auxiliary", {}).setdefault("vision", {})
                 _aux["base_url"] = base_url
                 save_config(_cfg)
-                if "api.openai.com" in base_url.lower():
+                if is_native_openai:
                     save_env_value("AUXILIARY_VISION_MODEL", "gpt-4o-mini")
                 _print_success("    Saved")
             else:
@@ -1315,16 +1713,39 @@ def _reconfigure_provider(provider: dict, config: dict):
         config.setdefault("web", {})["backend"] = provider["web_backend"]
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
+    if managed_feature and managed_feature not in ("web", "tts", "browser"):
+        section = config.setdefault(managed_feature, {})
+        if not isinstance(section, dict):
+            section = {}
+            config[managed_feature] = section
+        section["use_gateway"] = True
+    elif not managed_feature:
+        for cat_key, cat in TOOL_CATEGORIES.items():
+            if provider in cat.get("providers", []):
+                section = config.get(cat_key)
+                if isinstance(section, dict) and section.get("use_gateway"):
+                    section["use_gateway"] = False
+                break
+
     if not env_vars:
         if provider.get("post_setup"):
             _run_post_setup(provider["post_setup"])
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
+        plugin_name = provider.get("image_gen_plugin_name")
+        if plugin_name:
+            _select_plugin_image_gen_provider(plugin_name, config)
+            return
         # Imagegen backends prompt for model selection on reconfig too.
         backend = provider.get("imagegen_backend")
         if backend:
             _configure_imagegen_model(backend, config)
+            if backend == "fal":
+                img_cfg = config.setdefault("image_gen", {})
+                if isinstance(img_cfg, dict):
+                    img_cfg["provider"] = "fal"
+                    img_cfg["use_gateway"] = False
         return
 
     for var in env_vars:
@@ -1343,9 +1764,19 @@ def _reconfigure_provider(provider: dict, config: dict):
             _print_info("    Kept current")
 
     # Imagegen backends prompt for model selection on reconfig too.
+    plugin_name = provider.get("image_gen_plugin_name")
+    if plugin_name:
+        _select_plugin_image_gen_provider(plugin_name, config)
+        return
+
     backend = provider.get("imagegen_backend")
     if backend:
         _configure_imagegen_model(backend, config)
+        if backend == "fal":
+            img_cfg = config.setdefault("image_gen", {})
+            if isinstance(img_cfg, dict):
+                img_cfg["provider"] = "fal"
+                img_cfg["use_gateway"] = False
 
 
 def _reconfigure_simple_requirements(ts_key: str):
@@ -1426,7 +1857,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
 
             # Show checklist
-            new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected)
+            new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected, pkey)
 
             added = new_enabled - current_enabled
             removed = current_enabled - new_enabled
@@ -1782,7 +2213,11 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
 
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
-    effective = _get_effective_configurable_toolsets()
+    effective_all = _get_effective_configurable_toolsets()
+    effective = [
+        (k, l, d) for (k, l, d) in effective_all
+        if _toolset_allowed_for_platform(k, platform)
+    ]
     builtin_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
     print(f"Built-in toolsets ({platform}):")
@@ -1847,6 +2282,20 @@ def tools_disable_enable_command(args):
         for name in unknown_toolsets:
             _print_error(f"Unknown toolset '{name}'")
         toolset_targets = [t for t in toolset_targets if t in valid_toolsets]
+
+    # Reject platform-scoped toolsets on platforms that don't allow them.
+    restricted_targets = [
+        t for t in toolset_targets
+        if not _toolset_allowed_for_platform(t, platform)
+    ]
+    if restricted_targets:
+        for name in restricted_targets:
+            allowed = sorted(_TOOLSET_PLATFORM_RESTRICTIONS.get(name) or set())
+            _print_error(
+                f"Toolset '{name}' is not available on platform '{platform}' "
+                f"(only: {', '.join(allowed)})"
+            )
+        toolset_targets = [t for t in toolset_targets if t not in restricted_targets]
 
     if toolset_targets:
         _apply_toolset_change(config, platform, toolset_targets, action)

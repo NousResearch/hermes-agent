@@ -535,6 +535,9 @@ class QQAdapter(BasePlatformAdapter):
                     quick_disconnect_count = 0
                 else:
                     backoff_idx += 1
+                    if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
+                        logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
+                        return
 
             except Exception as exc:
                 if not self._running:
@@ -1086,11 +1089,8 @@ class QQAdapter(BasePlatformAdapter):
             return MessageType.VIDEO
         if "image" in first_type or "photo" in first_type:
             return MessageType.PHOTO
-        # Unknown content type with an attachment — don't assume PHOTO
-        # to prevent non-image files from being sent to vision analysis.
         logger.debug(
-            "[%s] Unknown media content_type '%s', defaulting to TEXT",
-            self._log_tag,
+            "Unknown media content_type '%s', defaulting to TEXT",
             first_type,
         )
         return MessageType.TEXT
@@ -1826,14 +1826,12 @@ class QQAdapter(BasePlatformAdapter):
             body["file_name"] = file_name
 
         # Retry transient upload failures
-        last_exc = None
         for attempt in range(3):
             try:
                 return await self._api_request(
                     "POST", path, body, timeout=FILE_UPLOAD_TIMEOUT
                 )
             except RuntimeError as exc:
-                last_exc = exc
                 err_msg = str(exc)
                 if any(
                         kw in err_msg
@@ -1842,8 +1840,8 @@ class QQAdapter(BasePlatformAdapter):
                     raise
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
-
-        raise last_exc  # type: ignore[misc]
+                else:
+                    raise
 
     # Maximum time (seconds) to wait for reconnection before giving up on send.
     _RECONNECT_WAIT_SECONDS = 15.0

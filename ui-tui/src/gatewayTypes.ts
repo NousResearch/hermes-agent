@@ -55,12 +55,14 @@ export interface ConfigDisplayConfig {
   bell_on_complete?: boolean
   details_mode?: string
   inline_diffs?: boolean
+  sections?: Record<string, string>
   show_cost?: boolean
   show_reasoning?: boolean
   streaming?: boolean
   thinking_mode?: string
   tui_compact?: boolean
-  tui_statusbar?: boolean
+  tui_mouse?: boolean
+  tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
 }
 
 export interface ConfigFullResponse {
@@ -92,7 +94,7 @@ export interface SetupStatusResponse {
 // ── Session lifecycle ────────────────────────────────────────────────
 
 export interface SessionCreateResponse {
-  info?: SessionInfo & { credential_warning?: string }
+  info?: SessionInfo & { config_warning?: string; credential_warning?: string }
   session_id: string
 }
 
@@ -115,6 +117,16 @@ export interface SessionListItem {
 
 export interface SessionListResponse {
   sessions?: SessionListItem[]
+}
+
+export interface SessionTitleResponse {
+  pending?: boolean
+  session_key?: string
+  title?: string
+}
+
+export interface SessionSaveResponse {
+  file?: string
 }
 
 export interface SessionUndoResponse {
@@ -170,10 +182,6 @@ export interface PromptSubmitResponse {
 
 export interface BackgroundStartResponse {
   task_id?: string
-}
-
-export interface BtwStartResponse {
-  ok?: boolean
 }
 
 export interface ClarifyRespondResponse {
@@ -236,10 +244,16 @@ export interface ImageAttachResponse {
 // ── Voice ────────────────────────────────────────────────────────────
 
 export interface VoiceToggleResponse {
+  audio_available?: boolean
+  available?: boolean
+  details?: string
   enabled?: boolean
+  stt_available?: boolean
+  tts?: boolean
 }
 
 export interface VoiceRecordResponse {
+  status?: string
   text?: string
 }
 
@@ -274,21 +288,121 @@ export interface ModelOptionsResponse {
 // ── MCP ──────────────────────────────────────────────────────────────
 
 export interface ReloadMcpResponse {
-  ok?: boolean
+  status?: string
+}
+
+export interface ProcessStopResponse {
+  killed?: number
+}
+
+export interface BrowserManageResponse {
+  connected?: boolean
+  url?: string
+}
+
+export interface RollbackCheckpoint {
+  hash: string
+  message?: string
+  timestamp?: string
+}
+
+export interface RollbackListResponse {
+  checkpoints?: RollbackCheckpoint[]
+  enabled?: boolean
+}
+
+export interface RollbackDiffResponse {
+  diff?: string
+  rendered?: string
+  stat?: string
+}
+
+export interface RollbackRestoreResponse {
+  error?: string
+  history_removed?: number
+  message?: string
+  reason?: string
+  restored_to?: string
+  success?: boolean
 }
 
 // ── Subagent events ──────────────────────────────────────────────────
 
 export interface SubagentEventPayload {
+  api_calls?: number
+  cost_usd?: number
+  depth?: number
   duration_seconds?: number
+  files_read?: string[]
+  files_written?: string[]
   goal: string
-  status?: 'completed' | 'failed' | 'interrupted' | 'running'
+  input_tokens?: number
+  iteration?: number
+  model?: string
+  output_tail?: { is_error?: boolean; preview?: string; tool?: string }[]
+  output_tokens?: number
+  parent_id?: null | string
+  reasoning_tokens?: number
+  status?: 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
+  subagent_id?: string
   summary?: string
   task_count?: number
   task_index: number
   text?: string
+  tool_count?: number
   tool_name?: string
   tool_preview?: string
+  toolsets?: string[]
+}
+
+// ── Delegation control RPCs ──────────────────────────────────────────
+
+export interface DelegationStatusResponse {
+  active?: {
+    depth?: number
+    goal?: string
+    model?: null | string
+    parent_id?: null | string
+    started_at?: number
+    status?: string
+    subagent_id?: string
+    tool_count?: number
+  }[]
+  max_concurrent_children?: number
+  max_spawn_depth?: number
+  paused?: boolean
+}
+
+export interface DelegationPauseResponse {
+  paused?: boolean
+}
+
+export interface SubagentInterruptResponse {
+  found?: boolean
+  subagent_id?: string
+}
+
+// ── Spawn-tree snapshots ─────────────────────────────────────────────
+
+export interface SpawnTreeListEntry {
+  count: number
+  finished_at?: number
+  label?: string
+  path: string
+  session_id?: string
+  started_at?: number | null
+}
+
+export interface SpawnTreeListResponse {
+  entries?: SpawnTreeListEntry[]
+}
+
+export interface SpawnTreeLoadResponse {
+  finished_at?: number
+  label?: string
+  session_id?: string
+  started_at?: null | number
+  subagents?: unknown[]
 }
 
 export type GatewayEvent =
@@ -298,15 +412,29 @@ export type GatewayEvent =
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
   | { payload?: undefined; session_id?: string; type: 'message.start' }
   | { payload?: { kind?: string; text?: string }; session_id?: string; type: 'status.update' }
+  | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
+  | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
   | { payload?: { cwd?: string; python?: string }; session_id?: string; type: 'gateway.start_timeout' }
   | { payload?: { preview?: string }; session_id?: string; type: 'gateway.protocol_error' }
   | { payload?: { text?: string }; session_id?: string; type: 'reasoning.delta' | 'reasoning.available' }
   | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
   | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
-  | { payload: { context?: string; name?: string; tool_id: string }; session_id?: string; type: 'tool.start' }
   | {
-      payload: { error?: string; inline_diff?: string; name?: string; summary?: string; tool_id: string }
+      payload: { context?: string; name?: string; tool_id: string; todos?: unknown[] }
+      session_id?: string
+      type: 'tool.start'
+    }
+  | {
+      payload: {
+        duration_s?: number
+        error?: string
+        inline_diff?: string
+        name?: string
+        summary?: string
+        tool_id: string
+        todos?: unknown[]
+      }
       session_id?: string
       type: 'tool.complete'
     }
@@ -319,7 +447,7 @@ export type GatewayEvent =
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
-  | { payload: { text: string }; session_id?: string; type: 'btw.complete' }
+  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.spawn_requested' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.start' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.thinking' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.tool' }

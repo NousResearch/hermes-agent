@@ -15,7 +15,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Any, Tuple
+from typing import Dict, Optional, Any, Tuple, List
 
 try:
     from slack_bolt.async_app import AsyncApp
@@ -38,8 +38,11 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    is_host_excluded_by_no_proxy,
+    resolve_proxy_url,
     safe_url_for_log,
     cache_document_from_bytes,
 )
@@ -54,11 +57,200 @@ class _ThreadContextCache:
     content: str
     fetched_at: float = field(default_factory=time.monotonic)
     message_count: int = 0
+    parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
 
 
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available."""
     return SLACK_AVAILABLE
+
+
+def _extract_text_from_slack_blocks(blocks: list) -> str:
+    """Extract readable text from Slack Block Kit blocks, including quoted/forwarded content.
+
+    Slack's modern WYSIWYG composer sends messages with a ``blocks`` array
+    containing ``rich_text`` elements. When a user forwards or quotes another
+    message, the quoted content appears as nested ``rich_text_quote`` elements
+    that are *not* included in the plain ``text`` field of the event.
+
+    This helper walks the rich-text tree recursively and returns readable lines,
+    preserving quotes, list items, and preformatted blocks so the agent can see
+    forwarded/quoted content instead of only the lossy plain-text field.
+    """
+    if not blocks:
+        return ""
+
+    parts: list[str] = []
+
+    def _render_inline_elements(elements: list) -> str:
+        """Render inline elements (text, link, channel, user, emoji, etc.)."""
+        pieces: list[str] = []
+        for el in elements:
+            el_type = el.get("type", "")
+            if el_type == "text":
+                pieces.append(el.get("text", ""))
+            elif el_type == "link":
+                url = el.get("url", "")
+                text = el.get("text", "") or url
+                pieces.append(f"{text} ({url})")
+            elif el_type == "channel":
+                pieces.append(f"<#{el.get('channel_id', '')}>")
+            elif el_type == "user":
+                pieces.append(f"<@{el.get('user_id', '')}>")
+            elif el_type == "usergroup":
+                pieces.append(f"<!subteam^{el.get('usergroup_id', '')}>")
+            elif el_type == "emoji":
+                pieces.append(f":{el.get('name', '')}:")
+            elif el_type == "broadcast":
+                pieces.append(f"<!{el.get('range', 'here')}>")
+            elif el_type == "date":
+                pieces.append(el.get("fallback", ""))
+        return "".join(pieces)
+
+    def _append_line(text: str, quote_depth: int = 0, bullet: str = "") -> None:
+        if not text or not text.strip():
+            return
+        prefix = ((">" * quote_depth) + " ") if quote_depth else ""
+        parts.append(f"{prefix}{bullet}{text}".rstrip())
+
+    def _walk_elements(elements: list, quote_depth: int = 0, bullet: str = "") -> None:
+        for elem in elements:
+            elem_type = elem.get("type", "")
+
+            if elem_type == "rich_text_section":
+                _append_line(
+                    _render_inline_elements(elem.get("elements", [])),
+                    quote_depth=quote_depth,
+                    bullet=bullet,
+                )
+            elif elem_type == "rich_text_quote":
+                _walk_elements(elem.get("elements", []), quote_depth=quote_depth + 1)
+            elif elem_type == "rich_text_list":
+                list_style = elem.get("style")
+                for idx, item in enumerate(elem.get("elements", [])):
+                    item_bullet = "• " if list_style == "bullet" else f"{idx + 1}. "
+                    _walk_elements([item], quote_depth=quote_depth, bullet=item_bullet)
+            elif elem_type == "rich_text_preformatted":
+                code_lines: list[str] = []
+                for child in elem.get("elements", []):
+                    child_type = child.get("type", "")
+                    if child_type == "rich_text_section":
+                        rendered = _render_inline_elements(child.get("elements", []))
+                    else:
+                        rendered = _render_inline_elements([child])
+                    if rendered:
+                        code_lines.append(rendered)
+                code_text = "\n".join(code_lines)
+                if code_text:
+                    lang = elem.get("language", "")
+                    _append_line(f"```{lang}\n{code_text}\n```", quote_depth=quote_depth, bullet=bullet)
+            else:
+                rendered = _render_inline_elements([elem])
+                if rendered:
+                    _append_line(rendered, quote_depth=quote_depth, bullet=bullet)
+
+    for block in blocks:
+        if (block or {}).get("type") == "rich_text":
+            _walk_elements(block.get("elements", []))
+
+    return "\n".join(parts)
+
+
+def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> str:
+    """Return a compact, redacted JSON view of the current message's Block Kit payload."""
+    if not blocks:
+        return ""
+
+    if all((block or {}).get("type") == "rich_text" for block in blocks):
+        return ""
+
+    scalar_allowlist = {
+        "type",
+        "block_id",
+        "action_id",
+        "style",
+        "dispatch_action",
+        "optional",
+        "multiple",
+        "emoji",
+    }
+    recursive_allowlist = {
+        "text",
+        "title",
+        "description",
+        "label",
+        "placeholder",
+        "accessory",
+        "fields",
+        "elements",
+        "options",
+        "option_groups",
+        "confirm",
+        "submit",
+        "close",
+        "hint",
+    }
+
+    def _sanitize(value):
+        if isinstance(value, list):
+            return [item for item in (_sanitize(v) for v in value) if item not in (None, {}, [], "")]
+        if isinstance(value, dict):
+            sanitized = {}
+            for key, item in value.items():
+                if key in scalar_allowlist:
+                    sanitized[key] = item
+                elif key in recursive_allowlist:
+                    cleaned = _sanitize(item)
+                    if cleaned not in (None, {}, [], ""):
+                        sanitized[key] = cleaned
+            return sanitized
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return repr(value)
+
+    try:
+        payload = json.dumps(_sanitize(blocks), ensure_ascii=False, indent=2)
+    except Exception:
+        payload = repr(blocks)
+
+    if len(payload) > max_chars:
+        payload = payload[: max_chars - 18].rstrip() + "\n... [truncated]"
+
+    return f"[Slack Block Kit payload for this message]\n```json\n{payload}\n```"
+
+
+def _apply_slack_proxy(client: Any, proxy_url: Optional[str]) -> None:
+    """Apply a resolved proxy to a Slack SDK client or clear it explicitly."""
+    if hasattr(client, "proxy"):
+        client.proxy = proxy_url
+
+
+_SLACK_PROXY_HOSTS = (
+    "slack.com",
+    "files.slack.com",
+    "wss-primary.slack.com",
+)
+
+
+def _resolve_slack_proxy_url() -> Optional[str]:
+    """Resolve a proxy URL that Slack SDK clients can safely use."""
+    proxy_url = resolve_proxy_url()
+    if not proxy_url:
+        return None
+
+    normalized = proxy_url.lower()
+    if not normalized.startswith(("http://", "https://")):
+        logger.info(
+            "[Slack] Ignoring unsupported proxy scheme for Slack transport: %s",
+            safe_url_for_log(proxy_url),
+        )
+        return None
+
+    if any(is_host_excluded_by_no_proxy(host) for host in _SLACK_PROXY_HOSTS):
+        logger.info("[Slack] NO_PROXY bypasses Slack proxy configuration")
+        return None
+
+    return proxy_url
 
 
 class SlackAdapter(BasePlatformAdapter):
@@ -81,13 +273,13 @@ class SlackAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
-        self._app: Optional[AsyncApp] = None
-        self._handler: Optional[AsyncSocketModeHandler] = None
+        self._app: Optional[Any] = None
+        self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
-        self._team_clients: Dict[str, AsyncWebClient] = {}   # team_id → WebClient
+        self._team_clients: Dict[str, Any] = {}   # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}          # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}                # channel_id → team_id
         # Dedup cache: prevents duplicate bot responses when Socket Mode
@@ -113,6 +305,68 @@ class SlackAdapter(BasePlatformAdapter):
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
+        # Track message IDs that should get reaction lifecycle (DMs / @mentions).
+        self._reacting_message_ids: set = set()
+        # Track active assistant thread status indicators so stop_typing can
+        # clear them (chat_id → thread_ts).
+        self._active_status_threads: Dict[str, str] = {}
+
+    def _describe_slack_api_error(self, response: Any, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """Convert Slack API auth/permission failures into actionable user-facing text."""
+        if response is None or not hasattr(response, "get"):
+            return None
+
+        error = str(response.get("error", "") or "").strip()
+        if not error:
+            return None
+
+        file_label = str((file_obj or {}).get("name") or (file_obj or {}).get("id") or "this attachment")
+        needed = str(response.get("needed", "") or "").strip()
+        provided = str(response.get("provided", "") or "").strip()
+        reinstall_hint = " Update the Slack app scopes/settings and reinstall the app to the workspace."
+        provided_hint = f" Current bot scopes: {provided}." if provided else ""
+
+        if error == "missing_scope":
+            needed_hint = f"Missing scope: {needed}." if needed else "Missing required Slack scope."
+            return f"Slack attachment access failed for {file_label}. {needed_hint}{provided_hint}{reinstall_hint}"
+        if error in {"not_authed", "invalid_auth", "account_inactive", "token_revoked"}:
+            return f"Slack attachment access failed for {file_label} because the bot token is not authorized ({error}). Refresh the token/reinstall the app."
+        if error in {"file_not_found", "file_deleted"}:
+            return f"Slack attachment {file_label} is no longer available ({error})."
+        if error in {"access_denied", "file_access_denied", "no_permission", "not_allowed_token_type", "restricted_action"}:
+            return f"Slack attachment access failed for {file_label} because the bot does not have permission ({error}). Check workspace permissions/scopes and reinstall if needed."
+        return None
+
+    def _describe_slack_download_failure(self, exc: Exception, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """Translate Slack download exceptions into user-facing attachment diagnostics."""
+        file_label = str((file_obj or {}).get("name") or (file_obj or {}).get("id") or "this attachment")
+
+        response = getattr(exc, "response", None)
+        api_detail = self._describe_slack_api_error(response, file_obj=file_obj)
+        if api_detail:
+            return api_detail
+
+        try:
+            import httpx
+        except Exception:  # pragma: no cover
+            httpx = None
+
+        if httpx is not None and isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            if status == 401:
+                return f"Slack attachment access failed for {file_label} with HTTP 401. The bot token is not authorized for this file."
+            if status == 403:
+                return f"Slack attachment access failed for {file_label} with HTTP 403. The bot likely lacks permission or scope to read this file."
+            if status == 404:
+                return f"Slack attachment {file_label} returned HTTP 404 and is no longer reachable."
+
+        message = str(exc)
+        if "Slack returned HTML instead of media" in message or "non-image data" in message:
+            return (
+                f"Slack attachment access failed for {file_label}: Slack returned an HTML/login or non-media response. "
+                "This usually means a scope, auth, or file-permission problem."
+            )
+        return None
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -131,6 +385,10 @@ class SlackAdapter(BasePlatformAdapter):
         if not app_token:
             logger.error("[Slack] SLACK_APP_TOKEN not set")
             return False
+
+        proxy_url = _resolve_slack_proxy_url()
+        if proxy_url:
+            logger.info("[Slack] Using proxy for Slack transport: %s", safe_url_for_log(proxy_url))
 
         # Support comma-separated bot tokens for multi-workspace
         bot_tokens = [t.strip() for t in raw_token.split(",") if t.strip()]
@@ -159,10 +417,12 @@ class SlackAdapter(BasePlatformAdapter):
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
             self._app = AsyncApp(token=primary_token)
+            _apply_slack_proxy(self._app.client, proxy_url)
 
             # Register each bot token and map team_id → client
             for token in bot_tokens:
                 client = AsyncWebClient(token=token)
+                _apply_slack_proxy(client, proxy_url)
                 auth_response = await client.auth_test()
                 team_id = auth_response.get("team_id", "")
                 bot_user_id = auth_response.get("user_id", "")
@@ -193,6 +453,21 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_app_mention(event, say):
                 pass
 
+            # File lifecycle events can arrive around snippet uploads even when
+            # the actual user message is what we care about. Ack them so Slack
+            # doesn't log noisy 404 "unhandled request" warnings.
+            @self._app.event("file_shared")
+            async def handle_file_shared(event, say):
+                pass
+
+            @self._app.event("file_created")
+            async def handle_file_created(event, say):
+                pass
+
+            @self._app.event("file_change")
+            async def handle_file_change(event, say):
+                pass
+
             @self._app.event("assistant_thread_started")
             async def handle_assistant_thread_started(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
@@ -201,8 +476,31 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
-            # Register slash command handler
-            @self._app.command("/hermes")
+            # Register slash command handler(s)
+            #
+            # Every gateway command from COMMAND_REGISTRY is a native Slack
+            # slash, matching Discord and Telegram's model (e.g. /btw, /stop,
+            # /model work directly without /hermes prefix). A single regex
+            # matcher dispatches all of them to one handler so we don't need
+            # N identical @app.command() decorators.
+            #
+            # The slash commands must ALSO be declared in the Slack app
+            # manifest (see `hermes slack manifest`). In Socket Mode, Slack
+            # routes the command event through the socket regardless of the
+            # manifest's request URL, but it will not deliver an event for
+            # a slash command the manifest doesn't declare.
+            from hermes_cli.commands import slack_native_slashes
+            import re as _re
+
+            _slash_names = [name for name, _d, _h in slack_native_slashes()]
+            if _slash_names:
+                _slash_pattern = _re.compile(
+                    r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
+                )
+            else:  # pragma: no cover - registry always non-empty
+                _slash_pattern = _re.compile(r"^/hermes$")
+
+            @self._app.command(_slash_pattern)
             async def handle_hermes_command(ack, command):
                 await ack()
                 await self._handle_slash_command(command)
@@ -217,7 +515,8 @@ class SlackAdapter(BasePlatformAdapter):
                 self._app.action(_action_id)(self._handle_approval_action)
 
             # Start Socket Mode handler in background
-            self._handler = AsyncSocketModeHandler(self._app, app_token)
+            self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
+            _apply_slack_proxy(self._handler.client, proxy_url)
             self._socket_mode_task = asyncio.create_task(self._handler.start_async())
 
             self._running = True
@@ -247,7 +546,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         logger.info("[Slack] Disconnected")
 
-    def _get_client(self, chat_id: str) -> AsyncWebClient:
+    def _get_client(self, chat_id: str) -> Any:
         """Return the workspace-specific WebClient for a channel."""
         team_id = self._channel_team.get(chat_id)
         if team_id and team_id in self._team_clients:
@@ -362,6 +661,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not thread_ts:
             return  # Can only set status in a thread context
 
+        self._active_status_threads[chat_id] = thread_ts
         try:
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,
@@ -372,6 +672,22 @@ class SlackAdapter(BasePlatformAdapter):
             # Silently ignore — may lack assistant:write scope or not be
             # in an assistant-enabled context. Falls back to reactions.
             logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Clear the assistant thread status indicator."""
+        if not self._app:
+            return
+        thread_ts = self._active_status_threads.pop(chat_id, None)
+        if not thread_ts:
+            return
+        try:
+            await self._get_client(chat_id).assistant_threads_setStatus(
+                channel_id=chat_id,
+                thread_ts=thread_ts,
+                status="",
+            )
+        except Exception as e:
+            logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
 
     def _dm_top_level_threads_as_sessions(self) -> bool:
         """Whether top-level Slack DMs get per-message session threads.
@@ -404,8 +720,18 @@ class SlackAdapter(BasePlatformAdapter):
         """
         # When reply_in_thread is disabled (default: True for backward compat),
         # only thread messages that are already part of an existing thread.
+        # For top-level channel messages, the inbound handler sets
+        # metadata.thread_id to the message's own ts as a session-keying
+        # fallback (see the `thread_ts = event.get("thread_ts") or ts` branch),
+        # so metadata alone can't distinguish a real thread reply from a
+        # top-level message. reply_to is the incoming message's own id, so
+        # when thread_id == reply_to the "thread" is synthetic and we reply
+        # directly in the channel instead.
         if not self.config.extra.get("reply_in_thread", True):
-            existing_thread = (metadata or {}).get("thread_id") or (metadata or {}).get("thread_ts")
+            md = metadata or {}
+            existing_thread = md.get("thread_id") or md.get("thread_ts")
+            if existing_thread and reply_to and existing_thread == reply_to:
+                existing_thread = None
             return existing_thread or None
 
         if metadata:
@@ -430,14 +756,61 @@ class SlackAdapter(BasePlatformAdapter):
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        result = await self._get_client(chat_id).files_upload_v2(
-            channel=chat_id,
-            file=file_path,
-            filename=os.path.basename(file_path),
-            initial_comment=caption or "",
-            thread_ts=self._resolve_thread_ts(reply_to, metadata),
-        )
-        return SendResult(success=True, raw_response=result)
+        thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        last_exc = None
+        for attempt in range(3):
+            try:
+                result = await self._get_client(chat_id).files_upload_v2(
+                    channel=chat_id,
+                    file=file_path,
+                    filename=os.path.basename(file_path),
+                    initial_comment=caption or "",
+                    thread_ts=thread_ts,
+                )
+                self._record_uploaded_file_thread(chat_id, thread_ts)
+                return SendResult(success=True, raw_response=result)
+            except Exception as exc:
+                last_exc = exc
+                if not self._is_retryable_upload_error(exc) or attempt >= 2:
+                    raise
+                logger.debug(
+                    "[Slack] Upload retry %d/2 for %s: %s",
+                    attempt + 1,
+                    file_path,
+                    exc,
+                )
+                await asyncio.sleep(1.5 * (attempt + 1))
+
+        raise last_exc
+
+    def _record_uploaded_file_thread(self, chat_id: str, thread_ts: Optional[str]) -> None:
+        """Treat successful file uploads as bot participation in a thread."""
+        if not thread_ts:
+            return
+        self._bot_message_ts.add(thread_ts)
+        if len(self._bot_message_ts) > self._BOT_TS_MAX:
+            excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
+            for old_ts in list(self._bot_message_ts)[:excess]:
+                self._bot_message_ts.discard(old_ts)
+
+    def _is_retryable_upload_error(self, exc: Exception) -> bool:
+        """Best-effort detection for transient Slack upload failures."""
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        if status_code is not None:
+            return status_code == 429 or status_code >= 500
+
+        body = " ".join(
+            str(part) for part in (
+                exc,
+                getattr(exc, "message", ""),
+                getattr(exc, "response", None),
+            ) if part
+        ).lower()
+        if "rate_limited" in body or "ratelimited" in body or "429" in body:
+            return True
+        if "connection reset" in body or "service unavailable" in body or "temporarily unavailable" in body:
+            return True
+        return self._is_retryable_error(body)
 
     # ----- Markdown → mrkdwn conversion -----
 
@@ -584,6 +957,38 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] reactions.remove failed (%s): %s", emoji, e)
             return False
 
+    def _reactions_enabled(self) -> bool:
+        """Check if message reactions are enabled via config/env."""
+        return os.getenv("SLACK_REACTIONS", "true").lower() not in ("false", "0", "no")
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an in-progress reaction when message processing begins."""
+        if not self._reactions_enabled():
+            return
+        ts = getattr(event, "message_id", None)
+        if not ts or ts not in self._reacting_message_ids:
+            return
+        channel_id = getattr(event.source, "chat_id", None)
+        if channel_id:
+            await self._add_reaction(channel_id, ts, "eyes")
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Swap the in-progress reaction for a final success/failure reaction."""
+        if not self._reactions_enabled():
+            return
+        ts = getattr(event, "message_id", None)
+        if not ts or ts not in self._reacting_message_ids:
+            return
+        self._reacting_message_ids.discard(ts)
+        channel_id = getattr(event.source, "chat_id", None)
+        if not channel_id:
+            return
+        await self._remove_reaction(channel_id, ts, "eyes")
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self._add_reaction(channel_id, ts, "white_check_mark")
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self._add_reaction(channel_id, ts, "x")
+
     # ----- User identity resolution -----
 
     async def _resolve_user_name(self, user_id: str, chat_id: str = "") -> str:
@@ -678,13 +1083,15 @@ class SlackAdapter(BasePlatformAdapter):
                 response = await client.get(image_url)
                 response.raise_for_status()
 
+            thread_ts = self._resolve_thread_ts(reply_to, metadata)
             result = await self._get_client(chat_id).files_upload_v2(
                 channel=chat_id,
                 content=response.content,
                 filename="image.png",
                 initial_comment=caption or "",
-                thread_ts=self._resolve_thread_ts(reply_to, metadata),
+                thread_ts=thread_ts,
             )
+            self._record_uploaded_file_thread(chat_id, thread_ts)
 
             return SendResult(success=True, raw_response=result)
 
@@ -697,7 +1104,12 @@ class SlackAdapter(BasePlatformAdapter):
             )
             # Fall back to sending the URL as text
             text = f"{caption}\n{image_url}" if caption else image_url
-            return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+            return await self.send(
+                chat_id=chat_id,
+                content=text,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
 
     async def send_voice(
         self,
@@ -738,14 +1150,32 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Video file not found: {video_path}")
 
         try:
-            result = await self._get_client(chat_id).files_upload_v2(
-                channel=chat_id,
-                file=video_path,
-                filename=os.path.basename(video_path),
-                initial_comment=caption or "",
-                thread_ts=self._resolve_thread_ts(reply_to, metadata),
-            )
-            return SendResult(success=True, raw_response=result)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            last_exc = None
+            for attempt in range(3):
+                try:
+                    result = await self._get_client(chat_id).files_upload_v2(
+                        channel=chat_id,
+                        file=video_path,
+                        filename=os.path.basename(video_path),
+                        initial_comment=caption or "",
+                        thread_ts=thread_ts,
+                    )
+                    self._record_uploaded_file_thread(chat_id, thread_ts)
+                    return SendResult(success=True, raw_response=result)
+                except Exception as exc:
+                    last_exc = exc
+                    if not self._is_retryable_upload_error(exc) or attempt >= 2:
+                        raise
+                    logger.debug(
+                        "[Slack] Video upload retry %d/2 for %s: %s",
+                        attempt + 1,
+                        video_path,
+                        exc,
+                    )
+                    await asyncio.sleep(1.5 * (attempt + 1))
+
+            raise last_exc
 
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
@@ -777,16 +1207,34 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"File not found: {file_path}")
 
         display_name = file_name or os.path.basename(file_path)
+        thread_ts = self._resolve_thread_ts(reply_to, metadata)
 
         try:
-            result = await self._get_client(chat_id).files_upload_v2(
-                channel=chat_id,
-                file=file_path,
-                filename=display_name,
-                initial_comment=caption or "",
-                thread_ts=self._resolve_thread_ts(reply_to, metadata),
-            )
-            return SendResult(success=True, raw_response=result)
+            last_exc = None
+            for attempt in range(3):
+                try:
+                    result = await self._get_client(chat_id).files_upload_v2(
+                        channel=chat_id,
+                        file=file_path,
+                        filename=display_name,
+                        initial_comment=caption or "",
+                        thread_ts=thread_ts,
+                    )
+                    self._record_uploaded_file_thread(chat_id, thread_ts)
+                    return SendResult(success=True, raw_response=result)
+                except Exception as exc:
+                    last_exc = exc
+                    if not self._is_retryable_upload_error(exc) or attempt >= 2:
+                        raise
+                    logger.debug(
+                        "[Slack] Document upload retry %d/2 for %s: %s",
+                        attempt + 1,
+                        file_path,
+                        exc,
+                    )
+                    await asyncio.sleep(1.5 * (attempt + 1))
+
+            raise last_exc
 
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
@@ -987,7 +1435,98 @@ class SlackAdapter(BasePlatformAdapter):
         if subtype in ("message_changed", "message_deleted"):
             return
 
-        text = event.get("text", "")
+        original_text = event.get("text", "")
+        text = original_text
+
+        # Extract quoted/forwarded content from Slack blocks.
+        # Slack's modern composer embeds forwarded messages in the ``blocks``
+        # array as ``rich_text_quote`` elements, which are NOT reflected in
+        # the plain ``text`` field.  Merge block text so the agent sees the
+        # full message content.
+        blocks = event.get("blocks")
+        if blocks:
+            blocks_text = _extract_text_from_slack_blocks(blocks)
+            if blocks_text:
+                # Only append if the blocks contain text not already present
+                # in the plain text field (avoids duplication).
+                stripped_blocks = blocks_text.strip()
+                if stripped_blocks and stripped_blocks not in text.strip():
+                    logger.debug(
+                        "Slack: extracted additional text from blocks "
+                        "(likely quoted/forwarded content): %s",
+                        stripped_blocks[:300],
+                    )
+                    text = (text.strip() + "\n" + stripped_blocks).strip()
+
+            blocks_payload = _serialize_slack_blocks_for_agent(blocks)
+            if blocks_payload:
+                text = (text.strip() + "\n\n" + blocks_payload).strip()
+
+        # Extract link unfurls / rich attachments (e.g. Notion previews).
+        # Slack places unfurled link previews in the ``attachments`` array with
+        # fields like title, title_link/from_url, text, footer, and fallback.
+        # Without reading these, the agent never sees shared link previews.
+        slack_attachments = event.get("attachments") or []
+        if slack_attachments:
+            att_parts: list[str] = []
+            for att in slack_attachments:
+                att_title = att.get("title", "")
+                att_url = att.get("title_link", "") or att.get("from_url", "")
+                att_text = att.get("text", "")
+                att_footer = att.get("footer", "")
+                att_fallback = att.get("fallback", "")
+
+                # Skip message-type attachments (e.g. Slack bot messages with
+                # is_msg_unfurl) to avoid echoing our own content.
+                if att.get("is_msg_unfurl"):
+                    continue
+
+                # Build a readable representation.
+                if att_title and att_url:
+                    header = f"📎 [{att_title}]({att_url})"
+                elif att_title:
+                    header = f"📎 {att_title}"
+                elif att_url:
+                    header = f"📎 {att_url}"
+                else:
+                    header = None
+
+                # Prefer preview text, fall back to fallback description.
+                body = att_text or att_fallback or ""
+                if body:
+                    body = body.strip()
+                    if len(body) > 500:
+                        body = body[:497] + "..."
+
+                if header and body:
+                    section = f"{header}\n   {body}"
+                elif header:
+                    section = header
+                elif body:
+                    section = f"📎 {body}"
+                else:
+                    continue
+
+                # Deduplicate only when the fully rendered section is already
+                # present. The shared URL often already appears in the user's
+                # message text, and skipping on URL/title alone would hide the
+                # preview body we actually want the agent to see.
+                if section in text:
+                    continue
+
+                if att_footer:
+                    section = f"{section}\n   _{att_footer}_"
+
+                att_parts.append(section)
+
+            if att_parts:
+                attachment_text = "\n\n".join(att_parts)
+                text = (text.strip() + "\n\n" + attachment_text).strip()
+                logger.debug(
+                    "Slack: appended %d link unfurl(s) to message text",
+                    len(att_parts),
+                )
+
         channel_id = event.get("channel", "")
         ts = event.get("ts", "")
         assistant_meta = self._lookup_assistant_thread_metadata(
@@ -1036,7 +1575,8 @@ class SlackAdapter(BasePlatformAdapter):
         #   3. The message is in a thread where the bot was previously @mentioned, OR
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-        is_mentioned = bot_uid and f"<@{bot_uid}>" in text
+        routing_text = original_text or ""
+        is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
@@ -1045,6 +1585,8 @@ class SlackAdapter(BasePlatformAdapter):
                 pass  # Free-response channel — always process
             elif not self._slack_require_mention():
                 pass  # Mention requirement disabled globally for Slack
+            elif self._slack_strict_mention() and not is_mentioned:
+                return  # Strict mode: ignore until @-mentioned again
             elif not is_mentioned:
                 reply_to_bot_thread = (
                     is_thread_reply and event_thread_ts in self._bot_message_ts
@@ -1067,8 +1609,11 @@ class SlackAdapter(BasePlatformAdapter):
         if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
-            # Register this thread so all future messages auto-trigger the bot
-            if event_thread_ts:
+            # Register this thread so all future messages auto-trigger the bot.
+            # Skipped in strict mode: strict_mention=true bots must be
+            # re-mentioned every turn, so remembering the thread would
+            # defeat the feature (and re-enable agent-to-agent ack loops).
+            if event_thread_ts and not self._slack_strict_mention():
                 self._mentioned_threads.add(event_thread_ts)
                 if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
                     to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]
@@ -1093,14 +1638,49 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Determine message type
         msg_type = MessageType.TEXT
-        if text.startswith("/"):
+        if (original_text or "").startswith("/"):
             msg_type = MessageType.COMMAND
 
         # Handle file attachments
         media_urls = []
         media_types = []
+        attachment_notices: List[str] = []
         files = event.get("files", [])
         for f in files:
+            # Slack Connect channels return stub file objects with
+            # file_access="check_file_info" and no URL fields. We must
+            # call files.info to retrieve the full object (including url_private_download)
+            # before we can download it.
+            # https://docs.slack.dev/reference/objects/file-object/#slack_connect_files
+            if f.get("file_access") == "check_file_info":
+                file_id = f.get("id")
+                if not file_id:
+                    continue
+                try:
+                    info_resp = await self._get_client(channel_id).files_info(file=file_id)
+                    if info_resp.get("ok"):
+                        f = info_resp["file"]
+                    else:
+                        detail = self._describe_slack_api_error(info_resp, file_obj=f)
+                        if detail:
+                            attachment_notices.append(detail)
+                            logger.warning("[Slack] %s", detail)
+                        else:
+                            logger.warning(
+                                "[Slack] files.info failed for %s: %s",
+                                file_id, info_resp.get("error"),
+                            )
+                        continue
+                except Exception as e:
+                    response = getattr(e, "response", None)
+                    detail = self._describe_slack_api_error(response, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning("[Slack] files.info error for %s: %s", file_id, e, exc_info=True)
+                    continue
+
             mimetype = f.get("mimetype", "unknown")
             url = f.get("url_private_download") or f.get("url_private", "")
             if mimetype.startswith("image/") and url:
@@ -1112,9 +1692,13 @@ class SlackAdapter(BasePlatformAdapter):
                     cached = await self._download_slack_file(url, ext, team_id=team_id)
                     media_urls.append(cached)
                     media_types.append(mimetype)
-                    msg_type = MessageType.PHOTO
                 except Exception as e:  # pragma: no cover - defensive logging
-                    logger.warning("[Slack] Failed to cache image from %s: %s", url, e, exc_info=True)
+                    detail = self._describe_slack_download_failure(e, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning("[Slack] Failed to cache image from %s: %s", url, e, exc_info=True)
             elif mimetype.startswith("audio/") and url:
                 try:
                     ext = "." + mimetype.split("/")[-1].split(";")[0]
@@ -1123,9 +1707,13 @@ class SlackAdapter(BasePlatformAdapter):
                     cached = await self._download_slack_file(url, ext, audio=True, team_id=team_id)
                     media_urls.append(cached)
                     media_types.append(mimetype)
-                    msg_type = MessageType.VOICE
                 except Exception as e:  # pragma: no cover - defensive logging
-                    logger.warning("[Slack] Failed to cache audio from %s: %s", url, e, exc_info=True)
+                    detail = self._describe_slack_download_failure(e, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning("[Slack] Failed to cache audio from %s: %s", url, e, exc_info=True)
             elif url:
                 # Try to handle as a document attachment
                 try:
@@ -1158,12 +1746,16 @@ class SlackAdapter(BasePlatformAdapter):
                     doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
                     media_urls.append(cached_path)
                     media_types.append(doc_mime)
-                    msg_type = MessageType.DOCUMENT
                     logger.debug("[Slack] Cached user document: %s", cached_path)
 
-                    # Inject text content for .txt/.md files (capped at 100 KB)
+                    # Inject small text-ish files directly into the prompt so
+                    # snippets like JSON/YAML/configs are actually visible to the agent.
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
-                    if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    TEXT_INJECT_EXTENSIONS = {
+                        ".md", ".txt", ".csv", ".log", ".json", ".xml",
+                        ".yaml", ".yml", ".toml", ".ini", ".cfg",
+                    }
+                    if ext in TEXT_INJECT_EXTENSIONS and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
                             text_content = raw_bytes.decode("utf-8")
                             display_name = original_filename or f"document{ext}"
@@ -1177,7 +1769,24 @@ class SlackAdapter(BasePlatformAdapter):
                             pass  # Binary content, skip injection
 
                 except Exception as e:  # pragma: no cover - defensive logging
-                    logger.warning("[Slack] Failed to cache document from %s: %s", url, e, exc_info=True)
+                    detail = self._describe_slack_download_failure(e, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning("[Slack] Failed to cache document from %s: %s", url, e, exc_info=True)
+
+        if attachment_notices:
+            notice_block = "[Slack attachment notice]\n" + "\n".join(f"- {n}" for n in attachment_notices)
+            text = f"{notice_block}\n\n{text}" if text else notice_block
+
+        if msg_type != MessageType.COMMAND and media_types:
+            if any(m.startswith("image/") for m in media_types):
+                msg_type = MessageType.PHOTO
+            elif any(m.startswith("audio/") for m in media_types):
+                msg_type = MessageType.VOICE
+            else:
+                msg_type = MessageType.DOCUMENT
 
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
@@ -1193,10 +1802,29 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         # Per-channel ephemeral prompt
-        from gateway.platforms.base import resolve_channel_prompt
+        from gateway.platforms.base import resolve_channel_prompt, resolve_channel_skills
         _channel_prompt = resolve_channel_prompt(
             self.config.extra, channel_id, None,
         )
+        _auto_skill = resolve_channel_skills(
+            self.config.extra, channel_id, None,
+        )
+
+        # Extract reply context if this message is a thread reply.
+        # Mirrors the Telegram/Discord implementations so that gateway.run
+        # can inject a `[Replying to: "..."]` prefix when the parent is not
+        # already in the session history. Uses the thread-context cache when
+        # available to avoid redundant conversations.replies calls.
+        reply_to_text = None
+        if thread_ts and thread_ts != ts:
+            try:
+                reply_to_text = await self._fetch_thread_parent_text(
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    team_id=team_id,
+                ) or None
+            except Exception:  # pragma: no cover - defensive
+                reply_to_text = None
 
         msg_event = MessageEvent(
             text=text,
@@ -1208,21 +1836,18 @@ class SlackAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=_channel_prompt,
+            reply_to_text=reply_to_text,
+            auto_skill=_auto_skill,
         )
 
         # Only react when bot is directly addressed (DM or @mention).
         # In listen-all channels (require_mention=false), reacting to every
         # casual message would be noisy.
-        _should_react = is_dm or is_mentioned
-
+        _should_react = (is_dm or is_mentioned) and self._reactions_enabled()
         if _should_react:
-            await self._add_reaction(channel_id, ts, "eyes")
+            self._reacting_message_ids.add(ts)
 
         await self.handle_message(msg_event)
-
-        if _should_react:
-            await self._remove_reaction(channel_id, ts, "eyes")
-            await self._add_reaction(channel_id, ts, "white_check_mark")
 
     # ----- Approval button support (Block Kit) -----
 
@@ -1420,7 +2045,7 @@ class SlackAdapter(BasePlatformAdapter):
         Returns a formatted string with prior thread history, or empty string
         on failure or if the thread has no prior messages.
         """
-        cache_key = f"{channel_id}:{thread_ts}"
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
         now = time.monotonic()
         cached = self._thread_context_cache.get(cache_key)
         if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
@@ -1467,14 +2092,37 @@ class SlackAdapter(BasePlatformAdapter):
 
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
             context_parts = []
+            parent_text = ""
             for msg in messages:
                 msg_ts = msg.get("ts", "")
                 # Exclude the current triggering message — it will be delivered
                 # as the user message itself, so including it here would duplicate it.
                 if msg_ts == current_ts:
                     continue
-                # Exclude our own bot messages to avoid circular context.
-                if msg.get("bot_id") or msg.get("subtype") == "bot_message":
+
+                is_parent = msg_ts == thread_ts
+                is_bot = bool(msg.get("bot_id")) or msg.get("subtype") == "bot_message"
+                msg_user = msg.get("user", "")
+
+                # Identify "our own" bot for this workspace (multi-workspace safe).
+                msg_team = msg.get("team") or team_id
+                self_bot_uid = (
+                    self._team_bot_user_ids.get(msg_team)
+                    if msg_team
+                    else None
+                ) or self._bot_user_id
+
+                # Exclude only our own prior bot replies (circular context).
+                # Keep:
+                #   - the thread parent even if it was posted by a bot
+                #     (e.g. a cron job summary we are now replying to);
+                #   - other bots' child messages (useful third-party context).
+                if (
+                    is_bot
+                    and not is_parent
+                    and self_bot_uid
+                    and msg_user == self_bot_uid
+                ):
                     continue
 
                 msg_text = msg.get("text", "").strip()
@@ -1485,11 +2133,15 @@ class SlackAdapter(BasePlatformAdapter):
                 if bot_uid:
                     msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
 
-                msg_user = msg.get("user", "unknown")
-                is_parent = msg_ts == thread_ts
                 prefix = "[thread parent] " if is_parent else ""
-                name = await self._resolve_user_name(msg_user, chat_id=channel_id)
+                display_user = msg_user or "unknown"
+                # Prefer the bot's own name when the message is a bot post.
+                if is_bot and not display_user:
+                    display_user = msg.get("username") or "bot"
+                name = await self._resolve_user_name(display_user, chat_id=channel_id)
                 context_parts.append(f"{prefix}{name}: {msg_text}")
+                if is_parent:
+                    parent_text = msg_text
 
             content = ""
             if context_parts:
@@ -1503,6 +2155,7 @@ class SlackAdapter(BasePlatformAdapter):
                 content=content,
                 fetched_at=now,
                 message_count=len(context_parts),
+                parent_text=parent_text,
             )
             return content
 
@@ -1510,8 +2163,62 @@ class SlackAdapter(BasePlatformAdapter):
             logger.warning("[Slack] Failed to fetch thread context: %s", e)
             return ""
 
+    async def _fetch_thread_parent_text(
+        self, channel_id: str, thread_ts: str, team_id: str = "",
+    ) -> str:
+        """Return the raw text of the thread parent message (for reply_to_text).
+
+        Uses the same per-thread cache as :meth:`_fetch_thread_context` to avoid
+        hitting ``conversations.replies`` twice. Falls back to a cheap single-
+        message fetch (``limit=1, inclusive=True``) when the cache is cold.
+
+        Returns empty string on any failure — callers should treat an empty
+        return as "no parent context to inject".
+        """
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
+        now = time.monotonic()
+        cached = self._thread_context_cache.get(cache_key)
+        if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
+            return cached.parent_text
+
+        try:
+            client = self._get_client(channel_id)
+            result = await client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                limit=1,
+                inclusive=True,
+            )
+            messages = result.get("messages", []) if result else []
+            if not messages:
+                return ""
+            parent = messages[0]
+            if parent.get("ts", "") != thread_ts:
+                return ""
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            text = (parent.get("text") or "").strip()
+            if bot_uid:
+                text = text.replace(f"<@{bot_uid}>", "").strip()
+            return text
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
+            return ""
+
     async def _handle_slash_command(self, command: dict) -> None:
-        """Handle /hermes slash command."""
+        """Handle Slack slash commands.
+
+        Every gateway command in COMMAND_REGISTRY is registered as a native
+        Slack slash (``/btw``, ``/stop``, ``/model``, etc.), matching the
+        Discord and Telegram model. The slash name itself is the command;
+        any text after it is the argument list.
+
+        The legacy ``/hermes <subcommand> [args]`` form is preserved for
+        backward compatibility with older workspace manifests and for users
+        who want a single entry point for free-form questions (``/hermes
+        what's the weather`` — non-slash text is treated as a regular
+        message).
+        """
+        slash_name = (command.get("command") or "").lstrip("/").strip()
         text = command.get("text", "").strip()
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
@@ -1521,20 +2228,25 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        # Map subcommands to gateway commands — derived from central registry.
-        # Also keep "compact" as a Slack-specific alias for /compress.
-        from hermes_cli.commands import slack_subcommand_map
-        subcommand_map = slack_subcommand_map()
-        subcommand_map["compact"] = "/compress"
-        first_word = text.split()[0] if text else ""
-        if first_word in subcommand_map:
-            # Preserve arguments after the subcommand
-            rest = text[len(first_word):].strip()
-            text = f"{subcommand_map[first_word]} {rest}".strip() if rest else subcommand_map[first_word]
-        elif text:
-            pass  # Treat as a regular question
+        if slash_name in ("hermes", ""):
+            # Legacy /hermes <subcommand> [args] routing + free-form questions.
+            # Empty slash_name falls into this branch for backward compat
+            # with any caller that didn't populate command["command"].
+            from hermes_cli.commands import slack_subcommand_map
+            subcommand_map = slack_subcommand_map()
+            subcommand_map["compact"] = "/compress"
+            first_word = text.split()[0] if text else ""
+            if first_word in subcommand_map:
+                rest = text[len(first_word):].strip()
+                text = f"{subcommand_map[first_word]} {rest}".strip() if rest else subcommand_map[first_word]
+            elif text:
+                pass  # Treat as a regular question
+            else:
+                text = "/help"
         else:
-            text = "/help"
+            # Native slash — /<slash_name> [args].  Route directly through the
+            # gateway command dispatcher by prepending the slash.
+            text = f"/{slash_name} {text}".strip()
 
         source = self.build_source(
             chat_id=channel_id,
@@ -1600,11 +2312,9 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _download_slack_file(self, url: str, ext: str, audio: bool = False, team_id: str = "") -> str:
         """Download a Slack file using the bot token for auth, with retry."""
-        import asyncio
         import httpx
 
         bot_token = self._team_clients[team_id].token if team_id and team_id in self._team_clients else self.config.token
-        last_exc = None
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             for attempt in range(3):
@@ -1634,7 +2344,6 @@ class SlackAdapter(BasePlatformAdapter):
                         from gateway.platforms.base import cache_image_from_bytes
                         return cache_image_from_bytes(response.content, ext)
                 except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                    last_exc = exc
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                         raise
                     if attempt < 2:
@@ -1643,15 +2352,12 @@ class SlackAdapter(BasePlatformAdapter):
                         await asyncio.sleep(1.5 * (attempt + 1))
                         continue
                     raise
-        raise last_exc
 
     async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
         """Download a Slack file and return raw bytes, with retry."""
-        import asyncio
         import httpx
 
         bot_token = self._team_clients[team_id].token if team_id and team_id in self._team_clients else self.config.token
-        last_exc = None
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             for attempt in range(3):
@@ -1661,10 +2367,18 @@ class SlackAdapter(BasePlatformAdapter):
                         headers={"Authorization": f"Bearer {bot_token}"},
                     )
                     response.raise_for_status()
+                    ct = response.headers.get("content-type", "")
+                    if "text/html" in ct:
+                        raise ValueError(
+                            "Slack returned HTML instead of file bytes "
+                            f"(content-type: {ct}); "
+                            "check bot token scopes and file permissions"
+                        )
                     return response.content
-                except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                    last_exc = exc
+                except (httpx.TimeoutException, httpx.HTTPStatusError, ValueError) as exc:
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
+                        raise
+                    if isinstance(exc, ValueError):
                         raise
                     if attempt < 2:
                         logger.debug("Slack file download retry %d/2 for %s: %s",
@@ -1672,7 +2386,6 @@ class SlackAdapter(BasePlatformAdapter):
                         await asyncio.sleep(1.5 * (attempt + 1))
                         continue
                     raise
-        raise last_exc
 
     # ── Channel mention gating ─────────────────────────────────────────────
 
@@ -1689,6 +2402,18 @@ class SlackAdapter(BasePlatformAdapter):
                 return configured.lower() not in ("false", "0", "no", "off")
             return bool(configured)
         return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+
+    def _slack_strict_mention(self) -> bool:
+        """When true, channel threads require an explicit @-mention on every
+        message. Disables all auto-triggers (mentioned-thread memory,
+        bot-message follow-up, session-presence). Defaults to False.
+        """
+        configured = self.config.extra.get("strict_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("SLACK_STRICT_MENTION", "false").lower() in ("true", "1", "yes", "on")
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""

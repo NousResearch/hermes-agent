@@ -789,6 +789,42 @@ class TestPromptBuilderConstants:
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
 
+    def test_cli_hint_does_not_suggest_media_tags(self):
+        # Regression: MEDIA:/path tags are intercepted only by messaging
+        # gateway platforms. On the CLI they render as literal text and
+        # confuse users. The CLI hint must steer the agent away from them.
+        cli_hint = PLATFORM_HINTS["cli"]
+        assert "MEDIA:" in cli_hint, (
+            "CLI hint should mention MEDIA: in order to tell the agent "
+            "NOT to use it (negative guidance)."
+        )
+        # Must contain explicit "don't" language near the MEDIA reference.
+        assert any(
+            marker in cli_hint.lower()
+            for marker in ("do not emit media", "not intercepted", "do not", "don't")
+        ), "CLI hint should explicitly discourage MEDIA: tags."
+        # Messaging hints should still advertise MEDIA: positively (sanity
+        # check that this test is calibrated correctly).
+        assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
+
+    def test_platform_hints_mattermost(self):
+        hint = PLATFORM_HINTS["mattermost"]
+        assert "Mattermost" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_matrix(self):
+        hint = PLATFORM_HINTS["matrix"]
+        assert "Matrix" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_feishu(self):
+        hint = PLATFORM_HINTS["feishu"]
+        assert "Feishu" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
 
 # =========================================================================
 # Environment hints

@@ -95,19 +95,37 @@ class TestInitialize:
 
 class TestAuthenticate:
     @pytest.mark.asyncio
-    async def test_authenticate_with_provider_configured(self, agent, monkeypatch):
+    async def test_authenticate_with_matching_method_id(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.has_provider",
-            lambda: True,
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
         )
         resp = await agent.authenticate(method_id="openrouter")
         assert isinstance(resp, AuthenticateResponse)
 
     @pytest.mark.asyncio
+    async def test_authenticate_is_case_insensitive(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
+        )
+        resp = await agent.authenticate(method_id="OpenRouter")
+        assert isinstance(resp, AuthenticateResponse)
+
+    @pytest.mark.asyncio
+    async def test_authenticate_rejects_mismatched_method_id(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "acp_adapter.server.detect_provider",
+            lambda: "openrouter",
+        )
+        resp = await agent.authenticate(method_id="totally-invalid-method")
+        assert resp is None
+
+    @pytest.mark.asyncio
     async def test_authenticate_without_provider(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "acp_adapter.server.has_provider",
-            lambda: False,
+            "acp_adapter.server.detect_provider",
+            lambda: None,
         )
         resp = await agent.authenticate(method_id="openrouter")
         assert resp is None
@@ -251,6 +269,57 @@ class TestListAndFork:
             await agent.list_sessions(cwd="/mnt/e/Projects/AI/browser-link-3")
 
         mock_list.assert_called_once_with(cwd="/mnt/e/Projects/AI/browser-link-3")
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_pagination_first_page(self, agent):
+        from acp_adapter import server as acp_server
+
+        infos = [
+            {"session_id": f"s{i}", "cwd": "/tmp", "title": None, "updated_at": 0.0}
+            for i in range(acp_server._LIST_SESSIONS_PAGE_SIZE + 5)
+        ]
+        with patch.object(agent.session_manager, "list_sessions", return_value=infos):
+            resp = await agent.list_sessions()
+
+        assert len(resp.sessions) == acp_server._LIST_SESSIONS_PAGE_SIZE
+        assert resp.next_cursor == resp.sessions[-1].session_id
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_pagination_no_more(self, agent):
+        infos = [
+            {"session_id": f"s{i}", "cwd": "/tmp", "title": None, "updated_at": 0.0}
+            for i in range(3)
+        ]
+        with patch.object(agent.session_manager, "list_sessions", return_value=infos):
+            resp = await agent.list_sessions()
+
+        assert len(resp.sessions) == 3
+        assert resp.next_cursor is None
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_cursor_resumes_after_match(self, agent):
+        infos = [
+            {"session_id": "s1", "cwd": "/tmp", "title": None, "updated_at": 0.0},
+            {"session_id": "s2", "cwd": "/tmp", "title": None, "updated_at": 0.0},
+            {"session_id": "s3", "cwd": "/tmp", "title": None, "updated_at": 0.0},
+        ]
+        with patch.object(agent.session_manager, "list_sessions", return_value=infos):
+            resp = await agent.list_sessions(cursor="s1")
+
+        assert [s.session_id for s in resp.sessions] == ["s2", "s3"]
+        assert resp.next_cursor is None
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_unknown_cursor_returns_empty(self, agent):
+        infos = [
+            {"session_id": "s1", "cwd": "/tmp", "title": None, "updated_at": 0.0},
+            {"session_id": "s2", "cwd": "/tmp", "title": None, "updated_at": 0.0},
+        ]
+        with patch.object(agent.session_manager, "list_sessions", return_value=infos):
+            resp = await agent.list_sessions(cursor="does-not-exist")
+
+        assert resp.sessions == []
+        assert resp.next_cursor is None
 
 # ---------------------------------------------------------------------------
 # session configuration / model routing
@@ -835,9 +904,15 @@ class TestRegisterSessionMcpServers:
         ]
 
         with patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_search"]), \
-             patch("model_tools.get_tool_definitions", return_value=fake_tools):
+             patch("model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
             await agent._register_session_mcp_servers(state, [server])
 
+        mock_defs.assert_called_once_with(
+            enabled_toolsets=["hermes-acp", "mcp-srv"],
+            disabled_toolsets=None,
+            quiet_mode=True,
+        )
+        assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
         assert state.agent.tools == fake_tools
         assert state.agent.valid_tool_names == {"mcp_srv_search", "terminal"}
         # _invalidate_system_prompt should have been called

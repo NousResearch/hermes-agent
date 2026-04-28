@@ -230,3 +230,102 @@ class TestEscapeDriftGuard:
         new, count, strategy, err = fuzzy_find_and_replace(content, old_string, new_string)
         assert err is None
         assert count == 1
+
+
+class TestFindClosestLines:
+    def setup_method(self):
+        from tools.fuzzy_match import find_closest_lines
+        self.find_closest_lines = find_closest_lines
+
+    def test_finds_similar_line(self):
+        content = "def foo():\n    pass\ndef bar():\n    return 1\n"
+        result = self.find_closest_lines("def baz():", content)
+        assert "def foo" in result or "def bar" in result
+
+    def test_returns_empty_for_no_match(self):
+        content = "completely different content here"
+        result = self.find_closest_lines("xyzzy_no_match_possible_!!!", content)
+        assert result == ""
+
+    def test_returns_empty_for_empty_inputs(self):
+        assert self.find_closest_lines("", "some content") == ""
+        assert self.find_closest_lines("old string", "") == ""
+
+    def test_includes_context_lines(self):
+        content = "line1\nline2\ndef target():\n    pass\nline5\n"
+        result = self.find_closest_lines("def target():", content)
+        assert "target" in result
+
+    def test_includes_line_numbers(self):
+        content = "line1\nline2\ndef foo():\n    pass\n"
+        result = self.find_closest_lines("def foo():", content)
+        # Should include line numbers in format "N| content"
+        assert "|" in result
+
+
+class TestFormatNoMatchHint:
+    """Gating tests for format_no_match_hint — the shared helper that decides
+    whether a 'Did you mean?' snippet should be appended to an error.
+    """
+
+    def setup_method(self):
+        from tools.fuzzy_match import format_no_match_hint
+        self.fmt = format_no_match_hint
+
+    def test_fires_on_could_not_find_with_match(self):
+        """Classic no-match: similar content exists → hint fires."""
+        content = "def foo():\n    pass\ndef bar():\n    pass\n"
+        result = self.fmt(
+            "Could not find a match for old_string in the file",
+            0, "def baz():", content,
+        )
+        assert "Did you mean" in result
+        assert "foo" in result or "bar" in result
+
+    def test_silent_on_ambiguous_match_error(self):
+        """'Found N matches' is not a missing-match failure — no hint."""
+        content = "aaa bbb aaa\n"
+        result = self.fmt(
+            "Found 2 matches for old_string. Provide more context to make it unique, or use replace_all=True.",
+            0, "aaa", content,
+        )
+        assert result == ""
+
+    def test_silent_on_escape_drift_error(self):
+        """Escape-drift errors are intentional blocks — hint would mislead."""
+        content = "x = 1\n"
+        result = self.fmt(
+            "Escape-drift detected: old_string and new_string contain the literal sequence '\\\\''...",
+            0, "x = \\'1\\'", content,
+        )
+        assert result == ""
+
+    def test_silent_on_identical_strings(self):
+        """old_string == new_string — hint irrelevant."""
+        result = self.fmt(
+            "old_string and new_string are identical",
+            0, "foo", "foo bar\n",
+        )
+        assert result == ""
+
+    def test_silent_when_match_count_nonzero(self):
+        """If match succeeded, we shouldn't be in the error path — defense in depth."""
+        result = self.fmt(
+            "Could not find a match for old_string in the file",
+            1, "foo", "foo bar\n",
+        )
+        assert result == ""
+
+    def test_silent_on_none_error(self):
+        """No error at all — no hint."""
+        result = self.fmt(None, 0, "foo", "bar\n")
+        assert result == ""
+
+    def test_silent_when_no_similar_content(self):
+        """Even for a valid no-match error, skip hint when nothing similar exists."""
+        result = self.fmt(
+            "Could not find a match for old_string in the file",
+            0, "totally_unique_xyzzy_qux", "abc\nxyz\n",
+        )
+        assert result == ""
+

@@ -504,6 +504,91 @@ def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch
     assert "openrouter" in payload.get("credential_pool", {})
 
 
+def test_logout_resets_codex_config_when_auth_state_already_cleared(tmp_path, monkeypatch, capsys):
+    """`hermes logout --provider openai-codex` must still clear model.provider.
+
+    Users can end up with auth.json already cleared but config.yaml still set to
+    openai-codex.  Previously logout reported no auth state and left the agent
+    pinned to the Codex provider.
+    """
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "credential_pool": {}})
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5.3-codex\n"
+        "  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n"
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import logout_command
+
+    logout_command(SimpleNamespace(provider="openai-codex"))
+
+    out = capsys.readouterr().out
+    assert "Logged out of OpenAI Codex." in out
+    config_text = (hermes_home / "config.yaml").read_text()
+    assert "provider: auto" in config_text
+    assert "base_url: https://openrouter.ai/api/v1" in config_text
+
+
+def test_logout_defaults_to_configured_codex_when_no_active_provider(tmp_path, monkeypatch, capsys):
+    """Bare `hermes logout` should target configured Codex if auth has no active provider."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "credential_pool": {}})
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5.3-codex\n"
+        "  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n"
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import logout_command
+
+    logout_command(SimpleNamespace(provider=None))
+
+    out = capsys.readouterr().out
+    assert "Logged out of OpenAI Codex." in out
+    config_text = (hermes_home / "config.yaml").read_text()
+    assert "provider: auto" in config_text
+
+
+def test_logout_clears_stale_active_codex_without_provider_credentials(tmp_path, monkeypatch, capsys):
+    """Logout must clear active_provider even when provider credential payloads are gone."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "openai-codex",
+            "providers": {},
+            "credential_pool": {},
+        },
+    )
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5.3-codex\n"
+        "  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n"
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import logout_command
+
+    logout_command(SimpleNamespace(provider=None))
+
+    out = capsys.readouterr().out
+    assert "Logged out of OpenAI Codex." in out
+    auth_payload = json.loads((hermes_home / "auth.json").read_text())
+    assert auth_payload.get("active_provider") is None
+    config_text = (hermes_home / "config.yaml").read_text()
+    assert "provider: auto" in config_text
+
+
 def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
     from hermes_cli.auth_commands import auth_list_command
 
@@ -569,8 +654,43 @@ def test_auth_list_shows_exhausted_cooldown(monkeypatch, capsys):
     auth_list_command(_Args())
 
     out = capsys.readouterr().out
-    assert "exhausted (429)" in out
+    assert "rate-limited (429)" in out
     assert "59m 30s left" in out
+
+
+def test_auth_list_shows_auth_failure_when_exhausted_entry_is_unauthorized(monkeypatch, capsys):
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Entry:
+        id = "cred-1"
+        label = "primary"
+        auth_type = "oauth"
+        source = "manual:device_code"
+        last_status = "exhausted"
+        last_error_code = 401
+        last_error_reason = "invalid_token"
+        last_error_message = "Access token expired or revoked."
+        last_status_at = 1000.0
+
+    class _Pool:
+        def entries(self):
+            return [_Entry()]
+
+        def peek(self):
+            return None
+
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("hermes_cli.auth_commands.time.time", lambda: 1030.0)
+
+    class _Args:
+        provider = "openai-codex"
+
+    auth_list_command(_Args())
+
+    out = capsys.readouterr().out
+    assert "auth failed invalid_token (401)" in out
+    assert "re-auth may be required" in out
+    assert "left" not in out
 
 
 def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):
@@ -1011,3 +1131,466 @@ def test_seed_from_singletons_respects_codex_suppression(tmp_path, monkeypatch):
     # Verify the auth store was NOT modified (no auto-import happened)
     after = json.loads((hermes_home / "auth.json").read_text())
     assert "openai-codex" not in after.get("providers", {})
+
+
+def test_auth_remove_env_seeded_suppresses_shell_exported_var(tmp_path, monkeypatch, capsys):
+    """`hermes auth remove xai 1` must stick even when the env var is exported
+    by the shell (not written into ~/.hermes/.env).  Before PR for #13371 the
+    removal silently restored on next load_pool() because _seed_from_env()
+    re-read os.environ.  Now env:<VAR> is suppressed in auth.json.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Simulate shell export (NOT written to .env)
+    monkeypatch.setenv("XAI_API_KEY", "sk-xai-shell-export")
+    (hermes_home / ".env").write_text("")
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "xai": [{
+                    "id": "env-1",
+                    "label": "XAI_API_KEY",
+                    "auth_type": "api_key",
+                    "priority": 0,
+                    "source": "env:XAI_API_KEY",
+                    "access_token": "sk-xai-shell-export",
+                    "base_url": "https://api.x.ai/v1",
+                }]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+    auth_remove_command(SimpleNamespace(provider="xai", target="1"))
+
+    # Suppression marker written
+    after = json.loads((hermes_home / "auth.json").read_text())
+    assert "env:XAI_API_KEY" in after.get("suppressed_sources", {}).get("xai", [])
+
+    # Diagnostic printed pointing at the shell
+    out = capsys.readouterr().out
+    assert "still set in your shell environment" in out
+    assert "Cleared XAI_API_KEY from .env" not in out  # wasn't in .env
+
+    # Fresh simulation: shell re-exports, reload pool
+    monkeypatch.setenv("XAI_API_KEY", "sk-xai-shell-export")
+    from agent.credential_pool import load_pool
+    pool = load_pool("xai")
+    assert not pool.has_credentials(), "pool must stay empty — env:XAI_API_KEY suppressed"
+
+
+def test_auth_remove_env_seeded_dotenv_only_no_shell_hint(tmp_path, monkeypatch, capsys):
+    """When the env var lives only in ~/.hermes/.env (not the shell), the
+    shell-hint should NOT be printed — avoid scaring the user about a
+    non-existent shell export.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Key ONLY in .env, shell must not have it
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    (hermes_home / ".env").write_text("DEEPSEEK_API_KEY=sk-ds-only\n")
+    # Mimic load_env() populating os.environ
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds-only")
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "deepseek": [{
+                    "id": "env-1",
+                    "label": "DEEPSEEK_API_KEY",
+                    "auth_type": "api_key",
+                    "priority": 0,
+                    "source": "env:DEEPSEEK_API_KEY",
+                    "access_token": "sk-ds-only",
+                }]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+    auth_remove_command(SimpleNamespace(provider="deepseek", target="1"))
+
+    out = capsys.readouterr().out
+    assert "Cleared DEEPSEEK_API_KEY from .env" in out
+    assert "still set in your shell environment" not in out
+    assert (hermes_home / ".env").read_text().strip() == ""
+
+
+def test_auth_add_clears_env_suppression_for_provider(tmp_path, monkeypatch):
+    """Re-adding a credential via `hermes auth add <provider>` clears any
+    env:<VAR> suppression marker — strong signal the user wants auth back.
+    Matches the Codex device_code re-link behaviour.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "suppressed_sources": {"xai": ["env:XAI_API_KEY"]},
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import is_source_suppressed
+    from hermes_cli.auth_commands import auth_add_command
+
+    assert is_source_suppressed("xai", "env:XAI_API_KEY") is True
+    auth_add_command(SimpleNamespace(
+        provider="xai", auth_type="api_key",
+        api_key="sk-xai-manual", label="manual",
+    ))
+    assert is_source_suppressed("xai", "env:XAI_API_KEY") is False
+
+
+def test_seed_from_env_respects_env_suppression(tmp_path, monkeypatch):
+    """_seed_from_env() must skip env:<VAR> sources that the user suppressed
+    via `hermes auth remove`.  This is the gate that prevents shell-exported
+    keys from resurrecting removed credentials.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("XAI_API_KEY", "sk-xai-shell-export")
+
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {"xai": ["env:XAI_API_KEY"]},
+    }))
+
+    from agent.credential_pool import _seed_from_env
+
+    entries = []
+    changed, active = _seed_from_env("xai", entries)
+    assert changed is False
+    assert entries == []
+    assert active == set()
+
+
+def test_seed_from_env_respects_openrouter_suppression(tmp_path, monkeypatch):
+    """OpenRouter is the special-case branch in _seed_from_env; verify it
+    honours suppression too.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-shell-export")
+
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {"openrouter": ["env:OPENROUTER_API_KEY"]},
+    }))
+
+    from agent.credential_pool import _seed_from_env
+
+    entries = []
+    changed, active = _seed_from_env("openrouter", entries)
+    assert changed is False
+    assert entries == []
+    assert active == set()
+
+
+# =============================================================================
+# Unified credential-source stickiness — every source Hermes reads from has a
+# registered RemovalStep in agent.credential_sources, and every seeding path
+# gates on is_source_suppressed.  Below: one test per source proving remove
+# sticks across a fresh load_pool() call.
+# =============================================================================
+
+
+def test_seed_from_singletons_respects_nous_suppression(tmp_path, monkeypatch):
+    """nous device_code must not re-seed from auth.json when suppressed."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {"nous": {"access_token": "tok", "refresh_token": "r", "expires_at": 9999999999}},
+        "suppressed_sources": {"nous": ["device_code"]},
+    }))
+
+    from agent.credential_pool import _seed_from_singletons
+    entries = []
+    changed, active = _seed_from_singletons("nous", entries)
+    assert changed is False
+    assert entries == []
+    assert active == set()
+
+
+def test_seed_from_singletons_respects_copilot_suppression(tmp_path, monkeypatch):
+    """copilot gh_cli must not re-seed when suppressed."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {"copilot": ["gh_cli"]},
+    }))
+
+    # Stub resolve_copilot_token to return a live token
+    import hermes_cli.copilot_auth as ca
+    monkeypatch.setattr(ca, "resolve_copilot_token", lambda: ("ghp_fake", "gh auth token"))
+
+    from agent.credential_pool import _seed_from_singletons
+    entries = []
+    changed, active = _seed_from_singletons("copilot", entries)
+    assert changed is False
+    assert entries == []
+    assert active == set()
+
+
+def test_seed_from_singletons_respects_qwen_suppression(tmp_path, monkeypatch):
+    """qwen-oauth qwen-cli must not re-seed from ~/.qwen/oauth_creds.json when suppressed."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {"qwen-oauth": ["qwen-cli"]},
+    }))
+
+    import hermes_cli.auth as ha
+    monkeypatch.setattr(ha, "resolve_qwen_runtime_credentials", lambda **kw: {
+        "api_key": "tok", "source": "qwen-cli", "base_url": "https://q",
+    })
+
+    from agent.credential_pool import _seed_from_singletons
+    entries = []
+    changed, active = _seed_from_singletons("qwen-oauth", entries)
+    assert changed is False
+    assert entries == []
+    assert active == set()
+
+
+def test_seed_from_singletons_respects_hermes_pkce_suppression(tmp_path, monkeypatch):
+    """anthropic hermes_pkce must not re-seed from ~/.hermes/.anthropic_oauth.json when suppressed."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    import yaml
+    (hermes_home / "config.yaml").write_text(yaml.dump({"model": {"provider": "anthropic", "model": "claude"}}))
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {"anthropic": ["hermes_pkce"]},
+    }))
+
+    # Stub the readers so only hermes_pkce is "available"; claude_code returns None
+    import agent.anthropic_adapter as aa
+    monkeypatch.setattr(aa, "read_hermes_oauth_credentials", lambda: {
+        "accessToken": "tok", "refreshToken": "r", "expiresAt": 9999999999000,
+    })
+    monkeypatch.setattr(aa, "read_claude_code_credentials", lambda: None)
+
+    from agent.credential_pool import _seed_from_singletons
+    entries = []
+    changed, active = _seed_from_singletons("anthropic", entries)
+    # hermes_pkce suppressed, claude_code returns None → nothing should be seeded
+    assert entries == []
+    assert "hermes_pkce" not in active
+
+
+def test_seed_custom_pool_respects_config_suppression(tmp_path, monkeypatch):
+    """Custom provider config:<name> source must not re-seed when suppressed."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    import yaml
+    (hermes_home / "config.yaml").write_text(yaml.dump({
+        "model": {},
+        "custom_providers": [
+            {"name": "my", "base_url": "https://c.example.com", "api_key": "sk-custom"},
+        ],
+    }))
+
+    from agent.credential_pool import _seed_custom_pool, get_custom_provider_pool_key
+    pool_key = get_custom_provider_pool_key("https://c.example.com")
+
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "providers": {},
+        "suppressed_sources": {pool_key: ["config:my"]},
+    }))
+
+    entries = []
+    changed, active = _seed_custom_pool(pool_key, entries)
+    assert changed is False
+    assert entries == []
+    assert "config:my" not in active
+
+
+def test_credential_sources_registry_has_expected_steps():
+    """Sanity check — the registry contains the expected RemovalSteps.
+
+    Guards against accidentally dropping a step during future refactors.
+    If you add a new credential source, add it to the expected set below.
+    """
+    from agent.credential_sources import _REGISTRY
+
+    descriptions = {step.description for step in _REGISTRY}
+    expected = {
+        "gh auth token / COPILOT_GITHUB_TOKEN / GH_TOKEN",
+        "Any env-seeded credential (XAI_API_KEY, DEEPSEEK_API_KEY, etc.)",
+        "~/.claude/.credentials.json",
+        "~/.hermes/.anthropic_oauth.json",
+        "auth.json providers.nous",
+        "auth.json providers.openai-codex + ~/.codex/auth.json",
+        "~/.qwen/oauth_creds.json",
+        "Custom provider config.yaml api_key field",
+    }
+    assert descriptions == expected, f"Registry mismatch. Got: {descriptions}"
+
+
+def test_credential_sources_find_step_returns_none_for_manual():
+    """Manual entries have nothing external to clean up — no step registered."""
+    from agent.credential_sources import find_removal_step
+    assert find_removal_step("openrouter", "manual") is None
+    assert find_removal_step("xai", "manual") is None
+
+
+def test_credential_sources_find_step_copilot_before_generic_env(tmp_path, monkeypatch):
+    """copilot env:GH_TOKEN must dispatch to the copilot step, not the
+    generic env-var step.  The copilot step handles the duplicate-source
+    problem (same token seeded as both gh_cli and env:<VAR>); the generic
+    env step would only suppress one of the variants.
+    """
+    from agent.credential_sources import find_removal_step
+
+    step = find_removal_step("copilot", "env:GH_TOKEN")
+    assert step is not None
+    assert "copilot" in step.description.lower() or "gh" in step.description.lower()
+
+    # Generic step still matches any other provider's env var
+    step = find_removal_step("xai", "env:XAI_API_KEY")
+    assert step is not None
+    assert "env-seeded" in step.description.lower()
+
+
+def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
+    """Removing any copilot source must suppress gh_cli + all env:* variants
+    so the duplicate-seed paths don't resurrect the credential.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "copilot": [{
+                    "id": "c1",
+                    "label": "gh auth token",
+                    "auth_type": "api_key",
+                    "priority": 0,
+                    "source": "gh_cli",
+                    "access_token": "ghp_fake",
+                }]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import is_source_suppressed
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="copilot", target="1"))
+
+    assert is_source_suppressed("copilot", "gh_cli")
+    assert is_source_suppressed("copilot", "env:COPILOT_GITHUB_TOKEN")
+    assert is_source_suppressed("copilot", "env:GH_TOKEN")
+    assert is_source_suppressed("copilot", "env:GITHUB_TOKEN")
+
+
+def test_auth_add_clears_all_suppressions_including_non_env(tmp_path, monkeypatch):
+    """Re-adding a credential via `hermes auth add <provider>` clears ALL
+    suppression markers for the provider, not just env:*.  This matches
+    the single "re-engage" semantic — the user wants auth back, period.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {},
+            "suppressed_sources": {
+                "copilot": ["gh_cli", "env:GH_TOKEN", "env:COPILOT_GITHUB_TOKEN"],
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import is_source_suppressed
+    from hermes_cli.auth_commands import auth_add_command
+
+    auth_add_command(SimpleNamespace(
+        provider="copilot", auth_type="api_key",
+        api_key="ghp-manual", label="m",
+    ))
+
+    assert not is_source_suppressed("copilot", "gh_cli")
+    assert not is_source_suppressed("copilot", "env:GH_TOKEN")
+    assert not is_source_suppressed("copilot", "env:COPILOT_GITHUB_TOKEN")
+
+
+def test_auth_remove_codex_manual_device_code_suppresses_canonical(tmp_path, monkeypatch):
+    """Removing a manual:device_code entry (from `hermes auth add openai-codex`)
+    must suppress the canonical ``device_code`` key, not ``manual:device_code``.
+    The re-seed gate in _seed_from_singletons checks ``device_code``.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {"openai-codex": {"tokens": {"access_token": "t", "refresh_token": "r"}}},
+            "credential_pool": {
+                "openai-codex": [{
+                    "id": "cdx",
+                    "label": "manual-codex",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "manual:device_code",
+                    "access_token": "t",
+                }]
+            },
+        },
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import is_source_suppressed
+    from hermes_cli.auth_commands import auth_remove_command
+
+    auth_remove_command(SimpleNamespace(provider="openai-codex", target="1"))
+    assert is_source_suppressed("openai-codex", "device_code")

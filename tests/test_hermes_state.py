@@ -93,6 +93,27 @@ class TestSessionLifecycle:
         assert session["input_tokens"] == 300
         assert session["output_tokens"] == 150
 
+    def test_update_token_counts_tracks_api_call_count(self, db):
+        """api_call_count increments with each update_token_counts call."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+
+        session = db.get_session("s1")
+        assert session["api_call_count"] == 3
+
+    def test_update_token_counts_api_call_count_absolute(self, db):
+        """absolute mode sets api_call_count directly."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50, api_call_count=1)
+        db.update_token_counts("s1", input_tokens=300, output_tokens=150,
+                               api_call_count=5, absolute=True)
+
+        session = db.get_session("s1")
+        assert session["api_call_count"] == 5
+        assert session["input_tokens"] == 300
+
     def test_update_token_counts_backfills_model_when_null(self, db):
         db.create_session(session_id="s1", source="telegram")
         db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4")
@@ -201,12 +222,59 @@ class TestMessageStorage:
         assert conv[0] == {"role": "user", "content": "Hello"}
         assert conv[1] == {"role": "assistant", "content": "Hi!"}
 
+    def test_get_messages_as_conversation_includes_ancestor_chain(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="first prompt")
+        db.append_message("root", role="assistant", content="first answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="second prompt")
+        db.append_message("child", role="assistant", content="second answer")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        assert [m["content"] for m in conv] == [
+            "first prompt",
+            "first answer",
+            "second prompt",
+            "second answer",
+        ]
+
+    def test_get_messages_as_conversation_avoids_repeated_resume_prompts_from_ancestors(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="assistant", content="answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="next prompt")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        assert [m["content"] for m in conv if m["role"] == "user"] == ["same prompt", "next prompt"]
+
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="assistant", content="Done", finish_reason="stop")
 
         messages = db.get_messages("s1")
         assert messages[0]["finish_reason"] == "stop"
+
+    def test_get_messages_as_conversation_strips_leaked_memory_context(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content=(
+                "<memory-context>\n"
+                "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+                "## Honcho Context\n"
+                "stale memory\n"
+                "</memory-context>\n\n"
+                "Visible answer"
+            ),
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv == [{"role": "assistant", "content": "Visible answer"}]
 
     def test_reasoning_persisted_and_restored(self, db):
         """Reasoning text is stored for assistant messages and restored by
@@ -254,6 +322,65 @@ class TestMessageStorage:
         msg = conv[0]
         assert msg["reasoning"] == "Thinking about what to say"
         assert msg["reasoning_details"] == details
+
+    def test_reasoning_content_persisted_and_restored(self, db):
+        """reasoning_content must survive session replay as its own field."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Hello",
+            reasoning="Short summary",
+            reasoning_content="Longer provider-native scratchpad",
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert conv[0]["reasoning"] == "Short summary"
+        assert conv[0]["reasoning_content"] == "Longer provider-native scratchpad"
+
+    def test_reasoning_content_empty_string_restored_for_assistant(self, db):
+        """Empty reasoning_content still needs to round-trip for strict replays."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="",
+            tool_calls=[{"id": "c1", "type": "function", "function": {"name": "date", "arguments": "{}"}}],
+            reasoning_content="",
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert "reasoning_content" in conv[0]
+        assert conv[0]["reasoning_content"] == ""
+
+    def test_codex_message_items_persisted_and_restored(self, db):
+        """codex_message_items must round-trip through JSON serialization."""
+        db.create_session(session_id="s1", source="cli")
+        items = [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "id": "msg_123",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "Thinking..."}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "id": "msg_456",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "Done!"}],
+            },
+        ]
+        db.append_message("s1", role="assistant", content="Done!", codex_message_items=items)
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert conv[0].get("codex_message_items") == items
 
     def test_reasoning_not_set_for_non_assistant(self, db):
         """reasoning is never leaked onto user or tool messages."""
@@ -364,6 +491,25 @@ class TestFTS5Search:
         assert "context" in results[0]
         assert isinstance(results[0]["context"], list)
         assert len(results[0]["context"]) > 0
+
+    def test_search_context_uses_session_neighbors_when_ids_are_interleaved(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+
+        db.append_message("s1", role="user", content="before needle")
+        db.append_message("s2", role="user", content="other session message")
+        db.append_message("s1", role="assistant", content="needle match")
+        db.append_message("s2", role="assistant", content="another other session message")
+        db.append_message("s1", role="user", content="after needle")
+
+        results = db.search_messages('"needle match"')
+        needle_result = next(r for r in results if r["session_id"] == "s1" and "needle match" in r["snippet"])
+
+        assert [msg["content"] for msg in needle_result["context"]] == [
+            "before needle",
+            "needle match",
+            "after needle",
+        ]
 
     def test_search_special_chars_do_not_crash(self, db):
         """FTS5 special characters in queries must not raise OperationalError."""
@@ -643,6 +789,51 @@ class TestCJKSearchFallback:
         # fallback handles the substring correctly.
         results = db.search_messages("Agent通信")
         assert len(results) == 1
+
+    def test_cjk_partial_fts5_results_supplemented_by_like(self, db):
+        """When FTS5 returns *some* CJK results, LIKE must still find all matches.
+
+        Regression test for #15500 / #14829: FTS5 unicode61 tokenizer drops
+        certain CJK characters, so multi-character queries may return partial
+        results.  The LIKE path must always run for CJK queries.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.append_message("s1", role="user", content="昨晚讨论了记忆系统")
+        db.append_message("s2", role="user", content="昨晚的会议纪要已发送")
+        results = db.search_messages("昨晚")
+        assert len(results) == 2
+        session_ids = {r["session_id"] for r in results}
+        assert session_ids == {"s1", "s2"}
+
+    def test_cjk_like_dedup_no_duplicates(self, db):
+        """When FTS5 and LIKE both find the same message, no duplicates."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="测试去重逻辑")
+        results = db.search_messages("测试")
+        assert len(results) == 1
+
+    def test_cjk_like_escapes_wildcards(self, db):
+        """Special characters (%, _) in CJK queries are treated as literals."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.append_message("s1", role="user", content="达成100%完成率")
+        db.append_message("s2", role="user", content="达成100完成率是目标")
+        # The % in the query must be literal — should only match s1
+        results = db.search_messages("100%完成")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+
+    def test_cjk_trigram_preserves_boolean_operators(self, db):
+        """Boolean operators (OR, AND, NOT) work in CJK trigram queries."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.append_message("s1", role="user", content="记忆系统很好用")
+        db.append_message("s2", role="user", content="断裂连接需要修复")
+        results = db.search_messages("记忆系统 OR 断裂连接")
+        assert len(results) == 2
+        session_ids = {r["session_id"] for r in results}
+        assert session_ids == {"s1", "s2"}
 
 
 # =========================================================================
@@ -1101,7 +1292,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 10
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1157,17 +1348,23 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to v9
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 10
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
         assert session is not None
         assert session["title"] is None
+
+        # Verify api_call_count column was added with default 0
+        cursor = migrated_db._conn.execute(
+            "SELECT api_call_count FROM sessions WHERE id = 'existing'"
+        )
+        assert cursor.fetchone()[0] == 0
 
         # Verify we can set title on migrated session
         assert migrated_db.set_session_title("existing", "Migrated Title") is True
@@ -1380,6 +1577,220 @@ class TestListSessionsRich:
         assert "\n" not in sessions[0]["preview"]
         assert "Line one Line two" in sessions[0]["preview"]
 
+    def test_branch_session_visible_in_list(self, db):
+        """Branch sessions (parent ended with 'branched') must appear in list_sessions_rich."""
+        db.create_session("parent", "cli")
+        db.end_session("parent", "branched")
+        db.create_session("branch", "cli", parent_session_id="parent")
+        db.append_message("branch", "user", "Exploring the alternative approach")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "branch" in ids, "Branch session should be visible in default list"
+
+    def test_subagent_session_still_hidden(self, db):
+        """Sub-agent children (parent NOT ended with 'branched') remain hidden."""
+        db.create_session("root", "cli")
+        db.create_session("delegate", "cli", parent_session_id="root")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "delegate" not in ids, "Delegate sub-agent should not appear in default list"
+        assert "root" in ids
+
+    def test_compression_child_still_hidden(self, db):
+        """Compression continuation sessions remain hidden (parent ended with 'compression')."""
+        import time as _time
+        t0 = _time.time()
+        db.create_session("root", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root"))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 1800, "root"),
+        )
+        db._conn.commit()
+        db.create_session("continuation", "cli", parent_session_id="root")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 1801, "continuation")
+        )
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(project_compression_tips=False)
+        ids = [s["id"] for s in sessions]
+        assert "continuation" not in ids, "Compression continuation should stay hidden"
+
+
+class TestCompressionChainProjection:
+    """Tests for lineage-aware list_sessions_rich — compressed conversations
+    surface as their live continuation tip, not the dead parent root.
+    """
+
+    def _build_compression_chain(self, db, t0: float):
+        """Helper: builds root -> delegate -> compression-child -> tip chain.
+
+        Returns (root_id, delegate_id, mid_id, tip_id).
+        """
+        import time as _time
+        # Root that gets compressed
+        db.create_session("root1", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
+        db.append_message("root1", "user", "help me refactor auth")
+
+        # Delegate subagent spawned while root1 was live (before it ended)
+        db.create_session("delegate1", "cli", parent_session_id="root1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=?, ended_at=? WHERE id=?",
+            (t0 + 600, t0 + 650, "delegate1"),
+        )
+        db.append_message("delegate1", "user", "delegate task")
+
+        # root1 compressed at t0+1800
+        t_compress_root = t0 + 1800
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t_compress_root, "compression", "root1"),
+        )
+
+        # Continuation mid created 1s after parent ended
+        db.create_session("mid1", "cli", parent_session_id="root1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (t_compress_root + 1, "mid1"),
+        )
+        db.append_message("mid1", "user", "continuing")
+
+        # mid1 also compressed
+        t_compress_mid = t_compress_root + 1800
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t_compress_mid, "compression", "mid1"),
+        )
+
+        # Tip — latest continuation
+        db.create_session("tip1", "cli", parent_session_id="mid1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?",
+            (t_compress_mid + 1, "tip1"),
+        )
+        db.append_message("tip1", "user", "latest message")
+
+        db._conn.commit()
+        return ("root1", "delegate1", "mid1", "tip1")
+
+    def test_get_compression_tip_walks_full_chain(self, db):
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        assert db.get_compression_tip("root1") == "tip1"
+        assert db.get_compression_tip("mid1") == "tip1"
+        assert db.get_compression_tip("tip1") == "tip1"
+
+    def test_get_compression_tip_returns_self_for_uncompressed(self, db):
+        db.create_session("solo", "cli")
+        assert db.get_compression_tip("solo") == "solo"
+
+    def test_get_compression_tip_skips_delegate_children(self, db):
+        """Delegate subagents have parent_session_id set but were created
+        BEFORE the parent ended. They must not be followed as compression
+        continuations — the started_at >= ended_at guard handles this.
+        """
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        # delegate1 is a child of root1 but NOT a compression continuation.
+        # root1's tip must be tip1 (via mid1), not delegate1.
+        assert db.get_compression_tip("root1") == "tip1"
+
+    def test_list_surfaces_tip_for_compressed_root(self, db):
+        """The list must show the tip's id/message_count/preview in place of
+        the root row, so users can see and resume the live conversation.
+        """
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        # Add an uncompressed root for comparison.
+        db.create_session("solo", "cli")
+        db.append_message("solo", "user", "standalone")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        ids = [s["id"] for s in sessions]
+        # Only top-level conversations appear: tip1 (projected from root1) + solo.
+        # Delegate children, mid1, and the dead root1 must NOT be in the list.
+        assert "tip1" in ids
+        assert "solo" in ids
+        assert "root1" not in ids
+        assert "mid1" not in ids
+        assert "delegate1" not in ids
+
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        # The row surfaces the tip's identity but preserves the root's start
+        # timestamp for stable ordering and lineage tracking.
+        assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["preview"].startswith("latest message")
+        assert tip_row["ended_at"] is None  # tip is still live
+        assert tip_row["end_reason"] is None
+
+    def test_list_without_projection_returns_raw_root(self, db):
+        """project_compression_tips=False returns the raw parent-NULL root
+        rows — useful for admin/debug UIs.
+        """
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        sessions = db.list_sessions_rich(
+            source="cli", limit=20, project_compression_tips=False
+        )
+        ids = [s["id"] for s in sessions]
+        assert "root1" in ids
+        assert "tip1" not in ids
+
+        root_row = next(s for s in sessions if s["id"] == "root1")
+        assert root_row["end_reason"] == "compression"
+        assert "_lineage_root_id" not in root_row
+
+    def test_list_preserves_sort_by_started_at(self, db):
+        """Chronological ordering uses the ROOT's started_at (conversation
+        start), not the tip's. This keeps lineage entries stable in the list
+        even as new compressions push the tip forward in time.
+        """
+        import time as _time
+        t0 = _time.time() - 3600
+        self._build_compression_chain(db, t0)
+
+        # Create a newer standalone session that should sort above the lineage
+        # if we used tip.started_at, but below if we correctly use root.started_at.
+        t_between = t0 + 120  # between root1 and its compression
+        db.create_session("newer", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t_between, "newer"))
+        db.append_message("newer", "user", "newer session started after root1")
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        ids_in_order = [s["id"] for s in sessions]
+        # 'newer' started AFTER root1 but BEFORE tip1's actual started_at.
+        # Correct ordering (by root started_at): newer > tip1's lineage entry.
+        assert ids_in_order.index("newer") < ids_in_order.index("tip1")
+
+    def test_list_handles_broken_chain_gracefully(self, db):
+        """A compression root with no child (e.g. DB corruption or a partial
+        end_session call that didn't finish creating the child) must not
+        crash the list — it should fall back to surfacing the root as-is.
+        """
+        import time as _time
+        t0 = _time.time() - 100
+        db.create_session("orphan", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "orphan"))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 10, "compression", "orphan"),
+        )
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=10)
+        ids = [s["id"] for s in sessions]
+        assert "orphan" in ids
+        row = next(s for s in sessions if s["id"] == "orphan")
+        # No tip means no projection — row stays raw.
+        assert "_lineage_root_id" not in row
+        assert row["end_reason"] == "compression"
+
 
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)
@@ -1541,3 +1952,179 @@ class TestConcurrentWriteSafety:
         assert "30" in src, (
             "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
         )
+
+
+# =========================================================================
+# Auto-maintenance: state_meta + vacuum + maybe_auto_prune_and_vacuum
+# =========================================================================
+
+class TestStateMeta:
+    def test_get_meta_missing_returns_none(self, db):
+        assert db.get_meta("nonexistent") is None
+
+    def test_set_then_get_meta(self, db):
+        db.set_meta("foo", "bar")
+        assert db.get_meta("foo") == "bar"
+
+    def test_set_meta_upsert(self, db):
+        """set_meta overwrites existing value (ON CONFLICT DO UPDATE)."""
+        db.set_meta("key", "v1")
+        db.set_meta("key", "v2")
+        assert db.get_meta("key") == "v2"
+
+
+class TestVacuum:
+    def test_vacuum_runs_without_error(self, db):
+        """VACUUM must succeed on a fresh DB (no rows to reclaim)."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(session_id="s1", role="user", content="hi")
+        # Should not raise, even though there's nothing significant to reclaim.
+        db.vacuum()
+
+
+class TestAutoMaintenance:
+    def _make_old_ended(self, db, sid: str, days_old: int = 100):
+        """Create a session that is ended and was started `days_old` days ago."""
+        db.create_session(session_id=sid, source="cli")
+        db.end_session(sid, end_reason="done")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?",
+            (time.time() - days_old * 86400, sid),
+        )
+        db._conn.commit()
+
+    def test_first_run_prunes_and_vacuums(self, db):
+        self._make_old_ended(db, "old1", days_old=100)
+        self._make_old_ended(db, "old2", days_old=100)
+        db.create_session(session_id="new", source="cli")  # active, must survive
+
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["skipped"] is False
+        assert result["pruned"] == 2
+        assert result["vacuumed"] is True
+        assert result.get("error") is None
+        assert db.get_session("old1") is None
+        assert db.get_session("old2") is None
+        assert db.get_session("new") is not None
+
+    def test_second_call_within_interval_skips(self, db):
+        self._make_old_ended(db, "old", days_old=100)
+        first = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, min_interval_hours=24
+        )
+        assert first["skipped"] is False
+        assert first["pruned"] == 1
+
+        # Create another prunable session; a second call within
+        # min_interval_hours should still skip without touching it.
+        self._make_old_ended(db, "old2", days_old=100)
+        second = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, min_interval_hours=24
+        )
+        assert second["skipped"] is True
+        assert second["pruned"] == 0
+        assert db.get_session("old2") is not None  # untouched
+
+    def test_second_call_after_interval_runs_again(self, db):
+        self._make_old_ended(db, "old", days_old=100)
+        db.maybe_auto_prune_and_vacuum(retention_days=90, min_interval_hours=24)
+
+        # Backdate the last-run marker to force another run.
+        db.set_meta("last_auto_prune", str(time.time() - 48 * 3600))
+
+        self._make_old_ended(db, "old2", days_old=100)
+        result = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, min_interval_hours=24
+        )
+        assert result["skipped"] is False
+        assert result["pruned"] == 1
+        assert db.get_session("old2") is None
+
+    def test_no_prunable_sessions_no_vacuum(self, db):
+        """When prune deletes 0 rows, VACUUM is skipped (wasted I/O)."""
+        db.create_session(session_id="fresh", source="cli")  # too recent
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["skipped"] is False
+        assert result["pruned"] == 0
+        assert result["vacuumed"] is False
+        # But last-run is still recorded so we don't retry immediately.
+        assert db.get_meta("last_auto_prune") is not None
+
+    def test_vacuum_disabled_via_flag(self, db):
+        self._make_old_ended(db, "old", days_old=100)
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90, vacuum=False)
+        assert result["pruned"] == 1
+        assert result["vacuumed"] is False
+
+    def test_corrupt_last_run_marker_treated_as_no_prior_run(self, db):
+        """A non-numeric marker must not break maintenance."""
+        db.set_meta("last_auto_prune", "not-a-timestamp")
+        self._make_old_ended(db, "old", days_old=100)
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["skipped"] is False
+        assert result["pruned"] == 1
+
+    def test_state_meta_survives_vacuum(self, db):
+        """Marker written just before VACUUM must still be readable after."""
+        self._make_old_ended(db, "old", days_old=100)
+        db.maybe_auto_prune_and_vacuum(retention_days=90)
+        marker = db.get_meta("last_auto_prune")
+        assert marker is not None
+        # Should parse as a float timestamp close to now.
+        assert abs(float(marker) - time.time()) < 60
+
+    def test_auto_prune_deletes_transcript_files(self, db, tmp_path):
+        """Issue #3015: auto-prune must also delete on-disk transcript files."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        self._make_old_ended(db, "old1", days_old=100)
+        self._make_old_ended(db, "old2", days_old=100)
+        db.create_session(session_id="new", source="cli")  # active
+
+        # Transcript files mimicking real gateway/CLI layout
+        (sessions_dir / "old1.json").write_text("{}")
+        (sessions_dir / "old1.jsonl").write_text("{}\n")
+        (sessions_dir / "old2.jsonl").write_text("{}\n")
+        (sessions_dir / "request_dump_old1_001.json").write_text("{}")
+        (sessions_dir / "new.jsonl").write_text("{}\n")  # active, must survive
+
+        result = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, sessions_dir=sessions_dir
+        )
+        assert result["pruned"] == 2
+
+        # Pruned transcript files are gone
+        assert not (sessions_dir / "old1.json").exists()
+        assert not (sessions_dir / "old1.jsonl").exists()
+        assert not (sessions_dir / "old2.jsonl").exists()
+        assert not (sessions_dir / "request_dump_old1_001.json").exists()
+        # Active session's transcript is untouched
+        assert (sessions_dir / "new.jsonl").exists()
+
+    def test_auto_prune_without_sessions_dir_preserves_files(self, db, tmp_path):
+        """Backward-compat: no sessions_dir = DB-only cleanup (legacy behavior)."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self._make_old_ended(db, "old", days_old=100)
+        (sessions_dir / "old.jsonl").write_text("{}\n")
+
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["pruned"] == 1
+        # File stays — caller didn't opt in
+        assert (sessions_dir / "old.jsonl").exists()
+
+    def test_prune_sessions_deletes_files_for_pruned_only(self, db, tmp_path):
+        """Active-session transcripts must never be deleted by prune."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self._make_old_ended(db, "old", days_old=100)
+        db.create_session(session_id="active", source="cli")  # not ended
+        (sessions_dir / "old.jsonl").write_text("{}\n")
+        (sessions_dir / "active.jsonl").write_text("{}\n")
+
+        count = db.prune_sessions(older_than_days=90, sessions_dir=sessions_dir)
+        assert count == 1
+        assert not (sessions_dir / "old.jsonl").exists()
+        assert (sessions_dir / "active.jsonl").exists()
+

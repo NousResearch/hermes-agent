@@ -197,9 +197,13 @@ def _make_fake_mautrix():
             self.account_id = account_id
             self.pickle_key = pickle_key
             self.db = db
+            self._device_id = ""
 
         async def open(self):
             pass
+
+        async def put_device_id(self, device_id):
+            self._device_id = device_id
 
     mautrix_crypto_store_asyncpg.PgCryptoStore = PgCryptoStore
 
@@ -1952,3 +1956,146 @@ class TestMatrixPresence:
         self.adapter._client = None
         result = await self.adapter.set_presence("online")
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Self / bridge / system sender filtering — regression coverage for #15763
+# ("Hall of Mirrors": recursive pairing / echo loops triggered by bridge
+# or bot-self senders bypassing the early-drop guard in _on_room_message).
+# ---------------------------------------------------------------------------
+
+class TestMatrixSelfSenderFilter:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    def test_exact_match_is_self(self):
+        self.adapter._user_id = "@bot:example.org"
+        assert self.adapter._is_self_sender("@bot:example.org") is True
+
+    def test_case_insensitive_match_is_self(self):
+        # Some homeservers canonicalize the localpart differently at
+        # different API surfaces — a case-sensitive equality check lets
+        # the bot's own sender through and triggers the pairing / echo
+        # loop in #15763.
+        self.adapter._user_id = "@Bot:Example.ORG"
+        assert self.adapter._is_self_sender("@bot:example.org") is True
+        assert self.adapter._is_self_sender("@BOT:EXAMPLE.ORG") is True
+
+    def test_whitespace_trimmed(self):
+        self.adapter._user_id = "@bot:example.org"
+        assert self.adapter._is_self_sender("  @bot:example.org  ") is True
+
+    def test_different_user_is_not_self(self):
+        self.adapter._user_id = "@bot:example.org"
+        assert self.adapter._is_self_sender("@alice:example.org") is False
+
+    def test_empty_user_id_is_treated_as_self(self):
+        # If whoami hasn't resolved yet (or login failed), we cannot
+        # prove a sender is NOT us.  Defensively drop rather than leak
+        # our own outbound traffic into the agent loop.
+        self.adapter._user_id = ""
+        assert self.adapter._is_self_sender("@alice:example.org") is True
+        assert self.adapter._is_self_sender("") is True
+
+
+class TestMatrixSystemBridgeFilter:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    def test_appservice_underscore_prefix_is_bridge(self):
+        # Conventional appservice namespace puppets
+        assert self.adapter._is_system_or_bridge_sender(
+            "@_telegram_12345:bridge.example.org"
+        ) is True
+        assert self.adapter._is_system_or_bridge_sender(
+            "@_discord_999:example.org"
+        ) is True
+        assert self.adapter._is_system_or_bridge_sender(
+            "@_slackbridge_puppet:example.org"
+        ) is True
+
+    def test_empty_localpart_is_system(self):
+        assert self.adapter._is_system_or_bridge_sender("@:server.example") is True
+
+    def test_empty_sender_is_system(self):
+        assert self.adapter._is_system_or_bridge_sender("") is True
+        assert self.adapter._is_system_or_bridge_sender("   ") is True
+
+    def test_regular_user_is_not_bridge(self):
+        assert self.adapter._is_system_or_bridge_sender(
+            "@alice:example.org"
+        ) is False
+        # A user whose localpart merely CONTAINS an underscore is not a
+        # bridge — the convention is a LEADING underscore.
+        assert self.adapter._is_system_or_bridge_sender(
+            "@alice_smith:example.org"
+        ) is False
+
+    def test_bot_account_is_not_bridge(self):
+        # The Hermes bot itself (no leading underscore) must not be
+        # classified as a bridge — that filter is a pairing guard, not
+        # a self-filter.
+        assert self.adapter._is_system_or_bridge_sender(
+            "@daemon:nerdworks.casa"
+        ) is False
+
+
+class TestMatrixOnRoomMessageFilter:
+    """End-to-end coverage of _on_room_message drop conditions."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._user_id = "@bot:example.org"
+        self.adapter._startup_ts = 0.0  # accept any event_ts
+        self.adapter._handle_text_message = AsyncMock()
+        self.adapter._handle_media_message = AsyncMock()
+
+    @staticmethod
+    def _mk_event(sender, body="hi", msgtype="m.text", event_id=None, ts=None):
+        import time as _t
+
+        ev = MagicMock()
+        ev.room_id = "!room:example.org"
+        ev.sender = sender
+        ev.event_id = event_id or f"$evt-{sender}-{body}"
+        ev.timestamp = int((ts or _t.time()) * 1000)
+        ev.server_timestamp = ev.timestamp
+        ev.content = {"msgtype": msgtype, "body": body}
+        return ev
+
+    @pytest.mark.asyncio
+    async def test_own_sender_case_insensitive_dropped(self):
+        # Simulate whoami returning a differently-cased copy of our MXID.
+        self.adapter._user_id = "@Bot:Example.ORG"
+        ev = self._mk_event(sender="@bot:example.org")
+        await self.adapter._on_room_message(ev)
+        self.adapter._handle_text_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bridge_sender_dropped_before_pairing(self):
+        ev = self._mk_event(sender="@_telegram_12345:bridge.example.org")
+        await self.adapter._on_room_message(ev)
+        # Bridge / appservice identities must never flow through to the
+        # gateway — otherwise they trigger pairing (#15763).
+        self.adapter._handle_text_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_sender_dropped(self):
+        ev = self._mk_event(sender="")
+        await self.adapter._on_room_message(ev)
+        self.adapter._handle_text_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_self_with_unresolved_user_id_dropped(self):
+        # whoami has not resolved yet → user_id empty → drop ALL traffic
+        # defensively rather than risk echoing our own outbound messages.
+        self.adapter._user_id = ""
+        ev = self._mk_event(sender="@alice:example.org")
+        await self.adapter._on_room_message(ev)
+        self.adapter._handle_text_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_regular_user_reaches_text_handler(self):
+        ev = self._mk_event(sender="@alice:example.org", body="hello bot")
+        await self.adapter._on_room_message(ev)
+        self.adapter._handle_text_message.assert_awaited_once()

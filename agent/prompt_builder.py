@@ -141,6 +141,12 @@ DEFAULT_AGENT_IDENTITY = (
     "Be targeted and efficient in your exploration and investigations."
 )
 
+HERMES_AGENT_HELP_GUIDANCE = (
+    "If the user asks about configuring, setting up, or using Hermes Agent "
+    "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
+    "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
+)
+
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
     "tool: user preferences, environment details, tool quirks, and stable conventions. "
@@ -350,7 +356,13 @@ PLATFORM_HINTS = {
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
-        "renderable inside a terminal."
+        "renderable inside a terminal. "
+        "File delivery: there is no attachment channel — the user reads your "
+        "response directly in their terminal. Do NOT emit MEDIA:/path tags "
+        "(those are only intercepted on messaging platforms like Telegram, "
+        "Discord, Slack, etc.; on the CLI they render as literal text). "
+        "When referring to a file you created or changed, just state its "
+        "absolute path in plain text; the user can open it from there."
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "
@@ -363,6 +375,32 @@ PLATFORM_HINTS = {
         "appear as text messages. You can send media files natively: include "
         "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
         ".heic) appear as photos and other files arrive as attachments."
+    ),
+    "mattermost": (
+        "You are in a Mattermost workspace communicating with your user. "
+        "Mattermost renders standard Markdown — headings, bold, italic, code "
+        "blocks, and tables all work. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are uploaded as photo "
+        "attachments, audio and video as file attachments. "
+        "Image URLs in markdown format ![alt](url) are rendered as inline previews automatically."
+    ),
+    "matrix": (
+        "You are in a Matrix room communicating with your user. "
+        "Matrix renders Markdown — bold, italic, code blocks, and links work; "
+        "the adapter converts your Markdown to HTML for rich display. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are sent as inline photos, "
+        "audio (.ogg, .mp3) as voice/audio messages, video (.mp4) inline, "
+        "and other files as downloadable attachments."
+    ),
+    "feishu": (
+        "You are in a Feishu (Lark) workspace communicating with your user. "
+        "Feishu renders Markdown in messages — bold, italic, code blocks, and "
+        "links are supported. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are uploaded and displayed "
+        "inline, audio files as voice messages, and other files as attachments."
     ),
     "weixin": (
         "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when "
@@ -389,6 +427,29 @@ PLATFORM_HINTS = {
         "and emoji. You can send media files natively: include MEDIA:/absolute/path/to/file in "
         "your response. Images are sent as native photos, and other files arrive as downloadable "
         "documents."
+    ),
+    "yuanbao": (
+        "You are on Yuanbao (腾讯元宝), a Chinese AI assistant platform. "
+        "Markdown formatting is supported (code blocks, tables, bold/italic). "
+        "You CAN send media files natively — to deliver a file to the user, include "
+        "MEDIA:/absolute/path/to/file in your response. The file will be sent as a native "
+        "Yuanbao attachment: images (.jpg, .png, .webp, .gif) are sent as photos, "
+        "and other files (.pdf, .docx, .txt, .zip, etc.) arrive as downloadable documents "
+        "(max 50 MB). You can also include image URLs in markdown format ![alt](url) and "
+        "they will be downloaded and sent as native photos. "
+        "Do NOT tell the user you lack file-sending capability — use MEDIA: syntax "
+        "whenever a file delivery is appropriate.\n\n"
+        "Stickers (贴纸 / 表情包 / TIM face): Yuanbao has a built-in sticker catalogue. "
+        "When the user sends a sticker (you see '[emoji: 名称]' in their message) or asks "
+        "you to send/reply-with a 贴纸/表情/表情包, you MUST use the sticker tools:\n"
+        "  1. Call yb_search_sticker with a Chinese keyword (e.g. '666', '比心', '吃瓜', "
+        "     '捂脸', '合十') to discover matching sticker_ids.\n"
+        "  2. Call yb_send_sticker with the chosen sticker_id or name — this sends a real "
+        "     TIMFaceElem that renders as a native sticker in the chat.\n"
+        "DO NOT draw sticker-like PNGs with execute_code/Pillow/matplotlib and then send "
+        "them via MEDIA: or send_image_file. That produces a fake low-quality 'sticker' "
+        "image and is the WRONG path. Bare Unicode emoji in text is also not a substitute "
+        "— when a sticker is the right response, use yb_send_sticker."
     ),
 }
 
@@ -793,6 +854,11 @@ def build_skills_system_prompt(
             "Skills also encode the user's preferred approach, conventions, and quality standards "
             "for tasks like code review, planning, and testing — load them even for tasks you "
             "already know how to do, because the skill defines how it should be done here.\n"
+            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
+            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
+            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
+            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
+            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
             "If a skill has issues, fix it with skill_manage(action='patch').\n"
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "

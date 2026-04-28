@@ -44,6 +44,18 @@ description: Description for {name}.
     return skill_dir
 
 
+def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Path:
+    """Create a category symlink under skills_dir pointing outside the tree."""
+    external_category = linked_root / category
+    external_category.mkdir(parents=True, exist_ok=True)
+    symlink_path = skills_dir / category
+    try:
+        symlink_path.symlink_to(external_category, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable in test environment: {exc}")
+    return external_category
+
+
 # ---------------------------------------------------------------------------
 # _parse_frontmatter
 # ---------------------------------------------------------------------------
@@ -255,6 +267,20 @@ class TestFindAllSkills:
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
 
+    def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            skills = _find_all_skills()
+
+        assert [s["name"] for s in skills] == ["knowledge-brain"]
+        assert skills[0]["category"] == "linked"
+
 
 # ---------------------------------------------------------------------------
 # skills_list
@@ -288,6 +314,23 @@ class TestSkillsList:
         assert result["count"] == 1
         assert result["skills"][0]["name"] == "skill-a"
 
+    def test_category_filter_finds_symlinked_category(self, tmp_path):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            raw = skills_list(category="linked")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["categories"] == ["linked"]
+        assert result["skills"][0]["name"] == "knowledge-brain"
+
 
 # ---------------------------------------------------------------------------
 # skill_view
@@ -303,6 +346,70 @@ class TestSkillView:
         assert result["success"] is True
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
+
+    def test_skill_view_applies_template_vars(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.load_skills_config",
+                return_value={"template_vars": True, "inline_shell": False},
+            ),
+        ):
+            skill_dir = _make_skill(
+                tmp_path,
+                "templated",
+                body="Run ${HERMES_SKILL_DIR}/scripts/do.sh in ${HERMES_SESSION_ID}",
+            )
+            raw = skill_view("templated", task_id="session-123")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert f"Run {skill_dir}/scripts/do.sh in session-123" in result["content"]
+        assert "${HERMES_SKILL_DIR}" not in result["content"]
+
+    def test_skill_view_applies_inline_shell_when_enabled(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.load_skills_config",
+                return_value={
+                    "template_vars": True,
+                    "inline_shell": True,
+                    "inline_shell_timeout": 5,
+                },
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "dynamic",
+                body="Current date: !`printf 2026-04-24`",
+            )
+            raw = skill_view("dynamic")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Current date: 2026-04-24" in result["content"]
+        assert "!`printf 2026-04-24`" not in result["content"]
+
+    def test_skill_view_leaves_inline_shell_literal_when_disabled(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.load_skills_config",
+                return_value={"template_vars": True, "inline_shell": False},
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "static",
+                body="Current date: !`printf SHOULD_NOT_RUN`",
+            )
+            raw = skill_view("static")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Current date: !`printf SHOULD_NOT_RUN`" in result["content"]
+        assert "Current date: SHOULD_NOT_RUN" not in result["content"]
 
     def test_view_nonexistent_skill(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -388,6 +495,35 @@ class TestSkillView:
             raw = skill_view("active-skill")
         result = json.loads(raw)
         assert result["success"] is True
+
+    def test_view_finds_skill_in_symlinked_category_dir(self, tmp_path):
+        external_root = tmp_path / "repo"
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        external_category = _symlink_category(skills_root, external_root, "linked")
+        _make_skill(external_category.parent, "knowledge-brain", category="linked")
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            raw = skill_view("knowledge-brain")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["name"] == "knowledge-brain"
+
+    def test_not_found_hint_uses_same_order_as_skills_list(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "zeta", category="z-cat")
+            _make_skill(tmp_path, "alpha", category="a-cat")
+            _make_skill(tmp_path, "beta", category="a-cat")
+
+            list_result = json.loads(skills_list())
+            view_result = json.loads(skill_view("missing-skill"))
+
+        assert view_result["success"] is False
+        assert view_result["available_skills"] == [
+            skill["name"] for skill in list_result["skills"]
+        ]
 
 
 class TestSkillViewSecureSetupOnLoad:

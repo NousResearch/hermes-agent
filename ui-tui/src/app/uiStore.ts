@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { MOUSE_TRACKING } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -10,13 +11,16 @@ const buildUiState = (): UiState => ({
   busy: false,
   compact: false,
   detailsMode: 'collapsed',
+  detailsModeCommandOverride: false,
   info: null,
   inlineDiffs: true,
+  mouseTracking: MOUSE_TRACKING,
+  sections: {},
   showCost: false,
   showReasoning: false,
   sid: null,
   status: 'summoning hermes…',
-  statusBar: true,
+  statusBar: 'top',
   streaming: true,
   theme: DEFAULT_THEME,
   usage: ZERO

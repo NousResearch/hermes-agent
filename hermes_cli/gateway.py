@@ -279,9 +279,11 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
                 capture_output=True,
                 text=True,
+                encoding='utf-8',  # Explicitly specify
+                errors='ignore',   # Ignore undecodable bytes instead of crashing
                 timeout=10,
             )
-            if result.returncode != 0:
+            if result.returncode != 0 or result.stdout is None:  # Added null check
                 return []
             current_cmd = ""
             for line in result.stdout.split("\n"):

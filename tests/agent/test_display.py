@@ -172,6 +172,20 @@ class TestEditDiffPreview:
         assert any("old" in line for line in calls)
         assert any("new" in line for line in calls)
 
+    def test_render_edit_diff_with_delta_preserves_syntax_colors(self):
+        printer = MagicMock()
+
+        rendered = render_edit_diff_with_delta(
+            "patch",
+            '{"diff": "--- a/app.py\\n+++ b/app.py\\n@@ -1 +1 @@\\n-def old():\\n+def new():\\n"}',
+            print_fn=printer,
+        )
+
+        assert rendered is True
+        calls = [call.args[0] for call in printer.call_args_list]
+        assert any("38;2;102;217;239;48;2;138;58;69mdef" in line for line in calls)
+        assert any("38;2;102;217;239;48;2;31;107;58mdef" in line for line in calls)
+
     def test_render_edit_diff_with_delta_skips_without_diff(self):
         rendered = render_edit_diff_with_delta(
             "patch",

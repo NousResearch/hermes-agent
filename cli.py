@@ -1373,35 +1373,143 @@ def _diff_rows_with_real_line_numbers(lines: list[str]) -> list[tuple[str, str, 
     return rows
 
 
+def _guess_diff_lexer_from_path(path: str) -> str:
+    cleaned = path.strip()
+    if cleaned.startswith(("a/", "b/")):
+        cleaned = cleaned[2:]
+    if cleaned == "/dev/null":
+        return "text"
+    try:
+        from pygments.lexers import get_lexer_for_filename
+
+        aliases = getattr(get_lexer_for_filename(cleaned), "aliases", ())
+        if aliases:
+            return str(aliases[0])
+    except Exception:
+        pass
+
+    suffix = cleaned.rsplit(".", 1)[-1].lower() if "." in cleaned else ""
+    return {
+        "js": "javascript",
+        "jsx": "jsx",
+        "ts": "typescript",
+        "tsx": "tsx",
+        "py": "python",
+        "rb": "ruby",
+        "go": "go",
+        "rs": "rust",
+        "java": "java",
+        "kt": "kotlin",
+        "kts": "kotlin",
+        "sh": "bash",
+        "bash": "bash",
+        "zsh": "bash",
+        "yaml": "yaml",
+        "yml": "yaml",
+        "json": "json",
+        "toml": "toml",
+        "md": "markdown",
+        "css": "css",
+        "scss": "scss",
+        "html": "html",
+        "xml": "xml",
+    }.get(suffix, "text")
+
+
+def _diff_lexer_from_header_line(line: str) -> str | None:
+    if not line.startswith("+++ "):
+        return None
+    path = line[4:].split("\t", 1)[0].strip()
+    return _guess_diff_lexer_from_path(path)
+
+
+def _highlight_diff_code_text(code: str, lexer: str, background: str | None):
+    from rich.syntax import Syntax
+    from rich.text import Text
+
+    if not code:
+        return Text("")
+    try:
+        highlighted = Syntax(
+            "",
+            lexer or "text",
+            theme=_skin_markdown_code_theme(),
+            background_color=background,
+        ).highlight(code)
+    except Exception:
+        highlighted = Syntax(
+            "",
+            "text",
+            theme=_skin_markdown_code_theme(),
+            background_color=background,
+        ).highlight(code)
+    if highlighted.plain.endswith("\n"):
+        highlighted = highlighted[:-1]
+    if highlighted:
+        highlighted.stylize("on default", 0, len(highlighted))
+    return highlighted
+
+
 def _compact_diff_renderable(lines: list[str]):
     from rich.panel import Panel
     from rich.text import Text
 
     rows = _diff_rows_with_real_line_numbers(lines or [""])
     number_width = max(3, *(len(number) for number, _, _ in rows))
-    bg = _skin_markdown_code_background()
-    base_style = f"#E5E7EB on {bg}" if bg else "#E5E7EB"
-    number_style = f"#94A3B8 on {bg}" if bg else "#64748B"
-    divider_style = f"{_accent_hex()} dim on {bg}" if bg else f"{_accent_hex()} dim"
+    base_style = "#E5E7EB"
+    number_style = "#94A3B8"
+    divider_style = f"{_accent_hex()} dim"
+    add_bg = "#1F6B3A"
+    delete_bg = "#8A3A45"
     styles = {
-        "file": f"{_accent_hex()} on {bg}" if bg else _accent_hex(),
-        "hunk": f"#A7B6D8 on {bg}" if bg else "#64748B",
-        "add": "#D7FBE8 on #12351E",
-        "delete": "#FFD6D6 on #3A1518",
+        "file": _accent_hex(),
+        "hunk": "#A7B6D8",
+        "add": f"#4ADE80 on {add_bg}",
+        "delete": f"#F87171 on {delete_bg}",
         "context": base_style,
         "meta": base_style,
     }
 
-    text = Text()
-    for idx, (number, content, kind) in enumerate(rows):
-        if idx:
-            text.append("\n")
+    current_lexer = "text"
+    rendered_rows: list[Text] = []
+    for number, content, kind in rows:
+        header_lexer = _diff_lexer_from_header_line(content)
+        if header_lexer:
+            current_lexer = header_lexer
+
         row_style = styles.get(kind, base_style)
         gutter_style = row_style if kind in {"add", "delete"} else number_style
         rule_style = row_style if kind in {"add", "delete"} else divider_style
-        text.append(number.rjust(number_width) if number else " " * number_width, style=gutter_style)
-        text.append(" │ ", style=rule_style)
-        text.append(content, style=row_style)
+        row = Text()
+        row.append(number.rjust(number_width) if number else " " * number_width, style=gutter_style)
+        row.append(" │ ", style=rule_style)
+
+        if kind in {"add", "delete", "context"} and content[:1] in {"+", "-", " "}:
+            marker = content[:1]
+            body = content[1:]
+            row_bg = add_bg if kind == "add" else delete_bg if kind == "delete" else None
+            marker_style = row_style if kind in {"add", "delete"} else base_style
+            row.append(marker, style=marker_style)
+            highlighted = _highlight_diff_code_text(body, current_lexer, None)
+            if kind in {"add", "delete"} and row_bg:
+                highlighted.stylize(f"on {row_bg}", 0, len(highlighted))
+            row.append_text(highlighted)
+        else:
+            row.append(content, style=row_style)
+        rendered_rows.append(row)
+
+    content_width = max((len(row.plain) for row in rendered_rows), default=0)
+    text = Text()
+    for idx, row in enumerate(rendered_rows):
+        if idx:
+            text.append("\n")
+        text.append_text(row)
+        kind = rows[idx][2]
+        if len(row.plain) < content_width:
+            pad_bg = add_bg if kind == "add" else delete_bg if kind == "delete" else None
+            if not pad_bg:
+                continue
+            text.append(" " * (content_width - len(row.plain)), style=f"on {pad_bg}")
 
     return Panel(
         text,
@@ -1415,7 +1523,7 @@ def _compact_diff_renderable(lines: list[str]):
 
 def _compact_code_renderable(language: str, lines: list[str]):
     from rich.panel import Panel
-    from rich.syntax import Syntax
+    from rich.text import Text
 
     code = "\n".join(lines or [""])
     lexer = (language or "text").strip() or "text"
@@ -1427,32 +1535,22 @@ def _compact_code_renderable(language: str, lines: list[str]):
         line_numbers = False
     elif lexer == "text":
         line_numbers = False
-    max_line_width = max((len(line) for line in code.splitlines()), default=1)
-    code_width = min(max(max_line_width + 2, 24), max(shutil.get_terminal_size((80, 24)).columns - 16, 24))
-    try:
-        syntax = Syntax(
-            code,
-            lexer,
-            theme=_skin_markdown_code_theme(),
-            background_color=_skin_markdown_code_background() or None,
-            line_numbers=line_numbers,
-            padding=(0, 1),
-            code_width=code_width,
-            word_wrap=True,
-        )
-    except Exception:
-        syntax = Syntax(
-            code,
-            "text",
-            theme=_skin_markdown_code_theme(),
-            background_color=_skin_markdown_code_background() or None,
-            line_numbers=False,
-            padding=(0, 1),
-            code_width=code_width,
-            word_wrap=True,
-        )
+
+    code_lines = code.splitlines() or [""]
+    number_width = max(2, len(str(len(code_lines))))
+    number_style = "#94A3B8"
+    divider_style = f"{_accent_hex()} dim"
+    text = Text()
+    for idx, line in enumerate(code_lines, start=1):
+        if idx > 1:
+            text.append("\n")
+        if line_numbers:
+            text.append(str(idx).rjust(number_width), style=number_style)
+            text.append(" │ ", style=divider_style)
+        text.append_text(_highlight_diff_code_text(line, lexer, None))
+
     return Panel(
-        syntax,
+        text,
         title=language or "code",
         title_align="left",
         border_style=f"{_accent_hex()} dim",

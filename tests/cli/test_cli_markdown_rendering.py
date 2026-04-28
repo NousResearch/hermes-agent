@@ -108,6 +108,29 @@ def test_slate_diff_code_blocks_show_real_diff_line_numbers():
     assert "1 --- a/README.md" not in output
 
 
+def test_slate_diff_code_blocks_keep_code_colors_under_diff_background():
+    from hermes_cli.skin_engine import set_active_skin
+
+    set_active_skin("slate")
+    renderable = _render_final_assistant_content(
+        "```diff\n"
+        "--- a/app.py\n"
+        "+++ b/app.py\n"
+        "@@ -1 +1 @@\n"
+        "-def old():\n"
+        "+def new():\n"
+        "```"
+    )
+    buf = StringIO()
+    Console(file=buf, width=100, force_terminal=True, color_system="truecolor", no_color=False).print(renderable)
+    output = buf.getvalue()
+
+    assert "38;2;102;217;239;48;2;138;58;69mdef" in output
+    assert "38;2;102;217;239;48;2;31;107;58mdef" in output
+    assert "38;2;248;113;113;48;2;138;58;69m-" in output
+    assert "38;2;74;222;128;48;2;31;107;58m+" in output
+
+
 def test_default_skin_leaves_markdown_code_blocks_to_rich():
     from hermes_cli.skin_engine import set_active_skin
 
@@ -167,7 +190,7 @@ def test_chat_console_print_preserves_multiline_rich_ansi_stream(monkeypatch):
     assert "second" in calls[0]
 
 
-def test_slate_chat_console_applies_code_background(monkeypatch):
+def test_slate_chat_console_renders_code_without_block_background(monkeypatch):
     from hermes_cli.skin_engine import set_active_skin
 
     calls: list[str] = []
@@ -177,7 +200,8 @@ def test_slate_chat_console_applies_code_background(monkeypatch):
     ChatConsole().print(_render_final_assistant_content("```python\nprint('ok')\n```"))
 
     assert calls
-    assert "48;2;30;41;59" in calls[0]
+    assert "print" in calls[0]
+    assert "48;2;30;41;59" not in calls[0]
 
 
 def test_slate_compact_renderer_handles_unclosed_fence(monkeypatch):
@@ -196,10 +220,10 @@ def test_slate_compact_renderer_handles_unclosed_fence(monkeypatch):
     assert calls
     assert "raw" in calls[0]
     assert "**What to check**" in calls[0]
-    assert "48;2;30;41;59" in calls[0]
+    assert "48;2;30;41;59" not in calls[0]
 
 
-def test_slate_renders_blockquote_fenced_code_with_code_background(monkeypatch):
+def test_slate_renders_blockquote_fenced_code_without_block_background(monkeypatch):
     from hermes_cli.skin_engine import set_active_skin
 
     calls: list[str] = []
@@ -217,7 +241,7 @@ def test_slate_renders_blockquote_fenced_code_with_code_background(monkeypatch):
     assert "def" in calls[0]
     assert "print" in calls[0]
     assert "After" in calls[0]
-    assert "48;2;30;41;59" in calls[0]
+    assert "48;2;30;41;59" not in calls[0]
 
 
 def test_slate_blockquotes_use_bright_markdown_color(monkeypatch):

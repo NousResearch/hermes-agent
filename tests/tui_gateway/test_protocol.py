@@ -107,13 +107,18 @@ def test_write_json_oserror_on_flush_returns_false(server):
     assert written and json.loads(written[0]) == {"x": 1}
 
 
-def test_write_json_no_flush_env_skips_flush(server, monkeypatch):
-    """HERMES_TUI_GATEWAY_NO_FLUSH=1 skips flush so a hung peer doesn't block."""
+def test_write_json_no_flush_env_skips_flush(monkeypatch):
+    """HERMES_TUI_GATEWAY_NO_FLUSH=1 skips flush so a hung peer doesn't block.
+
+    Avoids reloading ``tui_gateway.server`` on purpose — that would
+    re-register module-level atexit hooks and recreate the worker
+    pool.  We only need ``_DISABLE_FLUSH`` reapplied, which is owned
+    by ``tui_gateway.transport`` alone.
+    """
     import importlib
 
-    monkeypatch.setenv("HERMES_TUI_GATEWAY_NO_FLUSH", "1")
-    transport_mod = importlib.reload(importlib.import_module("tui_gateway.transport"))
-    server_mod = importlib.reload(importlib.import_module("tui_gateway.server"))
+    transport_mod = importlib.import_module("tui_gateway.transport")
+    monkeypatch.setattr(transport_mod, "_DISABLE_FLUSH", True)
 
     flushed = {"count": 0}
     written = []
@@ -122,19 +127,14 @@ def test_write_json_no_flush_env_skips_flush(server, monkeypatch):
         def write(self, line): written.append(line)
         def flush(self): flushed["count"] += 1
 
-    try:
-        stream = _Stream()
-        transport = transport_mod.StdioTransport(lambda: stream, threading.Lock())
+    stream = _Stream()
+    transport = transport_mod.StdioTransport(lambda: stream, threading.Lock())
 
-        assert transport.write({"x": 1}) is True
-        assert flushed["count"] == 0
-        assert written and json.loads(written[0]) == {"x": 1}
-    finally:
-        # Always restore module-level _DISABLE_FLUSH so an assertion
-        # failure above doesn't leak state into sibling tests.
-        monkeypatch.delenv("HERMES_TUI_GATEWAY_NO_FLUSH", raising=False)
-        importlib.reload(transport_mod)
-        importlib.reload(server_mod)
+    assert transport.write({"x": 1}) is True
+    assert flushed["count"] == 0
+    assert written and json.loads(written[0]) == {"x": 1}
+    # `monkeypatch.setattr` automatically restores the original value
+    # at teardown — no try/finally needed.
 
 
 # ── _emit ────────────────────────────────────────────────────────────

@@ -29,7 +29,26 @@ def _install_sidecar_publisher() -> None:
     )
 
 
-_SHUTDOWN_GRACE_S = 1.0
+# How long to wait for orderly shutdown (atexit + finalisers) before
+# falling back to ``os._exit(0)`` so a wedged worker mid-flush can't
+# strand the process.  1s covers the gateway's own shutdown work
+# (thread-pool drain + session finalize) on every machine we've
+# tested; override via ``HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S`` if a
+# slower environment needs more headroom (e.g. encrypted disks
+# flushing checkpoints) and accept that a longer grace also means a
+# longer wait when shutdown actually deadlocks.
+_DEFAULT_SHUTDOWN_GRACE_S = 1.0
+
+
+def _shutdown_grace_seconds() -> float:
+    raw = (os.environ.get("HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S") or "").strip()
+    if not raw:
+        return _DEFAULT_SHUTDOWN_GRACE_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_SHUTDOWN_GRACE_S
+    return value if value > 0 else _DEFAULT_SHUTDOWN_GRACE_S
 
 
 def _log_signal(signum: int, frame) -> None:
@@ -45,7 +64,9 @@ def _log_signal(signum: int, frame) -> None:
     Termination semantics: ``sys.exit(0)`` here used to race the worker
     pool — a thread holding ``_stdout_lock`` mid-flush would block the
     interpreter shutdown indefinitely.  We now log the stack, give the
-    process ``_SHUTDOWN_GRACE_S`` to drain naturally on a background
+    process the configured shutdown grace
+    (``HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S``, default
+    ``_DEFAULT_SHUTDOWN_GRACE_S``) to drain naturally on a background
     thread, and fall back to ``os._exit(0)`` so a wedged write/flush
     can never strand the process.
     """
@@ -83,7 +104,7 @@ def _log_signal(signum: int, frame) -> None:
         # the forensic trail.
         os._exit(0)
 
-    timer = _threading.Timer(_SHUTDOWN_GRACE_S, _hard_exit)
+    timer = _threading.Timer(_shutdown_grace_seconds(), _hard_exit)
     timer.daemon = True
     timer.start()
 

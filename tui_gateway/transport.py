@@ -99,47 +99,51 @@ class StdioTransport:
         self._lock = lock
 
     def write(self, obj: dict) -> bool:
+        # Serialization first — kept OUTSIDE the lock so a large
+        # payload can't block other threads waiting to emit their own
+        # frames.  Catch the narrow set of exceptions that genuinely
+        # mean "this payload can't be sent" (TypeError/ValueError from
+        # non-JSON-safe values).  ANY other exception here is a real
+        # programming error and should surface; we surface it as a
+        # warning + return False so the dispatcher loop survives, but
+        # we log with ``exc_info`` so the crash log keeps the trace.
         try:
-            # Serialize JSON inside the outer try so non-JSON-safe
-            # objects surface as "peer gone" instead of bubbling up
-            # into the dispatcher loop.  Kept OUTSIDE the lock so a
-            # large message can't block other threads waiting to emit
-            # their own frames.
             line = json.dumps(obj, ensure_ascii=False) + "\n"
-            with self._lock:
-                stream = self._stream_getter()
+        except (TypeError, ValueError) as e:
+            logger.warning("StdioTransport: non-JSON-safe payload dropped: %s", e)
+            return False
+        except Exception:  # noqa: BLE001 — surface programming errors loudly
+            logger.warning("StdioTransport: unexpected serialization error", exc_info=True)
+            return False
+
+        with self._lock:
+            stream = self._stream_getter()
+            try:
+                stream.write(line)
+            except (BrokenPipeError, ValueError):
+                # ValueError: I/O operation on closed file.
+                return False
+            except OSError as e:
+                logger.debug("StdioTransport write failed: %s", e)
+                return False
+
+            # Separate try/except: any flush exception is reported
+            # as peer-gone instead of bubbling up.  Note this only
+            # protects against EXCEPTIONS — a flush that *hangs*
+            # on a half-closed pipe will still hold the lock until
+            # it returns.  See ``_DISABLE_FLUSH`` for the
+            # "skip flush entirely" escape hatch when you cannot
+            # afford the lock-starvation risk.
+            if not _DISABLE_FLUSH:
                 try:
-                    stream.write(line)
+                    stream.flush()
                 except (BrokenPipeError, ValueError):
-                    # ValueError: I/O operation on closed file.
                     return False
                 except OSError as e:
-                    logger.debug("StdioTransport write failed: %s", e)
+                    logger.debug("StdioTransport flush failed: %s", e)
                     return False
 
-                # Separate try/except: any flush exception is reported
-                # as peer-gone instead of bubbling up.  Note this only
-                # protects against EXCEPTIONS — a flush that *hangs*
-                # on a half-closed pipe will still hold the lock until
-                # it returns.  See ``_DISABLE_FLUSH`` for the
-                # "skip flush entirely" escape hatch when you cannot
-                # afford the lock-starvation risk.
-                if not _DISABLE_FLUSH:
-                    try:
-                        stream.flush()
-                    except (BrokenPipeError, ValueError):
-                        return False
-                    except OSError as e:
-                        logger.debug("StdioTransport flush failed: %s", e)
-                        return False
-
-            return True
-        except Exception as e:
-            # Unexpected serialization (TypeError on non-JSON-safe
-            # value) or lock acquisition failure — log and signal the
-            # peer as gone instead of letting the dispatcher unwind.
-            logger.debug("StdioTransport write unexpected error: %s", e)
-            return False
+        return True
 
     def close(self) -> None:
         return None

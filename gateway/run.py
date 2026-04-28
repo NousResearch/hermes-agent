@@ -10168,23 +10168,43 @@ class GatewayRunner:
             # append any that aren't already present in the final response, so the
             # adapter's extract_media() can find and deliver the files exactly once.
             #
+            # Fix #16720: Only extract MEDIA: tags from tools that intentionally
+            # produce media artifacts (e.g. text_to_speech). Documentation tools,
+            # skill tools, search tools, and arbitrary tool outputs should not
+            # trigger attachment sending just because they contain a literal
+            # "MEDIA:" example string.
+            #
             # Uses path-based deduplication against _history_media_paths (collected
             # before run_conversation) instead of index slicing. This is safe even
             # when context compression shrinks the message list. (Fixes #160)
+            _AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech"}
             if "MEDIA:" not in final_response:
+                # Build a mapping from tool_call_id to tool name from assistant messages
+                tool_name_by_id = {}
+                for msg in result.get("messages", []):
+                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                        for tc in msg["tool_calls"]:
+                            fn = tc.get("function", {})
+                            if fn.get("name"):
+                                tool_name_by_id[tc.get("id", "")] = fn["name"]
                 media_tags = []
                 has_voice_directive = False
                 for msg in result.get("messages", []):
                     if msg.get("role") in ("tool", "function"):
+                        tool_call_id = msg.get("tool_call_id", "")
+                        tool_name = tool_name_by_id.get(tool_call_id, "")
+                        # Only extract MEDIA: tags from allowlisted media-producing tools
+                        if tool_name not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
+                            continue
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
                             for match in re.finditer(r'MEDIA:(\S+)', content):
-                                path = match.group(1).strip().rstrip('",}')
+                                path = match.group(1).strip().rstrip('\",}')
                                 if path and path not in _history_media_paths:
                                     media_tags.append(f"MEDIA:{path}")
                             if "[[audio_as_voice]]" in content:
                                 has_voice_directive = True
-                
+
                 if media_tags:
                     seen = set()
                     unique_tags = []

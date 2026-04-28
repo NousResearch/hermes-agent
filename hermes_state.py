@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -103,21 +103,27 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
+    tool_calls,
+    tool_name,
     content=messages,
     content_rowid=id
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO messages_fts(rowid, content, tool_calls, tool_name)
+        VALUES (new.id, new.content, new.tool_calls, new.tool_name);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+    INSERT INTO messages_fts(messages_fts, rowid, content, tool_calls, tool_name)
+        VALUES('delete', old.id, old.content, old.tool_calls, old.tool_name);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO messages_fts(messages_fts, rowid, content, tool_calls, tool_name)
+        VALUES('delete', old.id, old.content, old.tool_calls, old.tool_name);
+    INSERT INTO messages_fts(rowid, content, tool_calls, tool_name)
+        VALUES (new.id, new.content, new.tool_calls, new.tool_name);
 END;
 """
 
@@ -128,22 +134,28 @@ END;
 FTS_TRIGRAM_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,
+    tool_calls,
+    tool_name,
     content=messages,
     content_rowid=id,
     tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts_trigram(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO messages_fts_trigram(rowid, content, tool_calls, tool_name)
+        VALUES (new.id, new.content, new.tool_calls, new.tool_name);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages BEGIN
-    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content) VALUES('delete', old.id, old.content);
+    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_calls, tool_name)
+        VALUES('delete', old.id, old.content, old.tool_calls, old.tool_name);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
-    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content) VALUES('delete', old.id, old.content);
-    INSERT INTO messages_fts_trigram(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content, tool_calls, tool_name)
+        VALUES('delete', old.id, old.content, old.tool_calls, old.tool_name);
+    INSERT INTO messages_fts_trigram(rowid, content, tool_calls, tool_name)
+        VALUES (new.id, new.content, new.tool_calls, new.tool_name);
 END;
 """
 
@@ -428,6 +440,36 @@ class SessionDB:
                         "INSERT INTO messages_fts_trigram(rowid, content) "
                         "SELECT id, content FROM messages WHERE content IS NOT NULL"
                     )
+            if current_version < 11:
+                # v11: extend messages_fts and messages_fts_trigram with the
+                # tool_calls and tool_name columns from messages so session_search
+                # surfaces tokens that only appear in serialized tool-call args
+                # or tool names — previously invisible to FTS5 even though the
+                # rows exist in the DB (#16751). External-content FTS5 columns
+                # are fixed at CREATE time, so we drop and recreate both tables
+                # plus their triggers, then backfill from messages.
+                cursor.executescript(
+                    """
+                    DROP TRIGGER IF EXISTS messages_fts_insert;
+                    DROP TRIGGER IF EXISTS messages_fts_delete;
+                    DROP TRIGGER IF EXISTS messages_fts_update;
+                    DROP TABLE IF EXISTS messages_fts;
+                    DROP TRIGGER IF EXISTS messages_fts_trigram_insert;
+                    DROP TRIGGER IF EXISTS messages_fts_trigram_delete;
+                    DROP TRIGGER IF EXISTS messages_fts_trigram_update;
+                    DROP TABLE IF EXISTS messages_fts_trigram;
+                    """
+                )
+                cursor.executescript(FTS_SQL)
+                cursor.executescript(FTS_TRIGRAM_SQL)
+                cursor.execute(
+                    "INSERT INTO messages_fts(rowid, content, tool_calls, tool_name) "
+                    "SELECT id, content, tool_calls, tool_name FROM messages"
+                )
+                cursor.execute(
+                    "INSERT INTO messages_fts_trigram(rowid, content, tool_calls, tool_name) "
+                    "SELECT id, content, tool_calls, tool_name FROM messages"
+                )
             if current_version < SCHEMA_VERSION:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -1451,7 +1493,7 @@ class SessionDB:
                 m.id,
                 m.session_id,
                 m.role,
-                snippet(messages_fts, 0, '>>>', '<<<', '...', 40) AS snippet,
+                snippet(messages_fts, -1, '>>>', '<<<', '...', 40) AS snippet,
                 m.content,
                 m.timestamp,
                 m.tool_name,
@@ -1508,7 +1550,7 @@ class SessionDB:
                         m.id,
                         m.session_id,
                         m.role,
-                        snippet(messages_fts_trigram, 0, '>>>', '<<<', '...', 40) AS snippet,
+                        snippet(messages_fts_trigram, -1, '>>>', '<<<', '...', 40) AS snippet,
                         m.content,
                         m.timestamp,
                         m.tool_name,
@@ -1532,10 +1574,17 @@ class SessionDB:
                         matches = [dict(row) for row in tri_cursor.fetchall()]
             else:
                 # Short CJK query (1-2 chars) — trigram needs ≥3 CJK chars.
-                # Fall back to LIKE substring search.
+                # Fall back to LIKE substring search across the same columns
+                # indexed by FTS5 (content + tool_calls + tool_name) so the
+                # short-query path stays consistent with #16751.
                 escaped = raw_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                like_where = ["m.content LIKE ? ESCAPE '\\'"]
-                like_params: list = [f"%{escaped}%"]
+                like_pattern = f"%{escaped}%"
+                like_where = [
+                    "(m.content LIKE ? ESCAPE '\\' "
+                    "OR m.tool_calls LIKE ? ESCAPE '\\' "
+                    "OR m.tool_name LIKE ? ESCAPE '\\')"
+                ]
+                like_params: list = [like_pattern, like_pattern, like_pattern]
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)

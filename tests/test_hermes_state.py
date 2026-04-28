@@ -657,6 +657,178 @@ class TestFTS5Search:
 
 
 # =========================================================================
+# session_search indexing of tool_calls / tool_name (#16751)
+# =========================================================================
+
+class TestFTS5SearchToolCallsAndToolName:
+    """Regression tests for #16751.
+
+    `messages_fts` previously had a single ``content`` column; tokens that
+    appeared only in ``messages.tool_calls`` (serialized JSON args) or
+    ``messages.tool_name`` were never indexed, so ``session_search`` missed
+    them even though the row existed in the DB. v11 extends both FTS5 tables
+    (unicode61 and trigram) with the ``tool_calls`` and ``tool_name`` columns
+    and backfills.
+    """
+
+    def _add_tool_call_message(self, db, sid, *, content, func_name, args, tool_name):
+        db.append_message(
+            sid,
+            role="assistant",
+            content=content,
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": func_name, "arguments": args},
+                }
+            ],
+            tool_name=tool_name,
+        )
+
+    def test_search_finds_token_in_tool_call_function_name(self, db):
+        db.create_session(session_id="s1", source="cli")
+        self._add_tool_call_message(
+            db, "s1",
+            content="",
+            func_name="FUNCNAMEMARKER_UNIQUE",
+            args='{"cmd": "noop"}',
+            tool_name="something_else",
+        )
+        results = db.search_messages("FUNCNAMEMARKER_UNIQUE")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+
+    def test_search_finds_token_in_tool_call_arguments(self, db):
+        db.create_session(session_id="s1", source="cli")
+        self._add_tool_call_message(
+            db, "s1",
+            content="just running a script",
+            func_name="run",
+            args='{"cmd": "aws s3 cp x s3://BUCKETMARKER_TOOLCALL/"}',
+            tool_name="terminal",
+        )
+        results = db.search_messages("BUCKETMARKER_TOOLCALL")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+
+    def test_search_finds_token_in_tool_name(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="tool",
+            content="result body",
+            tool_name="TOOLNAMEMARKER_UNIQUE",
+        )
+        results = db.search_messages("TOOLNAMEMARKER_UNIQUE")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+
+    def test_search_still_finds_content_only_match(self, db):
+        """Content matches must continue to work — invariant preserved."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user",
+                          content="Uploading to BUCKETMARKER_CONTENT.")
+        results = db.search_messages("BUCKETMARKER_CONTENT")
+        assert len(results) == 1
+        assert "BUCKETMARKER_CONTENT" in results[0]["snippet"]
+
+    def test_role_filter_applies_to_tool_call_matches(self, db):
+        db.create_session(session_id="s1", source="cli")
+        self._add_tool_call_message(
+            db, "s1",
+            content="",
+            func_name="FILTEREDFUNC",
+            args='{}',
+            tool_name="x",
+        )
+        # Match exists in an assistant message with tool_calls — role filter
+        # for "user" should exclude it.
+        assert db.search_messages("FILTEREDFUNC", role_filter=["user"]) == []
+        assert db.search_messages("FILTEREDFUNC", role_filter=["assistant"])
+
+    def test_v11_migration_backfills_existing_messages_db(self, tmp_path):
+        """A pre-v11 DB upgraded in place must have its tool_calls/tool_name
+        rows reachable via search_messages without re-inserting the data."""
+        db_path = tmp_path / "legacy.db"
+
+        # Build a v10-shaped DB by hand: schema columns + single-column FTS
+        # tables matching the pre-v11 layout.
+        import sqlite3
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version VALUES (10);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL,
+                ended_at REAL,
+                end_reason TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT
+            );
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                content, content=messages, content_rowid=id
+            );
+            CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(
+                content, content=messages, content_rowid=id, tokenize='trigram'
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("s1", "cli", time.time()),
+        )
+        conn.execute(
+            "INSERT INTO messages "
+            "(session_id, role, content, tool_calls, tool_name, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("s1", "assistant", "",
+             '{"function": {"name": "LEGACYFUNC_MARKER", "arguments": "{}"}}',
+             "LEGACYTOOL_MARKER", time.time()),
+        )
+        # Old triggers are absent here, so messages_fts has no rows for this
+        # message (mirrors a real upgrade where only some rows were indexed).
+        conn.commit()
+        conn.close()
+
+        # Open with SessionDB — runs the v11 migration, which should backfill
+        # tool_calls / tool_name into the recreated FTS tables.
+        session_db = SessionDB(db_path=db_path)
+        try:
+            r1 = session_db.search_messages("LEGACYFUNC_MARKER")
+            r2 = session_db.search_messages("LEGACYTOOL_MARKER")
+            assert len(r1) == 1, "tool_calls token must be searchable post-migration"
+            assert len(r2) == 1, "tool_name token must be searchable post-migration"
+        finally:
+            session_db.close()
+
+
+# =========================================================================
 # CJK (Chinese/Japanese/Korean) LIKE fallback
 # =========================================================================
 
@@ -1292,7 +1464,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 10
+        assert version == 11
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1348,12 +1520,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v9
+        # Open with SessionDB — should migrate to the current version
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 10
+        assert cursor.fetchone()[0] == 11
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")

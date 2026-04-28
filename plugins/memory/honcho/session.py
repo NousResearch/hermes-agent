@@ -277,11 +277,12 @@ class HonchoSessionManager:
             logger.debug("Local session cache hit: %s", key)
             return self._cache[key]
 
-        # Gateway sessions should use the runtime user identity when available.
-        if self._runtime_user_peer_name:
-            user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
-        elif self._config and self._config.peer_name:
+        # Configured peerName takes priority (single-user setups like private Discord).
+        # Runtime user_id (e.g. Discord numeric ID) is only used as fallback.
+        if self._config and self._config.peer_name:
             user_peer_id = self._sanitize_id(self._config.peer_name)
+        elif self._runtime_user_peer_name:
+            user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
         else:
             # Fallback: derive from session key
             parts = key.split(":", 1)
@@ -329,7 +330,16 @@ class HonchoSessionManager:
         return session
 
     def _flush_session(self, session: HonchoSession) -> bool:
-        """Internal: write unsynced messages to Honcho synchronously."""
+        """Internal: write unsynced messages to Honcho synchronously.
+
+        Includes gateway-restart dedup: before sending, queries recent
+        Honco messages and skips any whose content already exists. This
+        prevents duplicates when the Hermes gateway restarts and replays
+        the current turn's messages that were already synced in a prior
+        process lifetime.
+        """
+        import hashlib
+
         if not session.messages:
             return True
 
@@ -346,20 +356,59 @@ class HonchoSessionManager:
         if not new_messages:
             return True
 
+        # --- Gateway-restart dedup ---
+        # After a restart, _cache is empty and get_or_create() reloads
+        # existing Honco messages as _synced=True. But the gateway may
+        # still feed the same turn data to sync_turn(), creating unsynced
+        # copies of messages that Honco already has. Dedup by content hash.
+        _DEDUP_LOOKBACK = 100  # check against last N existing messages
+        _recent_hashes: set[str] = set()
+        try:
+            ctx = honcho_session.context(summary=True)
+            existing = ctx.messages or []
+            for em in existing[-_DEDUP_LOOKBACK:]:
+                content_key = f"{em.peer_id}:{em.content}"
+                _recent_hashes.add(hashlib.md5(content_key.encode()).hexdigest())
+        except Exception:
+            pass  # Best-effort: if we can't query, skip dedup
+
+        deduped_count = 0
         honcho_messages = []
+        messages_to_mark_synced = []
         for msg in new_messages:
             peer = user_peer if msg["role"] == "user" else assistant_peer
+            content_hash = hashlib.md5(
+                f"{peer.peer_id}:{msg['content']}".encode()
+            ).hexdigest()
+
+            if content_hash in _recent_hashes:
+                msg["_synced"] = True  # Mark as synced without re-sending
+                deduped_count += 1
+                continue
+
             honcho_messages.append(peer.message(msg["content"]))
+            messages_to_mark_synced.append(msg)
+
+        if deduped_count:
+            logger.info(
+                "Honcho dedup: skipped %d duplicate(s) for %s (gateway restart protection)",
+                deduped_count, session.key,
+            )
+
+        if not honcho_messages:
+            # All were duplicates — still cache the updated session
+            self._cache[session.key] = session
+            return True
 
         try:
             honcho_session.add_messages(honcho_messages)
-            for msg in new_messages:
+            for msg in messages_to_mark_synced:
                 msg["_synced"] = True
             logger.debug("Synced %d messages to Honcho for %s", len(honcho_messages), session.key)
             self._cache[session.key] = session
             return True
         except Exception as e:
-            for msg in new_messages:
+            for msg in messages_to_mark_synced:
                 msg["_synced"] = False
             logger.error("Failed to sync messages to Honcho: %s", e)
             self._cache[session.key] = session

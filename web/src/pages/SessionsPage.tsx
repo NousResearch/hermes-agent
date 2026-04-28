@@ -13,7 +13,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
-  Loader2,
   MessageSquare,
   Search,
   Trash2,
@@ -36,7 +35,7 @@ import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { Toast } from "@/components/Toast";
-import { Button, ListItem } from "@nous-research/ui";
+import { Button, ListItem, Spinner } from "@nous-research/ui";
 import { Badge } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -388,7 +387,7 @@ function SessionRow({
         <div className="border-t border-border bg-background/50 p-4">
           {loading && (
             <div className="flex items-center justify-center py-8">
-              <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+              <Spinner className="text-xl text-primary" />
             </div>
           )}
           {error && (
@@ -444,7 +443,7 @@ export default function SessionsPage() {
     setEnd(
       <div className="relative w-full min-w-0 sm:max-w-xs">
         {searching ? (
-          <div className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
+          <Spinner className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[0.875rem] text-primary" />
         ) : (
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         )}
@@ -617,7 +616,7 @@ export default function SessionsPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <Spinner className="text-2xl text-primary" />
       </div>
     );
   }
@@ -667,13 +666,13 @@ export default function SessionsPage() {
           <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
             <div className="flex items-center gap-2 min-w-0">
               {actionStatus?.running ? (
-                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-warning" />
+                <Spinner className="shrink-0 text-[0.875rem] text-warning" />
               ) : actionStatus?.exit_code === 0 ? (
                 <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
               ) : actionStatus !== null ? (
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />
               ) : (
-                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+                <Spinner className="shrink-0 text-[0.875rem] text-muted-foreground" />
               )}
 
               <span className="text-xs font-mondwest tracking-[0.12em] truncate">

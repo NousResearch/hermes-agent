@@ -33,7 +33,7 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { AutoField } from "@/components/AutoField";
-import { Button, ListItem } from "@nous-research/ui";
+import { Button, ListItem, Spinner } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@nous-research/ui";
@@ -319,7 +319,7 @@ export default function ConfigPage() {
   if (!config || !schema) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <Spinner className="text-2xl text-primary" />
       </div>
     );
   }
@@ -483,7 +483,7 @@ export default function ConfigPage() {
           <CardContent className="p-0">
             {yamlLoading ? (
               <div className="flex items-center justify-center py-12">
-                <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                <Spinner className="text-xl text-primary" />
               </div>
             ) : (
               <textarea

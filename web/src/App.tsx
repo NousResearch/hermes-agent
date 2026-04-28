@@ -27,7 +27,6 @@ import {
   Globe,
   Heart,
   KeyRound,
-  Loader2,
   Menu,
   MessageSquare,
   Package,
@@ -46,6 +45,7 @@ import {
   Button,
   ListItem,
   SelectionSwitcher,
+  Spinner,
   Typography,
 } from "@nous-research/ui";
 import { cn } from "@/lib/utils";
@@ -573,10 +573,7 @@ export default function App() {
                         aria-live="polite"
                       >
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Loader2
-                            className="h-4 w-4 animate-spin"
-                            aria-hidden
-                          />
+                          <Spinner />
                           <span>Loading chat…</span>
                         </div>
                       </div>
@@ -681,12 +678,13 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                 )}
               >
                 {isPending ? (
-                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                  <Spinner className="shrink-0 text-[0.875rem]" />
+                ) : isActionRunning && spin ? (
+                  <Spinner className="shrink-0 text-[0.875rem]" />
                 ) : (
                   <Icon
                     className={cn(
                       "h-3.5 w-3.5 shrink-0",
-                      isActionRunning && spin && "animate-spin",
                       isActionRunning && !spin && "animate-pulse",
                     )}
                   />

@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -88,6 +88,65 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT,
     codex_message_items TEXT
 );
+
+CREATE TABLE IF NOT EXISTS code_workspaces (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    owner TEXT,
+    repo TEXT,
+    path TEXT,
+    git_remote TEXT,
+    repo_url TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_code_workspaces_id
+    ON code_workspaces(id);
+
+CREATE INDEX IF NOT EXISTS idx_code_workspaces_owner
+    ON code_workspaces(owner);
+
+CREATE INDEX IF NOT EXISTS idx_code_workspaces_repo
+    ON code_workspaces(owner, repo);
+
+CREATE TABLE IF NOT EXISTS code_sessions (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    status TEXT DEFAULT 'active',
+    provider TEXT,
+    branch TEXT,
+    last_synced_at REAL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    metadata_json TEXT,
+    FOREIGN KEY (workspace_id) REFERENCES code_workspaces(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_sessions_workspace
+    ON code_sessions(workspace_id);
+
+CREATE INDEX IF NOT EXISTS idx_code_sessions_status
+    ON code_sessions(status);
+
+CREATE TABLE IF NOT EXISTS code_events (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    session_id TEXT,
+    event_type TEXT NOT NULL,
+    sender_login TEXT,
+    source TEXT,
+    level TEXT DEFAULT 'info',
+    payload_json TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    FOREIGN KEY (workspace_id) REFERENCES code_workspaces(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_events_workspace
+    ON code_events(workspace_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_code_events_session
+    ON code_events(session_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
@@ -481,6 +540,79 @@ class SessionDB:
                     "COALESCE(tool_calls, '') "
                     "FROM messages"
                 )
+
+            if current_version < 12:
+                # v12: introduce minimal code-mode tables used by the
+                # Code Mode foundation (workspace/sessions/events metadata).
+                try:
+                    cursor.executescript(
+                        """
+                        CREATE TABLE IF NOT EXISTS code_workspaces (
+                            id TEXT PRIMARY KEY,
+                            name TEXT NOT NULL,
+                            owner TEXT,
+                            repo TEXT,
+                            path TEXT,
+                            git_remote TEXT,
+                            repo_url TEXT,
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL
+                        );
+
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_code_workspaces_id
+                            ON code_workspaces(id);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_workspaces_owner
+                            ON code_workspaces(owner);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_workspaces_repo
+                            ON code_workspaces(owner, repo);
+
+                        CREATE TABLE IF NOT EXISTS code_sessions (
+                            id TEXT PRIMARY KEY,
+                            workspace_id TEXT,
+                            status TEXT DEFAULT 'active',
+                            provider TEXT,
+                            branch TEXT,
+                            last_synced_at REAL,
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL,
+                            metadata_json TEXT,
+                            FOREIGN KEY (workspace_id) REFERENCES code_workspaces(id)
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_code_sessions_workspace
+                            ON code_sessions(workspace_id);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_sessions_status
+                            ON code_sessions(status);
+
+                        CREATE TABLE IF NOT EXISTS code_events (
+                            id TEXT PRIMARY KEY,
+                            workspace_id TEXT,
+                            session_id TEXT,
+                            event_type TEXT NOT NULL,
+                            sender_login TEXT,
+                            source TEXT,
+                            level TEXT DEFAULT 'info',
+                            payload_json TEXT NOT NULL,
+                            created_at REAL NOT NULL,
+                            FOREIGN KEY (workspace_id) REFERENCES code_workspaces(id) ON DELETE CASCADE
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_code_events_workspace
+                            ON code_events(workspace_id, created_at DESC);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_events_session
+                            ON code_events(session_id, created_at DESC);
+                        """
+                    )
+                except Exception:
+                    # If the process lacks required migration privileges or the
+                    # DB is in a transient bad state, continue with the
+                    # existing migration path after creating schema in future reads.
+                    pass
+
             if current_version < SCHEMA_VERSION:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -1083,6 +1215,124 @@ class SessionDB:
         else:
             s["preview"] = ""
         return s
+
+    # =========================================================================
+    # Code Mode support
+    # =========================================================================
+
+    def _code_tables_exist(self) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_workspaces'"
+            )
+            return bool(cursor.fetchone())
+
+    def code_mode_status(self) -> Dict[str, Any]:
+        """Return light-weight code mode state summary for console/dashboard."""
+        if not self._code_tables_exist():
+            return {
+                "mode": "unconfigured",
+                "schema_version": None,
+                "tables": {"code_workspaces": False, "code_sessions": False, "code_events": False},
+            }
+        with self._lock:
+            counts = {}
+            for name in ("code_workspaces", "code_sessions", "code_events"):
+                cursor = self._conn.execute(f"SELECT COUNT(1) AS c FROM {name}")
+                counts[name] = int(cursor.fetchone()["c"])
+            cursor = self._conn.execute("SELECT version FROM schema_version LIMIT 1")
+            row = cursor.fetchone()
+        return {
+            "mode": "enabled" if counts else "unknown",
+            "schema_version": row["version"] if row else None,
+            "tables": {
+                "code_workspaces": True,
+                "code_sessions": True,
+                "code_events": True,
+            },
+            "counts": counts,
+            "workspace_count": counts.get("code_workspaces", 0),
+            "session_count": counts.get("code_sessions", 0),
+            "event_count": counts.get("code_events", 0),
+        }
+
+    def _code_list_rows(
+        self,
+        table: str,
+        *,
+        query: str,
+        params: tuple = (),
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        if not self._code_tables_exist():
+            return []
+        with self._lock:
+            cursor = self._conn.execute(query, params + (limit, offset))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def list_code_workspaces(
+        self,
+        owner: str | None = None,
+        q: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        filters = []
+        params: list[Any] = []
+        if owner:
+            filters.append("owner = ?")
+            params.append(owner)
+        if q:
+            filters.append("(name LIKE ? OR path LIKE ? OR repo_url LIKE ? OR repo LIKE ?)")
+            pattern = f"%{q}%"
+            params.extend([pattern, pattern, pattern, pattern])
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+        query = (
+            f"SELECT * FROM code_workspaces {where_sql} "
+            "ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        )
+        return self._code_list_rows("code_workspaces", query=query, params=tuple(params), limit=limit, offset=offset)
+
+    def list_code_sessions(
+        self,
+        workspace_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        filters = []
+        params: list[Any] = []
+        if workspace_id:
+            filters.append("workspace_id = ?")
+            params.append(workspace_id)
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+        query = (
+            f"SELECT * FROM code_sessions {where_sql} "
+            "ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        )
+        return self._code_list_rows("code_sessions", query=query, params=tuple(params), limit=limit, offset=offset)
+
+    def list_code_events(
+        self,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        filters = []
+        params: list[Any] = []
+        if workspace_id:
+            filters.append("workspace_id = ?")
+            params.append(workspace_id)
+        if session_id:
+            filters.append("session_id = ?")
+            params.append(session_id)
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+        query = (
+            f"SELECT * FROM code_events {where_sql} "
+            "ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        )
+        return self._code_list_rows("code_events", query=query, params=tuple(params), limit=limit, offset=offset)
 
     # =========================================================================
     # Message storage
@@ -2091,4 +2341,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

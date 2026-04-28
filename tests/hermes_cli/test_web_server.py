@@ -328,6 +328,88 @@ class TestWebServerEndpoints:
         resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
 
+    def test_code_status_is_public(self):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauth_client = TestClient(app)
+        resp = unauth_client.get("/api/code/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mode"] == "code_mode"
+        assert data["schema_version"] == 12
+        assert "state" in data
+
+    def test_code_workspaces_requires_auth(self):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauth_client = TestClient(app)
+        resp = unauth_client.get("/api/code/workspaces")
+
+        assert resp.status_code == 401
+
+    def test_code_workspaces_endpoint(self):
+        import time
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            now = time.time()
+            db._conn.execute(
+                """
+                INSERT INTO code_workspaces
+                    (id, name, owner, repo, path, git_remote, repo_url, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ws-1",
+                    "Hermes Agent",
+                    "nous",
+                    "hermes-agent",
+                    "/tmp/hermes-agent",
+                    "git@github.com:nous/hermes-agent.git",
+                    "https://github.com/nous/hermes-agent",
+                    now,
+                    now,
+                ),
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/code/workspaces?q=Hermes")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["workspaces"][0]["id"] == "ws-1"
+
+    def test_code_sessions_endpoint(self):
+        import time
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            now = time.time()
+            db._conn.execute(
+                """
+                INSERT INTO code_sessions
+                    (id, workspace_id, status, provider, branch, created_at, updated_at, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("cs-1", None, "active", "openrouter", "main", now, now, "{}"),
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/code/sessions")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["sessions"][0]["id"] == "cs-1"
+
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""
         # %2e%2e = ..

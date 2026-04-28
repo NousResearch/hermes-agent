@@ -835,6 +835,7 @@ def check_all_command_guards(command: str, env_type: str,
     """
     # Skip containers for both checks
     if env_type in ("docker", "singularity", "modal", "daytona"):
+        logger.warning("[approval] Container env_type detected, skipping all checks")
         return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands
@@ -1065,6 +1066,13 @@ def check_all_command_guards(command: str, env_type: str,
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
         # Return approval_required for backward compat.
+        logger.warning(
+            "[api_server] Approval fallback: session_key=%r, registered_cbs=%s. "
+            "Expected session_key=%r",
+            session_key,
+            list(_gateway_notify_cbs.keys()),
+            "api:",
+        )
         submit_pending(session_key, {
             "command": command,
             "pattern_key": primary_key,

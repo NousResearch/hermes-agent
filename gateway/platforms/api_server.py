@@ -591,6 +591,16 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        # Pending clarify/approval requests waiting for user response.
+        # Key: "chat" for clarify, approval_id for approvals
+        # Value: {"event": threading.Event(), "result": {"response": None}}
+        self._pending_inputs: Dict[str, dict] = {}
+        self._pending_approvals: Dict[str, dict] = {}
+
+        # Mark this as a gateway session so tools/approval.py enables
+        # the approval flow (otherwise dangerous commands auto-approve).
+        if not os.getenv("HERMES_GATEWAY_SESSION"):
+            os.environ["HERMES_GATEWAY_SESSION"] = "1"
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -701,16 +711,96 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
 
+    def _get_api_timeout(self, key: str, default: int) -> int:
+        """Read api_server-specific timeout from config.yaml, with fallback.
+
+        Priority: config.yaml api_server.<key> > default.
+        """
+        try:
+            from hermes_cli.config import load_config
+            val = load_config().get("api_server", {}).get(key)
+            if val is not None:
+                return int(val)
+        except Exception:
+            pass
+        return default
+
+    def _make_chat_clarify_callback(self, stream_q):
+        """Create a clarify callback for the chat completions endpoint.
+
+        Pushes a ``hermes.clarify_required`` SSE event and blocks the agent
+        thread until the user replies via POST /v1/runs/chat/input or timeout.
+        """
+        import threading
+
+        timeout = self._get_api_timeout("clarify_timeout", 120)
+
+        def _callback(question: str, choices: list = None) -> str:
+            try:
+                stream_q.put(("__clarify_required__", {
+                    "event": "hermes.clarify_required",
+                    "question": question,
+                    "choices": choices or [],
+                    "timestamp": time.time(),
+                }))
+            except Exception:
+                pass
+
+            event = threading.Event()
+            result_container = {"response": None}
+            self._pending_inputs["chat"] = {"event": event, "result": result_container}
+
+            if event.wait(timeout=timeout):
+                return result_container.get("response", "")
+            else:
+                self._pending_inputs.pop("chat", None)
+                return "用户超时未回复。请根据上下文自行判断并继续执行。"
+        return _callback
+
+    def _make_chat_approval_notify(self, stream_q, session_key: str):
+        """Create an approval notification callback for the gateway approval system.
+
+        When a dangerous command is detected, this pushes a
+        ``hermes.approval_required`` SSE event and blocks via the gateway
+        approval queue until the user responds via POST /v1/runs/chat/approve
+        or timeout.
+        """
+        from tools.approval import register_gateway_notify, unregister_gateway_notify
+
+        def _on_approval(approval_data: dict):
+            """Called from the agent thread when approval is needed."""
+            import uuid
+            approval_id = str(uuid.uuid4())
+            payload = {
+                "event": "hermes.approval_required",
+                "approval_id": approval_id,
+                "command": approval_data.get("command", ""),
+                "description": approval_data.get("description", ""),
+                "options": ["once", "session", "always", "deny"],
+                "timestamp": time.time(),
+            }
+            try:
+                stream_q.put(("__approval_required__", payload))
+            except Exception as e:
+                logger.error("[api_server] Failed to push approval to SSE queue: %s", e)
+
+            # Store the approval_id -> session_key mapping for resolution
+            self._pending_approvals[approval_id] = {"session_key": session_key}
+
+        return _on_approval
+
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
 
     def _create_agent(
         self,
+        model_override: str = None,
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         reasoning_callback=None,
+        clarify_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -728,7 +818,18 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        model = _resolve_gateway_model()
+        model = model_override or _resolve_gateway_model()
+
+        # If model is overridden via API, dynamically detect the correct provider
+        # so the system prompt and API routing reflect the requested model.
+        if model_override:
+            from hermes_cli.models import detect_provider_for_model
+            current_provider = runtime_kwargs.get("provider", "")
+            detected = detect_provider_for_model(model_override, current_provider)
+            if detected:
+                provider_id, mapped_model = detected
+                runtime_kwargs["provider"] = provider_id
+                model = mapped_model
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -756,6 +857,7 @@ class APIServerAdapter(BasePlatformAdapter):
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
             reasoning_callback=reasoning_callback,
+            clarify_callback=clarify_callback,
             reasoning_config=reasoning_config,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -978,6 +1080,43 @@ class APIServerAdapter(BasePlatformAdapter):
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             agent_ref = [None]
+
+            # Build a unique session key for this chat request so the
+            # gateway approval system can route correctly.
+            # NOTE: We use `session_id` only (without completion_id) here.
+            # This allows approval state (like "session" or "always") to be
+            # shared across multiple requests within the same conversation.
+            # Trade-off: Concurrent requests in the same session will share
+            # the same callback queue (serializing approvals).
+            chat_session_key = f"api:{session_id}"
+
+            # Clarify callback — blocks agent thread, pushes SSE event
+            chat_clarify_cb = self._make_chat_clarify_callback(_stream_q)
+
+            # Approval notification callback — bridges to gateway approval queue
+            chat_approval_notify = self._make_chat_approval_notify(_stream_q, chat_session_key)
+
+            # Set session context for approval mechanism.
+            # Must set BOTH the general session vars AND the approval-specific
+            # contextvar — tools/approval.py reads _approval_session_key FIRST
+            # before falling back to get_session_env.
+            # CRITICAL: contextvars do NOT propagate across executor threads.
+            # We must also set HERMES_SESSION_KEY in os.environ as a fallback
+            # that the approval system can read from the agent's executor thread.
+            from gateway.session_context import set_session_vars, clear_session_vars
+            _sess_tokens = set_session_vars(platform="api_server", session_key=chat_session_key)
+
+            # Save and set env vars for cross-thread propagation
+            _prev_session_key = os.environ.get("HERMES_SESSION_KEY", "")
+            _prev_gateway_session = os.environ.get("HERMES_GATEWAY_SESSION", "")
+            os.environ["HERMES_SESSION_KEY"] = chat_session_key
+            if not _prev_gateway_session:
+                os.environ["HERMES_GATEWAY_SESSION"] = "1"
+
+            from tools.approval import register_gateway_notify, set_current_session_key
+            _approval_token = set_current_session_key(chat_session_key)
+            register_gateway_notify(chat_session_key, chat_approval_notify)
+
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
                 conversation_history=history,
@@ -985,13 +1124,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
                 reasoning_callback=_on_reasoning,
+                clarify_callback=chat_clarify_cb,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
+                model_override=model_name,
             ))
 
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
+                chat_session_key=chat_session_key,
+                _sess_tokens=_sess_tokens,
+                _approval_token=_approval_token,
+                _prev_session_key=_prev_session_key,
+                _prev_gateway_session=_prev_gateway_session,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -1001,6 +1147,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                model_override=model_name,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1059,6 +1206,9 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
+        chat_session_key: str = None,
+        _sess_tokens=None, _approval_token=None,
+        _prev_session_key: str = None, _prev_gateway_session: str = None,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -1108,6 +1258,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 Tagged tuples with ``("__reasoning__", text)`` are sent as
                 ``delta.reasoning_content`` chunks, the standard OpenAI
                 field for model thinking tokens.
+                Tagged tuples with ``("__clarify_required__", payload)`` are
+                sent as a custom ``event: hermes.clarify_required`` SSE event.
+                Tagged tuples with ``("__approval_required__", payload)`` are
+                sent as a custom ``event: hermes.approval_required`` SSE event.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
@@ -1125,6 +1279,16 @@ class APIServerAdapter(BasePlatformAdapter):
                         }],
                     }
                     await response.write(f"data: {json.dumps(reasoning_chunk)}\n\n".encode())
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__clarify_required__":
+                    payload = item[1]
+                    await response.write(
+                        f"event: {payload.get('event')}\ndata: {json.dumps(payload)}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__approval_required__":
+                    payload = item[1]
+                    await response.write(
+                        f"event: {payload.get('event')}\ndata: {json.dumps(payload)}\n\n".encode()
+                    )
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
@@ -1182,6 +1346,31 @@ class APIServerAdapter(BasePlatformAdapter):
             }
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
+
+            # Cleanup: unregister approval callback and reset context tokens
+            if chat_session_key:
+                from tools.approval import unregister_gateway_notify, reset_current_session_key
+                from gateway.session_context import clear_session_vars
+                unregister_gateway_notify(chat_session_key)
+                if _approval_token is not None:
+                    try:
+                        reset_current_session_key(_approval_token)
+                    except Exception:
+                        pass
+                if _sess_tokens is not None:
+                    try:
+                        clear_session_vars(_sess_tokens)
+                    except Exception:
+                        pass
+                # Restore env vars
+                if _prev_session_key is not None:
+                    os.environ["HERMES_SESSION_KEY"] = _prev_session_key
+                else:
+                    os.environ.pop("HERMES_SESSION_KEY", None)
+                if _prev_gateway_session is not None:
+                    os.environ["HERMES_GATEWAY_SESSION"] = _prev_gateway_session
+                else:
+                    os.environ.pop("HERMES_GATEWAY_SESSION", None)
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             # Client disconnected mid-stream.  Interrupt the agent so it
             # stops making LLM API calls at the next loop iteration, then
@@ -1192,6 +1381,39 @@ class APIServerAdapter(BasePlatformAdapter):
                     agent.interrupt("SSE client disconnected")
                 except Exception:
                     pass
+
+            # Unblock any pending clarify/approval waits so the agent thread
+            # doesn't hang forever after client disconnect.
+            pending = self._pending_inputs.pop("chat", None)
+            if pending and not pending["event"].is_set():
+                pending["result"]["response"] = "用户已断开连接。请停止执行。"
+                pending["event"].set()
+
+            # Unregister the gateway approval notify callback and clean up
+            # approval context.
+            from tools.approval import unregister_gateway_notify, reset_current_session_key
+            from gateway.session_context import clear_session_vars
+            unregister_gateway_notify(chat_session_key)
+            if _approval_token is not None:
+                try:
+                    reset_current_session_key(_approval_token)
+                except Exception:
+                    pass
+            if _sess_tokens is not None:
+                try:
+                    clear_session_vars(_sess_tokens)
+                except Exception:
+                    pass
+            # Restore env vars on disconnect
+            if _prev_session_key is not None:
+                os.environ["HERMES_SESSION_KEY"] = _prev_session_key
+            else:
+                os.environ.pop("HERMES_SESSION_KEY", None)
+            if _prev_gateway_session is not None:
+                os.environ["HERMES_GATEWAY_SESSION"] = _prev_gateway_session
+            else:
+                os.environ.pop("HERMES_GATEWAY_SESSION", None)
+
             if not agent_task.done():
                 agent_task.cancel()
                 try:
@@ -2280,30 +2502,26 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         reasoning_callback=None,
+        clarify_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        model_override: str = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
-
-        Returns ``(result_dict, usage_dict)`` where *usage_dict* contains
-        ``input_tokens``, ``output_tokens`` and ``total_tokens``.
-
-        If *agent_ref* is a one-element list, the AIAgent instance is stored
-        at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
-        callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
-        another thread to stop in-progress LLM calls.
         """
         loop = asyncio.get_running_loop()
 
         def _run():
             agent = self._create_agent(
+                model_override=model_override,
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
                 reasoning_callback=reasoning_callback,
+                clarify_callback=clarify_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
@@ -2619,6 +2837,173 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return web.json_response({"run_id": run_id, "status": "stopping"})
 
+    # ------------------------------------------------------------------
+    # Human-in-the-Loop reply endpoints
+    # ------------------------------------------------------------------
+
+    async def _handle_chat_input(self, request: "web.Request") -> "web.Response":
+        """POST /v1/runs/chat/input — reply to a clarify question.
+
+        Unblocks the waiting agent thread with the user's response.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+            response = str(body.get("response", ""))
+        except Exception:
+            return web.json_response(
+                {"error": {"message": "Invalid JSON", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        pending = self._pending_inputs.get("chat")
+        if not pending:
+            return web.json_response(
+                {"error": {"message": "No pending clarify request", "type": "invalid_request_error"}},
+                status=404,
+            )
+
+        pending["result"]["response"] = response
+        pending["event"].set()
+        self._pending_inputs.pop("chat", None)
+        return web.json_response({"ok": True, "response": response})
+
+    async def _handle_chat_approve(self, request: "web.Request") -> "web.Response":
+        """POST /v1/runs/chat/approve — approve/deny a dangerous command.
+
+        Resolves the oldest pending approval for the session via the
+        gateway approval queue mechanism.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+            approval_id = str(body.get("approval_id", "")).strip()
+            action = str(body.get("action", "deny")).strip().lower()
+        except Exception:
+            return web.json_response(
+                {"error": {"message": "Invalid JSON", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        # Validate action
+        if action not in ("once", "session", "always", "deny"):
+            return web.json_response(
+                {"error": {"message": "Invalid action. Must be: once, session, always, deny", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        # Resolve via approval_id mapping
+        mapping = self._pending_approvals.pop(approval_id, None)
+        if mapping:
+            session_key = mapping["session_key"]
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(session_key, action)
+            if count > 0:
+                return web.json_response({"ok": True, "resolved": count})
+
+        return web.json_response(
+            {"error": {"message": "Approval not found or already resolved", "type": "invalid_request_error"}},
+            status=404,
+        )
+
+    async def _handle_delete_sessions(self, request: "web.Request") -> "web.Response":
+        """DELETE /v1/sessions — Batch delete sessions from state.db.
+        
+        Accepts a JSON body with a list of session_ids.
+        Useful for frontend synchronization and bulk cleanup.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+            session_ids = body.get("session_ids", [])
+            if not isinstance(session_ids, list) or not session_ids:
+                return web.json_response(
+                    {"error": {"message": "Invalid or empty 'session_ids' list", "type": "invalid_request_error"}},
+                    status=400,
+                )
+        except Exception:
+            return web.json_response(
+                {"error": {"message": "Invalid JSON", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(
+                {"error": {"message": "Session DB unavailable", "type": "server_error"}},
+                status=500,
+            )
+
+        try:
+            # Note: 'messages' table has a FK to 'sessions', so we must delete messages first.
+            placeholders = ",".join("?" * len(session_ids))
+            params = tuple(session_ids)
+            
+            # 1. Delete associated messages
+            db._conn.execute(f"DELETE FROM messages WHERE session_id IN ({placeholders})", params)
+            
+            # 2. Delete sessions
+            cursor = db._conn.execute(f"DELETE FROM sessions WHERE id IN ({placeholders})", params)
+            
+            db._conn.commit()
+            deleted_count = cursor.rowcount
+            logger.info("[api_server] Deleted %d/%d sessions", deleted_count, len(session_ids))
+            return web.json_response({
+                "status": "success",
+                "deleted_count": deleted_count,
+            })
+        except Exception as e:
+            logger.error("[api_server] Failed to batch delete sessions: %s", e, exc_info=True)
+            return web.json_response(
+                {"error": {"message": "Failed to delete sessions", "type": "server_error"}},
+                status=500,
+            )
+
+    async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions — List all sessions from state.db.
+        
+        Returns a list of session IDs, titles, and timestamps.
+        Useful for frontend synchronization and debugging.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response({"sessions": [], "message": "Session DB unavailable"})
+
+        try:
+            cursor = db._conn.execute(
+                "SELECT id, title, started_at, message_count FROM sessions ORDER BY started_at DESC"
+            )
+            rows = cursor.fetchall()
+            sessions = [
+                {
+                    "id": row[0],
+                    "title": row[1],
+                    "started_at": row[2],
+                    "message_count": row[3],
+                }
+                for row in rows
+            ]
+            return web.json_response({"sessions": sessions, "total": len(sessions)})
+        except Exception as e:
+            logger.error("[api_server] Failed to list sessions: %s", e, exc_info=True)
+            return web.json_response(
+                {"error": {"message": "Failed to list sessions", "type": "server_error"}},
+                status=500,
+            )
+
     async def _sweep_orphaned_runs(self) -> None:
         """Periodically clean up run streams that were never consumed."""
         while True:
@@ -2671,6 +3056,12 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # Human-in-the-Loop reply endpoints for chat completions
+            self._app.router.add_post("/v1/runs/chat/input", self._handle_chat_input)
+            self._app.router.add_post("/v1/runs/chat/approve", self._handle_chat_approve)
+            # Session management endpoints
+            self._app.router.add_get("/v1/sessions", self._handle_list_sessions)
+            self._app.router.add_delete("/v1/sessions", self._handle_delete_sessions)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

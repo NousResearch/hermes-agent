@@ -63,6 +63,7 @@ AUTHOR_MAP = {
     "130918800+devorun@users.noreply.github.com": "devorun",
     "surat.s@itm.kmutnb.ac.th": "beesrsj2500",
     "beesr@bee.localdomain": "beesrsj2500",
+    "mtf201013@gmail.com": "ma-pony",
     "sonoyuncudmr@gmail.com": "Sonoyunchu",
     "maks.mir@yahoo.com": "say8hi",
     "web3blind@users.noreply.github.com": "web3blind",

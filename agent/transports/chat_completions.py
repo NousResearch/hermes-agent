@@ -18,6 +18,58 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
+def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
+    """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig.
+
+    Gemini native/cloud-code adapters do not read ``extra_body.reasoning``.
+    They only inspect ``extra_body.thinking_config`` / ``thinkingConfig`` and
+    then request thought parts with ``includeThoughts`` enabled.
+    """
+    if reasoning_config is None or not isinstance(reasoning_config, dict):
+        return None
+
+    if reasoning_config.get("enabled") is False:
+        # Gemini can hide thought parts even when internal thinking still
+        # happens; omit thinkingLevel to avoid model-specific validation quirks.
+        return {"includeThoughts": False}
+
+    effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
+    if effort == "none":
+        return {"includeThoughts": False}
+
+    thinking_config: Dict[str, Any] = {"includeThoughts": True}
+    normalized_model = (model or "").strip().lower()
+    if normalized_model.startswith("google/"):
+        normalized_model = normalized_model.split("/", 1)[1]
+
+    # Gemini 2.5 accepts thinkingBudget; don't guess a budget from Hermes'
+    # coarse effort levels. ``includeThoughts`` alone is enough to surface
+    # thought parts without risking request validation errors.
+    if normalized_model.startswith("gemini-2.5-"):
+        return thinking_config
+
+    if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
+        effort = "medium"
+
+    # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
+    # is stricter (low/high). Clamp Hermes' wider effort set to what each
+    # family accepts so we never forward an undocumented level verbatim.
+    if normalized_model.startswith(("gemini-3", "gemini-3.1")):
+        if "flash" in normalized_model:
+            if effort in {"minimal", "low"}:
+                thinking_config["thinkingLevel"] = "low"
+            elif effort in {"high", "xhigh"}:
+                thinking_config["thinkingLevel"] = "high"
+            else:
+                thinking_config["thinkingLevel"] = "medium"
+        elif "pro" in normalized_model:
+            thinking_config["thinkingLevel"] = (
+                "high" if effort in {"high", "xhigh"} else "low"
+            )
+
+    return thinking_config
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -188,6 +240,7 @@ class ChatCompletionsTransport(ProviderTransport):
         anthropic_max_out = params.get("anthropic_max_output")
         is_nvidia_nim = params.get("is_nvidia_nim", False)
         is_kimi = params.get("is_kimi", False)
+        is_tokenhub = params.get("is_tokenhub", False)
         reasoning_config = params.get("reasoning_config")
 
         if ephemeral is not None and max_tokens_fn:
@@ -219,12 +272,28 @@ class ChatCompletionsTransport(ProviderTransport):
                         _kimi_effort = _e
                 api_kwargs["reasoning_effort"] = _kimi_effort
 
+        # Tencent TokenHub: top-level reasoning_effort (unless thinking disabled)
+        if is_tokenhub:
+            _tokenhub_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _tokenhub_thinking_off:
+                _tokenhub_effort = "high"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e in ("low", "medium", "high"):
+                        _tokenhub_effort = _e
+                api_kwargs["reasoning_effort"] = _tokenhub_effort
+
         # extra_body assembly
         extra_body: Dict[str, Any] = {}
 
         is_openrouter = params.get("is_openrouter", False)
         is_nous = params.get("is_nous", False)
         is_github_models = params.get("is_github_models", False)
+        provider_name = str(params.get("provider_name") or "").strip().lower()
 
         provider_prefs = params.get("provider_preferences")
         if provider_prefs and is_openrouter:
@@ -276,6 +345,11 @@ class ChatCompletionsTransport(ProviderTransport):
 
         if is_qwen:
             extra_body["vl_high_resolution_images"] = True
+
+        if provider_name in {"gemini", "google-gemini-cli"}:
+            thinking_config = _build_gemini_thinking_config(model, reasoning_config)
+            if thinking_config:
+                extra_body["thinking_config"] = thinking_config
 
         # Merge any pre-built extra_body additions
         additions = params.get("extra_body_additions")

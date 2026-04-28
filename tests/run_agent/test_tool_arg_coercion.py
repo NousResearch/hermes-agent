@@ -255,6 +255,35 @@ class TestCoerceToolArgs:
             result = coerce_tool_args("test_tool", args)
             assert result["config"] == {"max": 50}
 
+    def test_coerces_string_null_for_nullable_object_arg(self):
+        """Models often emit literal "null" for optional MCP object args."""
+        schema = self._mock_schema({
+            "setting": {
+                "type": "object",
+                "additionalProperties": True,
+                "nullable": True,
+                "default": None,
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"setting": "null"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["setting"] is None
+
+    def test_coerces_string_null_for_nullable_array_arg(self):
+        schema = self._mock_schema({
+            "stages": {
+                "type": "array",
+                "items": {"type": "object"},
+                "nullable": True,
+                "default": None,
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"stages": "null"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["stages"] is None
+
     def test_invalid_json_array_preserved_as_string(self):
         """If the string isn't valid JSON, pass it through — let the tool decide."""
         schema = self._mock_schema({"items": {"type": "array"}})

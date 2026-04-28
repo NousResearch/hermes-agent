@@ -78,7 +78,15 @@ const CHAT_NAV_ITEM: NavItem = {
   icon: Terminal,
 };
 
-/** Built-in routes except /chat (only with `hermes dashboard --tui`). */
+/**
+ * Built-in routes except /chat.  Chat is rendered persistently (outside
+ * <Routes>) when embedded — see the persistent chat host block rendered
+ * inline near the bottom of this file — so the PTY child, WebSocket,
+ * and xterm instance survive when the user visits another tab and comes
+ * back.  A `display:none` toggle hides the terminal without unmounting.
+ * Routing still owns the URL so /chat deep-links, browser back/forward,
+ * and nav highlight keep working.
+ */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
@@ -90,6 +98,14 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/env": EnvPage,
   "/docs": DocsPage,
 };
+
+// Route placeholder for /chat.  The persistent ChatPage host (rendered
+// outside <Routes> when embedded chat is on) paints on top; this empty
+// element just claims the path so the `*` catch-all redirect doesn't
+// fire when the user navigates to /chat.
+function ChatRouteSink() {
+  return null;
+}
 
 const BUILTIN_NAV_REST: NavItem[] = [
   {
@@ -240,7 +256,7 @@ function buildRoutes(
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
-  const { manifests } = usePlugins();
+  const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
@@ -249,10 +265,32 @@ export default function App() {
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
 
+  // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
+  // in its manifest.  When one does, `buildRoutes` already swaps the route
+  // element for <PluginPage /> — but we also have to suppress the
+  // persistent ChatPage host below, or the plugin's page and the built-in
+  // terminal would paint on top of each other.  The override is niche
+  // (nothing ships overriding /chat today) but it's an advertised
+  // extension point, so preserve the pre-persistence contract: when a
+  // plugin owns /chat, the built-in chat UI is entirely absent.
+  //
+  // Waiting on `pluginsLoading` is load-bearing: manifests arrive
+  // asynchronously from /api/dashboard/plugins, so on initial render
+  // `chatOverriddenByPlugin` is always false.  Without the loading
+  // gate, the persistent host would mount, spawn a PTY, and THEN get
+  // yanked out from under the user when the plugin's manifest resolves
+  // — killing the session mid-paint.  Delaying host mount by the
+  // plugin-load window (typically <50ms, worst case 2s safety timeout)
+  // is the cheaper trade-off.
+  const chatOverriddenByPlugin = useMemo(
+    () => manifests.some((m) => m.tab.override === "/chat"),
+    [manifests],
+  );
+
   const builtinRoutes = useMemo(
     () => ({
       ...BUILTIN_ROUTES_CORE,
-      ...(embeddedChat ? { "/chat": ChatPage } : {}),
+      ...(embeddedChat ? { "/chat": ChatRouteSink } : {}),
     }),
     [embeddedChat],
   );
@@ -519,6 +557,60 @@ export default function App() {
                     element={<Navigate to="/sessions" replace />}
                   />
                 </Routes>
+
+                {/*
+                  Persistent chat host: always mounted when `hermes dashboard
+                  --tui` is active, visibility toggled by route.  Keeping the
+                  tree alive preserves the xterm instance, its WebSocket, and
+                  the PTY child that backs the TUI session — so navigating to
+                  another tab and returning lands the user in the same
+                  conversation instead of spawning a fresh session.
+
+                  The host sits alongside <Routes> (not inside one) because
+                  React Router unmounts route elements on path change, which
+                  is exactly the destructive lifecycle we're avoiding.
+
+                  Trade-off worth knowing about: while hidden, ChatPage still
+                  holds a PTY child + WebSocket + xterm instance for the
+                  dashboard's full lifetime.  The WS keeps delivering bytes
+                  and xterm keeps parsing them into a display:none host
+                  (cheap — no paint work, but not free).  If this becomes a
+                  resource problem we can pause `term.write` when !isActive
+                  or idle-disconnect after N minutes hidden; neither is
+                  shipped today.
+                */}
+                {embeddedChat && !chatOverriddenByPlugin && (
+                  pluginsLoading ? (
+                    // Direct /chat deep-link: plugin manifests haven't resolved
+                    // yet, so we can't tell if a plugin is going to claim this
+                    // route.  Show a lightweight placeholder instead of a
+                    // blank page.  Typical wait is <50ms; worst case is the
+                    // 2s plugin-registration safety timeout.
+                    isChatRoute ? (
+                      <div
+                        className="flex min-h-0 min-w-0 flex-1 items-center justify-center"
+                        aria-busy="true"
+                        aria-live="polite"
+                      >
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                          <span>Loading chat…</span>
+                        </div>
+                      </div>
+                    ) : null
+                  ) : (
+                    <div
+                      data-chat-active={isChatRoute ? "true" : "false"}
+                      className={cn(
+                        "min-h-0 min-w-0",
+                        isChatRoute ? "flex flex-1 flex-col" : "hidden",
+                      )}
+                      aria-hidden={!isChatRoute}
+                    >
+                      <ChatPage isActive={isChatRoute} />
+                    </div>
+                  )
+                )}
               </div>
               <PluginSlot name="post-main" />
             </div>

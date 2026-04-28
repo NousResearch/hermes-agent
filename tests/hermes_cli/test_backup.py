@@ -1462,3 +1462,103 @@ class TestRunPreUpdateBackup:
         _run_pre_update_backup(Namespace(no_backup=True, backup=False))
         out = capsys.readouterr().out
         assert "skipped (--no-backup)" in out
+
+
+# ---------------------------------------------------------------------------
+# Pre-migration backup (hermes claw migrate safety net)
+# ---------------------------------------------------------------------------
+
+class TestPreMigrationBackup:
+    """Tests for create_pre_migration_backup — the auto-backup
+    ``hermes claw migrate`` runs before mutating ~/.hermes/."""
+
+    @pytest.fixture
+    def hermes_home(self, tmp_path):
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+        return root
+
+    def test_creates_backup_under_backups_dir(self, hermes_home):
+        from hermes_cli.backup import create_pre_migration_backup
+        out = create_pre_migration_backup(hermes_home=hermes_home)
+        assert out is not None
+        assert out.exists()
+        # Shares the backups/ directory with pre-update backups so `hermes
+        # import` and the update-backup listing both pick them up.
+        assert out.parent == hermes_home / "backups"
+        assert out.name.startswith("pre-migration-")
+        assert out.suffix == ".zip"
+
+    def test_backup_uses_shared_exclusion_rules(self, hermes_home):
+        """Pre-migration backup reuses the same exclusion rules as
+        ``hermes backup`` / ``create_pre_update_backup`` — no drift."""
+        from hermes_cli.backup import create_pre_migration_backup
+        out = create_pre_migration_backup(hermes_home=hermes_home)
+        assert out is not None
+        with zipfile.ZipFile(out) as zf:
+            names = set(zf.namelist())
+        # User data present
+        assert "config.yaml" in names
+        assert ".env" in names
+        assert "skills/my-skill/SKILL.md" in names
+        # Same exclusions as the shared helper
+        assert not any(n.startswith("hermes-agent/") for n in names)
+        assert not any("__pycache__" in n for n in names)
+        assert "gateway.pid" not in names
+
+    def test_restorable_with_hermes_import(self, hermes_home, tmp_path):
+        """The zip produced by pre-migration backup must be a valid Hermes
+        backup — `hermes import` should accept it."""
+        from hermes_cli.backup import create_pre_migration_backup, _validate_backup_zip
+        out = create_pre_migration_backup(hermes_home=hermes_home)
+        assert out is not None
+        with zipfile.ZipFile(out) as zf:
+            valid, _reason = _validate_backup_zip(zf)
+        assert valid, "pre-migration zip failed _validate_backup_zip"
+
+    def test_does_not_recurse_into_prior_backups(self, hermes_home):
+        from hermes_cli.backup import create_pre_migration_backup
+        out1 = create_pre_migration_backup(hermes_home=hermes_home)
+        assert out1 is not None
+        out2 = create_pre_migration_backup(hermes_home=hermes_home)
+        assert out2 is not None
+        with zipfile.ZipFile(out2) as zf:
+            names = zf.namelist()
+        assert not any(n.startswith("backups/") for n in names)
+
+    def test_rotation_keeps_only_n(self, hermes_home):
+        import time as _t
+        from hermes_cli.backup import create_pre_migration_backup
+
+        created = []
+        for _ in range(7):
+            out = create_pre_migration_backup(hermes_home=hermes_home, keep=3)
+            if out is not None:
+                created.append(out)
+            _t.sleep(1.05)  # timestamp resolution
+
+        remaining = sorted((hermes_home / "backups").glob("pre-migration-*.zip"))
+        assert len(remaining) <= 3, f"expected <=3 backups retained, got {len(remaining)}"
+
+    def test_missing_hermes_home_returns_none(self, tmp_path):
+        """Fresh install with no ~/.hermes yet — nothing to back up."""
+        from hermes_cli.backup import create_pre_migration_backup
+        missing = tmp_path / "does-not-exist"
+        out = create_pre_migration_backup(hermes_home=missing)
+        assert out is None
+
+    def test_does_not_touch_pre_update_backups(self, hermes_home):
+        """Pre-migration rotation must only prune pre-migration-*.zip files,
+        leaving pre-update-*.zip backups untouched."""
+        from hermes_cli.backup import create_pre_update_backup, create_pre_migration_backup
+        update_backup = create_pre_update_backup(hermes_home=hermes_home, keep=5)
+        assert update_backup is not None and update_backup.exists()
+        # Spin up a lot of migration backups with keep=1
+        import time as _t
+        for _ in range(3):
+            out = create_pre_migration_backup(hermes_home=hermes_home, keep=1)
+            assert out is not None
+            _t.sleep(1.05)
+        # Update backup must still be there
+        assert update_backup.exists(), "pre-migration rotation wrongly pruned the pre-update backup"

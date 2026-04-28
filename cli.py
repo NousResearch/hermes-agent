@@ -6000,6 +6000,7 @@ class HermesCLI:
             platform_status = {
                 Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
                 Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
+                Platform.SLACK: ("Slack", "SLACK_BOT_TOKEN"),
                 Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED"),
             }
             
@@ -6231,6 +6232,8 @@ class HermesCLI:
             self._console_print(f"  Status bar {state}")
         elif canonical == "verbose":
             self._toggle_verbose()
+        elif canonical == "footer":
+            self._handle_footer_command(cmd_original)
         elif canonical == "yolo":
             self._toggle_yolo()
         elif canonical == "reasoning":
@@ -6858,6 +6861,58 @@ class HermesCLI:
         if self._apply_tui_skin_style():
             print("  Prompt + TUI colors updated.")
 
+    def _handle_footer_command(self, cmd_original: str) -> None:
+        """Toggle or inspect ``display.runtime_footer.enabled`` from the CLI.
+
+        Usage:
+            /footer           → toggle
+            /footer on|off    → explicit
+            /footer status    → show current state
+        """
+        from hermes_cli.config import load_config
+        from hermes_cli.colors import Colors as _Colors
+
+        # Parse arg
+        arg = ""
+        try:
+            parts = (cmd_original or "").strip().split(None, 1)
+            if len(parts) > 1:
+                arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        cfg = load_config() or {}
+        footer_cfg = ((cfg.get("display") or {}).get("runtime_footer") or {})
+        current = bool(footer_cfg.get("enabled", False))
+        fields = footer_cfg.get("fields") or ["model", "context_pct", "cwd"]
+
+        if arg in ("status", "?"):
+            state = "ON" if current else "OFF"
+            _cprint(
+                f"  {_Colors.BOLD}Runtime footer:{_Colors.RESET} {state}\n"
+                f"  Fields: {', '.join(fields)}"
+            )
+            return
+
+        if arg in ("on", "enable", "true", "1"):
+            new_state = True
+        elif arg in ("off", "disable", "false", "0"):
+            new_state = False
+        elif arg == "":
+            new_state = not current
+        else:
+            _cprint("  Usage: /footer [on|off|status]")
+            return
+
+        if save_config_value("display.runtime_footer.enabled", new_state):
+            state = (
+                f"{_Colors.GREEN}ON{_Colors.RESET}" if new_state
+                else f"{_Colors.DIM}OFF{_Colors.RESET}"
+            )
+            _cprint(f"  Runtime footer: {state}")
+        else:
+            _cprint("  Failed to save runtime_footer setting to config.yaml")
+
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off."""
         cycle = ["off", "new", "all", "verbose"]
@@ -7098,9 +7153,15 @@ class HermesCLI:
                 else:
                     print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
 
+                # Pass None as system_message so _compress_context rebuilds
+                # the system prompt from scratch via _build_system_prompt(None).
+                # Passing _cached_system_prompt caused duplication because
+                # _build_system_prompt appends system_message to prompt_parts
+                # which already contain the agent identity — resulting in the
+                # identity block appearing twice (issue #15281).
                 compressed, _ = self.agent._compress_context(
                     original_history,
-                    self.agent._cached_system_prompt or "",
+                    None,
                     approx_tokens=approx_tokens,
                     focus_topic=focus_topic or None,
                 )
@@ -8813,6 +8874,13 @@ class HermesCLI:
                         response,
                         self.conversation_history,
                         failure_callback=_title_failure_cb,
+                        main_runtime={
+                            "model": self.model,
+                            "provider": self.provider,
+                            "base_url": self.base_url,
+                            "api_key": self.api_key,
+                            "api_mode": self.api_mode,
+                        },
                     )
                 except Exception:
                     pass

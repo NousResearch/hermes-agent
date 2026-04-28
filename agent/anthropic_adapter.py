@@ -202,19 +202,33 @@ def _forbids_sampling_params(model: str) -> bool:
 
 
 # Beta headers for enhanced features (sent with ALL auth types).
-# As of Opus 4.7 (2026-04-16), both of these are GA on Claude 4.6+ — the
+# As of Opus 4.7 (2026-04-16), the first two are GA on Claude 4.6+ — the
 # beta headers are still accepted (harmless no-op) but not required. Kept
 # here so older Claude (4.5, 4.1) + third-party Anthropic-compat endpoints
 # that still gate on the headers continue to get the enhanced features.
-# Migration guide: remove these if you no longer support ≤4.5 models.
+#
+# ``context-1m-2025-08-07`` unlocks the 1M context window on Claude Opus 4.6/4.7
+# and Sonnet 4.6 when served via AWS Bedrock or Azure AI Foundry. 1M is GA on
+# native Anthropic (api.anthropic.com) for Opus 4.6+, but Bedrock/Azure still
+# gate it behind this beta header as of 2026-04 — without it Bedrock caps Opus
+# at 200K even though model_metadata.py advertises 1M. The header is a harmless
+# no-op on endpoints where 1M is GA.
+#
+# Migration guide: remove these if you no longer support ≤4.5 models or once
+# Bedrock/Azure promote 1M to GA.
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
+    "context-1m-2025-08-07",
 ]
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
 # fall back to the provider's default response path.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
+# 1M context beta — see comment on _COMMON_BETAS above. Stripped for
+# Bearer-auth (MiniMax) endpoints since they host their own models and
+# unknown Anthropic beta headers risk request rejection.
+_CONTEXT_1M_BETA = "context-1m-2025-08-07"
 
 # Fast mode beta — enables the ``speed: "fast"`` request parameter for
 # significantly higher output token throughput on Opus 4.6 (~2.5x).
@@ -228,10 +242,11 @@ _OAUTH_ONLY_BETAS = [
     "oauth-2025-04-20",
 ]
 
-# Claude Code identity — required for OAuth requests to be routed correctly.
-# Without these, Anthropic's infrastructure intermittently 500s OAuth traffic.
-# The version must stay reasonably current — Anthropic rejects OAuth requests
-# when the spoofed user-agent version is too far behind the actual release.
+# Claude Code version — sent on OAuth token-exchange / refresh requests
+# (platform.claude.com/v1/oauth/token) as the client's user-agent. Anthropic's
+# OAuth flow validates the UA and may reject requests with a version that's
+# too old, so detecting dynamically keeps users on a current Claude Code
+# install from hitting stale-version errors during login/refresh.
 _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 _claude_code_version_cache: Optional[str] = None
 
@@ -239,9 +254,9 @@ _claude_code_version_cache: Optional[str] = None
 def _detect_claude_code_version() -> str:
     """Detect the installed Claude Code version, fall back to a static constant.
 
-    Anthropic's OAuth infrastructure validates the user-agent version and may
-    reject requests with a version that's too old.  Detecting dynamically means
-    users who keep Claude Code updated never hit stale-version 400s.
+    Used only by the OAuth token-exchange / refresh flow
+    (``platform.claude.com/v1/oauth/token``). The Messages API client no
+    longer sends a claude-cli user-agent.
     """
     import subprocess as _sp
 
@@ -261,12 +276,13 @@ def _detect_claude_code_version() -> str:
     return _CLAUDE_CODE_VERSION_FALLBACK
 
 
-_CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
-_MCP_TOOL_PREFIX = "mcp_"
-
-
 def _get_claude_code_version() -> str:
-    """Lazily detect the installed Claude Code version when OAuth headers need it."""
+    """Lazily detect the installed Claude Code version for OAuth flow headers.
+
+    Used only on the OAuth token-exchange and refresh endpoints
+    (``platform.claude.com/v1/oauth/token``). The Messages API client does
+    not send a claude-cli user-agent.
+    """
     global _claude_code_version_cache
     if _claude_code_version_cache is None:
         _claude_code_version_cache = _detect_claude_code_version()
@@ -357,9 +373,14 @@ def _common_betas_for_base_url(base_url: str | None) -> list[str]:
     that include Anthropic's ``fine-grained-tool-streaming`` beta — every
     tool-use message triggers a connection error.  Strip that beta for
     Bearer-auth endpoints while keeping all other betas intact.
+
+    The ``context-1m-2025-08-07`` beta is also stripped for Bearer-auth
+    endpoints — MiniMax hosts its own models, not Claude, so the header is
+    irrelevant at best and risks request rejection at worst.
     """
     if _requires_bearer_auth(base_url):
-        return [b for b in _COMMON_BETAS if b != _TOOL_STREAMING_BETA]
+        _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
+        return [b for b in _COMMON_BETAS if b not in _stripped]
     return _COMMON_BETAS
 
 
@@ -430,15 +451,21 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
     elif _is_oauth_token(api_key):
-        # OAuth access token / setup-token → Bearer auth + Claude Code identity.
-        # Anthropic routes OAuth requests based on user-agent and headers;
-        # without Claude Code's fingerprint, requests get intermittent 500s.
-        all_betas = common_betas + _OAUTH_ONLY_BETAS
+        # OAuth access token / setup-token → Bearer auth + OAuth-only betas.
+        # The OAuth-specific beta headers are still required by Anthropic's
+        # OAuth-gated Messages API path; the Claude Code user-agent / x-app
+        # spoofing is deliberately NOT sent — Hermes identifies as itself.
+        #
+        # ``context-1m-2025-08-07`` is stripped here: Anthropic rejects
+        # OAuth requests that carry it with
+        #   "This authentication style is incompatible with the long
+        #    context beta header."
+        # Subscription-gated OAuth traffic gets the 200K default window.
+        oauth_safe_common = [b for b in common_betas if b != _CONTEXT_1M_BETA]
+        all_betas = oauth_safe_common + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
-            "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
-            "x-app": "cli",
         }
     else:
         # Regular API key → x-api-key header + common betas
@@ -455,6 +482,13 @@ def build_anthropic_bedrock_client(region: str):
     Uses the Anthropic SDK's native Bedrock adapter, which provides full
     Claude feature parity: prompt caching, thinking budgets, adaptive
     thinking, fast mode — features not available via the Converse API.
+
+    Attaches the common Anthropic beta headers as client-level defaults so
+    that Bedrock-hosted Claude models get the same enhanced features as
+    native Anthropic. The ``context-1m-2025-08-07`` beta in particular
+    unlocks the 1M context window for Opus 4.6/4.7 on Bedrock — without
+    it, Bedrock caps these models at 200K even though the Anthropic API
+    serves them with 1M natively.
 
     Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
     """
@@ -473,6 +507,7 @@ def build_anthropic_bedrock_client(region: str):
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,
         timeout=Timeout(timeout=900.0, connect=10.0),
+        default_headers={"anthropic-beta": ",".join(_COMMON_BETAS)},
     )
 
 
@@ -488,9 +523,6 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    import platform
-    import subprocess
-
     if platform.system() != "Darwin":
         return None
 
@@ -776,17 +808,45 @@ def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
     Priority:
-      1. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
-      2. CLAUDE_CODE_OAUTH_TOKEN env var
-      3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
+      1. Hermes credential pool (``~/.hermes/auth.json`` →
+         ``credential_pool.anthropic``) — OAuth tokens minted by Hermes'
+         own PKCE login flow. Entries are auto-refreshed when near
+         expiry. Env-sourced pool entries (``source="env:..."``) are
+         skipped here so the env-var priority logic below still runs.
+      2. ANTHROPIC_TOKEN env var (OAuth/setup token saved by Hermes)
+      3. CLAUDE_CODE_OAUTH_TOKEN env var
+      4. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
-      4. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
+    # 1. Hermes credential pool — the live source of truth for tokens
+    #    minted via ``hermes login anthropic`` / the dashboard PKCE flow.
+    #    ``select()`` picks the best available entry and refreshes it if
+    #    it's near expiry, so callers always get a fresh token.
+    #
+    #    Skip env-sourced pool entries (``env:ANTHROPIC_TOKEN``, etc.) —
+    #    those are passthroughs of the env var, and the env-var branches
+    #    below have richer priority logic (``_prefer_refreshable_claude_code_token``)
+    #    that can upgrade a static env OAuth token to a refreshed
+    #    Claude Code token. Letting the pool win here would short-circuit
+    #    that upgrade.
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool("anthropic")
+        entry = pool.select()
+        if entry and entry.access_token and not entry.source.startswith("env:"):
+            return entry.access_token
+    except Exception as exc:
+        # Pool lookup is best-effort — fall through to env/file sources
+        # if anything goes wrong (e.g. auth.json corruption during a
+        # concurrent write).
+        logger.debug("Credential-pool lookup failed for anthropic: %s", exc)
+
     creds = read_claude_code_credentials()
 
-    # 1. Hermes-managed OAuth/setup token env var
+    # 2. Hermes-managed OAuth/setup token env var
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()
     if token:
         preferred = _prefer_refreshable_claude_code_token(token, creds)
@@ -794,7 +854,7 @@ def resolve_anthropic_token() -> Optional[str]:
             return preferred
         return token
 
-    # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
+    # 3. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
     cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if cc_token:
         preferred = _prefer_refreshable_claude_code_token(cc_token, creds)
@@ -802,12 +862,12 @@ def resolve_anthropic_token() -> Optional[str]:
             return preferred
         return cc_token
 
-    # 3. Claude Code credential file
+    # 4. Claude Code credential file
     resolved_claude_token = _resolve_claude_code_token_from_credentials(creds)
     if resolved_claude_token:
         return resolved_claude_token
 
-    # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:
@@ -1054,6 +1114,33 @@ def _sanitize_tool_id(tool_id: str) -> str:
     return sanitized or "tool_0"
 
 
+def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
+    """Normalize tool schemas before sending them to Anthropic.
+
+    Anthropic's tool schema validator rejects nullable unions such as
+    ``anyOf: [{"type": "string"}, {"type": "null"}]`` that Pydantic/MCP
+    commonly emits for optional fields. Tool optionality is represented by
+    the parent ``required`` array, so we delegate to the shared
+    ``strip_nullable_unions`` helper to collapse nullable unions to the
+    non-null branch while preserving metadata like description/default.
+
+    ``keep_nullable_hint=False`` because the Anthropic validator does not
+    recognize the OpenAPI-style ``nullable: true`` extension and strict
+    schema-to-grammar converters may reject unknown keywords.
+    """
+    if not schema:
+        return {"type": "object", "properties": {}}
+
+    from tools.schema_sanitizer import strip_nullable_unions
+
+    normalized = strip_nullable_unions(schema, keep_nullable_hint=False)
+    if not isinstance(normalized, dict):
+        return {"type": "object", "properties": {}}
+    if normalized.get("type") == "object" and not isinstance(normalized.get("properties"), dict):
+        normalized = {**normalized, "properties": {}}
+    return normalized
+
+
 def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     """Convert OpenAI tool definitions to Anthropic format."""
     if not tools:
@@ -1064,7 +1151,9 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
         result.append({
             "name": fn.get("name", ""),
             "description": fn.get("description", ""),
-            "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+            "input_schema": _normalize_tool_input_schema(
+                fn.get("parameters", {"type": "object", "properties": {}})
+            ),
         })
     return result
 
@@ -1543,8 +1632,10 @@ def build_anthropic_kwargs(
     "max_tokens too large given prompt" errors and retry with a smaller cap
     (see parse_available_output_tokens_from_error + _ephemeral_max_output_tokens).
 
-    When *is_oauth* is True, applies Claude Code compatibility transforms:
-    system prompt prefix, tool name prefixing, and prompt sanitization.
+    When *is_oauth* is True, enables the OAuth-only beta headers required by
+    Anthropic's subscription-gated Messages endpoint (fast-mode branch only;
+    the default headers are set by build_anthropic_client). No system-prompt
+    or tool-name rewriting is performed — Hermes identifies as itself.
 
     When *preserve_dots* is True, model name dots are not converted to hyphens
     (for Alibaba/DashScope anthropic-compatible endpoints: qwen3.5-plus).
@@ -1577,45 +1668,11 @@ def build_anthropic_kwargs(
     if context_length and effective_max_tokens > context_length:
         effective_max_tokens = max(context_length - 1, 1)
 
-    # ── OAuth: Claude Code identity ──────────────────────────────────
-    if is_oauth:
-        # 1. Prepend Claude Code system prompt identity
-        cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
-        if isinstance(system, list):
-            system = [cc_block] + system
-        elif isinstance(system, str) and system:
-            system = [cc_block, {"type": "text", "text": system}]
-        else:
-            system = [cc_block]
-
-        # 2. Sanitize system prompt — replace product name references
-        #    to avoid Anthropic's server-side content filters.
-        for block in system:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text", "")
-                text = text.replace("Hermes Agent", "Claude Code")
-                text = text.replace("Hermes agent", "Claude Code")
-                text = text.replace("hermes-agent", "claude-code")
-                text = text.replace("Nous Research", "Anthropic")
-                block["text"] = text
-
-        # 3. Prefix tool names with mcp_ (Claude Code convention)
-        if anthropic_tools:
-            for tool in anthropic_tools:
-                if "name" in tool:
-                    tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
-
-        # 4. Prefix tool names in message history (tool_use and tool_result blocks)
-        for msg in anthropic_messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "tool_use" and "name" in block:
-                            if not block["name"].startswith(_MCP_TOOL_PREFIX):
-                                block["name"] = _MCP_TOOL_PREFIX + block["name"]
-                        elif block.get("type") == "tool_result" and "tool_use_id" in block:
-                            pass  # tool_result uses ID, not name
+    # OAuth requests go through Anthropic's subscription-gated Messages
+    # endpoint but otherwise send the real Hermes system prompt and real
+    # Hermes tool names — the only OAuth-specific wire differences are
+    # Bearer auth and the _OAUTH_ONLY_BETAS header (applied in
+    # build_anthropic_client and the fast-mode branch below).
 
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -1706,6 +1763,9 @@ def build_anthropic_kwargs(
         # extra_headers override the client-level anthropic-beta header).
         betas = list(_common_betas_for_base_url(base_url))
         if is_oauth:
+            # Strip context-1m — incompatible with OAuth auth. See matching
+            # comment in build_anthropic_client().
+            betas = [b for b in betas if b != _CONTEXT_1M_BETA]
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}

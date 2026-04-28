@@ -23,6 +23,7 @@ export const HOTKEYS: [string, string][] = [
   [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],
+  ['Ctrl+X', 'delete the queued message you’re editing (Esc cancels edit)'],
   [action + '+A/E', 'home / end of line'],
   [action + '+Z / ' + action + '+Y', 'undo / redo input edits'],
   [action + '+W', 'delete word'],

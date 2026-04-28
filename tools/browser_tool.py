@@ -526,7 +526,6 @@ def _url_is_private(url: str) -> bool:
     backend is configured, which will surface the DNS error naturally).
     """
     try:
-        from tools.url_safety import is_safe_url
         # is_safe_url returns False for private/loopback/link-local/CGNAT AND
         # for DNS failures.  We only want the private-network case here, so
         # we parse + check the host shape as a DNS-failure sieve first.

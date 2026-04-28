@@ -129,6 +129,22 @@ class TestResolveDeliveryTarget:
             "thread_id": "17",
         }
 
+    def test_explicit_telegram_topic_thread_survives_bare_directory_match(self):
+        """Exact channel-directory matches must not erase an explicit topic id."""
+        job = {
+            "deliver": "telegram:-1003724596514:17",
+        }
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value="-1003724596514",
+        ):
+            result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "telegram",
+            "chat_id": "-1003724596514",
+            "thread_id": "17",
+        }
+
     def test_explicit_telegram_chat_id_without_thread_id(self):
         """deliver: 'telegram:chat_id' sets thread_id to None."""
         job = {

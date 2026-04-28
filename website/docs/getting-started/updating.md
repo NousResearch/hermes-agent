@@ -59,17 +59,28 @@ Already up to date.  (or: Updating abc1234..def5678)
 If `git status --short` shows unexpected changes after `hermes update`, stop and inspect them before continuing. This usually means local modifications were reapplied on top of the updated code, or a dependency step refreshed lockfiles.
 :::
 
+### If your terminal disconnects mid-update
+
+`hermes update` protects itself against accidental terminal loss:
+
+- The update ignores `SIGHUP`, so closing your SSH session or terminal window no longer kills it mid-install. `pip` and `git` child processes inherit this protection, so the Python environment cannot be left half-installed by a dropped connection.
+- All output is mirrored to `~/.hermes/logs/update.log` while the update runs. If your terminal disappears, reconnect and inspect the log to see whether the update finished and whether the gateway restart succeeded:
+
+```bash
+tail -f ~/.hermes/logs/update.log
+```
+
+- `Ctrl-C` (SIGINT) and system shutdown (SIGTERM) are still honored — those are deliberate cancellations, not accidents.
+
+You no longer need to wrap `hermes update` in `screen` or `tmux` to survive a terminal drop.
+
 ### Checking your current version
 
 ```bash
 hermes version
 ```
 
-Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/hermes-agent/releases) or check for available updates:
-
-```bash
-hermes update --check
-```
+Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/hermes-agent/releases).
 
 ### Updating from Messaging Platforms
 

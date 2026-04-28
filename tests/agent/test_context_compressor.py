@@ -253,6 +253,35 @@ class TestSummaryPrefixNormalization:
 
 
 class TestCompressWithClient:
+    def test_system_content_list_gets_compression_note_without_crashing(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": [{"type": "text", "text": "system prompt"}]},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        assert isinstance(result[0]["content"], list)
+        assert any(
+            isinstance(block, dict)
+            and "compacted into a handoff summary" in block.get("text", "")
+            for block in result[0]["content"]
+        )
+
     def test_summarization_path(self):
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -459,6 +488,41 @@ class TestCompressWithClient:
         first_tail = [m for m in result if "msg 6" in (m.get("content") or "")]
         assert len(first_tail) == 1
         assert "summary text" in first_tail[0]["content"]
+
+    def test_double_collision_merges_summary_into_list_tail_content(self):
+        """Structured tail content should accept a merged summary without TypeError."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
+
+        msgs = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "user", "content": [{"type": "text", "text": "msg 6"}]},
+            {"role": "assistant", "content": "msg 7"},
+            {"role": "user", "content": "msg 8"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        merged_tail = next(
+            m for m in result
+            if m.get("role") == "user" and isinstance(m.get("content"), list)
+        )
+        assert isinstance(merged_tail["content"], list)
+        assert "summary text" in merged_tail["content"][0]["text"]
+        assert any(
+            isinstance(block, dict) and block.get("text") == "msg 6"
+            for block in merged_tail["content"]
+        )
 
     def test_double_collision_user_head_assistant_tail(self):
         """Reverse double collision: head ends with 'user', tail starts with 'assistant'.
@@ -781,3 +845,244 @@ class TestTokenBudgetTailProtection:
         # Tool at index 2 is outside the protected tail (last 3 = indices 2,3,4)
         # so it might or might not be pruned depending on boundary
         assert isinstance(pruned, int)
+
+    def test_multimodal_message_accumulates_text_chars_not_block_count(self, budget_compressor):
+        """_find_tail_cut_by_tokens must use text char count, not list length,
+        for multimodal content. Regression guard for #16087.
+
+        Setup: 6 messages, budget=80 (soft_ceiling=120).  The multimodal message
+        at index 1 has 500 chars of text → 135 tokens (correct) or 10 tokens (bug).
+
+        Fixed path: walk stops at the multimodal (44+135=179 > 120), cut stays at 2,
+        tail = messages[2:] = 4 messages.
+
+        Bug path: walk counts only 10 tokens for the multimodal, exhausts to head_end,
+        the head_end safeguard forces cut = n - min_tail = 3, tail = only 3 messages.
+        """
+        c = budget_compressor
+        # 500 chars → 500//4 + 10 = 135 tokens; len([text, image]) // 4 + 10 = 10 (bug)
+        big_text = "x" * 500
+        multimodal_content = [
+            {"type": "text", "text": big_text},
+            {"type": "image_url", "image_url": {"url": "https://example.com/img.jpg"}},
+        ]
+        messages = [
+            {"role": "user", "content": "head1"},               # 0
+            {"role": "user", "content": multimodal_content},    # 1: BIG (index under test)
+            {"role": "assistant", "content": "tail1"},           # 2
+            {"role": "user", "content": "tail2"},                # 3
+            {"role": "assistant", "content": "tail3"},           # 4
+            {"role": "user", "content": "tail4"},                # 5
+        ]
+        c.tail_token_budget = 80  # soft_ceiling = 120
+        head_end = 0
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        # With the fix: cut=2, tail has 4 messages (soft_ceiling not exceeded by tail1-4).
+        # With the bug: head_end safeguard fires → cut = n - min_tail = 3, only 3 in tail.
+        assert len(messages) - cut >= 4, (
+            f"Expected ≥4 messages in tail (got {len(messages) - cut}, cut={cut}). "
+            "The multimodal message was underestimated — len(list) used instead of text chars."
+        )
+
+    def test_plain_string_content_unchanged(self, budget_compressor):
+        """Plain string content must still be estimated correctly after the fix."""
+        c = budget_compressor
+        # Same layout as the multimodal test but with a plain 500-char string.
+        # Both buggy and fixed code count plain strings the same way (len(str)).
+        # With 135 tokens the plain string also exceeds soft_ceiling=120, so
+        # the walk stops at index 1 and tail has 4 messages — same as the fix path.
+        big_plain = "x" * 500
+        messages = [
+            {"role": "user", "content": "head1"},
+            {"role": "user", "content": big_plain},   # 1: 135 tokens, plain string
+            {"role": "assistant", "content": "tail1"},
+            {"role": "user", "content": "tail2"},
+            {"role": "assistant", "content": "tail3"},
+            {"role": "user", "content": "tail4"},
+        ]
+        c.tail_token_budget = 80
+        head_end = 0
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        assert len(messages) - cut >= 4, (
+            f"Plain string regression: expected ≥4 messages in tail, got {len(messages) - cut}"
+        )
+
+    def test_image_only_block_contributes_zero_text_chars(self, budget_compressor):
+        """Image-only content blocks (no 'text' key) contribute 0 chars + base overhead."""
+        c = budget_compressor
+        c.tail_token_budget = 500
+        image_only = [{"type": "image_url", "image_url": {"url": "https://example.com/x.jpg"}}]
+        messages = [
+            {"role": "user", "content": "a" * 4000},
+            {"role": "user", "content": image_only},   # 0 text chars → 10 tokens overhead
+            {"role": "assistant", "content": "ok"},
+        ]
+        head_end = 0
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        assert isinstance(cut, int)
+        assert 0 <= cut <= len(messages)
+
+    def test_mixed_list_with_bare_strings_does_not_crash(self, budget_compressor):
+        """Content list may contain bare strings (not dicts) — must not raise AttributeError."""
+        c = budget_compressor
+        c.tail_token_budget = 500
+        # Bare string item alongside a dict item — normalisation elsewhere allows this.
+        mixed_content = ["Hello, world!", {"type": "text", "text": "extra text"}]
+        messages = [
+            {"role": "user", "content": mixed_content},
+            {"role": "assistant", "content": "ok"},
+        ]
+        head_end = 0
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        assert isinstance(cut, int)
+        assert 0 <= cut <= len(messages)
+
+
+class TestUpdateModelBudgets:
+    """Regression: update_model() must recalculate token budgets."""
+
+    def test_tail_budget_recalculated(self):
+        """tail_token_budget must change after switching to a different context length."""
+        from unittest.mock import patch
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor("model-a", threshold_percent=0.50, quiet_mode=True)
+        old_tail = comp.tail_token_budget
+        old_max_summary = comp.max_summary_tokens
+
+        comp.update_model("model-b", context_length=32_000)
+        assert comp.tail_token_budget != old_tail, "tail_token_budget should change"
+        assert comp.tail_token_budget < old_tail, "smaller context → smaller budget"
+        assert comp.max_summary_tokens != old_max_summary, "max_summary_tokens should change"
+
+    def test_budgets_proportional(self):
+        """Budgets should be proportional to context_length after update."""
+        from unittest.mock import patch
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            comp = ContextCompressor("model-a", threshold_percent=0.50, quiet_mode=True)
+        comp.update_model("model-b", context_length=10_000)
+        assert comp.tail_token_budget == int(comp.threshold_tokens * comp.summary_target_ratio)
+        assert comp.max_summary_tokens == min(int(10_000 * 0.05), 4000)
+
+
+class TestTruncateToolCallArgsJson:
+    """Regression tests for #11762.
+
+    The previous implementation produced invalid JSON by slicing
+    ``function.arguments`` mid-string, which caused non-retryable 400s from
+    strict providers (observed on MiniMax) and stuck long sessions in a
+    re-send loop. The helper here must always emit parseable JSON whose
+    shape matches the original — shrunken, not corrupted.
+    """
+
+    def _helper(self):
+        from agent.context_compressor import _truncate_tool_call_args_json
+        return _truncate_tool_call_args_json
+
+    def test_shrunken_args_remain_valid_json(self):
+        import json as _json
+        shrink = self._helper()
+        original = _json.dumps({
+            "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
+            "content": "# Shopping Browser Setup Notes\n\n" + "abc " * 400,
+        })
+        assert len(original) > 500
+        shrunk = shrink(original)
+        parsed = _json.loads(shrunk)  # must not raise
+        assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
+        assert parsed["content"].endswith("...[truncated]")
+        assert len(shrunk) < len(original)
+
+    def test_non_json_arguments_pass_through(self):
+        shrink = self._helper()
+        not_json = "this is not json at all, " * 50
+        assert shrink(not_json) == not_json
+
+    def test_short_string_leaves_unchanged(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({"command": "ls -la", "cwd": "/tmp"})
+        assert _json.loads(shrink(payload)) == {"command": "ls -la", "cwd": "/tmp"}
+
+    def test_nested_structures_are_walked(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({
+            "messages": [
+                {"role": "user", "content": "x" * 500},
+                {"role": "assistant", "content": "ok"},
+            ],
+            "meta": {"note": "y" * 500},
+        })
+        parsed = _json.loads(shrink(payload))
+        assert parsed["messages"][0]["content"].endswith("...[truncated]")
+        assert parsed["messages"][1]["content"] == "ok"
+        assert parsed["meta"]["note"].endswith("...[truncated]")
+
+    def test_non_string_leaves_preserved(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({
+            "retries": 3,
+            "enabled": True,
+            "timeout": None,
+            "items": [1, 2, 3],
+            "note": "z" * 500,
+        })
+        parsed = _json.loads(shrink(payload))
+        assert parsed["retries"] == 3
+        assert parsed["enabled"] is True
+        assert parsed["timeout"] is None
+        assert parsed["items"] == [1, 2, 3]
+        assert parsed["note"].endswith("...[truncated]")
+
+    def test_scalar_json_string_gets_shrunk(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps("q" * 500)
+        parsed = _json.loads(shrink(payload))
+        assert isinstance(parsed, str)
+        assert parsed.endswith("...[truncated]")
+
+    def test_unicode_preserved(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({"content": "非德满" + ("a" * 500)})
+        out = shrink(payload)
+        # ensure_ascii=False keeps CJK intact rather than emitting \uXXXX
+        assert "非德满" in out
+
+    def test_pass3_emits_valid_json_for_downstream_provider(self):
+        """End-to-end: Pass 3 must never produce the exact failure payload
+        that caused the 400 loop (unterminated string, missing brace)."""
+        import json as _json
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+        huge_content = "# Shopping Browser Setup Notes\n\n## Overview\n" + "x " * 400
+        args_payload = _json.dumps({
+            "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
+            "content": huge_content,
+        })
+        assert len(args_payload) > 500  # triggers the Pass-3 shrink
+        messages = [
+            {"role": "user", "content": "please write two files"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "write_file", "arguments": args_payload}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1",
+             "content": '{"bytes_written": 727}'},
+            {"role": "user", "content": "ok"},
+            {"role": "assistant", "content": "done"},
+        ]
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
+        shrunk = result[1]["tool_calls"][0]["function"]["arguments"]
+        # Must parse — otherwise downstream provider returns 400
+        parsed = _json.loads(shrunk)
+        assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
+        assert parsed["content"].endswith("...[truncated]")

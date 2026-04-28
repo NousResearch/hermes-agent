@@ -62,9 +62,9 @@ async def test_compress_command_reports_noop_without_success_banner():
     history = _make_history()
     runner = _make_runner(history)
     agent_instance = MagicMock()
-    agent_instance.context_compressor.protect_first_n = 0
-    agent_instance.context_compressor._align_boundary_forward.return_value = 0
-    agent_instance.context_compressor._find_tail_cut_by_tokens.return_value = 2
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (list(history), "")
 
@@ -83,6 +83,8 @@ async def test_compress_command_reports_noop_without_success_banner():
     assert "No changes from compression" in result
     assert "Compressed:" not in result
     assert "Rough transcript estimate: ~100 tokens (unchanged)" in result
+    agent_instance.shutdown_memory_provider.assert_called_once()
+    agent_instance.close.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -95,9 +97,9 @@ async def test_compress_command_explains_when_token_estimate_rises():
     ]
     runner = _make_runner(history)
     agent_instance = MagicMock()
-    agent_instance.context_compressor.protect_first_n = 0
-    agent_instance.context_compressor._align_boundary_forward.return_value = 0
-    agent_instance.context_compressor._find_tail_cut_by_tokens.return_value = 2
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
 
@@ -119,3 +121,5 @@ async def test_compress_command_explains_when_token_estimate_rises():
     assert "Compressed: 4 → 3 messages" in result
     assert "Rough transcript estimate: ~100 → ~120 tokens" in result
     assert "denser summaries" in result
+    agent_instance.shutdown_memory_provider.assert_called_once()
+    agent_instance.close.assert_called_once()

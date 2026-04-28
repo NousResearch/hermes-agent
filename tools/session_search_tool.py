@@ -27,6 +27,27 @@ MAX_SESSION_CHARS = 100_000
 MAX_SUMMARY_TOKENS = 10000
 
 
+def _get_session_search_max_concurrency(default: int = 3) -> int:
+    """Read auxiliary.session_search.max_concurrency with sane bounds."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+    except ImportError:
+        return default
+    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    task_config = aux.get("session_search", {}) if isinstance(aux, dict) else {}
+    if not isinstance(task_config, dict):
+        return default
+    raw = task_config.get("max_concurrency")
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, 5))
+
+
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
 
@@ -253,12 +274,13 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             try:
                 sid = current_session_id
                 visited = set()
+                current_root = current_session_id
                 while sid and sid not in visited:
                     visited.add(sid)
+                    current_root = sid
                     s = db.get_session(sid)
                     parent = s.get("parent_session_id") if s else None
                     sid = parent if parent else None
-                current_root = max(visited, key=len) if visited else current_session_id
             except Exception:
                 current_root = current_session_id
 
@@ -423,9 +445,16 @@ def session_search(
 
         # Summarize all sessions in parallel
         async def _summarize_all() -> List[Union[str, Exception]]:
-            """Summarize all sessions in parallel."""
+            """Summarize all sessions with bounded concurrency."""
+            max_concurrency = min(_get_session_search_max_concurrency(), max(1, len(tasks)))
+            semaphore = asyncio.Semaphore(max_concurrency)
+
+            async def _bounded_summary(text: str, meta: Dict[str, Any]) -> Optional[str]:
+                async with semaphore:
+                    return await _summarize_session(text, query, meta)
+
             coros = [
-                _summarize_session(text, query, meta)
+                _bounded_summary(text, meta)
                 for _, _, text, meta in tasks
             ]
             return await asyncio.gather(*coros, return_exceptions=True)

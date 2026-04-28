@@ -267,7 +267,6 @@ Run `nix build .#configKeys && cat result` to see every leaf config key extracte
 
     # ── Documents ──────────────────────────────────────────────────────
     documents = {
-      "SOUL.md" = builtins.readFile /home/user/.hermes/SOUL.md;
       "USER.md" = ./documents/USER.md;
     };
 
@@ -316,7 +315,7 @@ Quick reference for the most common things Nix users want to customize:
 | Change the LLM model | `settings.model.default` | `"anthropic/claude-sonnet-4"` |
 | Use a different provider endpoint | `settings.model.base_url` | `"https://openrouter.ai/api/v1"` |
 | Add API keys | `environmentFiles` | `[ config.sops.secrets."hermes-env".path ]` |
-| Give the agent a personality | `documents."SOUL.md"` | `builtins.readFile ./my-soul.md` |
+| Give the agent a personality | `${services.hermes-agent.stateDir}/.hermes/SOUL.md` | manage the file directly |
 | Add MCP tool servers | `mcpServers.<name>` | See [MCP Servers](#mcp-servers) |
 | Mount host directories into container | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
 | Pass GPU access to container | `container.extraOptions` | `[ "--gpus" "all" ]` |
@@ -397,17 +396,14 @@ The file is only copied if `auth.json` doesn't already exist (unless `authFileFo
 
 The `documents` option installs files into the agent's working directory (the `workingDirectory`, which the agent reads as its workspace). Hermes looks for specific filenames by convention:
 
-- **`SOUL.md`** — the agent's system prompt / personality. Hermes reads this on startup and uses it as persistent instructions that shape its behavior across all conversations.
 - **`USER.md`** — context about the user the agent is interacting with.
 - Any other files you place here are visible to the agent as workspace files.
+
+The agent identity file is separate: Hermes loads its primary `SOUL.md` from `$HERMES_HOME/SOUL.md`, which in the NixOS module is `${services.hermes-agent.stateDir}/.hermes/SOUL.md`. Putting `SOUL.md` in `documents` only creates a workspace file and will not replace the main persona file.
 
 ```nix
 {
   services.hermes-agent.documents = {
-    "SOUL.md" = ''
-      You are a helpful research assistant specializing in NixOS packaging.
-      Always cite sources and prefer reproducible solutions.
-    '';
     "USER.md" = ./documents/USER.md;  # path reference, copied from Nix store
   };
 }
@@ -603,6 +599,93 @@ The `preStart` script creates a GC root at `${stateDir}/.gc-root` pointing to th
 
 ---
 
+## Plugins
+
+The NixOS module supports declarative plugin installation — no imperative `hermes plugins install` needed.
+
+### Directory Plugins (`extraPlugins`)
+
+For plugins that are just a source tree with `plugin.yaml` + `__init__.py` (e.g., [hermes-lcm](https://github.com/stephenschoettler/hermes-lcm)):
+
+```nix
+services.hermes-agent.extraPlugins = [
+  (pkgs.fetchFromGitHub {
+    owner = "stephenschoettler";
+    repo = "hermes-lcm";
+    rev = "v0.7.0";
+    hash = "sha256-...";
+  })
+];
+```
+
+Plugins are symlinked into `$HERMES_HOME/plugins/` at activation time. Hermes discovers them via its normal directory scan. Removing a plugin from the list and running `nixos-rebuild switch` removes the symlink.
+
+### Entry-Point Plugins (`extraPythonPackages`)
+
+For pip-packaged plugins that register via `[project.entry-points."hermes_agent.plugins"]` (e.g., [rtk-hermes](https://github.com/ogallotti/rtk-hermes)):
+
+```nix
+services.hermes-agent.extraPythonPackages = [
+  (pkgs.python312Packages.buildPythonPackage {
+    pname = "rtk-hermes";
+    version = "1.0.0";
+    src = pkgs.fetchFromGitHub {
+      owner = "ogallotti";
+      repo = "rtk-hermes";
+      rev = "v1.0.0";
+      hash = "sha256-...";
+    };
+    format = "pyproject";
+    build-system = [ pkgs.python312Packages.setuptools ];
+  })
+];
+```
+
+The package's `site-packages` is added to PYTHONPATH in the hermes wrapper. `importlib.metadata` discovers the entry point at session start.
+
+### Combining Both
+
+A directory plugin with third-party Python dependencies needs both options:
+
+```nix
+services.hermes-agent = {
+  extraPlugins = [ my-plugin-src ];          # plugin source
+  extraPythonPackages = [ pkgs.python312Packages.redis ];  # its Python dep
+  extraPackages = [ pkgs.redis ];            # system binary it needs
+};
+```
+
+### Using the Overlay
+
+External flakes can override the package directly:
+
+```nix
+{
+  inputs.hermes-agent.url = "github:NousResearch/hermes-agent";
+  outputs = { hermes-agent, nixpkgs, ... }: {
+    nixpkgs.overlays = [ hermes-agent.overlays.default ];
+    # Then: pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+  };
+}
+```
+
+### Plugin Configuration
+
+Plugins still need to be enabled in `config.yaml`. Add them via the declarative settings:
+
+```nix
+services.hermes-agent.settings.plugins.enabled = [
+  "hermes-lcm"
+  "rtk-rewrite"
+];
+```
+
+:::note
+A build-time collision check prevents plugin packages from shadowing core hermes dependencies. If a plugin provides a package already in the sealed venv, `nixos-rebuild` fails with a clear error.
+:::
+
+---
+
 ## Development
 
 ### Dev Shell
@@ -725,6 +808,8 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 |---|---|---|---|
 | `extraArgs` | `listOf str` | `[]` | Extra args for `hermes gateway` |
 | `extraPackages` | `listOf package` | `[]` | Extra packages on service PATH (native mode only) |
+| `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
+| `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Build with `python312Packages` |
 | `restart` | `str` | `"always"` | systemd `Restart=` policy |
 | `restartSec` | `int` | `5` | systemd `RestartSec=` value |
 

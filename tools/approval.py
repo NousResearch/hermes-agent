@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import threading
+import time
 import unicodedata
 from typing import Optional
 
@@ -62,11 +63,110 @@ _HERMES_ENV_PATH = (
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'\.env\b'
 )
+_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
+_PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SENSITIVE_WRITE_TARGET = (
     r'(?:/etc/|/dev/sd|'
     rf'{_SSH_SENSITIVE_PATH}|'
     rf'{_HERMES_ENV_PATH})'
 )
+_PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
+_COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
+
+# =========================================================================
+# Hardline (unconditional) blocklist
+# =========================================================================
+#
+# Commands so catastrophic they should NEVER run via the agent, regardless
+# of --yolo, /yolo, approvals.mode=off, or cron approve mode.  This is a
+# floor below yolo: opting into yolo is the user trusting the agent with
+# their files and services, not trusting it to wipe the disk or power the
+# box off.
+#
+# Hardline only applies to environments that can actually damage the host
+# (local, ssh, container-host cron).  Containerized backends (docker,
+# singularity, modal, daytona) already bypass the dangerous-command layer
+# because nothing they do can touch the host, so we leave that behavior
+# alone.
+#
+# The list is deliberately tiny — only things with no recovery path:
+# filesystem destruction rooted at /, raw block device overwrites, kernel
+# shutdown/reboot, and denial-of-service commands that take the host down.
+# Recoverable-but-costly operations (git reset --hard, rm -rf /tmp/x,
+# chmod -R 777, curl|sh) stay in DANGEROUS_PATTERNS where yolo can pass
+# them through — that's what yolo is for.
+#
+# Inspired by Mercury Agent's permission-hardened blocklist
+# (https://github.com/cosmicstack-labs/mercury-agent).
+
+# Regex fragment matching the *start* of a command (i.e. positions where
+# a shell would begin parsing a new command).  Used by shutdown/reboot
+# patterns so they don't fire on "echo reboot" or "grep 'shutdown' log".
+# Matches: start of string, after command separators (; && || | newline),
+# after subshell openers ( `$(` or backtick ), optionally consuming
+# leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid).
+_CMDPOS = (
+    r'(?:^|[;&|\n`]|\$\()'         # start position
+    r'\s*'                          # optional whitespace
+    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
+    r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
+    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    r'\s*'
+)
+
+HARDLINE_PATTERNS = [
+    # rm recursive targeting the root filesystem or protected roots
+    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
+    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
+    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
+    # Filesystem format
+    (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    # Raw block device overwrites (dd + redirection)
+    (r'\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
+    # Fork bomb (classic shell form)
+    (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
+    # Kill every process on the system
+    (r'\bkill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    # System shutdown / reboot — anchor to command position (start of line,
+    # after a command separator, or after sudo/env wrappers) so we don't
+    # false-positive on "echo reboot" or "grep 'shutdown' logs".
+    # _CMDPOS matches start-of-command positions.
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
+    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
+    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+]
+
+
+def detect_hardline_command(command: str) -> tuple:
+    """Check if a command matches the unconditional hardline blocklist.
+
+    Returns:
+        (is_hardline, description) or (False, None)
+    """
+    normalized = _normalize_command_for_detection(command).lower()
+    for pattern, description in HARDLINE_PATTERNS:
+        if re.search(pattern, normalized, re.IGNORECASE | re.DOTALL):
+            return (True, description)
+    return (False, None)
+
+
+def _hardline_block_result(description: str) -> dict:
+    """Build the standard block result for a hardline match."""
+    return {
+        "approved": False,
+        "hardline": True,
+        "message": (
+            f"BLOCKED (hardline): {description}. "
+            "This command is on the unconditional blocklist and cannot "
+            "be executed via the agent — not even with --yolo, /yolo, "
+            "approvals.mode=off, or cron approve mode. If you genuinely "
+            "need to run it, run it yourself in a terminal outside the "
+            "agent."
+        ),
+    }
+
 
 # =========================================================================
 # Dangerous command patterns
@@ -98,6 +198,8 @@ DANGEROUS_PATTERNS = [
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
+    (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config via tee"),
+    (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
@@ -119,6 +221,7 @@ DANGEROUS_PATTERNS = [
     (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
     # File copy/move/edit into sensitive system paths
     (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
+    (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
     (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
     (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
@@ -433,6 +536,33 @@ def prompt_dangerous_approval(command: str, description: str,
             logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
 
+    # Fail-closed guard: if prompt_toolkit owns the terminal (interactive
+    # CLI session) and no approval callback is registered on this thread,
+    # the input() fallback below would spawn a daemon thread whose read
+    # can never see Enter -- the user's keystrokes go to prompt_toolkit,
+    # not input(), producing an invisible 60s deadlock (issue #15216).
+    # Deny fast and log loudly instead so the caller can surface a real
+    # error to the agent. Any thread that needs interactive approval must
+    # install a callback via tools.terminal_tool.set_approval_callback()
+    # before reaching this point (see delegate_tool.py, run_agent.py
+    # _execute_tool_calls_concurrent / _spawn_background_review for the
+    # established pattern).
+    try:
+        from prompt_toolkit.application.current import get_app_or_none
+        if get_app_or_none() is not None:
+            logger.warning(
+                "Dangerous-command approval requested on a thread with no "
+                "approval callback while prompt_toolkit is active; denying "
+                "to avoid stdin deadlock. command=%r description=%r",
+                command, description,
+            )
+            return "deny"
+    except Exception:
+        # prompt_toolkit not installed, or detection failed -- fall through
+        # to the legacy input() path (safe in non-TUI contexts: scripts,
+        # tests, sshd, etc.).
+        pass
+
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
         while True:
@@ -531,6 +661,19 @@ def _get_approval_timeout() -> int:
         return 60
 
 
+def _get_cron_approval_mode() -> str:
+    """Read the cron approval mode from config. Returns 'deny' or 'approve'."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        mode = str(config.get("approvals", {}).get("cron_mode", "deny")).lower().strip()
+        if mode in ("approve", "off", "allow", "yes"):
+            return "approve"
+        return "deny"
+    except Exception:
+        return "deny"
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Use the auxiliary LLM to assess risk and decide approval.
 
@@ -541,12 +684,7 @@ def _smart_approve(command: str, description: str) -> str:
     (openai/codex#13860).
     """
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client, auxiliary_max_tokens_param
-
-        client, model = get_text_auxiliary_client(task="approval")
-        if not client or not model:
-            logger.debug("Smart approvals: no aux client available, escalating")
-            return "escalate"
+        from agent.auxiliary_client import call_llm
 
         prompt = f"""You are a security reviewer for an AI coding agent. A terminal command was flagged by pattern matching as potentially dangerous.
 
@@ -562,11 +700,11 @@ Rules:
 
 Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 
-        response = client.chat.completions.create(
-            model=model,
+        response = call_llm(
+            task="approval",
             messages=[{"role": "user", "content": prompt}],
-            **auxiliary_max_tokens_param(16),
             temperature=0,
+            max_tokens=16,
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()
@@ -601,6 +739,16 @@ def check_dangerous_command(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
+    # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
+    # to raw device, shutdown/reboot, fork bomb, kill -1) are blocked
+    # unconditionally, BEFORE the yolo bypass.  Opting into yolo is
+    # trusting the agent with your files and services, not trusting it
+    # to wipe the disk or power the box off.
+    is_hardline, hardline_desc = detect_hardline_command(command)
+    if is_hardline:
+        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        return _hardline_block_result(hardline_desc)
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled():
@@ -618,6 +766,19 @@ def check_dangerous_command(command: str, env_type: str,
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
 
     if not is_cli and not is_gateway:
+        # Cron sessions: respect cron_mode config
+        if os.getenv("HERMES_CRON_SESSION"):
+            if _get_cron_approval_mode() == "deny":
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Command flagged as dangerous ({description}) "
+                        "but cron jobs run without a user present to approve it. "
+                        "Find an alternative approach that avoids this command. "
+                        "To allow dangerous commands in cron jobs, set "
+                        "approvals.cron_mode: approve in config.yaml."
+                    ),
+                }
         return {"approved": True, "message": None}
 
     if is_gateway or os.getenv("HERMES_EXEC_ASK"):
@@ -703,6 +864,15 @@ def check_all_command_guards(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
+    # Hardline floor: unconditional block for catastrophic commands
+    # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
+    # kill -1). Applies BEFORE yolo / mode=off / cron approve-mode so
+    # no session-level setting can bypass it.
+    is_hardline, hardline_desc = detect_hardline_command(command)
+    if is_hardline:
+        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        return _hardline_block_result(hardline_desc)
+
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
@@ -716,6 +886,22 @@ def check_all_command_guards(command: str, env_type: str,
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
+        # Cron sessions: respect cron_mode config
+        if os.getenv("HERMES_CRON_SESSION"):
+            if _get_cron_approval_mode() == "deny":
+                # Run detection to get a description for the block message
+                is_dangerous, _pk, description = detect_dangerous_command(command)
+                if is_dangerous:
+                    return {
+                        "approved": False,
+                        "message": (
+                            f"BLOCKED: Command flagged as dangerous ({description}) "
+                            "but cron jobs run without a user present to approve it. "
+                            "Find an alternative approach that avoids this command. "
+                            "To allow dangerous commands in cron jobs, set "
+                            "approvals.cron_mode: approve in config.yaml."
+                        ),
+                    }
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---
@@ -834,13 +1020,43 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                 }
 
-            # Block until the user responds or timeout (default 5 min)
+            # Block until the user responds or timeout (default 5 min).
+            # Poll in short slices so we can fire activity heartbeats every
+            # ~10s to the agent's inactivity tracker.  Without this, the
+            # blocking event.wait() never touches activity, and the
+            # gateway's inactivity watchdog (agent.gateway_timeout, default
+            # 1800s) kills the agent while the user is still responding to
+            # the approval prompt.  Mirrors the _wait_for_process() cadence
+            # in tools/environments/base.py.
             timeout = _get_approval_config().get("gateway_timeout", 300)
             try:
                 timeout = int(timeout)
             except (ValueError, TypeError):
                 timeout = 300
-            resolved = entry.event.wait(timeout=timeout)
+
+            try:
+                from tools.environments.base import touch_activity_if_due
+            except Exception:  # pragma: no cover
+                touch_activity_if_due = None
+
+            _now = time.monotonic()
+            _deadline = _now + max(timeout, 0)
+            _activity_state = {"last_touch": _now, "start": _now}
+            resolved = False
+            while True:
+                _remaining = _deadline - time.monotonic()
+                if _remaining <= 0:
+                    break
+                # 1s poll slice — the event is set immediately when the
+                # user responds, so slice length only controls heartbeat
+                # cadence, not user-visible responsiveness.
+                if entry.event.wait(timeout=min(1.0, _remaining)):
+                    resolved = True
+                    break
+                if touch_activity_if_due is not None:
+                    touch_activity_if_due(
+                        _activity_state, "waiting for user approval"
+                    )
 
             # Clean up this entry from the queue
             with _lock:

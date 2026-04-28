@@ -1,0 +1,54 @@
+{
+  "name": "@hermes/ink",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/ink-bundle.js"
+  },
+  "sideEffects": true,
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js",
+      "default": "./index.js"
+    },
+    "./text-input": {
+      "types": "./text-input.d.ts",
+      "import": "./text-input.js",
+      "default": "./text-input.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "ink-text-input": ">=6.0.0",
+    "react": ">=19.0.0"
+  },
+  "dependencies": {
+    "@alcalzone/ansi-tokenize": "^0.1.0",
+    "auto-bind": "^5.0.0",
+    "bidi-js": "^1.0.0",
+    "chalk": "^5.4.0",
+    "cli-boxes": "^3.0.0",
+    "code-excerpt": "^4.0.0",
+    "emoji-regex": "^10.4.0",
+    "get-east-asian-width": "^1.3.0",
+    "indent-string": "^5.0.0",
+    "lodash-es": "^4.17.0",
+    "react": ">=19.0.0",
+    "react-reconciler": "0.33.0",
+    "semver": "^7.6.0",
+    "signal-exit": "^4.1.0",
+    "stack-utils": "^2.0.0",
+    "strip-ansi": "^7.1.0",
+    "supports-hyperlinks": "^3.1.0",
+    "type-fest": "^4.30.0",
+    "usehooks-ts": "^3.1.0",
+    "wrap-ansi": "^9.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

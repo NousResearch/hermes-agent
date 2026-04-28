@@ -13,6 +13,10 @@ Each route defines:
   - skills: optional list of skills to load for the agent
   - deliver: where to send the response (github_comment, telegram, etc.)
   - deliver_extra: additional delivery config (repo, pr_number, chat_id)
+  - deliver_only: if true, skip the agent — the rendered prompt IS the
+    message that gets delivered.  Use for external push notifications
+    (Supabase, monitoring alerts, inter-agent pings) where zero LLM cost
+    and sub-second delivery matter more than agent reasoning.
 
 Security:
   - HMAC secret is required per route (validated at startup)
@@ -121,6 +125,19 @@ class WebhookAdapter(BasePlatformAdapter):
                     f"Set 'secret' on the route or globally. "
                     f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
                 )
+
+            # deliver_only routes bypass the agent — the POST body becomes a
+            # direct push notification via the configured delivery target.
+            # Validate up-front so misconfiguration surfaces at startup rather
+            # than on the first webhook POST.
+            if route.get("deliver_only"):
+                deliver = route.get("deliver", "log")
+                if not deliver or deliver == "log":
+                    raise ValueError(
+                        f"[webhook] Route '{name}' has deliver_only=true but "
+                        f"deliver is '{deliver}'. Direct delivery requires a "
+                        f"real target (telegram, discord, slack, github_comment, etc.)."
+                    )
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
@@ -296,24 +313,14 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": "Payload too large"}, status=413
             )
 
-        # ── Rate limiting ────────────────────────────────────────
-        now = time.time()
-        window = self._rate_counts.setdefault(route_name, [])
-        window[:] = [t for t in window if now - t < 60]
-        if len(window) >= self._rate_limit:
-            return web.json_response(
-                {"error": "Rate limit exceeded"}, status=429
-            )
-        window.append(now)
-
-        # Read body
+        # Read body (must be done before any validation)
         try:
             raw_body = await request.read()
         except Exception as e:
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
 
-        # Validate HMAC signature (skip for INSECURE_NO_AUTH testing mode)
+        # Validate HMAC signature FIRST (skip for INSECURE_NO_AUTH testing mode)
         secret = route_config.get("secret", self._global_secret)
         if secret and secret != _INSECURE_NO_AUTH:
             if not self._validate_signature(request, raw_body, secret):
@@ -323,6 +330,16 @@ class WebhookAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": "Invalid signature"}, status=401
                 )
+
+        # ── Rate limiting (after auth) ───────────────────────────
+        now = time.time()
+        window = self._rate_counts.setdefault(route_name, [])
+        window[:] = [t for t in window if now - t < 60]
+        if len(window) >= self._rate_limit:
+            return web.json_response(
+                {"error": "Rate limit exceeded"}, status=429
+            )
+        window.append(now)
 
         # Parse payload
         try:
@@ -418,6 +435,64 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=200,
             )
         self._seen_deliveries[delivery_id] = now
+
+        # ── Direct delivery mode (deliver_only) ─────────────────
+        # Skip the agent entirely — the rendered prompt IS the message we
+        # deliver.  Use case: external services (Supabase, monitoring,
+        # cron jobs, other agents) that need to push a plain notification
+        # to a user's chat with zero LLM cost.  Reuses the same HMAC auth,
+        # rate limiting, idempotency, and template rendering as agent mode.
+        if route_config.get("deliver_only"):
+            delivery = {
+                "deliver": route_config.get("deliver", "log"),
+                "deliver_extra": self._render_delivery_extra(
+                    route_config.get("deliver_extra", {}), payload
+                ),
+                "payload": payload,
+            }
+            logger.info(
+                "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
+                event_type,
+                route_name,
+                delivery["deliver"],
+                len(prompt),
+                delivery_id,
+            )
+            try:
+                result = await self._direct_deliver(prompt, delivery)
+            except Exception:
+                logger.exception(
+                    "[webhook] direct-deliver failed route=%s delivery=%s",
+                    route_name,
+                    delivery_id,
+                )
+                return web.json_response(
+                    {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
+                    status=502,
+                )
+
+            if result.success:
+                return web.json_response(
+                    {
+                        "status": "delivered",
+                        "route": route_name,
+                        "target": delivery["deliver"],
+                        "delivery_id": delivery_id,
+                    },
+                    status=200,
+                )
+            # Delivery attempted but target rejected it — surface as 502
+            # with a generic error (don't leak adapter-level detail).
+            logger.warning(
+                "[webhook] direct-deliver target rejected route=%s target=%s error=%s",
+                route_name,
+                delivery["deliver"],
+                result.error,
+            )
+            return web.json_response(
+                {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
+                status=502,
+            )
 
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).
@@ -571,6 +646,34 @@ class WebhookAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Response delivery
     # ------------------------------------------------------------------
+
+    async def _direct_deliver(
+        self, content: str, delivery: dict
+    ) -> SendResult:
+        """Deliver *content* directly without invoking the agent.
+
+        Used by ``deliver_only`` routes: the rendered template becomes the
+        literal message body, and we dispatch to the same delivery helpers
+        that the agent-mode ``send()`` flow uses.  All target types that
+        work in agent mode work here — Telegram, Discord, Slack, GitHub
+        PR comments, etc.
+        """
+        deliver_type = delivery.get("deliver", "log")
+
+        if deliver_type == "log":
+            # Shouldn't reach here — startup validation rejects deliver_only
+            # with deliver=log — but guard defensively.
+            logger.info("[webhook] direct-deliver log-only: %s", content[:200])
+            return SendResult(success=True)
+
+        if deliver_type == "github_comment":
+            return await self._deliver_github_comment(content, delivery)
+
+        # Fall through to the cross-platform dispatcher, which validates the
+        # target name and routes via the gateway runner.
+        return await self._deliver_cross_platform(
+            deliver_type, content, delivery
+        )
 
     async def _deliver_github_comment(
         self, content: str, delivery: dict

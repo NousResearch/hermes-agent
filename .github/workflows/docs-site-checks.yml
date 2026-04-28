@@ -36,6 +36,9 @@ jobs:
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
 
+      - name: Regenerate per-skill docs pages + catalogs
+        run: python3 website/scripts/generate-skill-docs.py
+
       - name: Lint docs diagrams
         run: npm run lint:diagrams
         working-directory: website

@@ -1,6 +1,6 @@
 ---
 name: architecture-diagram
-description: Generate professional dark-themed system architecture diagrams as standalone HTML/SVG files. Self-contained output with no external dependencies. Based on Cocoon AI's architecture-diagram-generator (MIT).
+description: "Dark-themed SVG architecture/cloud/infra diagrams as HTML."
 version: 1.0.0
 author: Cocoon AI (hello@cocoon-ai.com), ported by Hermes Agent
 license: MIT
@@ -8,12 +8,30 @@ dependencies: []
 metadata:
   hermes:
     tags: [architecture, diagrams, SVG, HTML, visualization, infrastructure, cloud]
-    related_skills: [excalidraw]
+    related_skills: [concept-diagrams, excalidraw]
 ---
 
 # Architecture Diagram Skill
 
 Generate professional, dark-themed technical architecture diagrams as standalone HTML files with inline SVG graphics. No external tools, no API keys, no rendering libraries — just write the HTML file and open it in a browser.
+
+## Scope
+
+**Best suited for:**
+- Software system architecture (frontend / backend / database layers)
+- Cloud infrastructure (VPC, regions, subnets, managed services)
+- Microservice / service-mesh topology
+- Database + API map, deployment diagrams
+- Anything with a tech-infra subject that fits a dark, grid-backed aesthetic
+
+**Look elsewhere first for:**
+- Physics, chemistry, math, biology, or other scientific subjects
+- Physical objects (vehicles, hardware, anatomy, cross-sections)
+- Floor plans, narrative journeys, educational / textbook-style visuals
+- Hand-drawn whiteboard sketches (consider `excalidraw`)
+- Animated explainers (consider an animation skill)
+
+If a more specialized skill is available for the subject, prefer that. If none fits, this skill can also serve as a general SVG diagram fallback — the output will just carry the dark tech aesthetic described below.
 
 Based on [Cocoon AI's architecture-diagram-generator](https://github.com/Cocoon-AI/architecture-diagram-generator) (MIT).
 

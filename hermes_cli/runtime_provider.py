@@ -1124,13 +1124,34 @@ def resolve_runtime_provider(
             cfg_base_url and "azure.com" in cfg_base_url.lower()
         )
         if _is_azure_endpoint:
-            token = (
-                os.getenv("AZURE_ANTHROPIC_KEY", "").strip()
-                or os.getenv("ANTHROPIC_API_KEY", "").strip()
-            )
+            # Honor user-specified env var hints on the model config before
+            # falling back to the built-in AZURE_ANTHROPIC_KEY / ANTHROPIC_API_KEY
+            # chain.  Accept both `key_env` (Hermes canonical — matches the
+            # custom_providers field name) and `api_key_env` (documented in the
+            # Azure Foundry guide and read by most Hermes-compatible importers).
+            # Matches the config.yaml examples in website/docs/guides/azure-foundry.md.
+            token = ""
+            for hint_key in ("key_env", "api_key_env"):
+                env_var = str(model_cfg.get(hint_key) or "").strip()
+                if env_var:
+                    token = os.getenv(env_var, "").strip()
+                    if token:
+                        break
+            # Next: an inline api_key on the model config (useful in multi-profile
+            # setups that want to avoid env-var juggling).
+            if not token:
+                token = str(model_cfg.get("api_key") or "").strip()
+            # Finally fall back to the historical fixed names.
+            if not token:
+                token = (
+                    os.getenv("AZURE_ANTHROPIC_KEY", "").strip()
+                    or os.getenv("ANTHROPIC_API_KEY", "").strip()
+                )
             if not token:
                 raise AuthError(
-                    "No Azure Anthropic API key found. Set AZURE_ANTHROPIC_KEY or ANTHROPIC_API_KEY."
+                    "No Azure Anthropic API key found. Set AZURE_ANTHROPIC_KEY or "
+                    "ANTHROPIC_API_KEY, or point key_env/api_key_env in your "
+                    "config.yaml model section at a custom env var."
                 )
         else:
             from agent.anthropic_adapter import resolve_anthropic_token

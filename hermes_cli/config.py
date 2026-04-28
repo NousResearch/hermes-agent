@@ -745,7 +745,7 @@ DEFAULT_CONFIG = {
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
     # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "neutts" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "piper" (local HTTP) | "neutts" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -768,6 +768,16 @@ DEFAULT_CONFIG = {
         "mistral": {
             "model": "voxtral-mini-tts-2603",
             "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
+        },
+        "piper": {
+            # Piper HTTP server (local, self-hosted, free).
+            # Compatible with wyoming-piper HTTP wrappers, openedai-speech, and
+            # custom Flask/FastAPI servers exposing POST /tts -> WAV bytes.
+            "url": "http://localhost:5500",
+            "voice": "en_US-lessac-medium",
+            "length_scale": 1.0,    # 0.5 = faster, 2.0 = slower
+            "noise_w": 1.0,         # phoneme-noise width
+            "sentence_silence": 0.3,  # seconds of silence between sentences
         },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)

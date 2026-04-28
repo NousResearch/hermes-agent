@@ -2,7 +2,7 @@
 """
 Text-to-Speech Tool Module
 
-Supports seven TTS providers:
+Supports eight TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
@@ -10,6 +10,7 @@ Supports seven TTS providers:
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
+- Piper HTTP (local/self-hosted, free, no API key): HTTP endpoint returning WAV audio
 
 Output formats:
 - Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
@@ -111,6 +112,11 @@ DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_PIPER_URL = "http://localhost:5500"
+DEFAULT_PIPER_VOICE = "en_US-lessac-medium"
+DEFAULT_PIPER_LENGTH_SCALE = 1.0
+DEFAULT_PIPER_NOISE_W = 1.0
+DEFAULT_PIPER_SENTENCE_SILENCE = 0.3
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -764,6 +770,109 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
+# Provider: Piper HTTP (local/self-hosted)
+# ===========================================================================
+def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using a Piper-compatible HTTP endpoint.
+
+    Piper (https://github.com/rhasspy/piper) is a fast, local neural TTS that
+    runs on CPU. Several wrappers expose it over HTTP; the most common ones
+    accept POST /tts with a JSON body like:
+
+        {"text": "...", "voice": "en_US-lessac-medium",
+         "length_scale": 1.0, "noise_w": 1.0, "sentence_silence": 0.3}
+
+    and return WAV audio bytes in the response body. Compatible servers
+    include wyoming-piper's HTTP frontends and self-rolled Flask/FastAPI
+    wrappers. Tested with the openedai-speech project's Piper backend.
+
+    Output: WAV when output_path ends in .wav, otherwise ffmpeg converts to
+    Opus (.ogg) or whatever extension was requested. Without ffmpeg the
+    function falls back to writing a .wav next to the requested path.
+    """
+    try:
+        import requests
+    except ImportError as exc:
+        raise RuntimeError(
+            "Piper TTS provider requires the 'requests' package. "
+            "Install with: pip install requests"
+        ) from exc
+
+    piper_config = tts_config.get("piper", {})
+    base_url = str(piper_config.get("url", DEFAULT_PIPER_URL)).strip().rstrip("/")
+    if not base_url:
+        raise ValueError("Piper TTS URL is not configured. Set tts.piper.url in config.yaml")
+
+    voice = str(piper_config.get("voice", DEFAULT_PIPER_VOICE)).strip() or DEFAULT_PIPER_VOICE
+    length_scale = float(piper_config.get("length_scale", DEFAULT_PIPER_LENGTH_SCALE))
+    noise_w = float(piper_config.get("noise_w", DEFAULT_PIPER_NOISE_W))
+    sentence_silence = float(piper_config.get("sentence_silence", DEFAULT_PIPER_SENTENCE_SILENCE))
+
+    payload: Dict[str, Any] = {
+        "text": text,
+        "voice": voice,
+        "length_scale": length_scale,
+        "noise_w": noise_w,
+        "sentence_silence": sentence_silence,
+    }
+
+    response = requests.post(
+        f"{base_url}/tts",
+        headers={"Content-Type": "application/json"},
+        json=payload,
+        timeout=60,
+    )
+    if response.status_code != 200:
+        detail = response.text[:300]
+        raise RuntimeError(f"Piper TTS API error (HTTP {response.status_code}): {detail}")
+
+    wav_bytes = response.content
+    if not wav_bytes:
+        raise RuntimeError("Piper TTS returned empty audio data")
+
+    if output_path.lower().endswith(".wav"):
+        with open(output_path, "wb") as f:
+            f.write(wav_bytes)
+        return output_path
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(wav_bytes)
+        wav_path = tmp.name
+
+    try:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            if output_path.lower().endswith(".ogg"):
+                cmd = [
+                    ffmpeg, "-i", wav_path,
+                    "-acodec", "libopus", "-ac", "1",
+                    "-b:a", "64k", "-vbr", "off",
+                    "-y", "-loglevel", "error",
+                    output_path,
+                ]
+            else:
+                cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="ignore")[:300]
+                raise RuntimeError(f"ffmpeg conversion failed: {stderr}")
+            return output_path
+        # ffmpeg not available — fall back to writing the raw WAV alongside
+        fallback_path = output_path
+        if not output_path.lower().endswith(".wav"):
+            fallback_path = output_path.rsplit(".", 1)[0] + ".wav"
+        logger.warning("ffmpeg not found; writing WAV output to %s", fallback_path)
+        with open(fallback_path, "wb") as f:
+            f.write(wav_bytes)
+        return fallback_path
+    finally:
+        try:
+            os.remove(wav_path)
+        except OSError:
+            pass
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -968,7 +1077,7 @@ def text_to_speech_tool(
         out_dir.mkdir(parents=True, exist_ok=True)
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
+        if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini", "piper"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -1024,6 +1133,10 @@ def text_to_speech_tool(
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
+
+        elif provider == "piper":
+            logger.info("Generating speech with Piper HTTP TTS...")
+            file_str = _generate_piper_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -1092,7 +1205,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
+        elif provider in ("elevenlabs", "openai", "mistral", "gemini", "piper"):
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -1174,6 +1287,15 @@ def check_tts_requirements() -> bool:
         return True
     if _check_kittentts_available():
         return True
+    # Piper HTTP is considered available when a URL is configured. We don't
+    # probe it here (network) — the actual call will surface connection errors
+    # if the endpoint is unreachable.
+    try:
+        piper_url = str(_load_tts_config().get("piper", {}).get("url", "")).strip()
+        if piper_url:
+            return True
+    except Exception:
+        pass
     return False
 
 

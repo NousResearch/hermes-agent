@@ -558,35 +558,9 @@ export default function App() {
                   />
                 </Routes>
 
-                {/*
-                  Persistent chat host: always mounted when `hermes dashboard
-                  --tui` is active, visibility toggled by route.  Keeping the
-                  tree alive preserves the xterm instance, its WebSocket, and
-                  the PTY child that backs the TUI session — so navigating to
-                  another tab and returning lands the user in the same
-                  conversation instead of spawning a fresh session.
-
-                  The host sits alongside <Routes> (not inside one) because
-                  React Router unmounts route elements on path change, which
-                  is exactly the destructive lifecycle we're avoiding.
-
-                  Trade-off worth knowing about: while hidden, ChatPage still
-                  holds a PTY child + WebSocket + xterm instance for the
-                  dashboard's full lifetime.  The WS keeps delivering bytes
-                  and xterm keeps parsing them into a display:none host
-                  (cheap — no paint work, but not free).  If this becomes a
-                  resource problem we can pause `term.write` when !isActive
-                  or idle-disconnect after N minutes hidden; neither is
-                  shipped today.
-                */}
                 {embeddedChat &&
                   !chatOverriddenByPlugin &&
                   (pluginsLoading ? (
-                    // Direct /chat deep-link: plugin manifests haven't resolved
-                    // yet, so we can't tell if a plugin is going to claim this
-                    // route.  Show a lightweight placeholder instead of a
-                    // blank page.  Typical wait is <50ms; worst case is the
-                    // 2s plugin-registration safety timeout.
                     isChatRoute ? (
                       <div
                         className="flex min-h-0 min-w-0 flex-1 items-center justify-center"

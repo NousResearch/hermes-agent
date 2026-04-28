@@ -1123,7 +1123,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 22,
 }
 
 # =============================================================================
@@ -3122,28 +3122,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         "  ✓ Plugins now opt-in: no existing plugins to grandfather. "
                         "Use `hermes plugins enable <name>` to activate."
                     )
-
-    # ── Version 22 → 23: ensure LM_API_KEY is set when provider is lmstudio ──
-    # LM Studio's documented default is no-auth, but our API-key registry
-    # path needs *some* non-empty value to satisfy auxiliary_client and
-    # runtime resolution. Self-heal users whose config.yaml has
-    # provider:lmstudio but no LM_API_KEY in .env (cross-machine sync,
-    # manual edit, profile move).
-    if current_ver < 23:
-        try:
-            from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
-            config = load_config()
-            model_cfg = config.get("model")
-            if isinstance(model_cfg, dict) and str(model_cfg.get("provider") or "").strip().lower() == "lmstudio":
-                if not get_env_value("LM_API_KEY"):
-                    save_env_value("LM_API_KEY", LMSTUDIO_NOAUTH_PLACEHOLDER)
-                    results["env_added"].append(
-                        f"LM_API_KEY={LMSTUDIO_NOAUTH_PLACEHOLDER} (placeholder for no-auth LM Studio)"
-                    )
-                    if not quiet:
-                        print("  ✓ Added placeholder LM_API_KEY for LM Studio (no-auth default)")
-        except Exception:
-            pass
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

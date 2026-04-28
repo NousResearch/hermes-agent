@@ -316,8 +316,14 @@ def test_resolve_runtime_provider_lmstudio_honors_saved_base_url(monkeypatch):
     assert resolved["api_key"] == "dummy-lm-api-key"
 
 
-def test_resolve_runtime_provider_lmstudio_base_url_env_wins_over_saved_base_url(monkeypatch):
-    """LM_BASE_URL should override the saved lmstudio base_url for temporary redirects."""
+def test_resolve_runtime_provider_lmstudio_saved_base_url_wins_over_env(monkeypatch):
+    """Saved model.base_url takes precedence over LM_BASE_URL env var.
+
+    This matches the established contract for all api_key providers: the
+    explicit config value (model.base_url) wins over the env-derived
+    default.  Users who saved a remote LM Studio URL must not have it
+    silently overridden by a stale shell variable.
+    """
     monkeypatch.delenv("LM_API_KEY", raising=False)
     monkeypatch.setenv("LM_BASE_URL", "http://override.local:9999/v1")
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
@@ -340,7 +346,8 @@ def test_resolve_runtime_provider_lmstudio_base_url_env_wins_over_saved_base_url
 
     assert resolved["provider"] == "lmstudio"
     assert resolved["api_mode"] == "chat_completions"
-    assert resolved["base_url"] == "http://override.local:9999/v1"
+    # Saved config base_url wins over env var (standard contract).
+    assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
     assert resolved["api_key"] == "dummy-lm-api-key"
 
 

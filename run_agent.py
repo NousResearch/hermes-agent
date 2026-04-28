@@ -2149,7 +2149,6 @@ class AIAgent:
                 self.model, self.base_url, getattr(self, "api_key", ""), target_ctx,
             )
             if loaded_ctx:
-                self._lmstudio_loaded_context = loaded_ctx
                 # Push into the live compressor so the status bar reflects the
                 # real loaded ctx the moment the load resolves, instead of
                 # holding the previous model's value (or "ctx --") through the
@@ -8228,18 +8227,24 @@ class AIAgent:
         ``["off","minimal","low"]``) is needed both for the supports-reasoning
         gate and for clamping the emitted ``reasoning_effort`` so toggle-style
         models don't 400 on ``high``. Cache is keyed on (model, base_url) so
-        ``/model`` swaps and base-URL changes don't reuse a stale list, and an
-        empty result (transient probe failure) is *not* cached so the next call
-        retries instead of silently disabling reasoning for the rest of the
-        session.
+        ``/model`` swaps and base-URL changes don't reuse a stale list.
+        Non-empty results are cached permanently (model capabilities don't
+        change). Empty results (transient probe failure OR genuinely
+        non-reasoning model) are cached with a 60-second TTL to avoid an
+        HTTP round-trip on every turn while still retrying reasonably soon.
         """
+        import time as _time
+
         cache = getattr(self, "_lm_reasoning_opts_cache", None)
         if cache is None:
             cache = self._lm_reasoning_opts_cache = {}
         key = (self.model, self.base_url)
         cached = cache.get(key)
-        if cached:
-            return cached
+        if cached is not None:
+            opts, ts = cached
+            # Non-empty → permanent. Empty → 60s TTL.
+            if opts or (_time.monotonic() - ts) < 60:
+                return opts
         try:
             from hermes_cli.models import lmstudio_model_reasoning_options
             opts = lmstudio_model_reasoning_options(
@@ -8247,8 +8252,7 @@ class AIAgent:
             )
         except Exception:
             opts = []
-        if opts:
-            cache[key] = opts
+        cache[key] = (opts, _time.monotonic())
         return opts
 
     def _resolve_lmstudio_summary_reasoning_effort(self) -> Optional[str]:

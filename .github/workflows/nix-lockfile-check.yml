@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
+  nix-lockfile-check:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -35,6 +35,12 @@ jobs:
         env:
           LINK_SHA: ${{ steps.sha.outputs.full }}
         run: nix run .#fix-lockfiles -- --check
+
+      - name: Fail if check crashed without reporting
+        if: steps.check.outputs.stale != 'true' && steps.check.outputs.stale != 'false'
+        run: |
+          echo "::error::fix-lockfiles exited without reporting stale status — likely an infrastructure or script failure"
+          exit 1
 
       - name: Post sticky PR comment (stale)
         if: steps.check.outputs.stale == 'true' && github.event_name == 'pull_request'

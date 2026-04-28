@@ -187,7 +187,10 @@
 
         if [ "$MODE" = "--apply" ]; then
           sed -i "s|hash = \"sha256-[^\"]*\";|hash = \"$NEW_HASH\";|" "$NIX_FILE"
-          nix build ".#$ATTR.npmDeps" --no-link --print-build-logs
+          if ! nix build ".#$ATTR.npmDeps" --no-link --print-build-logs; then
+            echo "    verification build failed after hash update" >&2
+            exit 1
+          fi
           FIXED=1
           echo "    fixed"
         fi

@@ -329,17 +329,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         // Surface the most useful stderr lines inline so users can tell
         // "wrong python", "missing dep", and "config parse failure"
-        // apart without leaving the TUI.
-        const tail = (stderrTail ?? '').trim()
+        // apart without leaving the TUI.  Filter blank rows BEFORE
+        // taking the last N so trailing empty lines in the buffer
+        // don't crowd out actual content; truncate to match the
+        // 120-char clip used for `gateway.stderr` activity entries.
+        const STDERR_LINE_CAP = 120
+        const STDERR_LINES_MAX = 8
+        const tailLines = (stderrTail ?? '')
+          .split('\n')
+          .map(l => l.trim())
+          .filter(Boolean)
+          .slice(-STDERR_LINES_MAX)
 
-        if (tail) {
-          for (const line of tail.split('\n').slice(-8)) {
-            const trimmed = line.trim()
-
-            if (trimmed) {
-              turnController.pushActivity(trimmed, 'error')
-            }
-          }
+        for (const line of tailLines) {
+          turnController.pushActivity(line.slice(0, STDERR_LINE_CAP), 'error')
         }
 
         return

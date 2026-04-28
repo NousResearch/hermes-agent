@@ -799,6 +799,10 @@ def load_gateway_config() -> GatewayConfig:
 
     config = GatewayConfig.from_dict(gw_data)
 
+    # Apply home_channel settings from config.yaml top-level keys (e.g., SLACK_HOME_CHANNEL)
+    # This supports home channels set via /sethome. Env vars take precedence (applied later).
+    _apply_config_home_channels(config, yaml_cfg if 'yaml_cfg' in dir() else {})
+
     # Override with environment variables
     _apply_env_overrides(config)
     
@@ -875,6 +879,61 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
                     platform.value, env_name, token.strip()[:6] + "...",
                 )
                 pconfig.enabled = False
+
+
+def _apply_config_home_channels(config: GatewayConfig, yaml_cfg: dict) -> None:
+    """Apply home channel settings from config.yaml top-level keys (e.g., SLACK_HOME_CHANNEL).
+
+    This supports home channels set via /sethome. Environment variables take precedence
+    and will override these values in _apply_env_overrides.
+    """
+    if not isinstance(yaml_cfg, dict):
+        return
+
+    # Map of platform enum → (home_channel_key, home_channel_name_key)
+    home_channel_map = {
+        Platform.TELEGRAM: ("TELEGRAM_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL_NAME"),
+        Platform.DISCORD: ("DISCORD_HOME_CHANNEL", "DISCORD_HOME_CHANNEL_NAME"),
+        Platform.SLACK: ("SLACK_HOME_CHANNEL", "SLACK_HOME_CHANNEL_NAME"),
+        Platform.SIGNAL: ("SIGNAL_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL_NAME"),
+        Platform.MATTERMOST: ("MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME"),
+        Platform.MATRIX: ("MATRIX_HOME_ROOM", "MATRIX_HOME_ROOM_NAME"),
+        Platform.EMAIL: ("EMAIL_HOME_ADDRESS", "EMAIL_HOME_ADDRESS_NAME"),
+        Platform.SMS: ("SMS_HOME_CHANNEL", "SMS_HOME_CHANNEL_NAME"),
+        Platform.HOMEASSISTANT: ("HOMEASSISTANT_HOME_CHANNEL", "HOMEASSISTANT_HOME_CHANNEL_NAME"),
+    }
+
+    for platform, (key, name_key) in home_channel_map.items():
+        chat_id = yaml_cfg.get(key)
+        if chat_id:
+            if platform not in config.platforms:
+                config.platforms[platform] = PlatformConfig()
+            config.platforms[platform].home_channel = HomeChannel(
+                platform=platform,
+                chat_id=str(chat_id),
+                name=yaml_cfg.get(name_key, "Home"),
+            )
+
+    # Also check for legacy `gateway.home_channel` - use as fallback for slack if set
+    # and no platform-specific home channel is configured
+    gateway_cfg = yaml_cfg.get("gateway")
+    if isinstance(gateway_cfg, dict):
+        legacy_home = gateway_cfg.get("home_channel")
+        if legacy_home:
+            # Only use if slack doesn't already have a home channel
+            if Platform.SLACK in config.platforms and not config.platforms[Platform.SLACK].home_channel:
+                config.platforms[Platform.SLACK].home_channel = HomeChannel(
+                    platform=Platform.SLACK,
+                    chat_id=str(legacy_home),
+                    name="Home",
+                )
+            elif Platform.SLACK not in config.platforms:
+                config.platforms[Platform.SLACK] = PlatformConfig()
+                config.platforms[Platform.SLACK].home_channel = HomeChannel(
+                    platform=Platform.SLACK,
+                    chat_id=str(legacy_home),
+                    name="Home",
+                )
 
 
 def _apply_env_overrides(config: GatewayConfig) -> None:

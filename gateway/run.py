@@ -4821,7 +4821,11 @@ class GatewayRunner:
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-            if not os.getenv(env_key):
+            # Check both env var and loaded config (home channel may be set via /sethome in config.yaml)
+            has_home_channel = bool(os.getenv(env_key))
+            if not has_home_channel and source.platform in self.config.platforms:
+                has_home_channel = bool(self.config.platforms[source.platform].home_channel)
+            if not has_home_channel:
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     # Slack dispatches all Hermes commands through a single
@@ -6344,6 +6348,14 @@ class GatewayRunner:
             atomic_yaml_write(config_path, user_config)
             # Also set in the current environment so it takes effect immediately
             os.environ[env_key] = str(chat_id)
+            # Also update the in-memory config so the check sees it without restart
+            if source.platform and source.platform in self.config.platforms:
+                from gateway.config import HomeChannel, Platform
+                self.config.platforms[source.platform].home_channel = HomeChannel(
+                    platform=source.platform,
+                    chat_id=str(chat_id),
+                    name=chat_name or str(chat_id),
+                )
         except Exception as e:
             return f"Failed to save home channel: {e}"
         

@@ -875,7 +875,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             prompt += f"""
 
 MEMORY PROVIDER CONTEXT:
-The following context was extracted by the active memory provider before this compaction. Treat it as additional important information that MUST be preserved in the summary:
+The following context was extracted by active memory providers before this compaction. Treat it as additional important information that MUST be preserved in the summary:
 
 {memory_context}"""
 

@@ -787,6 +787,10 @@ def _get_current_memory_provider() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
+        mem = config.get("memory", {})
+        providers = mem.get("providers", [])
+        if providers:
+            return providers[0]
         return cfg_get(config, "memory", "provider", default="") or ""
     except Exception:
         return ""
@@ -808,6 +812,9 @@ def _save_memory_provider(name: str) -> None:
     config = load_config()
     if "memory" not in config:
         config["memory"] = {}
+    # Write to new list format
+    config["memory"]["providers"] = [name] if name else []
+    # Also set legacy single-provider for backwards compat
     config["memory"]["provider"] = name
     save_config(config)
 

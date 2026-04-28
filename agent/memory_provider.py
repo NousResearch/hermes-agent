@@ -1,8 +1,9 @@
 """Abstract base class for pluggable memory providers.
 
-Memory providers give the agent persistent recall across sessions.
-Multiple external providers can be active simultaneously via
-the ``memory.providers`` list in config.yaml.
+Memory providers give the agent persistent recall across sessions. One or
+more external providers can be active simultaneously alongside the always-on
+built-in memory (MEMORY.md / USER.md). The ``memory.providers`` list in
+config.yaml controls which external providers are loaded.
 
 Built-in memory is always active as the first provider and cannot be removed.
 External providers (Honcho, Hindsight, Mem0, etc.) are additive — they never

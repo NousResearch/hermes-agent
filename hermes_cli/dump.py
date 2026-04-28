@@ -119,8 +119,11 @@ def _configured_platforms() -> list[str]:
 
 
 def _memory_provider(config: dict) -> str:
-    """Return the active memory provider name."""
+    """Return the active memory provider name(s)."""
     mem = config.get("memory", {})
+    providers = mem.get("providers", [])
+    if providers:
+        return ", ".join(providers)
     provider = mem.get("provider", "")
     return provider if provider else "built-in"
 

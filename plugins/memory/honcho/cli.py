@@ -544,6 +544,9 @@ def cmd_setup(args) -> None:
         from hermes_cli.config import load_config, save_config
         hermes_config = load_config()
         hermes_config.setdefault("memory", {})["provider"] = "honcho"
+        providers = hermes_config["memory"].setdefault("providers", [])
+        if "honcho" not in providers:
+            providers.append("honcho")
         save_config(hermes_config)
         print("  Memory provider set to 'honcho' in config.yaml")
     except Exception as e:

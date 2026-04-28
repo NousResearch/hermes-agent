@@ -1,7 +1,7 @@
-import { Button } from "@/components/ui/button";
+import { Button, ListItem, Spinner } from "@nous-research/ui";
 import { Input } from "@/components/ui/input";
 import type { GatewayClient } from "@/lib/gatewayClient";
-import { Check, Loader2, Search, X } from "lucide-react";
+import { Check, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 /**
@@ -145,14 +145,15 @@ export function ModelPickerDialog({ gw, sessionId, onClose, onSubmit }: Props) {
       aria-labelledby="model-picker-title"
     >
       <div className="relative w-full max-w-3xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col">
-        <button
-          type="button"
+        <Button
+          ghost
+          size="icon"
           onClick={onClose}
-          className="absolute right-3 top-3 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
           aria-label="Close"
         >
-          <X className="h-5 w-5" />
-        </button>
+          <X />
+        </Button>
 
         <header className="p-5 pb-3 border-b border-border">
           <h2
@@ -222,10 +223,10 @@ export function ModelPickerDialog({ gw, sessionId, onClose, onSubmit }: Props) {
           </label>
 
           <div className="flex items-center gap-2 ml-auto">
-            <Button variant="ghost" size="sm" onClick={onClose}>
+            <Button outlined onClick={onClose}>
               Cancel
             </Button>
-            <Button size="sm" onClick={confirm} disabled={!canConfirm}>
+            <Button onClick={confirm} disabled={!canConfirm}>
               Switch
             </Button>
           </div>
@@ -260,7 +261,7 @@ function ProviderColumn({
     <div className="border-r border-border overflow-y-auto">
       {loading && (
         <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
-          <Loader2 className="h-3 w-3 animate-spin" /> loading…
+          <Spinner className="text-xs" /> loading…
         </div>
       )}
 
@@ -279,14 +280,12 @@ function ProviderColumn({
       {providers.map((p) => {
         const active = p.slug === selectedSlug;
         return (
-          <button
+          <ListItem
             key={p.slug}
-            type="button"
+            active={active}
             onClick={() => onSelect(p.slug)}
-            className={`w-full text-left px-3 py-2 text-xs border-l-2 transition-colors cursor-pointer flex items-start gap-2 ${
-              active
-                ? "bg-primary/10 border-l-primary text-foreground"
-                : "border-l-transparent text-muted-foreground hover:text-foreground hover:bg-muted/40"
+            className={`items-start text-xs border-l-2 ${
+              active ? "border-l-primary" : "border-l-transparent"
             }`}
           >
             <div className="flex-1 min-w-0">
@@ -298,7 +297,7 @@ function ProviderColumn({
                 {p.slug} · {p.total_models ?? p.models?.length ?? 0} models
               </div>
             </div>
-          </button>
+          </ListItem>
         );
       })}
     </div>
@@ -359,23 +358,19 @@ function ModelColumn({
             m === currentModel && provider.slug === currentProviderSlug;
 
           return (
-            <button
+            <ListItem
               key={m}
-              type="button"
+              active={active}
               onClick={() => onSelect(m)}
               onDoubleClick={() => onConfirm(m)}
-              className={`w-full text-left px-3 py-1.5 text-xs font-mono transition-colors cursor-pointer flex items-center gap-2 ${
-                active
-                  ? "bg-primary/15 text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-              }`}
+              className="px-3 py-1.5 text-xs font-mono"
             >
               <Check
                 className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
               />
               <span className="flex-1 truncate">{m}</span>
               {isCurrent && <CurrentTag />}
-            </button>
+            </ListItem>
           );
         })
       )}

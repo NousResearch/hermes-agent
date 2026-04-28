@@ -777,6 +777,16 @@ def _get_platform_tools(
     else:
         enabled_toolsets.update(explicit_mcp_servers)
 
+    # Honor agent.disabled_toolsets from config.yaml — allows users to
+    # globally suppress specific toolsets (e.g. "memory") across all
+    # platforms without per-platform toolset configuration.  This runs
+    # last so it overrides everything above.
+    agent_cfg = config.get("agent") or {}
+    disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
+    if disabled_toolsets:
+        disabled_set = {str(ts) for ts in disabled_toolsets}
+        enabled_toolsets -= disabled_set
+
     return enabled_toolsets
 
 

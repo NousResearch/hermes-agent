@@ -896,6 +896,10 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 db = self._ensure_session_db()
                 if db is not None:
+                    # Walk compression-continuation chain so that requests
+                    # carrying a stale parent-session ID after context
+                    # compression still land on the live tip.
+                    session_id = db.get_compression_tip(provided_session_id) or provided_session_id
                     history = db.get_messages_as_conversation(session_id)
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
@@ -1037,7 +1041,8 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
 
-        return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
+        effective_session_id = result.get("session_id", session_id)
+        return web.json_response(response_data, headers={"X-Hermes-Session-Id": effective_session_id})
 
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
@@ -2282,6 +2287,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 task_id="default",
             )
+            # Surface effective session_id so callers (e.g. the non-streaming
+            # chat completions path) can return the correct X-Hermes-Session-Id
+            # header even when context compression created a child session.
+            result["session_id"] = getattr(agent, "session_id", session_id)
             usage = {
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,

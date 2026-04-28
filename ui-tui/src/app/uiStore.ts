@@ -4,7 +4,7 @@ import { MOUSE_TRACKING } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
 import { DEFAULT_THEME } from '../theme.js'
 
-import type { UiState } from './interfaces.js'
+import { DEFAULT_INDICATOR_STYLE, type UiState } from './interfaces.js'
 
 const buildUiState = (): UiState => ({
   bgTasks: new Set(),
@@ -13,6 +13,7 @@ const buildUiState = (): UiState => ({
   compact: false,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
+  indicatorStyle: DEFAULT_INDICATOR_STYLE,
   info: null,
   inlineDiffs: true,
   mouseTracking: MOUSE_TRACKING,

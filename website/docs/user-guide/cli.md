@@ -141,9 +141,12 @@ quick_commands:
   gpu:
     type: exec
     command: nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader
+  restart:
+    type: alias
+    target: /gateway restart
 ```
 
-Then type `/status` or `/gpu` in any chat. See the [Configuration guide](/docs/user-guide/configuration#quick-commands) for more examples.
+Then type `/status`, `/gpu`, or `/restart` in any chat. See the [Configuration guide](/docs/user-guide/configuration#quick-commands) for more examples.
 
 ## Preloading Skills at Launch
 

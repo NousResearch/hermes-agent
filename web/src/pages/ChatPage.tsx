@@ -22,7 +22,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { Typography } from "@nous-research/ui";
+import { Button, Typography } from "@nous-research/ui";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -732,18 +732,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               {t.app.modelToolsSheetSubtitle}
             </Typography>
 
-            <button
-              type="button"
+            <Button
+              ghost
+              size="icon"
               onClick={closeMobilePanel}
               aria-label={t.app.closeModelTools}
-              className={cn(
-                "inline-flex h-7 w-7 items-center justify-center",
-                "text-midground/70 hover:text-midground transition-colors cursor-pointer",
-                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-              )}
+              className="text-midground/70 hover:text-midground"
             >
-              <X className="h-4 w-4" />
-            </button>
+              <X />
+            </Button>
           </div>
 
           <div

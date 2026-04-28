@@ -563,6 +563,7 @@ AUTHOR_MAP = {
     "screenmachine@gmail.com": "teknium1",
     "chenzeshi@live.com": "chen1749144759",
     "mor.aleksandr@yahoo.com": "MorAlekss",
+    "276649498+ztexydt-cqh@users.noreply.github.com": "ztexydt-cqh",
     "ash@users.noreply.github.com": "ash",
     "andrewho.sf@gmail.com": "andrewhosf",
     # April 2026 Honcho bug-fix consolidation (#15381)

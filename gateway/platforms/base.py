@@ -907,6 +907,41 @@ class MessageEvent:
         return args
 
 
+_PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?gateway[.!?\s]*$", re.IGNORECASE),
+    re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?hermes\s+gateway[.!?\s]*$", re.IGNORECASE),
+    re.compile(r"^(?:please\s+)?restart\s+hermes[.!?\s]*$", re.IGNORECASE),
+)
+
+
+def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
+    """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
+
+    This keeps high-impact operational phrases like ``restart gateway`` out of
+    the LLM/tool path, where they can trigger a self-restart from inside the
+    currently running agent and leave the gateway stuck in ``draining`` while it
+    waits for that same agent to finish.
+
+    Scope is intentionally narrow: DM text messages only, exact restart-style
+    phrases only. Group chats keep natural-language semantics.
+    """
+    try:
+        if event is None or event.message_type != MessageType.TEXT:
+            return
+        text = (event.text or "").strip()
+        if not text or text.startswith("/"):
+            return
+        source = getattr(event, "source", None)
+        if getattr(source, "chat_type", None) != "dm":
+            return
+        for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS:
+            if pattern.match(text):
+                event.text = "/restart"
+                return
+    except Exception:
+        return
+
+
 @dataclass 
 class SendResult:
     """Result of sending a message."""
@@ -2193,6 +2228,8 @@ class BasePlatformAdapter(ABC):
         """
         if not self._message_handler:
             return
+
+        coerce_plaintext_gateway_command(event)
         
         session_key = build_session_key(
             event.source,

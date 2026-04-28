@@ -348,6 +348,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "tencent-tokenhub": ProviderConfig(
+        id="tencent-tokenhub",
+        name="Tencent TokenHub",
+        auth_type="api_key",
+        inference_base_url="https://tokenhub.tencentmaas.com/v1",
+        api_key_env_vars=("TOKENHUB_API_KEY",),
+        base_url_env_var="TOKENHUB_BASE_URL",
+    ),
     "ollama-cloud": ProviderConfig(
         id="ollama-cloud",
         name="Ollama Cloud",
@@ -1141,6 +1149,8 @@ def resolve_provider(
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
+        "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
+        "tencent-cloud": "tencent-tokenhub", "tencentmaas": "tencent-tokenhub",
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",

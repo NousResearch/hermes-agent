@@ -188,6 +188,7 @@ class ChatCompletionsTransport(ProviderTransport):
         anthropic_max_out = params.get("anthropic_max_output")
         is_nvidia_nim = params.get("is_nvidia_nim", False)
         is_kimi = params.get("is_kimi", False)
+        is_tokenhub = params.get("is_tokenhub", False)
         reasoning_config = params.get("reasoning_config")
 
         if ephemeral is not None and max_tokens_fn:
@@ -218,6 +219,21 @@ class ChatCompletionsTransport(ProviderTransport):
                     if _e in ("low", "medium", "high"):
                         _kimi_effort = _e
                 api_kwargs["reasoning_effort"] = _kimi_effort
+
+        # Tencent TokenHub: top-level reasoning_effort (unless thinking disabled)
+        if is_tokenhub:
+            _tokenhub_thinking_off = bool(
+                reasoning_config
+                and isinstance(reasoning_config, dict)
+                and reasoning_config.get("enabled") is False
+            )
+            if not _tokenhub_thinking_off:
+                _tokenhub_effort = "high"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e in ("low", "medium", "high"):
+                        _tokenhub_effort = _e
+                api_kwargs["reasoning_effort"] = _tokenhub_effort
 
         # extra_body assembly
         extra_body: Dict[str, Any] = {}

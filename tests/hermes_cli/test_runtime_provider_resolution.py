@@ -1763,7 +1763,6 @@ class TestAzureFoundryResolution:
         assert resolved["api_mode"] == "codex_responses"
 
 
-
 # ──────────────────────────────────────────────────────────────────────────
 # Azure Anthropic — honor user-specified env var hints (key_env / api_key_env)
 #
@@ -1962,3 +1961,84 @@ class TestProviderEntryApiKeyEnvAlias:
         key_env so the set stays in sync with what the runtime actually reads."""
         from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
         assert "key_env" in _VALID_CUSTOM_PROVIDER_FIELDS
+# =============================================================================
+# Tencent TokenHub — API-key provider runtime resolution
+# =============================================================================
+
+class TestTencentTokenhubRuntimeResolution:
+    """Verify Tencent TokenHub resolves correctly through the generic
+    API-key provider path in resolve_runtime_provider."""
+
+    def test_resolves_with_env_key(self, monkeypatch):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "tencent-tokenhub")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.setenv("TOKENHUB_API_KEY", "test-tokenhub-key")
+        monkeypatch.delenv("TOKENHUB_BASE_URL", raising=False)
+
+        resolved = rp.resolve_runtime_provider(requested="tencent-tokenhub")
+
+        assert resolved["provider"] == "tencent-tokenhub"
+        assert resolved["api_mode"] == "chat_completions"
+        assert resolved["base_url"] == "https://tokenhub.tencentmaas.com/v1"
+        assert resolved["api_key"] == "test-tokenhub-key"
+        assert resolved["requested_provider"] == "tencent-tokenhub"
+
+    def test_custom_base_url_from_env(self, monkeypatch):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "tencent-tokenhub")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.setenv("TOKENHUB_API_KEY", "test-tokenhub-key")
+        monkeypatch.setenv("TOKENHUB_BASE_URL", "https://custom-proxy.example.com/v1")
+
+        resolved = rp.resolve_runtime_provider(requested="tencent-tokenhub")
+
+        assert resolved["provider"] == "tencent-tokenhub"
+        assert resolved["base_url"] == "https://custom-proxy.example.com/v1"
+        assert resolved["api_key"] == "test-tokenhub-key"
+
+    def test_config_base_url_honoured_when_provider_matches(self, monkeypatch):
+        """model.base_url in config.yaml should override the hardcoded default
+        when model.provider == tencent-tokenhub."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "tencent-tokenhub")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {
+            "provider": "tencent-tokenhub",
+            "base_url": "https://proxy.internal.com/v1",
+        })
+        monkeypatch.setenv("TOKENHUB_API_KEY", "test-tokenhub-key")
+        monkeypatch.delenv("TOKENHUB_BASE_URL", raising=False)
+
+        resolved = rp.resolve_runtime_provider(requested="tencent-tokenhub")
+
+        assert resolved["base_url"] == "https://proxy.internal.com/v1"
+
+    def test_config_base_url_ignored_for_different_provider(self, monkeypatch):
+        """model.base_url should NOT be used when model.provider doesn't match."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "tencent-tokenhub")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {
+            "provider": "openrouter",
+            "base_url": "https://some-other-endpoint.com/v1",
+        })
+        monkeypatch.setenv("TOKENHUB_API_KEY", "test-tokenhub-key")
+        monkeypatch.delenv("TOKENHUB_BASE_URL", raising=False)
+
+        resolved = rp.resolve_runtime_provider(requested="tencent-tokenhub")
+
+        # Should use the default, NOT the config base_url from a different provider
+        assert resolved["base_url"] == "https://tokenhub.tencentmaas.com/v1"
+
+    def test_explicit_override_skips_env(self, monkeypatch):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "tencent-tokenhub")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.setenv("TOKENHUB_API_KEY", "env-key-should-lose")
+        monkeypatch.delenv("TOKENHUB_BASE_URL", raising=False)
+
+        resolved = rp.resolve_runtime_provider(
+            requested="tencent-tokenhub",
+            explicit_api_key="explicit-tokenhub-key",
+            explicit_base_url="https://explicit-proxy.example.com/v1/",
+        )
+
+        assert resolved["provider"] == "tencent-tokenhub"
+        assert resolved["api_key"] == "explicit-tokenhub-key"
+        assert resolved["base_url"] == "https://explicit-proxy.example.com/v1"
+        assert resolved["source"] == "explicit"
+

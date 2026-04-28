@@ -480,6 +480,17 @@ class WeComAdapter(BasePlatformAdapter):
         if not isinstance(body, dict):
             return
 
+        # Debug: log full message structure for media debugging
+        import json
+        msgtype = str(body.get("msgtype") or "").lower()
+        if msgtype in ("image", "file", "mixed"):
+            logger.info(
+                "[%s] Received %s message, full body: %s",
+                self.name,
+                msgtype,
+                json.dumps(body, ensure_ascii=False, indent=2),
+            )
+
         msg_id = str(body.get("msgid") or self._payload_req_id(payload) or uuid.uuid4().hex)
         if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
@@ -1010,6 +1021,8 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
+        # WeCom doesn't pad base64 keys; add padding if needed
+        aes_key = aes_key + '=' * ((4 - len(aes_key) % 4) % 4)
         key = base64.b64decode(aes_key)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")

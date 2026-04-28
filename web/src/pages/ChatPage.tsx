@@ -22,7 +22,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { Typography } from "@nous-research/ui";
+import { Button, Typography } from "@nous-research/ui";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -192,22 +192,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return;
     }
     setEnd(
-      <button
-        type="button"
+      <Button
+        ghost
         onClick={() => setMobilePanelOpenRaw(true)}
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded border border-current/20",
-          "px-2 py-1 text-[0.65rem] font-medium tracking-wide normal-case",
-          "text-midground/80 hover:text-midground hover:bg-midground/5",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-          "shrink-0 cursor-pointer",
-        )}
         aria-expanded={mobilePanelOpen}
         aria-controls="chat-side-panel"
+        className={cn(
+          "shrink-0 rounded border border-current/20",
+          "px-2 py-1 text-[0.65rem] font-medium tracking-wide normal-case",
+          "text-midground/80 hover:text-midground hover:bg-midground/5",
+        )}
       >
-        <PanelRight className="h-3 w-3 shrink-0" />
-        {modelToolsLabel}
-      </button>,
+        <span className="inline-flex items-center gap-1.5">
+          <PanelRight className="h-3 w-3 shrink-0" />
+          {modelToolsLabel}
+        </span>
+      </Button>,
     );
     return () => setEnd(null);
   }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
@@ -690,13 +690,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     createPortal(
       <>
         {mobilePanelOpen && (
-          <button
-            type="button"
+          <Button
+            ghost
             aria-label={t.app.closeModelTools}
             onClick={closeMobilePanel}
             className={cn(
-              "fixed inset-0 z-[55]",
-              "bg-black/60 backdrop-blur-sm cursor-pointer",
+              "fixed inset-0 z-[55] p-0 block",
+              "bg-black/60 backdrop-blur-sm",
             )}
           />
         )}
@@ -732,18 +732,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               {t.app.modelToolsSheetSubtitle}
             </Typography>
 
-            <button
-              type="button"
+            <Button
+              ghost
+              size="icon"
               onClick={closeMobilePanel}
               aria-label={t.app.closeModelTools}
-              className={cn(
-                "inline-flex h-7 w-7 items-center justify-center",
-                "text-midground/70 hover:text-midground transition-colors cursor-pointer",
-                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-              )}
+              className="text-midground/70 hover:text-midground"
             >
-              <X className="h-4 w-4" />
-            </button>
+              <X />
+            </Button>
           </div>
 
           <div
@@ -786,29 +783,29 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 
-          <button
-            type="button"
+          <Button
+            ghost
             onClick={handleCopyLast}
             title="Copy last assistant response as raw markdown"
             aria-label="Copy last assistant response"
             className={cn(
-              "absolute z-10 flex items-center gap-1.5",
+              "absolute z-10",
               "rounded border border-current/30",
               "bg-black/20 backdrop-blur-sm",
               "opacity-60 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current",
-              "cursor-pointer",
+              "transition-opacity duration-150 normal-case font-normal tracking-normal",
               "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
               "lg:bottom-4 lg:right-4",
             )}
             style={{ color: TERMINAL_THEME.foreground }}
           >
-            <Copy className="h-3 w-3 shrink-0" />
-            <span className="hidden min-[400px]:inline tracking-wide">
-              {copyState === "copied" ? "copied" : "copy last response"}
+            <span className="inline-flex items-center gap-1.5">
+              <Copy className="h-3 w-3 shrink-0" />
+              <span className="hidden min-[400px]:inline tracking-wide">
+                {copyState === "copied" ? "copied" : "copy last response"}
+              </span>
             </span>
-          </button>
+          </Button>
         </div>
 
         {!narrow && (

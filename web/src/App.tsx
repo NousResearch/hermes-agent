@@ -27,7 +27,6 @@ import {
   Globe,
   Heart,
   KeyRound,
-  Loader2,
   Menu,
   MessageSquare,
   Package,
@@ -42,7 +41,13 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { SelectionSwitcher, Typography } from "@nous-research/ui";
+import {
+  Button,
+  ListItem,
+  SelectionSwitcher,
+  Spinner,
+  Typography,
+} from "@nous-research/ui";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
@@ -160,7 +165,10 @@ function resolveIcon(name: string): ComponentType<{ className?: string }> {
   return ICON_MAP[name] ?? Puzzle;
 }
 
-function buildNavItems(builtIn: NavItem[], manifests: PluginManifest[]): NavItem[] {
+function buildNavItems(
+  builtIn: NavItem[],
+  manifests: PluginManifest[],
+): NavItem[] {
   const items = [...builtIn];
 
   for (const manifest of manifests) {
@@ -367,20 +375,17 @@ export default function App() {
           clipPath: "var(--component-header-clip-path)",
         }}
       >
-        <button
-          type="button"
+        <Button
+          ghost
+          size="icon"
           onClick={() => setMobileOpen(true)}
           aria-label={t.app.openNavigation}
           aria-expanded={mobileOpen}
           aria-controls="app-sidebar"
-          className={cn(
-            "inline-flex h-8 w-8 items-center justify-center",
-            "text-midground/70 hover:text-midground transition-colors cursor-pointer",
-            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-          )}
+          className="text-midground/70 hover:text-midground"
         >
-          <Menu className="h-4 w-4" />
-        </button>
+          <Menu />
+        </Button>
 
         <Typography
           className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
@@ -391,13 +396,13 @@ export default function App() {
       </header>
 
       {mobileOpen && (
-        <button
-          type="button"
+        <Button
+          ghost
           aria-label={t.app.closeNavigation}
           onClick={closeMobile}
           className={cn(
-            "lg:hidden fixed inset-0 z-40",
-            "bg-black/60 backdrop-blur-sm cursor-pointer",
+            "lg:hidden fixed inset-0 z-40 p-0 block",
+            "bg-black/60 backdrop-blur-sm",
           )}
         />
       )}
@@ -425,34 +430,33 @@ export default function App() {
           >
             <div
               className={cn(
-                "flex h-14 shrink-0 items-center justify-between gap-2 px-5",
+                "flex h-14 shrink-0 items-center justify-between gap-2",
                 "border-b border-current/20",
               )}
             >
-              <Typography
-                className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-                style={{ mixBlendMode: "plus-lighter" }}
-              >
-                Hermes
-                <br />
-                Agent
-              </Typography>
+              <div className="flex items-center gap-2">
+                <PluginSlot name="header-left" />
 
-              <button
-                type="button"
+                <Typography
+                  className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
+                  style={{ mixBlendMode: "plus-lighter" }}
+                >
+                  Hermes
+                  <br />
+                  Agent
+                </Typography>
+              </div>
+
+              <Button
+                ghost
+                size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className={cn(
-                  "lg:hidden inline-flex h-7 w-7 items-center justify-center",
-                  "text-midground/70 hover:text-midground transition-colors cursor-pointer",
-                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-                )}
+                className="lg:hidden text-midground/70 hover:text-midground"
               >
-                <X className="h-4 w-4" />
-              </button>
+                <X />
+              </Button>
             </div>
-
-            <PluginSlot name="header-left" />
 
             <nav
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
@@ -545,7 +549,8 @@ export default function App() {
               <div
                 className={cn(
                   "w-full min-w-0",
-                  (isDocsRoute || isChatRoute) && "min-h-0 flex flex-1 flex-col",
+                  (isDocsRoute || isChatRoute) &&
+                    "min-h-0 flex flex-1 flex-col",
                 )}
               >
                 <Routes>
@@ -558,34 +563,9 @@ export default function App() {
                   />
                 </Routes>
 
-                {/*
-                  Persistent chat host: always mounted when `hermes dashboard
-                  --tui` is active, visibility toggled by route.  Keeping the
-                  tree alive preserves the xterm instance, its WebSocket, and
-                  the PTY child that backs the TUI session — so navigating to
-                  another tab and returning lands the user in the same
-                  conversation instead of spawning a fresh session.
-
-                  The host sits alongside <Routes> (not inside one) because
-                  React Router unmounts route elements on path change, which
-                  is exactly the destructive lifecycle we're avoiding.
-
-                  Trade-off worth knowing about: while hidden, ChatPage still
-                  holds a PTY child + WebSocket + xterm instance for the
-                  dashboard's full lifetime.  The WS keeps delivering bytes
-                  and xterm keeps parsing them into a display:none host
-                  (cheap — no paint work, but not free).  If this becomes a
-                  resource problem we can pause `term.write` when !isActive
-                  or idle-disconnect after N minutes hidden; neither is
-                  shipped today.
-                */}
-                {embeddedChat && !chatOverriddenByPlugin && (
-                  pluginsLoading ? (
-                    // Direct /chat deep-link: plugin manifests haven't resolved
-                    // yet, so we can't tell if a plugin is going to claim this
-                    // route.  Show a lightweight placeholder instead of a
-                    // blank page.  Typical wait is <50ms; worst case is the
-                    // 2s plugin-registration safety timeout.
+                {embeddedChat &&
+                  !chatOverriddenByPlugin &&
+                  (pluginsLoading ? (
                     isChatRoute ? (
                       <div
                         className="flex min-h-0 min-w-0 flex-1 items-center justify-center"
@@ -593,7 +573,7 @@ export default function App() {
                         aria-live="polite"
                       >
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                          <Spinner />
                           <span>Loading chat…</span>
                         </div>
                       </div>
@@ -609,8 +589,7 @@ export default function App() {
                     >
                       <ChatPage isActive={isChatRoute} />
                     </div>
-                  )
-                )}
+                  ))}
               </div>
               <PluginSlot name="post-main" />
             </div>
@@ -683,30 +662,29 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
 
           return (
             <li key={action}>
-              <button
-                type="button"
+              <ListItem
                 onClick={() => handleClick(action)}
                 disabled={disabled}
                 aria-busy={busy}
+                active={busy}
                 className={cn(
-                  "group relative flex w-full items-center gap-3",
-                  "px-5 py-1.5",
+                  "gap-3 px-5 py-1.5 whitespace-nowrap",
                   "font-mondwest text-[0.75rem] tracking-[0.1em]",
-                  "text-left whitespace-nowrap transition-opacity cursor-pointer",
-                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+                  "transition-opacity",
                   busy
                     ? "text-midground opacity-100"
                     : "opacity-60 hover:opacity-100",
-                  "disabled:cursor-not-allowed disabled:opacity-30",
+                  "disabled:opacity-30",
                 )}
               >
                 {isPending ? (
-                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                  <Spinner className="shrink-0 text-[0.875rem]" />
+                ) : isActionRunning && spin ? (
+                  <Spinner className="shrink-0 text-[0.875rem]" />
                 ) : (
                   <Icon
                     className={cn(
                       "h-3.5 w-3.5 shrink-0",
-                      isActionRunning && spin && "animate-spin",
                       isActionRunning && !spin && "animate-pulse",
                     )}
                   />
@@ -726,7 +704,7 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                     style={{ mixBlendMode: "plus-lighter" }}
                   />
                 )}
-              </button>
+              </ListItem>
             </li>
           );
         })}

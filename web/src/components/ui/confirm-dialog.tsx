@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle } from "lucide-react";
+import { Button } from "@nous-research/ui";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
 
 export function ConfirmDialog({
   cancelLabel = "Cancel",
@@ -101,8 +101,7 @@ export function ConfirmDialog({
         <div className="flex items-center justify-end gap-2 p-3">
           <Button
             type="button"
-            variant="ghost"
-            size="sm"
+            outlined
             onClick={onCancel}
             disabled={loading}
           >
@@ -111,8 +110,7 @@ export function ConfirmDialog({
           <Button
             data-confirm
             type="button"
-            variant={destructive ? "destructive" : "default"}
-            size="sm"
+            destructive={destructive}
             onClick={onConfirm}
             disabled={loading}
           >

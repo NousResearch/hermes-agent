@@ -343,6 +343,11 @@ See `references/network-patterns.md` for complete build scripts + shader code.
 | `references/midi-osc.md` | MIDI/OSC controllers, TouchOSC, multi-machine sync |
 | `references/particles.md` | POPs and legacy particleSOP — emission, forces, collisions |
 | `references/projection-mapping.md` | Multi-window output, corner pin, mesh warp, edge blending |
+| `references/external-data.md` | HTTP, WebSocket, MQTT, Serial, TCP, webserverDAT |
+| `references/panel-ui.md` | Custom params, panel COMPs, button/slider/field, panelExecuteDAT |
+| `references/replicator.md` | replicatorCOMP — data-driven cloning, layouts, callbacks |
+| `references/dat-scripting.md` | Execute DAT family — chop/dat/parameter/panel/op/executeDAT |
+| `references/3d-scene.md` | Lighting rigs, shadows, IBL/cubemaps, multi-camera, PBR |
 | `scripts/setup.sh` | Automated setup script |
 
 ---

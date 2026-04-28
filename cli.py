@@ -7101,7 +7101,7 @@ class HermesCLI:
 
                 compressed, _ = self.agent._compress_context(
                     original_history,
-                    self.agent._cached_system_prompt or "",
+                    None,
                     approx_tokens=approx_tokens,
                     focus_topic=focus_topic or None,
                 )

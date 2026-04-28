@@ -993,14 +993,38 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             return None
 
     @staticmethod
-    def _with_summary_prefix(summary: str) -> str:
-        """Normalize summary text to the current compaction handoff format."""
+    def _strip_summary_prefix(summary: str) -> str:
+        """Return summary body without the current or legacy handoff prefix."""
         text = (summary or "").strip()
-        for prefix in (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX):
+        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX):
             if text.startswith(prefix):
-                text = text[len(prefix):].lstrip()
-                break
+                return text[len(prefix):].lstrip()
+        return text
+
+    @classmethod
+    def _with_summary_prefix(cls, summary: str) -> str:
+        """Normalize summary text to the current compaction handoff format."""
+        text = cls._strip_summary_prefix(summary)
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
+
+    @staticmethod
+    def _is_context_summary_content(content: Any) -> bool:
+        text = _content_text_for_contains(content).lstrip()
+        return text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX)
+
+    @classmethod
+    def _find_latest_context_summary(
+        cls,
+        messages: List[Dict[str, Any]],
+        start: int,
+        end: int,
+    ) -> tuple[Optional[int], str]:
+        """Find the newest handoff summary inside a compression window."""
+        for idx in range(end - 1, start - 1, -1):
+            content = messages[idx].get("content")
+            if cls._is_context_summary_content(content):
+                return idx, cls._strip_summary_prefix(_content_text_for_contains(content))
+        return None, ""
 
     # ------------------------------------------------------------------
     # Tool-call / tool-result pair integrity helpers
@@ -1308,6 +1332,15 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             return messages
 
         turns_to_summarize = messages[compress_start:compress_end]
+        summary_idx, summary_body = self._find_latest_context_summary(
+            messages,
+            compress_start,
+            compress_end,
+        )
+        if summary_idx is not None:
+            if summary_body and not self._previous_summary:
+                self._previous_summary = summary_body
+            turns_to_summarize = messages[summary_idx + 1:compress_end]
 
         if not self.quiet_mode:
             logger.info(

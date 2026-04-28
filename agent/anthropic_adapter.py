@@ -1117,6 +1117,49 @@ def _sanitize_tool_id(tool_id: str) -> str:
     return sanitized or "tool_0"
 
 
+def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
+    """Normalize tool schemas before sending them to Anthropic.
+
+    Anthropic's tool schema validator rejects nullable unions such as
+    ``anyOf: [{"type": "string"}, {"type": "null"}]`` that Pydantic/MCP
+    commonly emits for optional fields.  Tool optionality is represented by
+    the parent ``required`` array, so collapse nullable unions to the non-null
+    branch while preserving metadata like description/default.
+    """
+    if not schema:
+        return {"type": "object", "properties": {}}
+
+    def _strip_nullable_union(node: Any) -> Any:
+        if isinstance(node, list):
+            return [_strip_nullable_union(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        stripped = {k: _strip_nullable_union(v) for k, v in node.items()}
+        for key in ("anyOf", "oneOf"):
+            variants = stripped.get(key)
+            if not isinstance(variants, list):
+                continue
+            non_null = [
+                item for item in variants
+                if not (isinstance(item, dict) and item.get("type") == "null")
+            ]
+            if len(non_null) == 1 and len(non_null) != len(variants):
+                replacement = dict(non_null[0]) if isinstance(non_null[0], dict) else {}
+                for meta_key in ("title", "description", "default", "examples"):
+                    if meta_key in stripped and meta_key not in replacement:
+                        replacement[meta_key] = stripped[meta_key]
+                return _strip_nullable_union(replacement)
+        return stripped
+
+    normalized = _strip_nullable_union(schema)
+    if not isinstance(normalized, dict):
+        return {"type": "object", "properties": {}}
+    if normalized.get("type") == "object" and not isinstance(normalized.get("properties"), dict):
+        normalized = {**normalized, "properties": {}}
+    return normalized
+
+
 def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     """Convert OpenAI tool definitions to Anthropic format."""
     if not tools:
@@ -1127,7 +1170,9 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
         result.append({
             "name": fn.get("name", ""),
             "description": fn.get("description", ""),
-            "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+            "input_schema": _normalize_tool_input_schema(
+                fn.get("parameters", {"type": "object", "properties": {}})
+            ),
         })
     return result
 

@@ -242,6 +242,9 @@ export interface Translations {
     exportConfig: string;
     importConfig: string;
     resetDefaults: string;
+    resetScopeTooltip: string;
+    confirmResetScope: string;
+    resetScopeToast: string;
     rawYaml: string;
     searchResults: string;
     fields: string;

@@ -1616,6 +1616,19 @@ def _run_single_child(
             # parent thread can fire subagent_stop with the correct role.
             # Stripped before the dict is serialised back to the model.
             "_child_role": getattr(child, "_delegate_role", None),
+            # Captured before child.close() so the parent aggregator can fold
+            # the child's total spend into the parent's session cost.  Port of
+            # Kilo-Org/kilocode#9448 — previously the footer only reflected the
+            # parent's direct API calls and under-counted subagent-heavy runs.
+            # Stripped before the dict is serialised back to the model.
+            "_child_cost_usd": (
+                float(getattr(child, "session_estimated_cost_usd", 0.0) or 0.0)
+                if isinstance(
+                    getattr(child, "session_estimated_cost_usd", 0.0),
+                    (int, float),
+                )
+                else 0.0
+            ),
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
@@ -2112,8 +2125,20 @@ def delegate_task(
         from hermes_cli.plugins import invoke_hook as _invoke_hook
     except Exception:
         _invoke_hook = None
+    # Aggregate child spend here so the parent's footer/UI reflect the true
+    # cost of a subagent-heavy turn.  Port of Kilo-Org/kilocode#9448.  Each
+    # child's cost was captured in _run_single_child before its AIAgent was
+    # closed; we fold them into the parent in one pass alongside the
+    # subagent_stop hook loop so we don't walk `results` twice.
+    _children_cost_total = 0.0
     for entry in results:
         child_role = entry.pop("_child_role", None)
+        child_cost = entry.pop("_child_cost_usd", 0.0)
+        try:
+            if child_cost:
+                _children_cost_total += float(child_cost)
+        except (TypeError, ValueError):
+            pass
         if _invoke_hook is None:
             continue
         try:
@@ -2127,6 +2152,28 @@ def delegate_task(
             )
         except Exception:
             logger.debug("subagent_stop hook invocation failed", exc_info=True)
+
+    # Fold the aggregated child cost into the parent's session total.  This is
+    # additive — each delegate_task call contributes its own children — so
+    # nested orchestrator→worker trees roll up naturally: each layer's own
+    # delegate_task() folds its direct children in, and when the orchestrator
+    # itself finishes, its parent folds the orchestrator's now-inflated total
+    # on top.  Degrades silently if the parent lacks the counter (older test
+    # fixtures, etc.).
+    if _children_cost_total > 0.0:
+        try:
+            current = float(getattr(parent_agent, "session_estimated_cost_usd", 0.0) or 0.0)
+            parent_agent.session_estimated_cost_usd = current + _children_cost_total
+            # Upgrade the cost_source so the UI doesn't label a partially-real
+            # total as "none" when the parent itself hadn't billed any calls
+            # yet (rare but possible when the parent's only action this turn
+            # was delegate_task).
+            if getattr(parent_agent, "session_cost_source", "none") in (None, "", "none"):
+                parent_agent.session_cost_source = "subagent"
+            if getattr(parent_agent, "session_cost_status", "unknown") in (None, "", "unknown"):
+                parent_agent.session_cost_status = "estimated"
+        except Exception:
+            logger.debug("Subagent cost rollup failed", exc_info=True)
 
     total_duration = round(time.monotonic() - overall_start, 2)
 

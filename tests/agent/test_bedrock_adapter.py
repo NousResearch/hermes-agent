@@ -28,10 +28,21 @@ class TestResolveAwsAuthEnvVar:
     Mirrors OpenClaw's resolveAwsSdkEnvVarName() priority order.
     """
 
-    def test_prefers_bearer_token_over_access_keys_and_profile(self):
+    def test_prefers_bearer_token_over_access_keys_when_endpoint_set(self):
         from agent.bedrock_adapter import resolve_aws_auth_env_var
         env = {
-            "AWS_BEARER_TOKEN_BEDROCK": "bearer-token",
+            "AWS_BEARER_TOKEN_BEDROCK": "test-bearer-token",
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "https://gateway.example.com/bedrock",
+            "AWS_ACCESS_KEY_ID": "AKIA...",
+            "AWS_SECRET_ACCESS_KEY": "secret",
+            "AWS_PROFILE": "default",
+        }
+        assert resolve_aws_auth_env_var(env) == "AWS_BEARER_TOKEN_BEDROCK"
+
+    def test_bearer_token_without_endpoint_still_valid(self):
+        from agent.bedrock_adapter import resolve_aws_auth_env_var
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "test-bearer-token",
             "AWS_ACCESS_KEY_ID": "AKIA...",
             "AWS_SECRET_ACCESS_KEY": "secret",
             "AWS_PROFILE": "default",
@@ -1265,14 +1276,17 @@ class TestInvalidateRuntimeClient:
             reset_client_cache,
         )
         reset_client_cache()
-        _bedrock_runtime_client_cache["us-east-1"] = "dead-client"
-        _bedrock_runtime_client_cache["us-west-2"] = "live-client"
+        _bedrock_runtime_client_cache["us-east-1||"] = "dead-client"
+        _bedrock_runtime_client_cache["us-west-2||"] = "live-client"
 
-        evicted = invalidate_runtime_client("us-east-1")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+            evicted = invalidate_runtime_client("us-east-1")
 
         assert evicted is True
-        assert "us-east-1" not in _bedrock_runtime_client_cache
-        assert _bedrock_runtime_client_cache["us-west-2"] == "live-client"
+        assert "us-east-1||" not in _bedrock_runtime_client_cache
+        assert _bedrock_runtime_client_cache["us-west-2||"] == "live-client"
 
     def test_returns_false_when_region_not_cached(self):
         from agent.bedrock_adapter import invalidate_runtime_client, reset_client_cache
@@ -1372,16 +1386,19 @@ class TestCallConverseInvalidatesOnStaleError:
         dead_client.converse.side_effect = ConnectionClosedError(
             endpoint_url="https://bedrock.example",
         )
-        _bedrock_runtime_client_cache["us-east-1"] = dead_client
+        _bedrock_runtime_client_cache["us-east-1||"] = dead_client
 
-        with pytest.raises(ConnectionClosedError):
-            call_converse(
-                region="us-east-1",
-                model="anthropic.claude-3-sonnet-20240229-v1:0",
-                messages=[{"role": "user", "content": "hi"}],
-            )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+            with pytest.raises(ConnectionClosedError):
+                call_converse(
+                    region="us-east-1",
+                    model="anthropic.claude-3-sonnet-20240229-v1:0",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
 
-        assert "us-east-1" not in _bedrock_runtime_client_cache, (
+        assert "us-east-1||" not in _bedrock_runtime_client_cache, (
             "stale client should have been evicted so the retry reconnects"
         )
 
@@ -1399,16 +1416,19 @@ class TestCallConverseInvalidatesOnStaleError:
         dead_client.converse_stream.side_effect = ConnectionClosedError(
             endpoint_url="https://bedrock.example",
         )
-        _bedrock_runtime_client_cache["us-east-1"] = dead_client
+        _bedrock_runtime_client_cache["us-east-1||"] = dead_client
 
-        with pytest.raises(ConnectionClosedError):
-            call_converse_stream(
-                region="us-east-1",
-                model="anthropic.claude-3-sonnet-20240229-v1:0",
-                messages=[{"role": "user", "content": "hi"}],
-            )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+            with pytest.raises(ConnectionClosedError):
+                call_converse_stream(
+                    region="us-east-1",
+                    model="anthropic.claude-3-sonnet-20240229-v1:0",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
 
-        assert "us-east-1" not in _bedrock_runtime_client_cache
+        assert "us-east-1||" not in _bedrock_runtime_client_cache
 
     def test_converse_does_not_evict_on_non_stale_error(self):
         """Non-stale errors (e.g. ValidationException) leave the client cache alone."""
@@ -1426,16 +1446,19 @@ class TestCallConverseInvalidatesOnStaleError:
             error_response={"Error": {"Code": "ValidationException", "Message": "bad"}},
             operation_name="Converse",
         )
-        _bedrock_runtime_client_cache["us-east-1"] = live_client
+        _bedrock_runtime_client_cache["us-east-1||"] = live_client
 
-        with pytest.raises(ClientError):
-            call_converse(
-                region="us-east-1",
-                model="anthropic.claude-3-sonnet-20240229-v1:0",
-                messages=[{"role": "user", "content": "hi"}],
-            )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+            with pytest.raises(ClientError):
+                call_converse(
+                    region="us-east-1",
+                    model="anthropic.claude-3-sonnet-20240229-v1:0",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
 
-        assert _bedrock_runtime_client_cache.get("us-east-1") is live_client, (
+        assert _bedrock_runtime_client_cache.get("us-east-1||") is live_client, (
             "validation errors do not indicate a dead connection — keep the client"
         )
 
@@ -1453,12 +1476,363 @@ class TestCallConverseInvalidatesOnStaleError:
             "stopReason": "end_turn",
             "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
         }
-        _bedrock_runtime_client_cache["us-east-1"] = live_client
+        _bedrock_runtime_client_cache["us-east-1||"] = live_client
 
-        call_converse(
-            region="us-east-1",
-            model="anthropic.claude-3-sonnet-20240229-v1:0",
-            messages=[{"role": "user", "content": "hi"}],
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+            call_converse(
+                region="us-east-1",
+                model="anthropic.claude-3-sonnet-20240229-v1:0",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert _bedrock_runtime_client_cache.get("us-east-1||") is live_client
+
+
+# ---------------------------------------------------------------------------
+# Custom endpoint with bearer token auth
+# ---------------------------------------------------------------------------
+
+class TestCustomEndpointBearerAuth:
+    """Test custom Bedrock endpoint with bearer token authentication.
+
+    When both AWS_ENDPOINT_URL_BEDROCK_RUNTIME and AWS_BEARER_TOKEN_BEDROCK
+    are set, the client should:
+      - Use the custom endpoint URL
+      - Disable AWS SigV4 signing (UNSIGNED)
+      - Inject bearer token via Authorization header
+    """
+
+    def test_creates_unsigned_client_with_custom_endpoint(self):
+        """Client uses UNSIGNED signature and custom endpoint when both env vars set."""
+        from agent.bedrock_adapter import _get_bedrock_runtime_client, reset_client_cache
+        from botocore import UNSIGNED
+        reset_client_cache()
+
+        with patch.dict(os.environ, {
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "https://gateway.example.com/bedrock",
+            "AWS_BEARER_TOKEN_BEDROCK": "test-bearer-token-123",
+        }):
+            client = _get_bedrock_runtime_client("us-east-1")
+
+            assert client.meta.endpoint_url == "https://gateway.example.com/bedrock"
+            assert client._client_config.signature_version is UNSIGNED
+
+    def test_bearer_token_injected_via_event_handler(self):
+        """Bearer token is injected into Authorization header via before-sign event."""
+        from agent.bedrock_adapter import _get_bedrock_runtime_client, reset_client_cache
+        reset_client_cache()
+
+        with patch.dict(os.environ, {
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "https://gateway.example.com/bedrock",
+            "AWS_BEARER_TOKEN_BEDROCK": "my-secret-token",
+        }):
+            client = _get_bedrock_runtime_client("us-east-1")
+
+            mock_request = MagicMock()
+            mock_request.headers = {}
+            client.meta.events.emit(
+                "before-sign.bedrock-runtime.InvokeModel",
+                request=mock_request,
+            )
+            assert mock_request.headers.get("Authorization") == "Bearer my-secret-token"
+
+    def test_cache_key_includes_endpoint_url(self):
+        """Different endpoint URLs should result in different cache keys."""
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            _get_bedrock_runtime_client,
+            reset_client_cache,
         )
+        reset_client_cache()
 
-        assert _bedrock_runtime_client_cache.get("us-east-1") is live_client
+        with patch.dict(os.environ, {
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "https://gateway1.example.com/bedrock",
+            "AWS_BEARER_TOKEN_BEDROCK": "token1",
+        }):
+            client1 = _get_bedrock_runtime_client("us-east-1")
+
+        reset_client_cache()
+
+        with patch.dict(os.environ, {
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "https://gateway2.example.com/bedrock",
+            "AWS_BEARER_TOKEN_BEDROCK": "token2",
+        }):
+            client2 = _get_bedrock_runtime_client("us-east-1")
+
+        # Clients should be different objects (different endpoints)
+        assert client1 is not client2
+        assert client1.meta.endpoint_url == "https://gateway1.example.com/bedrock"
+        assert client2.meta.endpoint_url == "https://gateway2.example.com/bedrock"
+
+    def test_custom_endpoint_without_bearer_uses_sigv4(self):
+        """Custom endpoint without bearer token should use normal SigV4 signing."""
+        from agent.bedrock_adapter import _get_bedrock_runtime_client, reset_client_cache
+        from botocore import UNSIGNED
+        reset_client_cache()
+
+        with patch.dict(os.environ, {
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "https://custom.aws.endpoint.com",
+        }, clear=False):
+            os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+            client = _get_bedrock_runtime_client("us-east-1")
+
+            assert client.meta.endpoint_url == "https://custom.aws.endpoint.com"
+            assert client._client_config.signature_version is not UNSIGNED
+
+    def test_no_custom_endpoint_uses_default_aws_endpoint(self):
+        """Without custom endpoint, client uses default AWS bedrock-runtime endpoint."""
+        from agent.bedrock_adapter import _get_bedrock_runtime_client, reset_client_cache
+        reset_client_cache()
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+            client = _get_bedrock_runtime_client("us-west-2")
+
+            # Default endpoint follows AWS naming pattern
+            assert "bedrock-runtime" in client.meta.endpoint_url
+            assert "us-west-2" in client.meta.endpoint_url
+
+    def test_invalidate_runtime_client_with_custom_endpoint(self):
+        """Invalidation should use correct cache key when custom endpoint is set."""
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            invalidate_runtime_client,
+            reset_client_cache,
+        )
+        reset_client_cache()
+
+        endpoint_url = "https://gateway.example.com/bedrock"
+        cache_key = f"us-east-1|{endpoint_url}|"
+        default_key = "us-east-1||"
+        _bedrock_runtime_client_cache[cache_key] = "custom-endpoint-client"
+        _bedrock_runtime_client_cache[default_key] = "default-client"
+
+        with patch.dict(os.environ, {
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": endpoint_url,
+        }, clear=False):
+            os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+            evicted = invalidate_runtime_client("us-east-1")
+
+        assert evicted is True
+        assert cache_key not in _bedrock_runtime_client_cache
+        assert _bedrock_runtime_client_cache.get(default_key) == "default-client"
+
+    def test_whitespace_env_vars_treated_as_empty(self):
+        """Whitespace-only env vars should be treated as not set."""
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            _get_bedrock_runtime_client,
+            reset_client_cache,
+        )
+        reset_client_cache()
+
+        mock_client = MagicMock()
+        mock_client.meta.endpoint_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+
+        with patch.dict(os.environ, {
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "   ",
+            "AWS_BEARER_TOKEN_BEDROCK": "  \t  ",
+        }):
+            with patch("agent.bedrock_adapter._require_boto3") as mock_boto3:
+                mock_boto3.return_value.client.return_value = mock_client
+                client = _get_bedrock_runtime_client("us-east-1")
+
+                mock_boto3.return_value.client.assert_called_once_with(
+                    "bedrock-runtime", region_name="us-east-1",
+                )
+                assert "us-east-1||" in _bedrock_runtime_client_cache
+
+
+class TestBearerTokenAuthEnvVarPriority:
+    """Test AWS_BEARER_TOKEN_BEDROCK credential resolution semantics."""
+
+    def test_bearer_token_with_endpoint_takes_priority(self):
+        from agent.bedrock_adapter import resolve_aws_auth_env_var
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "test-bearer-token",
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "https://gateway.example.com/bedrock",
+            "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+            "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "AWS_PROFILE": "production",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/v2/creds",
+            "AWS_WEB_IDENTITY_TOKEN_FILE": "/var/run/token",
+        }
+        assert resolve_aws_auth_env_var(env) == "AWS_BEARER_TOKEN_BEDROCK"
+
+    def test_bearer_token_without_endpoint_is_valid(self):
+        from agent.bedrock_adapter import resolve_aws_auth_env_var
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "test-bearer-token",
+            "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+            "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        }
+        assert resolve_aws_auth_env_var(env) == "AWS_BEARER_TOKEN_BEDROCK"
+
+    def test_bearer_token_with_endpoint_indicates_custom_auth(self):
+        from agent.bedrock_adapter import has_aws_credentials
+        env = {
+            "AWS_BEARER_TOKEN_BEDROCK": "test-bearer-token",
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME": "https://gateway.example.com/bedrock",
+        }
+        assert has_aws_credentials(env) is True
+
+    def test_bearer_token_alone_indicates_native_auth(self):
+        from agent.bedrock_adapter import has_aws_credentials
+        env = {"AWS_BEARER_TOKEN_BEDROCK": "native-aws-api-key"}
+        assert has_aws_credentials(env) is True
+
+
+class TestNativeBearerAuth:
+    """Bearer token without custom endpoint — native AWS Bedrock API keys."""
+
+    def test_bearer_only_creates_unsigned_client(self):
+        from agent.bedrock_adapter import _get_bedrock_runtime_client, reset_client_cache
+        from botocore import UNSIGNED
+        reset_client_cache()
+
+        with patch.dict(os.environ, {
+            "AWS_BEARER_TOKEN_BEDROCK": "native-api-key-123",
+        }, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            client = _get_bedrock_runtime_client("us-east-1")
+
+            assert client._client_config.signature_version is UNSIGNED
+            assert "bedrock-runtime" in client.meta.endpoint_url
+            assert "us-east-1" in client.meta.endpoint_url
+
+    def test_bearer_only_injects_auth_header(self):
+        from agent.bedrock_adapter import _get_bedrock_runtime_client, reset_client_cache
+        reset_client_cache()
+
+        with patch.dict(os.environ, {
+            "AWS_BEARER_TOKEN_BEDROCK": "native-api-key-abc",
+        }, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            client = _get_bedrock_runtime_client("us-east-1")
+
+            mock_request = MagicMock()
+            mock_request.headers = {}
+            client.meta.events.emit(
+                "before-sign.bedrock-runtime.Converse",
+                request=mock_request,
+            )
+            assert mock_request.headers["Authorization"] == "Bearer native-api-key-abc"
+
+    def test_bearer_rotation_gets_new_client(self):
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            _get_bedrock_runtime_client,
+            reset_client_cache,
+        )
+        reset_client_cache()
+
+        with patch.dict(os.environ, {
+            "AWS_BEARER_TOKEN_BEDROCK": "token-v1",
+        }, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            client_v1 = _get_bedrock_runtime_client("us-east-1")
+
+        with patch.dict(os.environ, {
+            "AWS_BEARER_TOKEN_BEDROCK": "token-v2",
+        }, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            client_v2 = _get_bedrock_runtime_client("us-east-1")
+
+        assert client_v1 is not client_v2
+
+
+class TestBearerAuthViaSdkNative:
+    """Verify that bearer token auth uses the SDK's native api_key parameter."""
+
+    def test_build_bedrock_client_bearer_sets_api_key(self):
+        from agent.anthropic_adapter import build_anthropic_bedrock_client
+        import anthropic
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+            client = build_anthropic_bedrock_client(
+                "us-east-1",
+                endpoint_url="https://gateway.example.com/bedrock",
+                bearer_token="test-bearer-token",
+            )
+        assert isinstance(client, anthropic.AnthropicBedrock)
+        assert client.api_key == "test-bearer-token"
+
+    def test_build_bedrock_client_no_bearer_has_no_api_key(self):
+        import anthropic
+        from agent.anthropic_adapter import build_anthropic_bedrock_client
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+            client = build_anthropic_bedrock_client("us-east-1")
+        assert isinstance(client, anthropic.AnthropicBedrock)
+        assert client.api_key is None
+
+    def test_build_bedrock_client_bearer_uses_custom_base_url(self):
+        from agent.anthropic_adapter import build_anthropic_bedrock_client
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            os.environ.pop("AWS_BEARER_TOKEN_BEDROCK", None)
+            client = build_anthropic_bedrock_client(
+                "us-east-1",
+                endpoint_url="https://gateway.example.com/bedrock",
+                bearer_token="test-bearer-token",
+            )
+        assert "gateway.example.com" in str(client.base_url)
+
+
+class TestConfigOnlyRegionFallback:
+
+    def test_region_from_config_when_no_env_var(self):
+        from agent.bedrock_adapter import reset_client_cache
+        reset_client_cache()
+        mock_client = MagicMock()
+        mock_client.meta.endpoint_url = "https://gateway.example.com/bedrock"
+
+        fake_config = {"bedrock": {"region": "eu-west-1", "runtime_endpoint": "https://gateway.example.com/bedrock"}}
+
+        with patch.dict(os.environ, {
+            "AWS_BEARER_TOKEN_BEDROCK": "test-bearer-token",
+        }, clear=False):
+            os.environ.pop("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", None)
+            os.environ.pop("AWS_REGION", None)
+            os.environ.pop("AWS_DEFAULT_REGION", None)
+            with patch("agent.bedrock_adapter._require_boto3") as mock_boto3, \
+                 patch("hermes_cli.config.load_config", return_value=fake_config):
+                mock_boto3.return_value.client.return_value = mock_client
+                from agent.bedrock_adapter import _resolve_custom_endpoint
+                endpoint = _resolve_custom_endpoint()
+                assert endpoint == "https://gateway.example.com/bedrock"
+
+    def test_region_from_bedrock_config_used_in_agent_init(self):
+        fake_config = {"bedrock": {"region": "ap-southeast-1", "runtime_endpoint": ""}}
+        with patch("hermes_cli.config.load_config", return_value=fake_config), \
+             patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AWS_REGION", None)
+            os.environ.pop("AWS_DEFAULT_REGION", None)
+            from run_agent import _resolve_bedrock_region_for_init
+            region = _resolve_bedrock_region_for_init("")
+            assert region == "ap-southeast-1"
+
+class TestModeSwitchClearsEndpoint:
+
+    def test_clear_custom_bedrock_endpoint_removes_runtime_endpoint(self):
+        from hermes_cli.main import _clear_custom_bedrock_endpoint
+        cfg = {"bedrock": {"region": "us-east-1", "runtime_endpoint": "https://gw.example.com/bedrock"}}
+        _clear_custom_bedrock_endpoint(cfg)
+        assert cfg["bedrock"]["runtime_endpoint"] == ""
+
+    def test_clear_custom_bedrock_endpoint_noop_when_empty(self):
+        from hermes_cli.main import _clear_custom_bedrock_endpoint
+        cfg = {"bedrock": {"region": "us-east-1", "runtime_endpoint": ""}}
+        _clear_custom_bedrock_endpoint(cfg)
+        assert cfg["bedrock"]["runtime_endpoint"] == ""
+
+    def test_clear_custom_bedrock_endpoint_noop_when_missing(self):
+        from hermes_cli.main import _clear_custom_bedrock_endpoint
+        cfg = {"bedrock": {"region": "us-east-1"}}
+        _clear_custom_bedrock_endpoint(cfg)
+        assert cfg["bedrock"].get("runtime_endpoint") is None

@@ -2,6 +2,7 @@ import { Box, Link, Text } from '@hermes/ink'
 import { memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
+import { texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
 
@@ -19,6 +20,15 @@ const QUOTE_RE = /^\s*(?:>\s*)+/
 const TABLE_DIVIDER_CELL_RE = /^:?-{3,}:?$/
 const MD_URL_RE = '((?:[^\\s()]|\\([^\\s()]*\\))+?)'
 
+// Display math openers: `$$ ... $$` (TeX) and `\[ ... \]` (LaTeX). The
+// opener is matched only when `$$` / `\[` appears at the very start of the
+// trimmed line — `startsWith('$$')` used to fire on prose like
+// `$$x+y$$ followed by more`, opening a block that never closed because the
+// trailing `$$` on the same line was invisible to the close-scan loop.
+const MATH_BLOCK_OPEN_RE = /^\s*(\$\$|\\\[)(.*)$/
+const MATH_BLOCK_CLOSE_DOLLAR_RE = /^(.*?)\$\$\s*$/
+const MATH_BLOCK_CLOSE_BRACKET_RE = /^(.*?)\\\]\s*$/
+
 export const MEDIA_LINE_RE = /^\s*[`"']?MEDIA:\s*(\S+?)[`"']?\s*$/
 export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
 
@@ -31,6 +41,13 @@ export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
 // `thing ~! more ~?` from Kimi / Qwen / GLM (kaomoji-style decorators)
 // doesn't pair up the first `~` with the next one on the line and swallow
 // the text between them as a dim `_`-prefixed span.
+//
+// Inline math (`$x$` and `\(x\)`) takes precedence over emphasis at the
+// same start position because regex alternation is leftmost-first; a
+// dollar-delimited span at column N wins over a `*` at column N+1, so
+// `$P=a*b*c$` renders as math instead of having `*b*` corrupted into
+// italics. Single-character minimums and "no space adjacent to delimiter"
+// rules keep currency prose like `$5 to $10` from being swallowed.
 export const INLINE_RE = new RegExp(
   [
     `!\\[(.*?)\\]\\(${MD_URL_RE}\\)`, // 1,2  image
@@ -46,7 +63,13 @@ export const INLINE_RE = new RegExp(
     `\\[\\^([^\\]]+)\\]`, // 13   footnote ref
     `\\^([^^\\s][^^]*?)\\^`, // 14   superscript
     `~([A-Za-z0-9]{1,8})~`, // 15   subscript
-    `https?:\\/\\/[^\\s<]+` //  16   bare URL
+    `(https?:\\/\\/[^\\s<]+)`, // 16   bare URL — wrapped so it owns its own
+    //                                capture group; without this, the math
+    //                                spans below would land in m[16] and the
+    //                                MdInline dispatcher would treat them as
+    //                                bare URLs and render them as autolinks.
+    `(?<!\\$)\\$([^\\s$](?:[^$\\n]*?[^\\s$])?)\\$(?!\\$)`, // 17   inline math $...$
+    `\\\\\\(([^\\n]+?)\\\\\\)` // 18   inline math \(...\)
   ].join('|'),
   'g'
 )
@@ -93,6 +116,8 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/\[\^([^\]]+)\]/g, '[$1]')
     .replace(/\^([^^\s][^^]*?)\^/g, '^$1')
     .replace(/~([A-Za-z0-9]{1,8})~/g, '_$1')
+    .replace(/(?<!\$)\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?!\$)/g, '$1')
+    .replace(/\\\(([^\n]+?)\\\)/g, '$1')
 
 const renderTable = (k: number, rows: string[][], t: Theme) => {
   const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => stripInlineMarkup(r[ci] ?? '').length)))
@@ -201,6 +226,19 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
       if (url.length < m[16].length) {
         parts.push(<Text key={parts.length}>{m[16].slice(url.length)}</Text>)
       }
+    } else if (m[17] ?? m[18]) {
+      // Inline math is run through `texToUnicode` (Greek letters, ℕℤℚℝ,
+      // operators, sub/superscripts, fractions) and rendered in italic
+      // amber. Italic is the disambiguator — links use amber+underline,
+      // so without italic readers can't tell `\mathbb{R}` (math) from a
+      // hyperlinked word. Anything `texToUnicode` doesn't recognise is
+      // preserved verbatim, so unfamiliar commands just look like their
+      // raw LaTeX rather than vanishing.
+      parts.push(
+        <Text color={t.color.amber} italic key={parts.length}>
+          {texToUnicode(m[17] ?? m[18]!)}
+        </Text>
+      )
     }
 
     last = i + m[0].length
@@ -398,32 +436,84 @@ function MdImpl({ compact, t, text }: MdProps) {
         continue
       }
 
-      if (line.trim().startsWith('$$')) {
-        start('code')
+      const mathOpen = line.match(MATH_BLOCK_OPEN_RE)
 
+      if (mathOpen) {
+        const opener = mathOpen[1]!
+        const closeRe = opener === '$$' ? MATH_BLOCK_CLOSE_DOLLAR_RE : MATH_BLOCK_CLOSE_BRACKET_RE
+        const headRest = mathOpen[2] ?? ''
         const block: string[] = []
 
-        for (i++; i < lines.length; i++) {
-          if (lines[i]!.trim().startsWith('$$')) {
-            i++
+        // Single-line block: `$$x + y = z$$` or `\[x\]`. Capture inner content
+        // and emit the block immediately. Without this, the close-scan loop
+        // skips line `i` and treats the next opener as our closer, swallowing
+        // every paragraph in between.
+        const sameLineClose = headRest.match(closeRe)
+
+        if (sameLineClose) {
+          const inner = sameLineClose[1]!.trim()
+
+          start('code')
+          nodes.push(
+            <Box flexDirection="column" key={key} paddingLeft={2}>
+              <Text color={t.color.dim}>─ math</Text>
+
+              {inner ? <Text color={t.color.amber}>{texToUnicode(inner)}</Text> : null}
+            </Box>
+          )
+          i++
+
+          continue
+        }
+
+        // Multi-line block: scan ahead for a real closer before committing.
+        // If none exists in the rest of the document, render this line as a
+        // paragraph instead of consuming everything that follows.
+        let closeIdx = -1
+
+        for (let j = i + 1; j < lines.length; j++) {
+          if (closeRe.test(lines[j]!)) {
+            closeIdx = j
 
             break
           }
-
-          block.push(lines[i]!)
         }
 
+        if (closeIdx < 0) {
+          start('paragraph')
+          nodes.push(<MdInline key={key} t={t} text={line} />)
+          i++
+
+          continue
+        }
+
+        if (headRest.trim()) {
+          block.push(headRest)
+        }
+
+        for (let j = i + 1; j < closeIdx; j++) {
+          block.push(lines[j]!)
+        }
+
+        const tail = lines[closeIdx]!.match(closeRe)![1]!.trimEnd()
+
+        if (tail.trim()) {
+          block.push(tail)
+        }
+
+        start('code')
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
             <Text color={t.color.dim}>─ math</Text>
 
             {block.map((l, j) => (
               <Text color={t.color.amber} key={j}>
-                {l}
+                {texToUnicode(l)}
               </Text>
             ))}
           </Box>
         )
+        i = closeIdx + 1
 
         continue
       }
@@ -434,7 +524,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         start('heading')
         nodes.push(
           <Text bold color={t.color.amber} key={key}>
-            {heading}
+            <MdInline t={t} text={heading} />
           </Text>
         )
         i++
@@ -446,7 +536,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         start('heading')
         nodes.push(
           <Text bold color={t.color.amber} key={key}>
-            {line.trim()}
+            <MdInline t={t} text={line.trim()} />
           </Text>
         )
         i += 2

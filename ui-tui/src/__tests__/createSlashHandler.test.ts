@@ -298,6 +298,45 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.panel).toHaveBeenCalledWith(expect.any(String), expect.any(Array))
   })
 
+  it('lets exact catalog commands win over longer prefix matches', async () => {
+    const ctx = buildCtx({
+      local: {
+        catalog: {
+          canon: {
+            '/status': '/status',
+            '/statusbar': '/statusbar'
+          }
+        }
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/status')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+        command: 'status',
+        session_id: null
+      })
+    })
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('ambiguous command'))
+  })
+
+  it('keeps ambiguous prefix handling when there is no exact catalog match', () => {
+    const ctx = buildCtx({
+      local: {
+        catalog: {
+          canon: {
+            '/status': '/status',
+            '/statusbar': '/statusbar'
+          }
+        }
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/stat')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('ambiguous command: /status, /statusbar')
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('falls through to command.dispatch for skill commands and sends the message', async () => {
     const skillMessage = 'Use this skill to do X.\n\n## Steps\n1. First step'
 

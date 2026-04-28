@@ -57,6 +57,7 @@ _PROVIDER_ENV_HINTS = (
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
     "XIAOMI_API_KEY",
+    "TOKENHUB_API_KEY",
 )
 
 
@@ -343,7 +344,7 @@ def run_doctor(args):
                     )
 
             # Warn if model is set to a provider-prefixed name on a provider that doesn't use them
-            if default_model and "/" in default_model and canonical_provider and canonical_provider not in ("openrouter", "custom", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "nous"):
+            if default_model and "/" in default_model and canonical_provider and canonical_provider not in ("openrouter", "custom", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "nous", "lmstudio"):
                 check_warn(
                     f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
                     "(vendor-prefixed slugs belong to aggregators like openrouter)",
@@ -516,7 +517,14 @@ def run_doctor(args):
     if shutil.which("codex"):
         check_ok("codex CLI")
     else:
-        check_warn("codex CLI not found", "(required for openai-codex login)")
+        # Native OAuth uses Hermes' own device-code flow — the Codex CLI is
+        # only needed if you want to import existing tokens from
+        # ~/.codex/auth.json.  Downgrade to info so users running
+        # `hermes auth openai-codex` aren't told they're missing something.
+        check_info(
+            "codex CLI not installed "
+            "(optional — only required to import tokens from an existing Codex CLI login)"
+        )
 
     # =========================================================================
     # Check: Directory structure

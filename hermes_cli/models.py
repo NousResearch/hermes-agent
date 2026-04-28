@@ -44,6 +44,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("openai/gpt-5.4-mini",             ""),
     ("xiaomi/mimo-v2.5-pro",             ""),
     ("xiaomi/mimo-v2.5",                 ""),
+    ("tencent/hy3-preview:free",         "free"),
     ("openai/gpt-5.3-codex",            ""),
     ("google/gemini-3-pro-image-preview", ""),
     ("google/gemini-3-flash-preview",   ""),
@@ -156,6 +157,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "moonshotai/kimi-k2.6",
         "xiaomi/mimo-v2.5-pro",
         "xiaomi/mimo-v2.5",
+        "tencent/hy3-preview",
         "anthropic/claude-opus-4.7",
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
@@ -314,6 +316,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-pro",
         "mimo-v2-omni",
         "mimo-v2-flash",
+    ],
+    "tencent-tokenhub": [
+        "hy3-preview",
     ],
     "arcee": [
         "trinity-large-thinking",
@@ -763,10 +768,12 @@ class ProviderEntry(NamedTuple):
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
+    ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (local desktop app with built-in model server)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, $5 free credit, no markup)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models — pro, omni, flash)"),
+    ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview — direct API via tokenhub.tencentmaas.com)"),
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models — build.nvidia.com or local NIM)"),
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
@@ -849,6 +856,10 @@ _PROVIDER_ALIASES = {
     "huggingface-hub": "huggingface",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
+    "tencent": "tencent-tokenhub",
+    "tokenhub": "tencent-tokenhub",
+    "tencent-cloud": "tencent-tokenhub",
+    "tencentmaas": "tencent-tokenhub",
     "aws": "bedrock",
     "aws-bedrock": "bedrock",
     "amazon-bedrock": "bedrock",
@@ -860,6 +871,9 @@ _PROVIDER_ALIASES = {
     "nvidia-nim": "nvidia",
     "build-nvidia": "nvidia",
     "nemotron": "nvidia",
+    "lmstudio": "lmstudio",
+    "lm-studio": "lmstudio",
+    "lm_studio": "lmstudio",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
 }
@@ -1978,6 +1992,18 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             live = fetch_api_models(api_key, base_url)
             if live:
                 return live
+    # Bedrock uses live discovery keyed by the resolved AWS region so that
+    # EU/AP users see eu.*/ap.* model IDs instead of the static us.* list.
+    # Note: early return intentionally skips _MODELS_DEV_PREFERRED merge
+    # below — bedrock is not expected to appear in that table.
+    if normalized == "bedrock":
+        try:
+            from agent.bedrock_adapter import bedrock_model_ids_or_none
+            ids = bedrock_model_ids_or_none()
+            if ids is not None:
+                return ids
+        except Exception:
+            pass
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
         return _merge_with_models_dev(normalized, curated_static)
@@ -2171,6 +2197,228 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
         normalized.startswith(COPILOT_BASE_URL)
         or normalized.startswith("https://models.github.ai/inference")
     )
+
+
+def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
+    """Strip ``/v1`` suffix from an LM Studio base URL to get the native API root.
+
+    Returns ``None`` when the base URL is empty/invalid.
+    """
+    root = (base_url or "").strip().rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3].rstrip("/")
+    return root or None
+
+
+def _lmstudio_request_headers(api_key: Optional[str] = None) -> dict:
+    """Build HTTP headers for LM Studio native API requests."""
+    headers = {"User-Agent": _HERMES_USER_AGENT}
+    token = str(api_key or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _lmstudio_fetch_raw_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[dict]]:
+    """Fetch the raw model list from LM Studio's ``/api/v1/models``.
+
+    Returns the ``models`` list of dicts on success, ``None`` on network
+    errors or malformed responses.  Raises ``AuthError`` on HTTP 401/403.
+    """
+    server_root = _lmstudio_server_root(base_url)
+    if not server_root:
+        return None
+
+    headers = _lmstudio_request_headers(api_key)
+    request = urllib.request.Request(server_root + "/api/v1/models", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            from hermes_cli.auth import AuthError
+            raise AuthError(
+                f"LM Studio rejected the request with HTTP {exc.code}.",
+                provider="lmstudio",
+                code="auth_rejected",
+            ) from exc
+        import logging
+        logging.getLogger(__name__).debug(
+            "LM Studio probe at %s failed with HTTP %s", server_root, exc.code,
+        )
+        return None
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).debug(
+            "LM Studio probe at %s failed: %s", server_root, exc,
+        )
+        return None
+
+    raw_models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        import logging
+        logging.getLogger(__name__).debug(
+            "LM Studio probe at %s returned malformed payload (no `models` list)",
+            server_root,
+        )
+        return None
+    return raw_models
+
+
+def probe_lmstudio_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Probe LM Studio's model listing.
+
+    Returns chat-capable model keys on success, including the valid empty-list
+    case when the server is reachable but has no non-embedding models.
+    Returns ``None`` on network errors, malformed responses, or empty/invalid
+    base URLs.
+
+    Raises ``AuthError`` on HTTP 401/403 so callers can surface token issues
+    separately from reachability problems.
+    """
+    raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=timeout)
+    if raw_models is None:
+        return None
+
+    keys: list[str] = []
+    for raw in raw_models:
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("type") or "").strip().lower() == "embedding":
+            continue
+        key = str(raw.get("key") or raw.get("id") or "").strip()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def fetch_lmstudio_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> list[str]:
+    """Fetch LM Studio chat-capable model keys from native ``/api/v1/models``.
+
+    Returns a list of model keys (e.g. ``publisher/model-name``) with embedding
+    models filtered out. Returns an empty list on network errors, malformed
+    responses, or empty/invalid base URLs.
+
+    Raises ``AuthError`` on HTTP 401/403 so callers can distinguish a missing
+    or wrong ``LM_API_KEY`` from an unreachable server — the most common
+    LM Studio support case once auth-enabled mode is turned on.
+    """
+    models = probe_lmstudio_models(api_key=api_key, base_url=base_url, timeout=timeout)
+    return models or []
+
+
+def ensure_lmstudio_model_loaded(
+    model: str,
+    base_url: Optional[str],
+    api_key: Optional[str],
+    target_context_length: int,
+    timeout: float = 120.0,
+) -> Optional[int]:
+    """Ensure LM Studio has ``model`` loaded with at least ``target_context_length``.
+
+    No-op when an instance is already loaded with sufficient context. Otherwise
+    POSTs ``/api/v1/models/load`` to (re)load with the target context, capped
+    at the model's ``max_context_length``. Returns the resolved loaded context
+    length, or ``None`` when the probe / load failed.
+    """
+    server_root = _lmstudio_server_root(base_url)
+    if not server_root:
+        return None
+
+    headers = _lmstudio_request_headers(api_key)
+
+    try:
+        raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=10)
+    except Exception:
+        raw_models = None
+    if raw_models is None:
+        return None
+
+    target_entry = None
+    for raw in raw_models:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("key") == model or raw.get("id") == model:
+            target_entry = raw
+            break
+    if target_entry is None:
+        return None
+
+    max_ctx = target_entry.get("max_context_length")
+    if isinstance(max_ctx, int) and max_ctx > 0:
+        target_context_length = min(target_context_length, max_ctx)
+
+    for inst in target_entry.get("loaded_instances") or []:
+        cfg = inst.get("config") if isinstance(inst, dict) else None
+        loaded_ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
+        if isinstance(loaded_ctx, int) and loaded_ctx >= target_context_length:
+            return loaded_ctx
+
+    body = json.dumps({
+        "model": model,
+        "context_length": target_context_length,
+    }).encode()
+    load_headers = dict(headers)
+    load_headers["Content-Type"] = "application/json"
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(
+                server_root + "/api/v1/models/load",
+                data=body,
+                headers=load_headers,
+                method="POST",
+            ),
+            timeout=timeout,
+        ) as resp:
+            resp.read()
+    except Exception:
+        return None
+    return target_context_length
+
+
+def lmstudio_model_reasoning_options(
+    model: str,
+    base_url: Optional[str],
+    api_key: Optional[str] = None,
+    timeout: float = 5.0,
+) -> list[str]:
+    """Return the reasoning ``allowed_options`` LM Studio publishes for ``model``.
+
+    Pulls ``capabilities.reasoning.allowed_options`` from ``/api/v1/models``.
+    Returns ``[]`` when the model is unknown, the endpoint is unreachable,
+    or the model does not declare a reasoning capability.
+    """
+    try:
+        raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=timeout)
+    except Exception:
+        raw_models = None
+    if not raw_models:
+        return []
+
+    for raw in raw_models:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("key") != model and raw.get("id") != model:
+            continue
+        caps = raw.get("capabilities")
+        reasoning = caps.get("reasoning") if isinstance(caps, dict) else None
+        opts = reasoning.get("allowed_options") if isinstance(reasoning, dict) else None
+        if isinstance(opts, list):
+            return [str(o).strip().lower() for o in opts if isinstance(o, str)]
+        return []
+    return []
 
 
 def _fetch_github_models(api_key: Optional[str] = None, timeout: float = 5.0) -> Optional[list[str]]:
@@ -2766,6 +3014,40 @@ def validate_requested_model(
             "persist": False,
             "recognized": False,
             "message": "Model names cannot contain spaces.",
+        }
+
+    if normalized == "lmstudio":
+        from hermes_cli.auth import AuthError
+        # Use probe_lmstudio_models so we can distinguish None (unreachable
+        # / malformed response) from [] (reachable, but no chat-capable models
+        # are loaded). fetch_lmstudio_models collapses both to [].
+        try:
+            models = probe_lmstudio_models(api_key=api_key, base_url=base_url)
+        except AuthError as exc:
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": (
+                    f"{exc} Set `LM_API_KEY` (or update it) to match the server's bearer token."
+                ),
+            }
+        if models is None:
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": f"Could not reach LM Studio's `/api/v1/models` to validate `{requested}`.",
+            }
+        if not models:
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": (
+                    f"LM Studio is reachable but no chat-capable models are loaded. "
+                    f"Load `{requested}` in LM Studio (Developer tab → Load Model) and try again."
+                ),
+            }
+        if requested_for_lookup in set(models):
+            return {"accepted": True, "persist": True, "recognized": True, "message": None}
+        return {
+            "accepted": False, "persist": False, "recognized": False,
+            "message": f"Model `{requested}` was not found in LM Studio's model listing.",
         }
 
     if normalized == "custom":

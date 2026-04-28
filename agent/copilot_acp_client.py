@@ -30,6 +30,11 @@ _DEFAULT_TIMEOUT_SECONDS = 900.0
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
+_ACP_SECRET_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_-])(sk-[A-Za-z0-9_-]{10,})(?![A-Za-z0-9_-])")
+_ACP_SECRET_ENV_RE = re.compile(
+    r"([A-Z0-9_]{0,50}(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)[A-Z0-9_]{0,50})\s*=\s*(['\"]?)(\S+)\2",
+    re.IGNORECASE,
+)
 
 
 def _resolve_command() -> str:
@@ -356,10 +361,21 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
 
 
 def _redacted_tail(text: str, *, max_lines: int = 40, max_chars: int = 500) -> str:
-    redacted = redact_sensitive_text(text or "")
+    redacted = _redact_acp_text(text or "")
     lines = redacted.splitlines()[-max_lines:]
     tail = "\n".join(lines).strip()[:max_chars]
     return tail or "<no stderr>"
+
+
+def _redact_acp_text(text: str) -> str:
+    """Always redact ACP boundary text, independent of global log settings."""
+    redacted = redact_sensitive_text(text or "")
+
+    def _env_repl(match: re.Match[str]) -> str:
+        return f"{match.group(1)}={match.group(2)}***{match.group(2)}"
+
+    redacted = _ACP_SECRET_ENV_RE.sub(_env_repl, redacted)
+    return _ACP_SECRET_TOKEN_RE.sub("***", redacted)
 
 
 def _command_basename(command: str | None) -> str:
@@ -904,7 +920,7 @@ class CopilotACPClient:
                     end = start + limit if isinstance(limit, int) and limit > 0 else None
                     content = "".join(lines[start:end])
                 if content:
-                    content = redact_sensitive_text(content)
+                    content = _redact_acp_text(content)
                 response = {
                     "jsonrpc": "2.0",
                     "id": message_id,

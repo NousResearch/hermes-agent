@@ -11,7 +11,6 @@ hot-reloaded by the webhook adapter without a gateway restart.
 """
 
 import json
-import os
 import re
 import secrets
 import time
@@ -19,6 +18,7 @@ from pathlib import Path
 from typing import Dict
 
 from hermes_constants import display_hermes_home
+from utils import atomic_replace
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
@@ -52,7 +52,7 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
         json.dumps(subs, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    os.replace(str(tmp_path), str(path))
+    atomic_replace(tmp_path, path)
 
 
 def _get_webhook_config() -> dict:

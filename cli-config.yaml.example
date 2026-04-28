@@ -30,14 +30,13 @@ model:
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
+  #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
   #
   # Local servers (LM Studio, Ollama, vLLM, llama.cpp):
-  #   "custom"       - Any OpenAI-compatible endpoint. Set base_url below.
-  #   Aliases: "lmstudio", "ollama", "vllm", "llamacpp" all map to "custom".
-  #   Example for LM Studio:
-  #     provider: "lmstudio"
-  #     base_url: "http://localhost:1234/v1"
-  #   No API key needed — local servers typically ignore auth.
+  #   "custom"       - Any other OpenAI-compatible endpoint. Set base_url below.
+  #   Aliases: "ollama", "vllm", "llamacpp" all map to "custom".
+  #   LM Studio is first-class and uses provider: "lmstudio".
+  #   It works with both no-auth and auth-enabled server modes.
   #
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"

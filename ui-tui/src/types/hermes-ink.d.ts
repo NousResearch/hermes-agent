@@ -28,7 +28,7 @@ declare module '@hermes/ink' {
   export type InputEvent = {
     readonly input: string
     readonly key: Key
-    readonly keypress: { readonly raw?: string }
+    readonly keypress: { readonly isPasted?: boolean; readonly raw?: string }
   }
 
   export type InputHandler = (input: string, key: Key, event: InputEvent) => void

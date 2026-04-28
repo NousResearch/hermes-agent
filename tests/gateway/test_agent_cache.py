@@ -98,6 +98,166 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-telegram"], "")
         assert sig1 == sig2
 
+    # ---------------------------------------------------------------
+    # cache_keys (compression/context config cache-busting)
+    # ---------------------------------------------------------------
+
+    def test_cache_keys_default_omitted_matches_empty(self):
+        """Omitted cache_keys must produce the same signature as empty {}."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig_omitted = GatewayRunner._agent_config_signature("m", runtime, [], "")
+        sig_empty = GatewayRunner._agent_config_signature("m", runtime, [], "", cache_keys={})
+        sig_none = GatewayRunner._agent_config_signature("m", runtime, [], "", cache_keys=None)
+        assert sig_omitted == sig_empty == sig_none
+
+    def test_context_length_change_busts_cache(self):
+        """Editing model.context_length in config must produce a new signature."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"model.context_length": 200_000},
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"model.context_length": 400_000},
+        )
+        assert sig1 != sig2
+
+    def test_compression_threshold_change_busts_cache(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig1 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"compression.threshold": 0.50},
+        )
+        sig2 = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"compression.threshold": 0.75},
+        )
+        assert sig1 != sig2
+
+    def test_compression_enabled_toggle_busts_cache(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig_on = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"compression.enabled": True},
+        )
+        sig_off = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"compression.enabled": False},
+        )
+        assert sig_on != sig_off
+
+    def test_cache_keys_key_order_does_not_matter(self):
+        """Signature must be stable regardless of dict key insertion order."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig_a = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"model.context_length": 200_000, "compression.threshold": 0.5},
+        )
+        sig_b = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys={"compression.threshold": 0.5, "model.context_length": 200_000},
+        )
+        assert sig_a == sig_b
+
+
+class TestExtractCacheBustingConfig:
+    """Verify _extract_cache_busting_config pulls the documented subset of
+    config values that must invalidate the cached agent on change."""
+
+    def test_reads_model_context_length(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {"model": {"context_length": 272_000, "provider": "openrouter"}}
+        )
+        assert out["model.context_length"] == 272_000
+
+    def test_reads_compression_subkeys(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {
+                "compression": {
+                    "enabled": False,
+                    "threshold": 0.6,
+                    "target_ratio": 0.3,
+                    "protect_last_n": 25,
+                    "some_other_key": "ignored",
+                }
+            }
+        )
+        assert out["compression.enabled"] is False
+        assert out["compression.threshold"] == 0.6
+        assert out["compression.target_ratio"] == 0.3
+        assert out["compression.protect_last_n"] == 25
+
+    def test_missing_keys_yield_none(self):
+        """Absent config keys must produce None values (still contribute to signature)."""
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config({})
+        # Every documented cache-busting key must be present, even if None
+        for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
+            assert f"{section}.{key}" in out
+            assert out[f"{section}.{key}"] is None
+
+    def test_non_dict_section_treated_as_missing(self):
+        from gateway.run import GatewayRunner
+
+        # compression is a string — should not crash, all compression.* keys None
+        out = GatewayRunner._extract_cache_busting_config(
+            {"compression": "broken", "model": {"context_length": 100_000}}
+        )
+        assert out["compression.enabled"] is None
+        assert out["compression.threshold"] is None
+        assert out["model.context_length"] == 100_000
+
+    def test_none_config_is_safe(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(None)
+        for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
+            assert out[f"{section}.{key}"] is None
+
+    def test_full_round_trip_busts_cache_on_real_edit(self):
+        """End-to-end: simulate a config edit on main and verify the
+        extracted cache_keys change produces a new signature."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        cfg_before = {
+            "model": {"context_length": 200_000},
+            "compression": {"threshold": 0.50, "enabled": True},
+        }
+        cfg_after = {
+            "model": {"context_length": 200_000},
+            "compression": {"threshold": 0.75, "enabled": True},  # user raised threshold
+        }
+
+        sig_before = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_before),
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_after),
+        )
+        assert sig_before != sig_after, (
+            "Editing compression.threshold in config.yaml must bust the "
+            "gateway's cached agent so the new threshold takes effect."
+        )
+
 
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""

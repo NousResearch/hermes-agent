@@ -9079,12 +9079,47 @@ class GatewayRunner:
 
     _MAX_INTERRUPT_DEPTH = 3  # Cap recursive interrupt handling (#816)
 
+    # Config keys whose values MUST invalidate the gateway's cached agent
+    # when they change.  The agent bakes these into its compressor / context
+    # handling at construction time, so a mid-running-gateway config edit
+    # would otherwise be silently ignored until the user triggers a
+    # different cache eviction (model switch, /reset, etc.).
+    #
+    # Each entry is a tuple of (section, key) read from the raw config dict.
+    # Add more here as new baked-at-construction config settings are added.
+    _CACHE_BUSTING_CONFIG_KEYS: tuple = (
+        ("model", "context_length"),
+        ("compression", "enabled"),
+        ("compression", "threshold"),
+        ("compression", "target_ratio"),
+        ("compression", "protect_last_n"),
+    )
+
+    @classmethod
+    def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
+        """Pull the subset of config values that must bust the agent cache.
+
+        Returns a flat dict keyed by 'section.key'.  Missing keys and
+        non-dict sections yield None values, which still contribute to
+        the signature (so 'absent' vs 'present-and-null' differ).
+        """
+        out: Dict[str, Any] = {}
+        cfg = user_config if isinstance(user_config, dict) else {}
+        for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
+            section_val = cfg.get(section)
+            if isinstance(section_val, dict):
+                out[f"{section}.{key}"] = section_val.get(key)
+            else:
+                out[f"{section}.{key}"] = None
+        return out
+
     @staticmethod
     def _agent_config_signature(
         model: str,
         runtime: dict,
         enabled_toolsets: list,
         ephemeral_prompt: str,
+        cache_keys: dict | None = None,
     ) -> str:
         """Compute a stable string key from agent config values.
 
@@ -9092,6 +9127,12 @@ class GatewayRunner:
         discarded and rebuilt.  When it stays the same, the cached agent is
         reused — preserving the frozen system prompt and tool schemas for
         prompt cache hits.
+
+        ``cache_keys`` is an optional flat dict of additional config values
+        that should invalidate the cache when they change.  Callers pass
+        the output of ``_extract_cache_busting_config(user_config)`` so
+        edits to model.context_length / compression.* in config.yaml are
+        picked up on the next gateway message without a manual restart.
         """
         import hashlib, json as _j
 
@@ -9101,6 +9142,8 @@ class GatewayRunner:
         # switches if only the first few characters are considered.
         _api_key = str(runtime.get("api_key", "") or "")
         _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
+
+        _cache_keys_sorted = sorted((cache_keys or {}).items())
 
         blob = _j.dumps(
             [
@@ -9113,6 +9156,7 @@ class GatewayRunner:
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
                 ephemeral_prompt or "",
+                _cache_keys_sorted,
             ],
             sort_keys=True,
             default=str,
@@ -10365,6 +10409,7 @@ class GatewayRunner:
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
+                cache_keys=self._extract_cache_busting_config(user_config),
             )
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)

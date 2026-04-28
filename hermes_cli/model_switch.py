@@ -190,11 +190,18 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
             model: "minimax-m2.7"
             provider: custom
             base_url: "https://ollama.com/v1"
+
+    Also reads ``model.aliases`` (set by ``hermes config set model.aliases.xxx``)
+    and converts simple string entries (``ds-flash: deepseek/deepseek-v4-flash``)
+    into DirectAlias objects.  The provider is parsed from the ``provider/``
+    prefix in the value; if no slash, the current provider is used.
     """
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
+
+        # --- model_aliases (dict-based format) ---
         user_aliases = cfg.get("model_aliases")
         if isinstance(user_aliases, dict):
             for name, entry in user_aliases.items():
@@ -206,6 +213,30 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                 if model:
                     merged[name.strip().lower()] = DirectAlias(
                         model=model, provider=provider, base_url=base_url,
+                    )
+
+        # --- model.aliases (string-based format, from config set) ---
+        model_section = cfg.get("model", {})
+        if isinstance(model_section, dict):
+            simple_aliases = model_section.get("aliases")
+            if isinstance(simple_aliases, dict):
+                current_provider = model_section.get("provider", "")
+                for name, value in simple_aliases.items():
+                    if not isinstance(value, str) or not value.strip():
+                        continue
+                    key = name.strip().lower()
+                    if key in merged:
+                        continue  # don't override explicit model_aliases entries
+                    val = value.strip()
+                    if "/" in val:
+                        provider, model = val.split("/", 1)
+                    else:
+                        provider = current_provider
+                        model = val
+                    merged[key] = DirectAlias(
+                        model=model.strip(),
+                        provider=provider.strip() or current_provider,
+                        base_url="",
                     )
     except Exception:
         pass

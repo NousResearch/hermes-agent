@@ -10194,6 +10194,17 @@ Examples:
                 "plugin discovery failed at CLI startup", exc_info=True,
             )
         try:
+            # MCP tool discovery — no event loop running in CLI/TUI startup,
+            # so inline is safe.  Moved here from model_tools.py module scope
+            # to avoid freezing the gateway's event loop on its first message
+            # via the same lazy import path (#16856).
+            from tools.mcp_tool import discover_mcp_tools
+            discover_mcp_tools()
+        except Exception:
+            logger.debug(
+                "MCP tool discovery failed at CLI startup", exc_info=True,
+            )
+        try:
             from hermes_cli.config import load_config
             from agent.shell_hooks import register_from_config
             register_from_config(load_config(), accept_hooks=_accept_hooks)

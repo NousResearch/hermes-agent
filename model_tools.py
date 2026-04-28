@@ -138,12 +138,18 @@ def _run_async(coro):
 
 discover_builtin_tools()
 
-# MCP tool discovery (external MCP servers from config)
-try:
-    from tools.mcp_tool import discover_mcp_tools
-    discover_mcp_tools()
-except Exception as e:
-    logger.debug("MCP tool discovery failed: %s", e)
+# MCP tool discovery (external MCP servers from config) used to run here as
+# a module-level side effect.  It was removed because discover_mcp_tools()
+# internally uses a blocking future.result(timeout=120) wait, and the
+# gateway lazy-imports this module from inside the asyncio event loop on
+# the first user message — freezing Discord/Telegram heartbeats for up to
+# 120s whenever any configured MCP server was slow or unreachable (#16856).
+#
+# Each entry point now runs discovery explicitly at its own startup:
+#   - gateway/run.py            -> start_gateway() uses run_in_executor
+#   - cli.py, hermes_cli/*      -> inline on startup (no event loop)
+#   - tui_gateway/server.py     -> inline on startup (no event loop)
+#   - acp_adapter/server.py     -> asyncio.to_thread on session init
 
 # Plugin tool discovery (user/project/pip plugins)
 try:

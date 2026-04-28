@@ -11663,6 +11663,19 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
 
+    # MCP tool discovery — run in an executor so the asyncio event loop
+    # stays responsive even when a configured MCP server is slow or
+    # unreachable.  discover_mcp_tools() uses a blocking 120s wait
+    # internally; calling it from the loop thread would freeze platform
+    # heartbeats (Discord shard, Telegram polling) until it returned.
+    # See #16856.
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+        _loop = asyncio.get_running_loop()
+        await _loop.run_in_executor(None, discover_mcp_tools)
+    except Exception as e:
+        logger.debug("MCP tool discovery failed: %s", e)
+
     # Start the gateway
     success = await runner.start()
     if not success:

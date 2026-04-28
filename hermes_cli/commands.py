@@ -436,15 +436,36 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
 
     Plugin-registered slash commands are included so plugins get native
     autocomplete in Telegram without touching core code.
+
+    Custom descriptions can be provided via ``telegram.command_descriptions``
+    in ``config.yaml`` for i18n support::
+
+        telegram:
+          command_descriptions:
+            new: 开始新会话
+            retry: 重试上一条消息
+            undo: 撤销最后一组对话
     """
     overrides = _resolve_config_gates()
+
+    # Load per-command description overrides from config.yaml for i18n.
+    desc_overrides: dict[str, str] = {}
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        desc_overrides = cfg.get("telegram", {}).get("command_descriptions", {}) or {}
+    except Exception:
+        pass
+
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            desc = desc_overrides.get(cmd.name, cmd.description)
+            result.append((tg_name, desc))
     for name, description, _args_hint in _iter_plugin_command_entries():
         tg_name = _sanitize_telegram_name(name)
         if tg_name:

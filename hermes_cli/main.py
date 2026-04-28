@@ -5313,9 +5313,17 @@ def _update_via_zip(args):
     # individually so update does not silently strip working capabilities.
     print("→ Updating Python dependencies...")
 
+    # In Termux (Android), maturin (used by some Rust-extensions in optional
+    # extras) fails to auto-detect the Android API level.  Set a safe default
+    # (API 21 = Android 5.0) so maturin-based wheels can build successfully.
+    from hermes_constants import is_termux as _is_termux_env
+    _android_api_level = "21" if _is_termux_env() else None
+
     uv_bin = shutil.which("uv")
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env: dict[str, str] = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        if _android_api_level:
+            uv_env["ANDROID_API_LEVEL"] = _android_api_level
         _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
@@ -5336,7 +5344,7 @@ def _update_via_zip(args):
                 cwd=PROJECT_ROOT,
                 check=True,
             )
-        _install_python_dependencies_with_optional_fallback(pip_cmd)
+        _install_python_dependencies_with_optional_fallback(pip_cmd, android_api_level=_android_api_level)
 
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
@@ -5856,8 +5864,18 @@ def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
     env: dict[str, str] | None = None,
+    android_api_level: str | None = None,
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports."""
+    # In Termux (Android), some optional extras (e.g. obstore, python-olm, davey)
+    # depend on maturin-based wheels that fail to build without ANDROID_API_LEVEL.
+    # Propagate it through the env so subprocess calls inherit it.
+    if android_api_level:
+        env = dict(env) if env else dict(os.environ)
+        env["ANDROID_API_LEVEL"] = android_api_level
+    elif env:
+        env = dict(env)
+
     try:
         subprocess.run(
             install_cmd_prefix + ["install", "-e", ".[all]", "--quiet"],
@@ -7369,6 +7387,11 @@ def cmd_profile(args):
                 no_alias=no_alias,
             )
             print(f"\nProfile '{name}' created at {profile_dir}")
+
+            # Automatically switch to the newly created profile so subsequent
+            # commands (e.g. `hermes setup`) operate on it immediately.
+            set_active_profile(name)
+            print(f"Switched to profile: {name}")
 
             if clone or clone_all:
                 source_label = (

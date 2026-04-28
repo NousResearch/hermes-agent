@@ -102,6 +102,7 @@ from agent.model_metadata import (
     parse_available_output_tokens_from_error,
     save_context_length, is_local_endpoint,
     query_ollama_num_ctx,
+    query_ollama_capabilities,
 )
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
@@ -2010,6 +2011,22 @@ class AIAgent:
             logger.info(
                 "Ollama num_ctx: will request %d tokens (model max from /api/show)",
                 self._ollama_num_ctx,
+            )
+
+        # Detect Ollama model capabilities (tools, vision, thinking) from the
+        # /api/show endpoint so Hermes can adapt behaviour without hardcoding.
+        self._ollama_capabilities: set = set()
+        if self.base_url and is_local_endpoint(self.base_url):
+            try:
+                _caps = query_ollama_capabilities(self.model, self.base_url, api_key=self.api_key or "")
+                if _caps:
+                    self._ollama_capabilities = _caps
+            except Exception as exc:
+                logger.debug("Ollama capabilities detection failed: %s", exc)
+        if self._ollama_capabilities and not self.quiet_mode:
+            logger.info(
+                "Ollama capabilities: %s",
+                ", ".join(sorted(self._ollama_capabilities)),
             )
 
         if not self.quiet_mode:
@@ -4607,6 +4624,11 @@ class AIAgent:
                 # "auto" or any unrecognised value — use hardcoded defaults
                 model_lower = (self.model or "").lower()
                 _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+                # Also inject when the Ollama server reports tool capability
+                # (dynamic detection via /api/show — no hardcoding needed).
+                if not _inject and hasattr(self, "_ollama_capabilities"):
+                    if "tools" in self._ollama_capabilities:
+                        _inject = True
             if _inject:
                 prompt_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
                 _model_lower = (self.model or "").lower()

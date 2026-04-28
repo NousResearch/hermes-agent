@@ -945,6 +945,47 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     return None
 
 
+def query_ollama_capabilities(model: str, base_url: str, api_key: str = "") -> set:
+    """Query an Ollama server for the model's capabilities.
+
+    Returns a set of capability strings (e.g. ``{"tools", "vision", "thinking"}``)
+    from the ``/api/show`` endpoint's ``capabilities`` array.  Returns an empty
+    set if the server is unreachable, not Ollama, or the field is absent.
+
+    This enables dynamic capability detection so Hermes knows whether an
+    Ollama-hosted model supports tools, vision, thinking etc. without relying
+    on hardcoded model lists.
+    """
+    import httpx
+
+    bare_model = _strip_provider_prefix(model)
+    server_url = base_url.rstrip("/")
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+
+    try:
+        server_type = detect_local_server_type(base_url, api_key=api_key)
+    except Exception:
+        return set()
+    if server_type != "ollama":
+        return set()
+
+    headers = _auth_headers(api_key)
+
+    try:
+        with httpx.Client(timeout=3.0, headers=headers) as client:
+            resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
+            if resp.status_code != 200:
+                return set()
+            data = resp.json()
+            capabilities = data.get("capabilities")
+            if isinstance(capabilities, list):
+                return {str(c).lower() for c in capabilities if isinstance(c, str)}
+    except Exception:
+        pass
+    return set()
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx

@@ -8460,6 +8460,23 @@ class AIAgent:
                     f"⚠ Compression summary failed: {summary_error}. "
                     "Inserted a fallback context marker."
                 )
+        else:
+            # No hard failure — but did the configured aux model error out
+            # and get recovered by retrying on main?  Surface that so users
+            # know their auxiliary.compression.model setting is broken even
+            # though compression succeeded.
+            _aux_fail_model = getattr(self.context_compressor, "_last_aux_model_failure_model", None)
+            _aux_fail_err = getattr(self.context_compressor, "_last_aux_model_failure_error", None)
+            if _aux_fail_model:
+                # Dedup on (model, error) so we don't spam on every compaction
+                _aux_key = (_aux_fail_model, _aux_fail_err)
+                if getattr(self, "_last_aux_fallback_warning_key", None) != _aux_key:
+                    self._last_aux_fallback_warning_key = _aux_key
+                    self._emit_warning(
+                        f"ℹ Configured compression model '{_aux_fail_model}' failed "
+                        f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
+                        "check auxiliary.compression.model in config.yaml."
+                    )
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:

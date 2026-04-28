@@ -1106,9 +1106,15 @@ class MatrixAdapter(BasePlatformAdapter):
         next_batch = await client.sync_store.get_next_batch()
         while not self._closing:
             try:
-                sync_data = await client.sync(
-                    since=next_batch,
-                    timeout=30000,
+                # Wrap in asyncio.wait_for to guard against TCP-level hangs
+                # that the Matrix long-poll timeout cannot catch. Long-poll
+                # is 30s, so 45s gives 15s slack for network drain.
+                sync_data = await asyncio.wait_for(
+                    client.sync(
+                        since=next_batch,
+                        timeout=30000,
+                    ),
+                    timeout=45.0,
                 )
 
                 # nio returns SyncError objects (not exceptions) for auth
@@ -1231,6 +1237,15 @@ class MatrixAdapter(BasePlatformAdapter):
         room_id = str(getattr(event, "room_id", ""))
         sender = str(getattr(event, "sender", ""))
 
+        # Diagnostic: confirm the callback is firing at all when DEBUG is on.
+        # Helps users troubleshoot silent inbound issues like #5819, #7914, #12614.
+        logger.debug(
+            "Matrix: callback fired — event %s from %s in %s",
+            getattr(event, "event_id", "?"),
+            sender,
+            room_id,
+        )
+
         # Ignore own messages (case-insensitive; also drops when our own
         # user_id hasn't been resolved yet — see _is_self_sender docstring
         # and issue #15763).
@@ -1342,6 +1357,12 @@ class MatrixAdapter(BasePlatformAdapter):
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
                 if not is_mentioned:
+                    logger.debug(
+                        "Matrix: ignoring message %s in %s — no @mention "
+                        "(set MATRIX_REQUIRE_MENTION=false to disable)",
+                        event_id,
+                        room_id,
+                    )
                     return None
 
         # DM mention-thread.

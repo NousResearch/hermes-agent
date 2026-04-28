@@ -769,19 +769,20 @@ def list_authenticated_providers(
     custom_providers: list | None = None,
     max_models: int = 8,
 ) -> List[dict]:
-    """Detect which providers have credentials and list their curated models.
+    """Detect which providers have credentials and list their picker-visible models.
 
-    Uses the curated model lists from hermes_cli/models.py (OPENROUTER_MODELS,
-    _PROVIDER_MODELS) — NOT the full models.dev catalog.  These are hand-picked
-    agentic models that work well as agent backends.
+    Starts with the curated model lists from hermes_cli/models.py
+    (OPENROUTER_MODELS, _PROVIDER_MODELS), then appends extra agentic models
+    discovered via models.dev. This keeps high-signal defaults at the top while
+    still exposing additional available models in the picker.
 
     Returns a list of dicts, each with:
       - slug: str — the --provider value to use
       - name: str — display name
       - is_current: bool
       - is_user_defined: bool
-      - models: list[str] — curated model IDs (up to max_models)
-      - total_models: int — total curated count
+      - models: list[str] — picker-visible model IDs (up to max_models)
+      - total_models: int — total visible count before truncation
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
@@ -791,6 +792,7 @@ def list_authenticated_providers(
         PROVIDER_TO_MODELS_DEV,
         fetch_models_dev,
         get_provider_info as _mdev_pinfo,
+        list_agentic_models,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
@@ -811,6 +813,28 @@ def list_authenticated_providers(
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
         curated["ollama-cloud"] = fetch_ollama_cloud_models()
+
+    def _merged_model_list(provider_slug: str, fallback_slug: str = "") -> list[str]:
+        """Return curated models first, then extra agentic models from models.dev."""
+        merged: list[str] = []
+        for slug in filter(None, [provider_slug, fallback_slug]):
+            for model_id in curated.get(slug, []) or []:
+                if model_id and model_id not in merged:
+                    merged.append(model_id)
+
+        dynamic_models: list[str] = []
+        for slug in filter(None, [provider_slug, fallback_slug]):
+            try:
+                dynamic_models = list_agentic_models(slug)
+            except Exception:
+                dynamic_models = []
+            if dynamic_models:
+                break
+
+        for model_id in dynamic_models:
+            if model_id and model_id not in merged:
+                merged.append(model_id)
+        return merged
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
@@ -839,8 +863,8 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list, falling back to models.dev if no curated list
-        model_ids = curated.get(hermes_id, [])
+        # Use curated list first, then append extra agentic models from models.dev
+        model_ids = _merged_model_list(hermes_id, mdev_id)
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -942,8 +966,8 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list — look up by Hermes slug, fall back to overlay key
-        model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+        # Use curated list first, then append extra agentic models from models.dev
+        model_ids = _merged_model_list(hermes_slug, pid)
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -1003,7 +1027,7 @@ def list_authenticated_providers(
         if not _cp_has_creds:
             continue
 
-        _cp_model_ids = curated.get(_cp.slug, [])
+        _cp_model_ids = _merged_model_list(_cp.slug)
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models]
 

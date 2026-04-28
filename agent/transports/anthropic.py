@@ -85,9 +85,6 @@ class AnthropicTransport(ProviderTransport):
         from agent.anthropic_adapter import _to_plain_data
         from agent.transports.types import ToolCall
 
-        strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
-        _MCP_PREFIX = "mcp_"
-
         text_parts = []
         reasoning_parts = []
         reasoning_details = []
@@ -102,13 +99,10 @@ class AnthropicTransport(ProviderTransport):
                 if isinstance(block_dict, dict):
                     reasoning_details.append(block_dict)
             elif block.type == "tool_use":
-                name = block.name
-                if strip_tool_prefix and name.startswith(_MCP_PREFIX):
-                    name = name[len(_MCP_PREFIX):]
                 tool_calls.append(
                     ToolCall(
                         id=block.id,
-                        name=name,
+                        name=block.name,
                         arguments=json.dumps(block.input),
                     )
                 )

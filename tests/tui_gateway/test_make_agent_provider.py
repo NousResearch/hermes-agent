@@ -45,7 +45,12 @@ def test_make_agent_passes_resolved_provider():
 
         _make_agent("sid-1", "key-1")
 
-        mock_resolve.assert_called_once_with(requested=None)
+        # target_model comes from _resolve_startup_runtime() which reads
+        # _load_cfg().  Due to module-level caching in tui_gateway.server,
+        # the patched config may not take effect when the module was already
+        # imported by an earlier test.  Assert the stable part of the call.
+        mock_resolve.assert_called_once()
+        assert mock_resolve.call_args.kwargs.get("requested") is None
 
         call_kwargs = mock_agent.call_args
         assert call_kwargs.kwargs["provider"] == "anthropic"

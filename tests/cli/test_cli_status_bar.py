@@ -336,7 +336,6 @@ class TestStatusBarWidthSource:
     """Ensure status bar fragments don't overflow the terminal width."""
 
     def _make_wide_cli(self):
-        from datetime import datetime, timedelta
         cli_obj = _attach_agent(
             _make_cli(),
             prompt_tokens=100_000,
@@ -376,7 +375,7 @@ class TestStatusBarWidthSource:
         mock_app = MagicMock()
         mock_app.output.get_size.return_value = MagicMock(columns=120)
 
-        with patch("prompt_toolkit.application.get_app", return_value=mock_app) as mock_get_app, \
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app), \
              patch("shutil.get_terminal_size") as mock_shutil:
             cli_obj._get_status_bar_fragments()
 

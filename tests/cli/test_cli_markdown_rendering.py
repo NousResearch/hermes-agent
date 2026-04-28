@@ -57,8 +57,8 @@ def test_slate_skin_uses_compact_code_blocks_in_render_mode():
 
     assert "python" in output
     assert "def smoke" in output
-    assert "1 def smoke" in output
-    assert "2     return True" in output
+    assert "1 │ def smoke" in output
+    assert "2 │     return True" in output
     assert "╭" in output
 
 

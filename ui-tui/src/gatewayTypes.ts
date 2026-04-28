@@ -119,6 +119,12 @@ export interface SessionListResponse {
   sessions?: SessionListItem[]
 }
 
+export interface SessionTitleResponse {
+  pending?: boolean
+  session_key?: string
+  title?: string
+}
+
 export interface SessionSaveResponse {
   file?: string
 }
@@ -282,7 +288,42 @@ export interface ModelOptionsResponse {
 // ── MCP ──────────────────────────────────────────────────────────────
 
 export interface ReloadMcpResponse {
-  ok?: boolean
+  status?: string
+}
+
+export interface ProcessStopResponse {
+  killed?: number
+}
+
+export interface BrowserManageResponse {
+  connected?: boolean
+  url?: string
+}
+
+export interface RollbackCheckpoint {
+  hash: string
+  message?: string
+  timestamp?: string
+}
+
+export interface RollbackListResponse {
+  checkpoints?: RollbackCheckpoint[]
+  enabled?: boolean
+}
+
+export interface RollbackDiffResponse {
+  diff?: string
+  rendered?: string
+  stat?: string
+}
+
+export interface RollbackRestoreResponse {
+  error?: string
+  history_removed?: number
+  message?: string
+  reason?: string
+  restored_to?: string
+  success?: boolean
 }
 
 // ── Subagent events ──────────────────────────────────────────────────
@@ -374,7 +415,7 @@ export type GatewayEvent =
   | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
   | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
-  | { payload?: { cwd?: string; python?: string }; session_id?: string; type: 'gateway.start_timeout' }
+  | { payload?: { cwd?: string; python?: string; stderr_tail?: string }; session_id?: string; type: 'gateway.start_timeout' }
   | { payload?: { preview?: string }; session_id?: string; type: 'gateway.protocol_error' }
   | { payload?: { text?: string }; session_id?: string; type: 'reasoning.delta' | 'reasoning.available' }
   | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }

@@ -30,6 +30,32 @@ _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
 )
 
 
+def _fire_approval_hook(hook_name: str, **kwargs) -> None:
+    """Invoke a plugin lifecycle hook for the approval system.
+
+    Lazy-imports the plugin manager to avoid circular imports (approval.py is
+    imported very early, long before plugins are discovered). Never raises --
+    plugin errors are logged and swallowed.
+
+    Only fires for the two approval-specific hooks in VALID_HOOKS:
+    pre_approval_request, post_approval_response.
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook
+    except Exception:
+        # Plugin system not available in this execution context
+        # (e.g. bare tool-only imports, minimal test environments).
+        return
+    try:
+        invoke_hook(hook_name, **kwargs)
+    except Exception as exc:
+        # invoke_hook() already swallows per-callback errors, so reaching here
+        # means the dispatch layer itself failed. Log and move on -- approval
+        # flow is safety-critical, plugin observability is not.
+        logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc)
+
+
+
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
     """Bind the active approval session key to the current context."""
     return _approval_session_key.set(session_key or "")
@@ -1002,6 +1028,19 @@ def check_all_command_guards(command: str, env_type: str,
             with _lock:
                 _gateway_queues.setdefault(session_key, []).append(entry)
 
+            # Notify plugins that an approval is being requested. Fires before
+            # the gateway notify callback so observers (e.g. macOS notifier
+            # plugins, audit logs, Slack alerts) get the event in real time.
+            _fire_approval_hook(
+                "pre_approval_request",
+                command=command,
+                description=combined_desc,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                session_key=session_key,
+                surface="gateway",
+            )
+
             # Notify the user (bridges sync agent thread → async gateway)
             try:
                 notify_cb(approval_data)
@@ -1067,6 +1106,24 @@ def check_all_command_guards(command: str, env_type: str,
                     _gateway_queues.pop(session_key, None)
 
             choice = entry.result
+            # Normalize outcome for the post hook. Unresolved (timeout) and
+            # None both mean the user never responded; report that explicitly
+            # so plugins can distinguish timeout from explicit deny.
+            _outcome = (
+                "timeout" if not resolved
+                else (choice if choice else "timeout")
+            )
+            _fire_approval_hook(
+                "post_approval_response",
+                command=command,
+                description=combined_desc,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                session_key=session_key,
+                surface="gateway",
+                choice=_outcome,
+            )
+
             if not resolved or choice is None or choice == "deny":
                 reason = "timed out" if not resolved else "denied by user"
                 return {
@@ -1111,9 +1168,28 @@ def check_all_command_guards(command: str, env_type: str,
 
     # CLI interactive: single combined prompt
     # Hide [a]lways when any tirith warning is present
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=command,
+        description=combined_desc,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        session_key=session_key,
+        surface="cli",
+    )
     choice = prompt_dangerous_approval(command, combined_desc,
                                        allow_permanent=not has_tirith,
                                        approval_callback=approval_callback)
+    _fire_approval_hook(
+        "post_approval_response",
+        command=command,
+        description=combined_desc,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        session_key=session_key,
+        surface="cli",
+        choice=choice,
+    )
 
     if choice == "deny":
         return {

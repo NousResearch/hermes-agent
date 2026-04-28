@@ -62,8 +62,8 @@ from .config import (
 )
 from .whatsapp_identity import (
     canonical_whatsapp_identifier,
-    normalize_whatsapp_identifier,
 )
+from utils import atomic_replace
 
 
 @dataclass
@@ -705,7 +705,7 @@ class SessionStore:
                 json.dump(data, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_path, sessions_file)
+            atomic_replace(tmp_path, sessions_file)
         except BaseException:
             try:
                 os.unlink(tmp_path)
@@ -1257,25 +1257,11 @@ class SessionStore:
         Used by /retry, /undo, and /compress to persist modified conversation history.
         Rewrites both SQLite and legacy JSONL storage.
         """
-        # SQLite: clear old messages and re-insert
+        # SQLite: replace atomically so a mid-rewrite failure doesn't leave
+        # the session half-empty in the DB while JSONL still has history.
         if self._db:
             try:
-                self._db.clear_messages(session_id)
-                for msg in messages:
-                    role = msg.get("role", "unknown")
-                    self._db.append_message(
-                        session_id=session_id,
-                        role=role,
-                        content=msg.get("content"),
-                        tool_name=msg.get("tool_name"),
-                        tool_calls=msg.get("tool_calls"),
-                        tool_call_id=msg.get("tool_call_id"),
-                        reasoning=msg.get("reasoning") if role == "assistant" else None,
-                        reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
-                        reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
-                        codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
-                        codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
-                    )
+                self._db.replace_messages(session_id, messages)
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
         

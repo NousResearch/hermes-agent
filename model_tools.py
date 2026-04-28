@@ -138,12 +138,18 @@ def _run_async(coro):
 
 discover_builtin_tools()
 
-# MCP tool discovery (external MCP servers from config)
-try:
-    from tools.mcp_tool import discover_mcp_tools
-    discover_mcp_tools()
-except Exception as e:
-    logger.debug("MCP tool discovery failed: %s", e)
+# MCP tool discovery (external MCP servers from config) used to run here as
+# a module-level side effect.  It was removed because discover_mcp_tools()
+# internally uses a blocking future.result(timeout=120) wait, and the
+# gateway lazy-imports this module from inside the asyncio event loop on
+# the first user message — freezing Discord/Telegram heartbeats for up to
+# 120s whenever any configured MCP server was slow or unreachable (#16856).
+#
+# Each entry point now runs discovery explicitly at its own startup:
+#   - gateway/run.py            -> start_gateway() uses run_in_executor
+#   - cli.py, hermes_cli/*      -> inline on startup (no event loop)
+#   - tui_gateway/server.py     -> inline on startup (no event loop)
+#   - acp_adapter/server.py     -> asyncio.to_thread on session init
 
 # Plugin tool discovery (user/project/pip plugins)
 try:
@@ -409,24 +415,27 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if not prop_schema:
             continue
         expected = prop_schema.get("type")
-        if not expected:
+        if not expected and not _schema_allows_null(prop_schema):
             continue
-        coerced = _coerce_value(value, expected)
+        coerced = _coerce_value(value, expected, schema=prop_schema)
         if coerced is not value:
             args[key] = coerced
 
     return args
 
 
-def _coerce_value(value: str, expected_type):
+def _coerce_value(value: str, expected_type, schema: dict | None = None):
     """Attempt to coerce a string *value* to *expected_type*.
 
     Returns the original string when coercion is not applicable or fails.
     """
+    if _schema_allows_null(schema) and value.strip().lower() == "null":
+        return None
+
     if isinstance(expected_type, list):
         # Union type — try each in order, return first successful coercion
         for t in expected_type:
-            result = _coerce_value(value, t)
+            result = _coerce_value(value, t, schema=schema)
             if result is not value:
                 return result
         return value
@@ -439,7 +448,33 @@ def _coerce_value(value: str, expected_type):
         return _coerce_json(value, list)
     if expected_type == "object":
         return _coerce_json(value, dict)
+    if expected_type == "null" and value.strip().lower() == "null":
+        return None
     return value
+
+
+def _schema_allows_null(schema: dict | None) -> bool:
+    """Return True when a JSON Schema fragment explicitly permits null."""
+    if not isinstance(schema, dict):
+        return False
+
+    schema_type = schema.get("type")
+    if schema_type == "null":
+        return True
+    if isinstance(schema_type, list) and "null" in schema_type:
+        return True
+    if schema.get("nullable") is True:
+        return True
+
+    for union_key in ("anyOf", "oneOf"):
+        variants = schema.get(union_key)
+        if not isinstance(variants, list):
+            continue
+        for variant in variants:
+            if isinstance(variant, dict) and variant.get("type") == "null":
+                return True
+
+    return False
 
 
 def _coerce_json(value: str, expected_python_type: type):

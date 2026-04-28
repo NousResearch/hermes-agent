@@ -1,7 +1,7 @@
 import { AlertTriangle, Radio, Wifi, WifiOff } from "lucide-react";
 import type { PlatformStatus } from "@/lib/api";
 import { isoTimeAgo } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useI18n } from "@/i18n";
 
@@ -9,11 +9,11 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
   const { t } = useI18n();
   const platformStateBadge: Record<
     string,
-    { variant: "success" | "warning" | "destructive"; label: string }
+    { tone: "success" | "warning" | "destructive"; label: string }
   > = {
-    connected: { variant: "success", label: t.status.connected },
-    disconnected: { variant: "warning", label: t.status.disconnected },
-    fatal: { variant: "destructive", label: t.status.error },
+    connected: { tone: "success", label: t.status.connected },
+    disconnected: { tone: "warning", label: t.status.disconnected },
+    fatal: { tone: "destructive", label: t.status.error },
   };
 
   return (
@@ -30,7 +30,7 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
       <CardContent className="grid gap-3">
         {platforms.map(([name, info]) => {
           const display = platformStateBadge[info.state] ?? {
-            variant: "outline" as const,
+            tone: "outline" as const,
             label: info.state,
           };
           const IconComponent =
@@ -76,10 +76,10 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
               </div>
 
               <Badge
-                variant={display.variant}
+                tone={display.tone}
                 className="shrink-0 self-start sm:self-center"
               >
-                {display.variant === "success" && (
+                {display.tone === "success" && (
                   <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                 )}
                 {display.label}

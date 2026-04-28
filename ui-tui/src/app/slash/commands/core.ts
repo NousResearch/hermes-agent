@@ -7,6 +7,7 @@ import type {
   ConfigSetResponse,
   SessionSaveResponse,
   SessionSteerResponse,
+  SessionTitleResponse,
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
@@ -148,6 +149,47 @@ export const coreCommands: SlashCommand[] = [
       }
 
       arg ? ctx.session.resumeById(arg) : patchOverlayState({ picker: true })
+    }
+  },
+
+  {
+    help: 'set or show current session title',
+    name: 'title',
+    run: (arg, ctx) => {
+      if (!ctx.sid) {
+        return ctx.transcript.sys('no active session')
+      }
+
+      const title = arg.trim()
+
+      if (!arg) {
+        ctx.gateway
+          .rpc<SessionTitleResponse>('session.title', { session_id: ctx.sid })
+          .then(
+            ctx.guarded<SessionTitleResponse>(r => {
+              const current = (r?.title ?? '').trim()
+              ctx.transcript.sys(current ? `title: ${current}` : 'no title set')
+            })
+          )
+          .catch(ctx.guardedErr)
+
+        return
+      }
+
+      if (!title) {
+        return ctx.transcript.sys('usage: /title <your session title>')
+      }
+
+      ctx.gateway
+        .rpc<SessionTitleResponse>('session.title', { session_id: ctx.sid, title })
+        .then(
+          ctx.guarded<SessionTitleResponse>(r => {
+            const next = (r?.title ?? title).trim()
+            const suffix = r?.pending ? ' (queued while session initializes)' : ''
+            ctx.transcript.sys(`session title set: ${next}${suffix}`)
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 

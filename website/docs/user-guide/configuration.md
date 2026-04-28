@@ -85,7 +85,7 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 
 Context bootstrap providers add ephemeral project context to the next user message. They run alongside the context compressor and the configured memory provider.
 
-Lean-ctx activates from the native `lean_ctx` config section. With `enabled: auto`, Hermes uses `which lean-ctx` semantics through `PATH` and activates the layer when the configured command is available. Hermes calls lean-ctx MCP tools such as `ctx_overview`, `ctx_preload`, `ctx_handoff`, and bounded symbol/caller probes on the first turn of each agent session, then appends the result to the current API request as ephemeral context. When tool routing is enabled, the visible `read_file`, `search_files`, and eligible foreground local `terminal` commands can also use lean-ctx internally with native fallback after Hermes' normal safety checks. Set `code_task_only: true` for heuristic gating to obvious code tasks.
+Lean-ctx activates from the native `lean_ctx` config section. With `enabled: auto`, Hermes uses `which lean-ctx` semantics through `PATH` and activates the layer when the configured command is available. Hermes calls lean-ctx MCP tools such as `ctx_overview`, `ctx_preload`, `ctx_handoff`, and bounded symbol/caller probes on the first turn of each agent session and for delegated child tasks, then appends the result to the current API request as ephemeral context. When tool routing is enabled, the visible `read_file`, `search_files`, and eligible foreground local `terminal` commands can also use lean-ctx internally with native fallback after Hermes' normal safety checks. Set `code_task_only: true` for heuristic gating to obvious code tasks.
 
 ```yaml
 lean_ctx:
@@ -99,10 +99,14 @@ lean_ctx:
   first_turn_only: true
   code_task_only: false
   max_chars: 12000
+  delegation_max_chars: 6000
+  max_task_chars: 4000
   packet_timeout_seconds: 25
 ```
 
 Hermes keeps a small process-local savings counter for routed lean-ctx calls and shows it in the CLI status bar when non-zero, for example `lc 12.4k saved · 74%`. Use `/leanctx` for the current session summary or `/leanctx status`, `/leanctx token-report`, `/leanctx gain`, `/leanctx cache`, and `/leanctx doctor` for on-demand diagnostics. `ctx_dashboard` is a lean-ctx dashboard/server control; Hermes' TUI uses the compact status-bar metric.
+
+`max_chars` and `delegation_max_chars` cap only the lean-ctx context packet appended by Hermes. They do not truncate the user's instruction or the persona/task prompt. `max_task_chars` caps the task text sent to lean-ctx for retrieval so large instructions do not turn into oversized retrieval queries.
 
 ## Terminal Backend Configuration
 

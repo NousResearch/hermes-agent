@@ -19,16 +19,14 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
-
-logger = logging.getLogger(__name__)
 import os
 import threading
 import time
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
-    as_completed,
 )
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
@@ -44,6 +42,8 @@ from tools.delegate_bridge_transport import (
 from tools.delegate_personas import apply_persona_to_task
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
+
+logger = logging.getLogger(__name__)
 
 
 # Tools that children must never have access to
@@ -661,6 +661,53 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     return None
 
 
+def _augment_task_context_with_bootstrap(
+    parent_agent,
+    *,
+    goal: str,
+    context: Optional[str],
+    workspace_hint: Optional[str],
+) -> Optional[str]:
+    """Append configured bootstrap context to a delegated child task."""
+    try:
+        manager = vars(parent_agent).get("_context_bootstrap_manager")
+    except TypeError:
+        manager = getattr(parent_agent, "_context_bootstrap_manager", None)
+    if manager is None:
+        return context
+    context_for_delegation = getattr(manager, "context_for_delegation", None)
+    if not callable(context_for_delegation):
+        return context
+
+    workspace_root = Path.cwd()
+    if workspace_hint:
+        try:
+            candidate = Path(workspace_hint).expanduser()
+            if candidate.is_dir():
+                workspace_root = candidate.resolve()
+        except Exception:
+            workspace_root = Path.cwd()
+
+    try:
+        bootstrap_context = context_for_delegation(
+            goal=goal,
+            context=context or "",
+            workspace_root=workspace_root,
+        )
+    except Exception as exc:
+        logger.warning("context bootstrap failed for delegated task: %s", exc)
+        return context
+    if not bootstrap_context or not bootstrap_context.strip():
+        return context
+
+    parts = [
+        part.strip()
+        for part in (context or "", bootstrap_context)
+        if part and part.strip()
+    ]
+    return "\n\n".join(parts)
+
+
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools."""
     blocked_toolset_names = {
@@ -958,6 +1005,12 @@ def _build_child_agent(
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+    context = _augment_task_context_with_bootstrap(
+        parent_agent,
+        goal=goal,
+        context=context,
+        workspace_hint=workspace_hint,
+    )
     child_prompt = _build_child_system_prompt(
         goal,
         context,
@@ -1175,7 +1228,7 @@ def _dump_subagent_timeout_diagnostic(
         def _w(line: str = "") -> None:
             lines.append(line)
 
-        _w(f"# Subagent timeout diagnostic — issue #14726")
+        _w("# Subagent timeout diagnostic — issue #14726")
         _w(f"# Generated: {_dt.datetime.now().isoformat()}")
         _w("")
         _w("## Timeout")
@@ -2958,7 +3011,7 @@ DELEGATE_TASK_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_error  # noqa: E402
 
 registry.register(
     name="delegate_task",

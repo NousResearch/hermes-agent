@@ -11,7 +11,6 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
-import sys
 import tempfile
 import threading
 import time
@@ -451,7 +450,7 @@ class TestDelegateTask(unittest.TestCase):
             "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
         }
         parent = _make_mock_parent()
-        result = json.loads(delegate_task(
+        json.loads(delegate_task(
             goal="This should be ignored",
             tasks=[{"goal": "Actual task"}],
             parent_agent=parent,
@@ -545,6 +544,42 @@ class TestDelegateTask(unittest.TestCase):
             )
 
         self.assertIs(mock_child._print_fn, sink)
+
+    def test_child_prompt_includes_delegated_context_bootstrap(self):
+        parent = _make_mock_parent(depth=0)
+        with tempfile.TemporaryDirectory() as tmp:
+            parent.terminal_cwd = tmp
+            parent._context_bootstrap_manager = MagicMock()
+            parent._context_bootstrap_manager.context_for_delegation.return_value = (
+                "LEAN-CTX DELEGATION CONTEXT\nctx_overview result"
+            )
+
+            with patch.dict(os.environ, {"TERMINAL_CWD": tmp}), patch(
+                "run_agent.AIAgent"
+            ) as MockAgent:
+                mock_child = MagicMock()
+                MockAgent.return_value = mock_child
+
+                _build_child_agent(
+                    task_index=0,
+                    goal="Review `dispatchTask`",
+                    context="Persona-specific review context",
+                    toolsets=None,
+                    model=None,
+                    max_iterations=10,
+                    parent_agent=parent,
+                    task_count=1,
+                )
+
+            call_kwargs = MockAgent.call_args[1]
+            child_prompt = call_kwargs["ephemeral_system_prompt"]
+            self.assertIn("Persona-specific review context", child_prompt)
+            self.assertIn("LEAN-CTX DELEGATION CONTEXT", child_prompt)
+            parent._context_bootstrap_manager.context_for_delegation.assert_called_once()
+            _, kwargs = parent._context_bootstrap_manager.context_for_delegation.call_args
+            self.assertEqual(kwargs["goal"], "Review `dispatchTask`")
+            self.assertEqual(kwargs["context"], "Persona-specific review context")
+            self.assertEqual(kwargs["workspace_root"], Path(tmp).resolve())
 
     def test_child_uses_thinking_callback_when_progress_callback_available(self):
         parent = _make_mock_parent(depth=0)

@@ -47,6 +47,42 @@ def test_provider_builds_first_turn_packet_with_overview_and_symbols(tmp_path):
     assert all(call[2] == Path(tmp_path).resolve() for call in calls)
 
 
+def test_provider_builds_delegation_packet_with_separate_budget(tmp_path):
+    calls = []
+
+    def fake_call(tool_name, args, root, timeout_seconds):
+        calls.append((tool_name, args, root))
+        return f"{tool_name} result"
+
+    provider = LeanCtxBootstrapProvider(
+        LeanCtxConfig(
+            command="lean-ctx",
+            delegation_max_chars=800,
+            max_chars=6000,
+            timeout_seconds=1,
+        ),
+        call_tool=fake_call,
+    )
+
+    context = provider.context_for_delegation(
+        goal="Review function `dispatchTask`",
+        context="Focus on persona routing.",
+        workspace_root=tmp_path,
+    )
+
+    assert "LEAN-CTX DELEGATION CONTEXT" in context
+    assert "Focus on persona routing" in context
+    assert "ctx_symbol:dispatchTask" in context
+    assert len(context) <= 800
+    assert [call[0] for call in calls] == [
+        "ctx_overview",
+        "ctx_preload",
+        "ctx_handoff",
+        "ctx_symbol",
+        "ctx_callers",
+    ]
+
+
 def test_provider_bootstraps_session_once(tmp_path):
     provider = LeanCtxBootstrapProvider(
         LeanCtxConfig(command="lean-ctx"),

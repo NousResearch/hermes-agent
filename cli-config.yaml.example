@@ -350,6 +350,10 @@ compression:
 #   first_turn_only: true
 #   code_task_only: false
 #   max_chars: 12000
+#   # Caps only the lean-ctx packet added to delegated child tasks.
+#   delegation_max_chars: 6000
+#   # Caps task text sent to lean-ctx for retrieval; does not truncate user prompts.
+#   max_task_chars: 4000
 #   # Optional wall-clock cap for the entire bootstrap packet.
 #   packet_timeout_seconds: 25
 

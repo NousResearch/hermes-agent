@@ -68,6 +68,33 @@ class TestBuildAnthropicClient:
             assert "fine-grained-tool-streaming-2025-05-14" in betas
             assert "api_key" not in kwargs
 
+    def test_oauth_does_not_send_claude_code_spoof_headers(self):
+        """OAuth requests identify as Hermes — no claude-cli UA, no x-app: cli.
+
+        Anthropic's OAuth-gated Messages API accepts requests from non-Claude-Code
+        clients as long as auth is correct and the OAuth beta headers are present.
+        See commit that removed fingerprinting for the live-test write-up.
+        """
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-oat01-" + "x" * 60)
+            headers = mock_sdk.Anthropic.call_args[1]["default_headers"]
+            assert "user-agent" not in {k.lower() for k in headers}
+            assert "x-app" not in {k.lower() for k in headers}
+
+    def test_oauth_strips_context_1m_beta(self):
+        """context-1m-2025-08-07 is incompatible with OAuth auth — must be stripped.
+
+        Anthropic returns HTTP 400 "This authentication style is incompatible
+        with the long context beta header." when OAuth traffic carries it.
+        """
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-oat01-" + "x" * 60)
+            betas = mock_sdk.Anthropic.call_args[1]["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" not in betas
+            # But other common betas still flow through
+            assert "interleaved-thinking-2025-05-14" in betas
+            assert "oauth-2025-04-20" in betas
+
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client("sk-ant-api03-something")
@@ -516,6 +543,36 @@ class TestConvertTools:
     def test_empty_tools(self):
         assert convert_tools_to_anthropic([]) == []
         assert convert_tools_to_anthropic(None) == []
+
+    def test_strips_nullable_union_from_input_schema(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "run",
+                    "description": "Run command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"},
+                            "timeout": {
+                                "anyOf": [{"type": "integer"}, {"type": "null"}],
+                                "default": None,
+                            },
+                        },
+                        "required": ["command"],
+                    },
+                },
+            }
+        ]
+
+        result = convert_tools_to_anthropic(tools)
+
+        assert result[0]["input_schema"]["properties"]["timeout"] == {
+            "type": "integer",
+            "default": None,
+        }
+        assert result[0]["input_schema"]["required"] == ["command"]
 
 
 # ---------------------------------------------------------------------------

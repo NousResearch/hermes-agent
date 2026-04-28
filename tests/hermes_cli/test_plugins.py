@@ -635,7 +635,7 @@ class TestPluginManagerList:
         assert mgr.list_plugins() == []
 
     def test_list_returns_sorted(self, tmp_path, monkeypatch):
-        """list_plugins() returns results sorted by name."""
+        """list_plugins() returns results sorted by key."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         _make_plugin_dir(plugins_dir, "zulu")
         _make_plugin_dir(plugins_dir, "alpha")
@@ -645,8 +645,10 @@ class TestPluginManagerList:
         mgr.discover_and_load()
 
         listing = mgr.list_plugins()
-        names = [p["name"] for p in listing]
-        assert names == sorted(names)
+        # list_plugins sorts by key (path-derived, e.g. ``image_gen/openai``),
+        # not by display name, so that category plugins group together.
+        keys = [p["key"] for p in listing]
+        assert keys == sorted(keys)
 
     def test_list_with_plugins(self, tmp_path, monkeypatch):
         """list_plugins() returns info dicts for each discovered plugin."""

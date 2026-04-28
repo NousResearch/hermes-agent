@@ -248,6 +248,8 @@ def register(ctx):
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
+| [`pre_approval_request`](#pre_approval_request) | Dangerous command needs user approval, before the prompt/notification is sent | ignored |
+| [`post_approval_response`](#post_approval_response) | User responded to an approval prompt (or it timed out) | ignored |
 
 ---
 
@@ -317,7 +319,8 @@ Fires **immediately after** every tool execution returns.
 **Callback signature:**
 
 ```python
-def my_callback(tool_name: str, args: dict, result: str, task_id: str, **kwargs):
+def my_callback(tool_name: str, args: dict, result: str, task_id: str,
+                duration_ms: int, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -326,24 +329,27 @@ def my_callback(tool_name: str, args: dict, result: str, task_id: str, **kwargs)
 | `args` | `dict` | The arguments the model passed to the tool |
 | `result` | `str` | The tool's return value (always a JSON string) |
 | `task_id` | `str` | Session/task identifier. Empty string if not set. |
+| `duration_ms` | `int` | How long the tool's dispatch took, in milliseconds (measured with `time.monotonic()` around `registry.dispatch()`). |
 
 **Fires:** In `model_tools.py`, inside `handle_function_call()`, after the tool's handler returns. Fires once per tool call. Does **not** fire if the tool raised an unhandled exception (the error is caught and returned as an error JSON string instead, and `post_tool_call` fires with that error string as `result`).
 
 **Return value:** Ignored.
 
-**Use cases:** Logging tool results, metrics collection, tracking tool success/failure rates, sending notifications when specific tools complete.
+**Use cases:** Logging tool results, metrics collection, tracking tool success/failure rates, latency dashboards, per-tool budget alerts, sending notifications when specific tools complete.
 
 **Example — track tool usage metrics:**
 
 ```python
-from collections import Counter
+from collections import Counter, defaultdict
 import json
 
 _tool_counts = Counter()
 _error_counts = Counter()
+_latency_ms = defaultdict(list)
 
-def track_metrics(tool_name, result, **kwargs):
+def track_metrics(tool_name, result, duration_ms=0, **kwargs):
     _tool_counts[tool_name] += 1
+    _latency_ms[tool_name].append(duration_ms)
     try:
         parsed = json.loads(result)
         if "error" in parsed:
@@ -767,6 +773,97 @@ def buffer_or_rewrite(event, **kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
+```
+
+---
+
+### `pre_approval_request`
+
+Fires **immediately before** an approval request is shown to the user — covers every surface: interactive CLI, the Ink TUI, gateway platforms (Telegram, Discord, Slack, WhatsApp, Matrix, etc.), and ACP clients (VS Code, Zed, JetBrains).
+
+This is the right place to wire a custom notifier — for example, a macOS menu-bar app that pops an allow/deny notification, or an audit log that records every approval request with context.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    command: str,
+    description: str,
+    pattern_key: str,
+    pattern_keys: list[str],
+    session_key: str,
+    surface: str,
+    **kwargs,
+):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `command` | `str` | The shell command awaiting approval |
+| `description` | `str` | Human-readable reason(s) the command is flagged (combined when multiple patterns match) |
+| `pattern_key` | `str` | Primary pattern key that triggered the approval (e.g. `"rm_rf"`, `"sudo"`) |
+| `pattern_keys` | `list[str]` | All pattern keys that matched |
+| `session_key` | `str` | Session identifier, useful for scoping notifications per-chat |
+| `surface` | `str` | `"cli"` for interactive CLI/TUI prompts, `"gateway"` for async platform approvals |
+
+**Return value:** ignored. Hooks here are observer-only; they cannot veto or pre-answer the approval. Use [`pre_tool_call`](#pre_tool_call) to block a tool before it reaches the approval system.
+
+**Use cases:** Desktop notifications, push alerts, audit logging, Slack webhooks, escalation routing, metrics.
+
+**Example — desktop notification on macOS:**
+
+```python
+import subprocess
+
+def notify_approval(command, description, session_key, **kwargs):
+    title = "Hermes needs approval"
+    body = f"{description}: {command[:80]}"
+    subprocess.Popen([
+        "osascript", "-e",
+        f'display notification "{body}" with title "{title}"',
+    ])
+
+def register(ctx):
+    ctx.register_hook("pre_approval_request", notify_approval)
+```
+
+---
+
+### `post_approval_response`
+
+Fires **after** the user responds to an approval prompt (or the prompt times out).
+
+**Callback signature:**
+
+```python
+def my_callback(
+    command: str,
+    description: str,
+    pattern_key: str,
+    pattern_keys: list[str],
+    session_key: str,
+    surface: str,
+    choice: str,
+    **kwargs,
+):
+```
+
+Same kwargs as `pre_approval_request`, plus:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `choice` | `str` | One of `"once"`, `"session"`, `"always"`, `"deny"`, or `"timeout"` |
+
+**Return value:** ignored.
+
+**Use cases:** Close the matching desktop notification, record the final decision in an audit log, update metrics, roll forward a rate limiter.
+
+```python
+def log_decision(command, choice, session_key, **kwargs):
+    logger.info("approval %s: %s for session %s", choice, command[:60], session_key)
+
+def register(ctx):
+    ctx.register_hook("post_approval_response", log_decision)
 ```
 
 ---

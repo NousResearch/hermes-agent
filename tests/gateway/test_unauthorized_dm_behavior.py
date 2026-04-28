@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
@@ -12,6 +11,7 @@ from gateway.session import SessionSource
 def _clear_auth_env(monkeypatch) -> None:
     for key in (
         "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
         "DISCORD_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
         "SLACK_ALLOWED_USERS",
@@ -75,7 +75,7 @@ def _make_runner(platform: Platform, config: GatewayConfig):
 def test_whatsapp_lid_user_matches_phone_allowlist_via_session_mapping(monkeypatch, tmp_path):
     _clear_auth_env(monkeypatch)
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000001")
-    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     session_dir = tmp_path / "whatsapp" / "session"
     session_dir.mkdir(parents=True)
@@ -176,6 +176,26 @@ def test_qq_group_allowlist_does_not_authorize_other_groups(monkeypatch):
     )
 
     assert runner._is_user_authorized(source) is False
+
+
+def test_telegram_group_allowlist_authorizes_forum_chat_without_user_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "-1001878443972")
+
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="999",
+        chat_id="-1001878443972",
+        user_name="tester",
+        chat_type="forum",
+    )
+
+    assert runner._is_user_authorized(source) is True
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,8 @@ from hermes_cli.commands import (
     discord_skill_commands,
     gateway_help_lines,
     resolve_command,
+    slack_app_manifest,
+    slack_native_slashes,
     slack_subcommand_map,
     telegram_bot_commands,
     telegram_menu_commands,
@@ -254,6 +256,115 @@ class TestSlackSubcommandMap:
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
                 assert cmd.name not in mapping
+
+
+class TestSlackNativeSlashes:
+    """Slack native slash command generation — used to register every
+    COMMAND_REGISTRY entry as a first-class Slack slash, matching Discord
+    and Telegram."""
+
+    def test_returns_triples(self):
+        slashes = slack_native_slashes()
+        assert len(slashes) >= 10
+        for entry in slashes:
+            assert isinstance(entry, tuple) and len(entry) == 3
+            name, desc, hint = entry
+            assert isinstance(name, str) and name
+            assert isinstance(desc, str)
+            assert isinstance(hint, str)
+
+    def test_hermes_catchall_is_first(self):
+        """``/hermes`` must be reserved as the first slot so the legacy
+        ``/hermes <subcommand>`` form keeps working after we add new
+        commands and hit the 50-slash cap."""
+        slashes = slack_native_slashes()
+        assert slashes[0][0] == "hermes"
+
+    def test_names_respect_slack_limits(self):
+        for name, _desc, _hint in slack_native_slashes():
+            # Slack: lowercase a-z, 0-9, hyphens, underscores; max 32 chars
+            assert len(name) <= 32, f"slash {name!r} exceeds 32 chars"
+            assert name == name.lower()
+            for ch in name:
+                assert ch.isalnum() or ch in "-_", f"invalid char {ch!r} in {name!r}"
+
+    def test_under_fifty_command_cap(self):
+        """Slack allows at most 50 slash commands per app."""
+        assert len(slack_native_slashes()) <= 50
+
+    def test_unique_names(self):
+        names = [n for n, _d, _h in slack_native_slashes()]
+        assert len(names) == len(set(names)), "duplicate Slack slash names"
+
+    def test_includes_canonical_commands(self):
+        names = {n for n, _d, _h in slack_native_slashes()}
+        # Sample of gateway-available canonical commands
+        for expected in ("new", "stop", "background", "model", "help", "status"):
+            assert expected in names, f"missing canonical /{expected}"
+
+    def test_includes_aliases_as_first_class_slashes(self):
+        """Aliases (/btw, /bg, /reset, /q) must be registered as standalone
+        slashes — this is the whole point of native-slashes parity."""
+        names = {n for n, _d, _h in slack_native_slashes()}
+        assert "btw" in names
+        assert "bg" in names
+        assert "reset" in names
+        assert "q" in names
+
+    def test_telegram_parity(self):
+        """Every Telegram bot command must be registerable on Slack too.
+
+        This catches the old behavior where Slack users couldn't invoke
+        commands like /btw natively. If a future command surfaces on
+        Telegram but not Slack (because of Slack's 50-slash cap), this
+        test fails loudly so we can curate the list rather than silently
+        dropping parity.
+        """
+        slack_names = {n for n, _d, _h in slack_native_slashes()}
+        tg_names = {n for n, _d in telegram_bot_commands()}
+        # Some Telegram names have underscores where Slack uses hyphens
+        # (e.g. set_home vs sethome). Normalize both sides for comparison.
+        def _norm(s: str) -> str:
+            return s.replace("-", "_").replace("__", "_").strip("_")
+
+        slack_norm = {_norm(n) for n in slack_names}
+        tg_norm = {_norm(n) for n in tg_names}
+        missing = tg_norm - slack_norm
+        assert not missing, (
+            f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
+        )
+
+
+class TestSlackAppManifest:
+    """Generated Slack app manifest (used by `hermes slack manifest`)."""
+
+    def test_returns_dict(self):
+        m = slack_app_manifest()
+        assert isinstance(m, dict)
+        assert "features" in m
+        assert "slash_commands" in m["features"]
+
+    def test_each_slash_has_required_fields(self):
+        m = slack_app_manifest()
+        for entry in m["features"]["slash_commands"]:
+            assert entry["command"].startswith("/")
+            assert "description" in entry
+            assert "url" in entry
+            # should_escape must be present (Slack defaults to True which
+            # HTML-escapes args — we want the raw text)
+            assert "should_escape" in entry
+
+    def test_btw_is_in_manifest(self):
+        """Regression: /btw must be a native Slack slash, not just a
+        /hermes subcommand."""
+        m = slack_app_manifest()
+        commands = [c["command"] for c in m["features"]["slash_commands"]]
+        assert "/btw" in commands
+
+    def test_custom_request_url(self):
+        m = slack_app_manifest(request_url="https://example.com/slack")
+        for entry in m["features"]["slash_commands"]:
+            assert entry["url"] == "https://example.com/slack"
 
 
 # ---------------------------------------------------------------------------

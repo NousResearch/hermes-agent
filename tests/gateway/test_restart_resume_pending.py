@@ -26,12 +26,19 @@ PRs #9850, #9934, #7536):
 """
 
 import asyncio
+import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.run import (
+    _auto_continue_freshness_window,
+    _coerce_gateway_timestamp,
+    _is_fresh_gateway_interruption,
+    _last_transcript_timestamp,
+)
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
@@ -52,19 +59,69 @@ def _make_store(tmp_path):
     return SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
 
 
+def _build_agent_history(history: list) -> list:
+    """Mirror gateway/run.py's ``history → agent_history`` conversion.
+
+    This is the transformation that strips ``timestamp`` off tool/tool_call
+    rows before the agent sees them.  Tests that check the freshness gate
+    must go through this conversion so they exercise the *real* data the
+    note-injection code sees.
+    """
+    agent_history: list = []
+    for msg in history:
+        role = msg.get("role")
+        if not role or role in ("session_meta", "system"):
+            continue
+        has_tool_calls = "tool_calls" in msg
+        has_tool_call_id = "tool_call_id" in msg
+        is_tool_message = role == "tool"
+        if has_tool_calls or has_tool_call_id or is_tool_message:
+            agent_history.append({k: v for k, v in msg.items() if k != "timestamp"})
+        else:
+            content = msg.get("content")
+            if content:
+                agent_history.append({"role": role, "content": content})
+    return agent_history
+
+
 def _simulate_note_injection(
-    agent_history: list,
+    history: list,
     user_message: str,
     resume_entry: SessionEntry | None,
+    *,
+    agent_history: list | None = None,
+    window_secs: float | None = None,
 ) -> str:
     """Mirror the note-injection logic in gateway/run.py _run_agent().
 
-    Matches the production code in the ``run_sync`` closure so we can
-    test the decision tree without a full gateway runner.
+    The freshness signal reads ``history[-1].timestamp`` (the raw transcript
+    row), NOT ``agent_history[-1].timestamp`` (which has been stripped).
+    Tests pass the raw ``history`` — ``agent_history`` is derived from it
+    via the real conversion if not supplied explicitly.
     """
+    if agent_history is None:
+        agent_history = _build_agent_history(history)
+
+    window = (
+        float(window_secs)
+        if window_secs is not None
+        else _auto_continue_freshness_window()
+    )
+    interruption_is_fresh = _is_fresh_gateway_interruption(
+        _last_transcript_timestamp(history),
+        window_secs=window,
+    )
+
     message = user_message
     is_resume_pending = bool(
-        resume_entry is not None and getattr(resume_entry, "resume_pending", False)
+        resume_entry is not None
+        and getattr(resume_entry, "resume_pending", False)
+        and interruption_is_fresh
+    )
+    has_fresh_tool_tail = bool(
+        agent_history
+        and agent_history[-1].get("role") == "tool"
+        and interruption_is_fresh
     )
 
     if is_resume_pending:
@@ -84,7 +141,7 @@ def _simulate_note_injection(
             f"message below.]\n\n"
             + message
         )
-    elif agent_history and agent_history[-1].get("role") == "tool":
+    elif has_fresh_tool_tail:
         message = (
             "[System note: Your previous turn was interrupted before you could "
             "process the last tool result(s). The conversation history contains "
@@ -355,7 +412,9 @@ class TestResumePendingSystemNote:
     def test_resume_pending_restart_note_mentions_restart(self):
         entry = self._pending_entry(reason="restart_timeout")
         result = _simulate_note_injection(
-            agent_history=[{"role": "assistant", "content": "in progress"}],
+            history=[
+                {"role": "assistant", "content": "in progress", "timestamp": time.time()},
+            ],
             user_message="what happened?",
             resume_entry=entry,
         )
@@ -366,7 +425,9 @@ class TestResumePendingSystemNote:
     def test_resume_pending_shutdown_note_mentions_shutdown(self):
         entry = self._pending_entry(reason="shutdown_timeout")
         result = _simulate_note_injection(
-            agent_history=[{"role": "assistant", "content": "in progress"}],
+            history=[
+                {"role": "assistant", "content": "in progress", "timestamp": time.time()},
+            ],
             user_message="ping",
             resume_entry=entry,
         )
@@ -377,8 +438,8 @@ class TestResumePendingSystemNote:
         even when the transcript's last role is NOT ``tool``."""
         entry = self._pending_entry()
         history = [
-            {"role": "user", "content": "run a long thing"},
-            {"role": "assistant", "content": "ok, starting..."},
+            {"role": "user", "content": "run a long thing", "timestamp": time.time() - 10},
+            {"role": "assistant", "content": "ok, starting...", "timestamp": time.time()},
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=entry)
         assert "[System note:" in result
@@ -391,8 +452,9 @@ class TestResumePendingSystemNote:
         history = [
             {"role": "assistant", "content": None, "tool_calls": [
                 {"id": "c1", "function": {"name": "x", "arguments": "{}"}},
-            ]},
-            {"role": "tool", "tool_call_id": "c1", "content": "result"},
+            ], "timestamp": time.time() - 1},
+            {"role": "tool", "tool_call_id": "c1", "content": "result",
+             "timestamp": time.time()},
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=entry)
         assert result.count("[System note:") == 1
@@ -405,6 +467,149 @@ class TestResumePendingSystemNote:
         history = [
             {"role": "assistant", "content": None, "tool_calls": [
                 {"id": "c1", "function": {"name": "x", "arguments": "{}"}},
+            ], "timestamp": time.time() - 1},
+            {"role": "tool", "tool_call_id": "c1", "content": "result",
+             "timestamp": time.time()},
+        ]
+        result = _simulate_note_injection(history, "ping", resume_entry=None)
+        assert "[System note:" in result
+        assert "tool result" in result
+
+    def test_stale_resume_pending_does_not_inject_restart_note(self):
+        """Old restart markers must not revive an unrelated stale task.
+
+        The transcript's last row is from an hour ago — well outside the
+        default 1h freshness window (fixture uses window=1800 to exercise
+        the stale path without tying the test to the production default).
+        """
+        entry = self._pending_entry()
+        entry.last_resume_marked_at = datetime.now() - timedelta(hours=1)
+
+        history = [
+            {"role": "assistant", "content": "old in progress",
+             "timestamp": time.time() - 3600},
+        ]
+        result = _simulate_note_injection(
+            history=history,
+            user_message="start a new task",
+            resume_entry=entry,
+            window_secs=1800,
+        )
+        assert result == "start a new task"
+
+    def test_fresh_tool_tail_preserves_auto_continue_note(self):
+        history = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "function": {"name": "x", "arguments": "{}"}},
+            ], "timestamp": time.time() - 1},
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": "result",
+                "timestamp": time.time(),
+            },
+        ]
+        result = _simulate_note_injection(history, "ping", resume_entry=None)
+        assert "[System note:" in result
+        assert "tool result" in result
+
+    def test_stale_tool_tail_does_not_inject_auto_continue_note(self):
+        """The core bug fix: stale tool-tail must not revive a dead task.
+
+        Uses window_secs=1800 (30 min) to verify the gate fires at 1h —
+        keeps the test stable regardless of the production default.
+        """
+        history = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "function": {"name": "x", "arguments": "{}"}},
+            ], "timestamp": time.time() - 3601},
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": "stale result",
+                "timestamp": time.time() - 3600,
+            },
+        ]
+        result = _simulate_note_injection(
+            history,
+            "start a new task",
+            resume_entry=None,
+            window_secs=1800,
+        )
+        assert result == "start a new task"
+
+    def test_stale_tool_tail_with_production_data_shape(self):
+        """Regression guard for #16802: exercise the REAL production path
+        where ``agent_history`` has been stripped of timestamps.
+
+        The original PR #16802 fix read ``agent_history[-1].get("timestamp")``
+        — which is always ``None`` at runtime because the gateway strips
+        ``timestamp`` off tool/tool_call rows in ``history → agent_history``.
+        This test builds a stale history, runs it through the real
+        ``_build_agent_history`` conversion, then asserts:
+
+          1. The stripped ``agent_history`` carries NO timestamp (protects
+             against someone "fixing" the original PR by re-adding the
+             stripped field — which would break the API contract).
+          2. The freshness gate still correctly classifies the transcript
+             as stale because the signal is read from ``history`` BEFORE
+             the strip.
+          3. No auto-continue note is injected.
+        """
+        history = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "function": {"name": "x", "arguments": "{}"}},
+            ], "timestamp": time.time() - 7201},
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": "stale result",
+                "timestamp": time.time() - 7200,  # 2 hours old
+            },
+        ]
+        agent_history = _build_agent_history(history)
+
+        # Invariant 1: strip contract preserved
+        assert agent_history[-1]["role"] == "tool"
+        assert "timestamp" not in agent_history[-1], (
+            "agent_history tool rows must NOT carry a timestamp — the "
+            "freshness gate must read from raw history, not agent_history"
+        )
+
+        # Invariant 2+3: stale classification, no note injection
+        result = _simulate_note_injection(
+            history,
+            "start a new task",
+            resume_entry=None,
+            agent_history=agent_history,
+        )
+        assert result == "start a new task"
+
+    def test_freshness_gate_disabled_via_zero_window(self):
+        """window_secs=0 restores pre-fix behaviour (always inject)."""
+        history = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "function": {"name": "x", "arguments": "{}"}},
+            ], "timestamp": time.time() - 86400},
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": "day-old result",
+                "timestamp": time.time() - 86400,  # 24 hours old
+            },
+        ]
+        result = _simulate_note_injection(
+            history, "ping", resume_entry=None, window_secs=0,
+        )
+        assert "[System note:" in result
+        assert "tool result" in result
+
+    def test_legacy_history_without_timestamps_still_injects(self):
+        """Transcripts predating timestamp persistence must keep the old
+        behaviour — freshness unknown → treat as fresh."""
+        history = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "function": {"name": "x", "arguments": "{}"}},
             ]},
             {"role": "tool", "tool_call_id": "c1", "content": "result"},
         ]
@@ -414,11 +619,119 @@ class TestResumePendingSystemNote:
 
     def test_no_note_when_nothing_to_resume(self):
         history = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "hello", "timestamp": time.time() - 2},
+            {"role": "assistant", "content": "hi", "timestamp": time.time() - 1},
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=None)
         assert result == "ping"
+
+
+# ---------------------------------------------------------------------------
+# Freshness helpers
+# ---------------------------------------------------------------------------
+
+
+class TestFreshnessHelpers:
+    def test_coerce_datetime(self):
+        now = datetime.now()
+        assert _coerce_gateway_timestamp(now) == pytest.approx(now.timestamp(), abs=1e-3)
+
+    def test_coerce_epoch_seconds(self):
+        assert _coerce_gateway_timestamp(1_700_000_000) == 1_700_000_000.0
+        assert _coerce_gateway_timestamp(1_700_000_000.5) == 1_700_000_000.5
+
+    def test_coerce_epoch_milliseconds(self):
+        # Values > 10^10 treated as ms
+        assert _coerce_gateway_timestamp(1_700_000_000_000) == 1_700_000_000.0
+
+    def test_coerce_iso_string(self):
+        iso = "2026-04-18T12:00:00+00:00"
+        expected = datetime.fromisoformat(iso).timestamp()
+        assert _coerce_gateway_timestamp(iso) == pytest.approx(expected, abs=1e-3)
+
+    def test_coerce_iso_string_with_z_suffix(self):
+        iso_z = "2026-04-18T12:00:00Z"
+        expected = datetime.fromisoformat("2026-04-18T12:00:00+00:00").timestamp()
+        assert _coerce_gateway_timestamp(iso_z) == pytest.approx(expected, abs=1e-3)
+
+    def test_coerce_numeric_string(self):
+        assert _coerce_gateway_timestamp("1700000000") == 1_700_000_000.0
+
+    def test_coerce_rejects_garbage(self):
+        assert _coerce_gateway_timestamp(None) is None
+        assert _coerce_gateway_timestamp("") is None
+        assert _coerce_gateway_timestamp("not-a-timestamp") is None
+        assert _coerce_gateway_timestamp(True) is None  # bool rejected
+        assert _coerce_gateway_timestamp(False) is None
+        assert _coerce_gateway_timestamp([1, 2, 3]) is None
+
+    def test_is_fresh_unknown_is_fresh(self):
+        """Legacy-compat: unknown timestamp → fresh."""
+        assert _is_fresh_gateway_interruption(None) is True
+        assert _is_fresh_gateway_interruption("not-a-timestamp") is True
+
+    def test_is_fresh_window_bounds(self):
+        now = 1_700_000_000.0
+        # 1h window, 30min old → fresh
+        assert _is_fresh_gateway_interruption(
+            now - 1800, now=now, window_secs=3600,
+        ) is True
+        # 1h window, 2h old → stale
+        assert _is_fresh_gateway_interruption(
+            now - 7200, now=now, window_secs=3600,
+        ) is False
+        # 1h window, exactly at boundary → fresh (<=)
+        assert _is_fresh_gateway_interruption(
+            now - 3600, now=now, window_secs=3600,
+        ) is True
+
+    def test_is_fresh_zero_window_always_fresh(self):
+        """Opt-out: window_secs=0 disables the gate entirely."""
+        assert _is_fresh_gateway_interruption(
+            0.0, now=1_700_000_000.0, window_secs=0,
+        ) is True
+        assert _is_fresh_gateway_interruption(
+            -1.0, now=1_700_000_000.0, window_secs=-5,
+        ) is True
+
+    def test_last_transcript_timestamp_skips_meta(self):
+        history = [
+            {"role": "user", "content": "hi", "timestamp": 100.0},
+            {"role": "assistant", "content": "hey", "timestamp": 200.0},
+            {"role": "session_meta", "content": "tools:{}", "timestamp": 999.0},
+            {"role": "system", "content": "ignore", "timestamp": 999.0},
+        ]
+        assert _last_transcript_timestamp(history) == 200.0
+
+    def test_last_transcript_timestamp_empty(self):
+        assert _last_transcript_timestamp([]) is None
+        assert _last_transcript_timestamp(None) is None
+
+    def test_last_transcript_timestamp_row_without_timestamp(self):
+        """Legacy transcript row (no timestamp) returns None → caller
+        treats as fresh."""
+        history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hey"},
+        ]
+        assert _last_transcript_timestamp(history) is None
+
+    def test_auto_continue_freshness_window_reads_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "7200")
+        assert _auto_continue_freshness_window() == 7200.0
+
+    def test_auto_continue_freshness_window_default_when_unset(self, monkeypatch):
+        monkeypatch.delenv("HERMES_AUTO_CONTINUE_FRESHNESS", raising=False)
+        # Default is 1 hour
+        assert _auto_continue_freshness_window() == 3600.0
+
+    def test_auto_continue_freshness_window_malformed_falls_back(self, monkeypatch):
+        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "not-a-number")
+        assert _auto_continue_freshness_window() == 3600.0
+
+    def test_auto_continue_freshness_window_empty_falls_back(self, monkeypatch):
+        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "")
+        assert _auto_continue_freshness_window() == 3600.0
 
 
 # ---------------------------------------------------------------------------

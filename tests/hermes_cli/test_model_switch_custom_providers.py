@@ -69,7 +69,7 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     """Shared /model switch pipeline should accept --provider for custom_providers."""
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested: {
+        lambda **kwargs: {
             "api_key": "no-key-required",
             "base_url": "http://127.0.0.1:4141/v1",
             "api_mode": "chat_completions",

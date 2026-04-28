@@ -158,14 +158,34 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "tencent-tokenhub": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="TOKENHUB_BASE_URL",
+    ),
     "arcee": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
     ),
+    "gmi": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("GMI_API_KEY",),
+        base_url_override="https://api.gmi-serving.com/v1",
+        base_url_env_var="GMI_BASE_URL",
+    ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="OLLAMA_BASE_URL",
+    ),
+    # Azure Foundry: supports both OpenAI-style and Anthropic-style endpoints.
+    # The transport is determined at runtime from config.yaml model.api_mode.
+    "azure-foundry": HermesOverlay(
+        transport="openai_chat",  # default; overridden by api_mode in config
+        base_url_env_var="AZURE_FOUNDRY_BASE_URL",
+    ),
+    "bedrock": HermesOverlay(
+        transport="bedrock_converse",
+        auth_type="aws_sdk",
     ),
 }
 
@@ -281,6 +301,12 @@ ALIASES: Dict[str, str] = {
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
 
+    # tencent
+    "tencent": "tencent-tokenhub",
+    "tokenhub": "tencent-tokenhub",
+    "tencent-cloud": "tencent-tokenhub",
+    "tencentmaas": "tencent-tokenhub",
+
     # bedrock
     "aws": "bedrock",
     "aws-bedrock": "bedrock",
@@ -290,6 +316,10 @@ ALIASES: Dict[str, str] = {
     # arcee
     "arcee-ai": "arcee",
     "arceeai": "arcee",
+
+    # gmi
+    "gmi-cloud": "gmi",
+    "gmicloud": "gmi",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
@@ -313,6 +343,8 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "copilot-acp": "GitHub Copilot ACP",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
+    "gmi": "GMI Cloud",
+    "tencent-tokenhub": "Tencent TokenHub",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",

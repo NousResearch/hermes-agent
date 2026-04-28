@@ -1,17 +1,21 @@
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import {
   BarChart3,
   Brain,
   Cpu,
   Hash,
+  RefreshCw,
   TrendingUp,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AnalyticsResponse, AnalyticsDailyEntry, AnalyticsModelEntry, AnalyticsSkillEntry } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
+import { PluginSlot } from "@/plugins";
 
 const PERIODS = [
   { label: "7d", days: 7 },
@@ -281,6 +285,7 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { t } = useI18n();
+  const { setAfterTitle, setEnd } = usePageHeader();
 
   const load = useCallback(() => {
     setLoading(true);
@@ -292,28 +297,61 @@ export default function AnalyticsPage() {
       .finally(() => setLoading(false));
   }, [days]);
 
+  useLayoutEffect(() => {
+    const periodLabel =
+      PERIODS.find((p) => p.days === days)?.label ?? `${days}d`;
+    setAfterTitle(
+      <span className="flex items-center gap-2">
+        {loading && (
+          <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        )}
+        <Badge variant="secondary" className="text-[10px]">
+          {periodLabel}
+        </Badge>
+      </span>,
+    );
+    setEnd(
+      <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {PERIODS.map((p) => (
+            <Button
+              key={p.label}
+              type="button"
+              variant={days === p.days ? "default" : "outline"}
+              size="sm"
+              className="h-7 min-w-0 text-xs"
+              onClick={() => setDays(p.days)}
+            >
+              {p.label}
+            </Button>
+          ))}
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={load}
+          disabled={loading}
+          className="h-7 text-xs"
+        >
+          <RefreshCw className="mr-1 h-3 w-3" />
+          {t.common.refresh}
+        </Button>
+      </div>,
+    );
+    return () => {
+      setAfterTitle(null);
+      setEnd(null);
+    };
+  }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh]);
+
   useEffect(() => {
     load();
   }, [load]);
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Period selector */}
-      <div className="flex items-center gap-2">
-        <span className="text-sm text-muted-foreground font-medium">{t.analytics.period}</span>
-        {PERIODS.map((p) => (
-          <Button
-            key={p.label}
-            variant={days === p.days ? "default" : "outline"}
-            size="sm"
-            className="text-xs h-7"
-            onClick={() => setDays(p.days)}
-          >
-            {p.label}
-          </Button>
-        ))}
-      </div>
-
+      <PluginSlot name="analytics:top" />
       {loading && !data && (
         <div className="flex items-center justify-center py-24">
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
@@ -373,6 +411,7 @@ export default function AnalyticsPage() {
           </CardContent>
         </Card>
       )}
+      <PluginSlot name="analytics:bottom" />
     </div>
   );
 }

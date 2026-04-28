@@ -247,7 +247,9 @@ class TestPatchHints:
 
         from tools.file_tools import patch_tool
         raw = patch_tool(mode="replace", path="foo.py", old_string="x", new_string="y")
-        assert "[Hint:" in raw
+        # patch_tool surfaces the hint as a structured "_hint" field on the
+        # JSON error payload (not an inline "[Hint: ..." tail).
+        assert "_hint" in raw
         assert "read_file" in raw
 
     @patch("tools.file_tools._get_file_ops")
@@ -260,7 +262,7 @@ class TestPatchHints:
 
         from tools.file_tools import patch_tool
         raw = patch_tool(mode="replace", path="foo.py", old_string="x", new_string="y")
-        assert "[Hint:" not in raw
+        assert "_hint" not in raw
 
 
 class TestSearchHints:

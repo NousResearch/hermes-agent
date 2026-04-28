@@ -1,6 +1,6 @@
 ---
 name: minecraft-modpack-server
-description: Set up a modded Minecraft server from a CurseForge/Modrinth server pack zip. Covers NeoForge/Forge install, Java version, JVM tuning, firewall, LAN config, backups, and launch scripts.
+description: "Host modded Minecraft servers (CurseForge, Modrinth)."
 tags: [minecraft, gaming, server, neoforge, forge, modpack]
 ---
 

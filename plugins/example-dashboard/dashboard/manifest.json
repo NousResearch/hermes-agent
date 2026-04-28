@@ -8,6 +8,7 @@
     "path": "/example",
     "position": "after:skills"
   },
+  "slots": ["sessions:top"],
   "entry": "dist/index.js",
   "api": "plugin_api.py"
 }

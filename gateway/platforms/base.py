@@ -148,7 +148,102 @@ def _detect_macos_system_proxy() -> str | None:
     return None
 
 
-def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
+def _split_host_port(value: str) -> tuple[str, int | None]:
+    raw = str(value or "").strip()
+    if not raw:
+        return "", None
+    if "://" in raw:
+        parsed = urlsplit(raw)
+        return (parsed.hostname or "").lower().rstrip("."), parsed.port
+    if raw.startswith("[") and "]" in raw:
+        host, _, rest = raw[1:].partition("]")
+        port = None
+        if rest.startswith(":") and rest[1:].isdigit():
+            port = int(rest[1:])
+        return host.lower().rstrip("."), port
+    if raw.count(":") == 1:
+        host, _, maybe_port = raw.rpartition(":")
+        if maybe_port.isdigit():
+            return host.lower().rstrip("."), int(maybe_port)
+    return raw.lower().strip("[]").rstrip("."), None
+
+
+def _no_proxy_entries() -> list[str]:
+    entries: list[str] = []
+    for key in ("NO_PROXY", "no_proxy"):
+        raw = os.environ.get(key, "")
+        entries.extend(part.strip() for part in raw.split(",") if part.strip())
+    return entries
+
+
+def _no_proxy_entry_matches(entry: str, host: str, port: int | None = None) -> bool:
+    token = str(entry or "").strip().lower()
+    if not token:
+        return False
+    if token == "*":
+        return True
+
+    token_host, token_port = _split_host_port(token)
+    if token_port is not None and port is not None and token_port != port:
+        return False
+    if token_port is not None and port is None:
+        return False
+    if not token_host:
+        return False
+
+    try:
+        network = ipaddress.ip_network(token_host, strict=False)
+        try:
+            return ipaddress.ip_address(host) in network
+        except ValueError:
+            return False
+    except ValueError:
+        pass
+
+    try:
+        token_ip = ipaddress.ip_address(token_host)
+        try:
+            return ipaddress.ip_address(host) == token_ip
+        except ValueError:
+            return False
+    except ValueError:
+        pass
+
+    if token_host.startswith("*."):
+        suffix = token_host[1:]
+        return host.endswith(suffix)
+    if token_host.startswith("."):
+        return host == token_host[1:] or host.endswith(token_host)
+    return host == token_host or host.endswith(f".{token_host}")
+
+
+def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[str] | None) -> bool:
+    """Return True when NO_PROXY/no_proxy matches at least one target host.
+
+    Supports exact hosts, domain suffixes, wildcard suffixes, IP literals,
+    CIDR ranges, optional host:port entries, and ``*``.
+    """
+    entries = _no_proxy_entries()
+    if not entries or not target_hosts:
+        return False
+    if isinstance(target_hosts, str):
+        candidates = [target_hosts]
+    else:
+        candidates = list(target_hosts)
+    for candidate in candidates:
+        host, port = _split_host_port(str(candidate))
+        if not host:
+            continue
+        if any(_no_proxy_entry_matches(entry, host, port) for entry in entries):
+            return True
+    return False
+
+
+def resolve_proxy_url(
+    platform_env_var: str | None = None,
+    *,
+    target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
+) -> str | None:
     """Return a proxy URL from env vars, or macOS system proxy.
 
     Check order:
@@ -156,18 +251,26 @@ def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
       1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (and lowercase variants)
       2. macOS system proxy via ``scutil --proxy`` (auto-detect)
 
-    Returns *None* if no proxy is found.
+    Returns *None* if no proxy is found, or if NO_PROXY/no_proxy matches one
+    of ``target_hosts``.
     """
     if platform_env_var:
         value = (os.environ.get(platform_env_var) or "").strip()
         if value:
+            if should_bypass_proxy(target_hosts):
+                return None
             return normalize_proxy_url(value)
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()
         if value:
+            if should_bypass_proxy(target_hosts):
+                return None
             return normalize_proxy_url(value)
-    return normalize_proxy_url(_detect_macos_system_proxy())
+    detected = normalize_proxy_url(_detect_macos_system_proxy())
+    if detected and should_bypass_proxy(target_hosts):
+        return None
+    return detected
 
 
 def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
@@ -204,9 +307,14 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
     """Build kwargs for standalone ``aiohttp.ClientSession`` with proxy.
 
     Returns ``(session_kwargs, request_kwargs)`` where:
-      - SOCKS → ``({"connector": ProxyConnector(...)}, {})``
-      - HTTP  → ``({}, {"proxy": url})``
-      - None  → ``({}, {})``
+      - With aiohttp-socks → ``({"connector": ProxyConnector(...)}, {})``
+        for *all* proxy schemes (SOCKS **and** HTTP/HTTPS).
+      - HTTP without aiohttp-socks → ``({}, {"proxy": url})``.
+      - None → ``({}, {})``.
+
+    Prefer the connector path: it works transparently with libraries
+    (like mautrix) that call ``session.request()`` without forwarding
+    per-request ``proxy=`` kwargs.
 
     Usage::
 
@@ -217,20 +325,53 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
     """
     if not proxy_url:
         return {}, {}
-    if proxy_url.lower().startswith("socks"):
-        try:
-            from aiohttp_socks import ProxyConnector
+    try:
+        from aiohttp_socks import ProxyConnector
 
-            connector = ProxyConnector.from_url(proxy_url, rdns=True)
-            return {"connector": connector}, {}
-        except ImportError:
+        connector = ProxyConnector.from_url(proxy_url, rdns=True)
+        return {"connector": connector}, {}
+    except ImportError:
+        if proxy_url.lower().startswith("socks"):
             logger.warning(
                 "aiohttp_socks not installed — SOCKS proxy %s ignored. "
                 "Run: pip install aiohttp-socks",
                 proxy_url,
             )
             return {}, {}
-    return {}, {"proxy": proxy_url}
+        return {}, {"proxy": proxy_url}
+
+
+def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = None) -> bool:
+    """Return True when ``hostname`` matches a ``NO_PROXY`` entry.
+
+    Supports comma- or whitespace-separated entries with optional leading dots
+    and ``*.`` wildcards, which match both the apex domain and subdomains.
+    """
+    raw = no_proxy_value
+    if raw is None:
+        raw = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+
+    raw = raw.strip()
+    if not raw:
+        return False
+
+    lower_hostname = hostname.lower()
+    for entry in re.split(r"[\s,]+", raw):
+        normalized = entry.strip().lower()
+        if not normalized:
+            continue
+        if normalized == "*":
+            return True
+
+        if normalized.startswith("*."):
+            normalized = normalized[2:]
+        elif normalized.startswith("."):
+            normalized = normalized[1:]
+
+        if lower_hostname == normalized or lower_hostname.endswith(f".{normalized}"):
+            return True
+
+    return False
 
 
 from dataclasses import dataclass, field
@@ -590,7 +731,15 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    ".csv": "text/csv",
     ".log": "text/plain",
+    ".json": "application/json",
+    ".xml": "application/xml",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".toml": "application/toml",
+    ".ini": "text/plain",
+    ".cfg": "text/plain",
     ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -758,6 +907,41 @@ class MessageEvent:
         return args
 
 
+_PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?gateway[.!?\s]*$", re.IGNORECASE),
+    re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?hermes\s+gateway[.!?\s]*$", re.IGNORECASE),
+    re.compile(r"^(?:please\s+)?restart\s+hermes[.!?\s]*$", re.IGNORECASE),
+)
+
+
+def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
+    """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
+
+    This keeps high-impact operational phrases like ``restart gateway`` out of
+    the LLM/tool path, where they can trigger a self-restart from inside the
+    currently running agent and leave the gateway stuck in ``draining`` while it
+    waits for that same agent to finish.
+
+    Scope is intentionally narrow: DM text messages only, exact restart-style
+    phrases only. Group chats keep natural-language semantics.
+    """
+    try:
+        if event is None or event.message_type != MessageType.TEXT:
+            return
+        text = (event.text or "").strip()
+        if not text or text.startswith("/"):
+            return
+        source = getattr(event, "source", None)
+        if getattr(source, "chat_type", None) != "dm":
+            return
+        for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS:
+            if pattern.match(text):
+                event.text = "/restart"
+                return
+    except Exception:
+        return
+
+
 @dataclass 
 class SendResult:
     """Result of sending a message."""
@@ -879,6 +1063,61 @@ def resolve_channel_prompt(
     return None
 
 
+def resolve_channel_skills(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> list[str] | None:
+    """Resolve auto-loaded skill(s) for a channel/thread from platform config.
+
+    Looks up ``channel_skill_bindings`` in the adapter's ``config.extra`` dict.
+
+    Config format::
+
+        channel_skill_bindings:
+          - id: "C0123"          # Slack channel ID or Discord channel/forum ID
+            skills: ["skill-a", "skill-b"]
+          - id: "D0ABCDE"
+            skill: "solo-skill"  # single string also accepted
+
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (useful for forum threads / Slack threads inheriting the parent channel's
+    binding).
+
+    Returns a deduplicated list of skill names (order preserved), or None if
+    no match is found.
+    """
+    bindings = config_extra.get("channel_skill_bindings") or []
+    if not isinstance(bindings, list) or not bindings:
+        return None
+    ids_to_check: set[str] = set()
+    if channel_id:
+        ids_to_check.add(str(channel_id))
+    if parent_id:
+        ids_to_check.add(str(parent_id))
+    if not ids_to_check:
+        return None
+    for entry in bindings:
+        if not isinstance(entry, dict):
+            continue
+        entry_id = str(entry.get("id", ""))
+        if entry_id in ids_to_check:
+            skills = entry.get("skills") or entry.get("skill")
+            if isinstance(skills, str):
+                s = skills.strip()
+                return [s] if s else None
+            if isinstance(skills, list) and skills:
+                seen: list[str] = []
+                for name in skills:
+                    if not isinstance(name, str):
+                        continue
+                    nm = name.strip()
+                    if nm and nm not in seen:
+                        seen.append(nm)
+                return seen or None
+    return None
+
+
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.
@@ -922,7 +1161,20 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
-        # Chats where auto-TTS on voice input is disabled (set by /voice off)
+        # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
+        # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
+        # Per-chat overrides live in two sets populated from ``_voice_mode``:
+        #   - ``_auto_tts_enabled_chats``: chat explicitly opted in via ``/voice on``
+        #     or ``/voice tts`` (mode is ``voice_only`` or ``all``). Fires even when
+        #     the global default is False.
+        #   - ``_auto_tts_disabled_chats``: chat explicitly opted out via
+        #     ``/voice off`` (mode is ``off``). Suppresses auto-TTS even when the
+        #     global default is True.
+        # The gate in _process_message() is:
+        #   fire if chat in _auto_tts_enabled_chats
+        #     OR (_auto_tts_default and chat not in _auto_tts_disabled_chats)
+        self._auto_tts_default: bool = False
+        self._auto_tts_enabled_chats: set = set()
         self._auto_tts_disabled_chats: set = set()
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
@@ -943,6 +1195,21 @@ class BasePlatformAdapter(ABC):
     @property
     def fatal_error_retryable(self) -> bool:
         return self._fatal_error_retryable
+
+    def _should_auto_tts_for_chat(self, chat_id: str) -> bool:
+        """Whether auto-TTS on voice input should fire for ``chat_id``.
+
+        Decision layers (Issue #16007):
+          1. Explicit ``/voice on`` or ``/voice tts`` → always fire (even if
+             ``voice.auto_tts`` is False).
+          2. Explicit ``/voice off`` → never fire.
+          3. Fall back to the global ``voice.auto_tts`` config default.
+        """
+        if chat_id in self._auto_tts_enabled_chats:
+            return True
+        if chat_id in self._auto_tts_disabled_chats:
+            return False
+        return bool(self._auto_tts_default)
 
     def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
         self._fatal_error_handler = handler
@@ -1126,6 +1393,27 @@ class BasePlatformAdapter(ABC):
         consumer) and leave it ``False`` on intermediate edits.
         """
         return SendResult(success=False, error="Not supported")
+
+    async def delete_message(
+        self,
+        chat_id: str,
+        message_id: str,
+    ) -> bool:
+        """
+        Delete a previously sent message.  Optional — platforms that don't
+        support deletion return ``False`` and callers fall back to leaving
+        the message in place.
+
+        Used by the stream consumer's fresh-final cleanup path (see
+        openclaw/openclaw#72038) to remove long-lived preview messages
+        after sending the completed reply as a fresh message so the
+        platform's visible timestamp reflects completion time.
+
+        Returns ``True`` on successful deletion, ``False`` otherwise.
+        Subclasses should override for platforms with a deletion API
+        (e.g. Telegram ``deleteMessage``).
+        """
+        return False
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
@@ -1454,13 +1742,41 @@ class BasePlatformAdapter(ABC):
         the agent is waiting for dangerous-command approval).  This is critical
         for Slack's Assistant API where ``assistant_threads_setStatus`` disables
         the compose box — pausing lets the user type ``/approve`` or ``/deny``.
+
+        Each ``send_typing`` call is bounded by a ~1.5s timeout so a slow
+        network round-trip can't stall the refresh cadence.  Telegram- and
+        Discord-side typing expire after ~5s; if any individual send_typing
+        takes longer than the refresh interval, the bubble would die and
+        stay dead until that call returns.  Abandoning the slow call lets
+        the next tick fire a fresh send_typing on schedule — as long as
+        one of them succeeds within the 5s platform-side window, the bubble
+        stays visible across provider stalls / upstream API timeouts.
         """
+        # Bound each send_typing round-trip so the refresh cadence isn't
+        # gated on network health.  Must stay below ``interval`` so a slow
+        # call gets abandoned before the next scheduled tick.
+        _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
                 if chat_id not in self._typing_paused:
-                    await self.send_typing(chat_id, metadata=metadata)
+                    try:
+                        await asyncio.wait_for(
+                            self.send_typing(chat_id, metadata=metadata),
+                            timeout=_send_typing_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        # Slow network — abandon this tick, keep the loop
+                        # on schedule so the next send_typing fires fresh.
+                        pass
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as typing_err:
+                        logger.debug(
+                            "[%s] send_typing error (non-fatal): %s",
+                            self.name, typing_err,
+                        )
                 if stop_event is None:
                     await asyncio.sleep(interval)
                     continue
@@ -1912,6 +2228,8 @@ class BasePlatformAdapter(ABC):
         """
         if not self._message_handler:
             return
+
+        coerce_plaintext_gateway_command(event)
         
         session_key = build_session_key(
             event.source,
@@ -2111,12 +2429,14 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
-                # Skipped when the chat has voice mode disabled (/voice off)
+                # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
+                # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
+                # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
-                if (event.message_type == MessageType.VOICE
+                if (self._should_auto_tts_for_chat(event.source.chat_id)
+                        and event.message_type == MessageType.VOICE
                         and text_content
-                        and not media_files
-                        and event.source.chat_id not in self._auto_tts_disabled_chats):
+                        and not media_files):
                     try:
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():
@@ -2440,6 +2760,9 @@ class BasePlatformAdapter(ABC):
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
         is_bot: bool = False,
+        guild_id: Optional[str] = None,
+        parent_chat_id: Optional[str] = None,
+        message_id: Optional[str] = None,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
@@ -2457,6 +2780,9 @@ class BasePlatformAdapter(ABC):
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
             is_bot=is_bot,
+            guild_id=str(guild_id) if guild_id else None,
+            parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
+            message_id=str(message_id) if message_id else None,
         )
     
     @abstractmethod

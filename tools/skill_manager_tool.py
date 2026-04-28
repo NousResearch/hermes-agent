@@ -42,6 +42,8 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
 from typing import Dict, Any, Optional, Tuple
 
+from utils import atomic_replace
+
 logger = logging.getLogger(__name__)
 
 # Import security scanner — external hub installs always get scanned;
@@ -309,9 +311,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
     try:
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(content)
-        # Resolve symlinks so os.replace writes to the real file (GitHub #16743).
-        real_path = os.path.realpath(file_path) if os.path.islink(file_path) else file_path
-        os.replace(temp_path, real_path)
+        atomic_replace(temp_path, file_path)
     except Exception:
         # Clean up temp file on error
         try:

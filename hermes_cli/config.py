@@ -227,6 +227,7 @@ def get_container_exec_info() -> Optional[dict]:
 
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home  # noqa: F811,E402
+from utils import atomic_replace
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -3666,9 +3667,7 @@ def sanitize_env_file() -> int:
             f.writelines(sanitized)
             f.flush()
             os.fsync(f.fileno())
-        # Resolve symlinks so os.replace writes to the real file (GitHub #16743).
-        real_path = os.path.realpath(env_path) if os.path.islink(env_path) else env_path
-        os.replace(tmp_path, real_path)
+        atomic_replace(tmp_path, env_path)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -3771,9 +3770,7 @@ def save_env_value(key: str, value: str):
             f.writelines(lines)
             f.flush()
             os.fsync(f.fileno())
-        # Resolve symlinks so os.replace writes to the real file (GitHub #16743).
-        real_path = os.path.realpath(env_path) if os.path.islink(env_path) else env_path
-        os.replace(tmp_path, real_path)
+        atomic_replace(tmp_path, env_path)
         # Restore original permissions before _secure_file may tighten them.
         if original_mode is not None:
             try:
@@ -3829,9 +3826,7 @@ def remove_env_value(key: str) -> bool:
                 f.writelines(new_lines)
                 f.flush()
                 os.fsync(f.fileno())
-            # Resolve symlinks so os.replace writes to the real file (GitHub #16743).
-            real_path = os.path.realpath(env_path) if os.path.islink(env_path) else env_path
-            os.replace(tmp_path, real_path)
+            atomic_replace(tmp_path, env_path)
             if original_mode is not None:
                 try:
                     os.chmod(env_path, original_mode)

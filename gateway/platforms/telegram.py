@@ -84,6 +84,7 @@ from gateway.platforms.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
+from utils import atomic_replace
 
 
 def check_telegram_requirements() -> bool:
@@ -554,7 +555,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
                         f.flush()
                         os.fsync(f.fileno())
-                    os.replace(tmp_path, config_path)
+                    atomic_replace(tmp_path, config_path)
                 except BaseException:
                     try:
                         os.unlink(tmp_path)

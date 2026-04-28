@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
-import { applyDisplay, normalizeBusyInputMode, normalizeStatusBar } from '../app/useConfigSync.js'
+import {
+  applyDisplay,
+  normalizeBusyInputMode,
+  normalizeIndicatorStyle,
+  normalizeStatusBar
+} from '../app/useConfigSync.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
@@ -187,6 +192,28 @@ describe('normalizeBusyInputMode', () => {
   })
 })
 
+describe('normalizeIndicatorStyle', () => {
+  it('passes through the canonical enum', () => {
+    expect(normalizeIndicatorStyle('kaomoji')).toBe('kaomoji')
+    expect(normalizeIndicatorStyle('emoji')).toBe('emoji')
+    expect(normalizeIndicatorStyle('unicode')).toBe('unicode')
+    expect(normalizeIndicatorStyle('ascii')).toBe('ascii')
+  })
+
+  it('trims and lowercases input', () => {
+    expect(normalizeIndicatorStyle(' Emoji ')).toBe('emoji')
+    expect(normalizeIndicatorStyle('UNICODE')).toBe('unicode')
+  })
+
+  it('defaults to kaomoji for missing/unknown values', () => {
+    expect(normalizeIndicatorStyle(undefined)).toBe('kaomoji')
+    expect(normalizeIndicatorStyle(null)).toBe('kaomoji')
+    expect(normalizeIndicatorStyle('')).toBe('kaomoji')
+    expect(normalizeIndicatorStyle('sparkle')).toBe('kaomoji')
+    expect(normalizeIndicatorStyle(42)).toBe('kaomoji')
+  })
+})
+
 describe('applyDisplay → busy_input_mode', () => {
   beforeEach(() => {
     resetUiState()
@@ -210,5 +237,31 @@ describe('applyDisplay → busy_input_mode', () => {
 
     applyDisplay({ config: { display: { busy_input_mode: 'drop' } } }, setBell)
     expect($uiState.get().busyInputMode).toBe('queue')
+  })
+})
+
+describe('applyDisplay → tui_status_indicator', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  it('threads display.tui_status_indicator into $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { tui_status_indicator: 'emoji' } } }, setBell)
+    expect($uiState.get().indicatorStyle).toBe('emoji')
+
+    applyDisplay({ config: { display: { tui_status_indicator: 'unicode' } } }, setBell)
+    expect($uiState.get().indicatorStyle).toBe('unicode')
+  })
+
+  it('falls back to kaomoji default when missing or invalid', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().indicatorStyle).toBe('kaomoji')
+
+    applyDisplay({ config: { display: { tui_status_indicator: 'rainbow' } } }, setBell)
+    expect($uiState.get().indicatorStyle).toBe('kaomoji')
   })
 })

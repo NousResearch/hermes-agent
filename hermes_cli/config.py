@@ -715,6 +715,9 @@ DEFAULT_CONFIG = {
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
+        # spinner), or ascii.  Live-swappable via `/indicator <style>`.
+        "tui_status_indicator": "kaomoji",
         "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
             "first_lines": 2,
             "last_lines": 2,

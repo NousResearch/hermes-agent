@@ -346,6 +346,10 @@ def _ensure_reference_path_allowed(path: Path) -> None:
 
     blocked_exact = {home / rel for rel in _SENSITIVE_HOME_FILES}
     blocked_exact.add(hermes_home / ".env")
+    # auth.json holds live OAuth tokens (codex etc.) — block @file:
+    # references to it for the same prompt-injection-exfiltration reason
+    # we block it in the read_file_tool layer.
+    blocked_exact.add(hermes_home / "auth.json")
     blocked_dirs = [home / rel for rel in _SENSITIVE_HOME_DIRS]
     blocked_dirs.extend(hermes_home / rel for rel in _SENSITIVE_HERMES_DIRS)
 

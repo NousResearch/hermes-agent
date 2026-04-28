@@ -150,6 +150,83 @@ _SENSITIVE_PATH_PREFIXES = (
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
+# Files containing live credentials/tokens that file_tools refuses to read
+# OR write — even though the agent has otherwise full filesystem access.
+# Why: the agent process IS the threat surface here. A prompt-injection
+# attack (malicious chat content, malformed tool result, hostile webpage
+# fed to the agent via a browser tool) can trick the model into reading
+# auth.json and exfiltrating tokens via a subsequent tool call. The agent
+# itself flagged this as a concrete risk during the freedom audit on
+# 2026-04-28. Block the read at the tool layer so the model can't be
+# tricked into it regardless of context.
+#
+# Exact filenames matched relative to the resolved path's basename, plus
+# specific known credential-bearing files under HERMES_HOME and the user
+# home dir. Sudo-via-terminal is unaffected — if Ash explicitly needs to
+# touch these, that path still works.
+_CREDENTIAL_FILE_BASENAMES = {
+    "auth.json",                # OAuth bundles (codex, etc.)
+    "credentials.json",         # generic
+    "credentials",              # ~/.aws/credentials
+    "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+    "authorized_keys",
+    ".netrc", ".pgpass", ".npmrc", ".pypirc",
+}
+_CREDENTIAL_HOME_DIRS = (
+    ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh",
+)
+_CREDENTIAL_HERMES_FILES = (
+    "auth.json", ".env",
+)
+
+
+def _check_credential_path(filepath: str, task_id: str = "default") -> str | None:
+    """Return an error message if the path targets a live credential file.
+
+    Always-on. Independent of HERMES_AGENT_RESTRICTIVE_MODE — credentials
+    are blocked regardless of mode. If the agent legitimately needs to
+    touch one (rare), the user can do it via sudo + terminal tool, which
+    routes through the approval system instead of the file_tools layer.
+    """
+    try:
+        resolved = _resolve_path_for_task(filepath, task_id)
+    except (OSError, ValueError):
+        return None  # let the regular error path handle bad inputs
+
+    basename = resolved.name
+    if basename in _CREDENTIAL_FILE_BASENAMES:
+        return (
+            f"Refusing to access credential file: {filepath}\n"
+            "This file likely contains live API tokens or auth secrets. "
+            "If you genuinely need to inspect it, ask the user to confirm "
+            "and use the terminal tool with explicit sudo."
+        )
+
+    home = Path(os.path.expanduser("~")).resolve()
+    for sensitive_dir in _CREDENTIAL_HOME_DIRS:
+        try:
+            resolved.relative_to(home / sensitive_dir)
+            return (
+                f"Refusing to access path under sensitive directory ~/{sensitive_dir}: {filepath}\n"
+                "Use the terminal tool with explicit sudo if you genuinely need this."
+            )
+        except ValueError:
+            continue
+
+    hermes_home_raw = os.getenv("HERMES_HOME")
+    if hermes_home_raw:
+        try:
+            hermes_home = Path(hermes_home_raw).expanduser().resolve()
+            for cred_file in _CREDENTIAL_HERMES_FILES:
+                if resolved == hermes_home / cred_file:
+                    return (
+                        f"Refusing to access HERMES_HOME credential file: {filepath}"
+                    )
+        except (OSError, ValueError):
+            pass
+
+    return None
+
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
@@ -414,6 +491,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
+        # ── Credential file guard ─────────────────────────────────────
+        # Always-on. Block tool-level reads of live OAuth tokens, SSH
+        # keys, and other credential files even when the agent has
+        # otherwise full filesystem access. Closes prompt-injection
+        # exfiltration risk identified during the freedom audit.
+        cred_err = _check_credential_path(path, task_id)
+        if cred_err:
+            return json.dumps({"error": cred_err})
+
         _resolved = _resolve_path_for_task(path, task_id)
 
         # ── Binary file guard ─────────────────────────────────────────
@@ -667,6 +753,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    cred_err = _check_credential_path(path, task_id)
+    if cred_err:
+        return tool_error(cred_err)
     try:
         # Resolve once for the registry lock + stale check.  Failures here
         # fall back to the legacy path — write proceeds, per-task staleness
@@ -730,6 +819,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+        cred_err = _check_credential_path(_p, task_id)
+        if cred_err:
+            return tool_error(cred_err)
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping

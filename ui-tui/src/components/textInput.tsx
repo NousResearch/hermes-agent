@@ -927,8 +927,8 @@ export function TextInput({
         } else {
           v = v.slice(0, c)
         }
-      } else if (inp.length > 0) {
-        const bracketed = inp.includes('[200~')
+      } else if (event.keypress.isPasted || inp.length > 0) {
+        const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
         if (bracketed && emitPaste({ bracketed: true, cursor: c, text, value: v })) {

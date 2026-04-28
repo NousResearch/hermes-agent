@@ -59,6 +59,8 @@ AUTHOR_MAP = {
     "uzmpsk.dilekakbas@gmail.com": "dlkakbs",
     "jefferson@heimdallstrategy.com": "Mind-Dragon",
     "130918800+devorun@users.noreply.github.com": "devorun",
+    "surat.s@itm.kmutnb.ac.th": "beesrsj2500",
+    "beesr@bee.localdomain": "beesrsj2500",
     "sonoyuncudmr@gmail.com": "Sonoyunchu",
     "maks.mir@yahoo.com": "say8hi",
     "web3blind@users.noreply.github.com": "web3blind",

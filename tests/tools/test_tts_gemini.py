@@ -193,9 +193,9 @@ class TestGenerateGeminiTts:
         config = {
             "gemini": {
                 "persona": {
-                    "profile": "Athena: warm and lucid.",
-                    "scene": "A private Telegram voice note to MK.",
-                    "sample_context": "Trusted technical partner.",
+                    "profile": "Assistant: warm and lucid.",
+                    "scene": "A private voice note to the user.",
+                    "sample_context": "Helpful assistant response.",
                     "style": "Empathetic",
                     "pacing": "Natural",
                     "accent": "Neutral",
@@ -205,18 +205,18 @@ class TestGenerateGeminiTts:
         }
 
         with patch("requests.post", return_value=mock_gemini_response) as mock_post:
-            _generate_gemini_tts("Hello MK.", str(tmp_path / "test.wav"), config)
+            _generate_gemini_tts("Hello there.", str(tmp_path / "test.wav"), config)
 
         prompt = mock_post.call_args[1]["json"]["contents"][0]["parts"][0]["text"]
-        assert "Voice profile: Athena: warm and lucid." in prompt
-        assert "Scene: A private Telegram voice note to MK." in prompt
-        assert "Sample context: Trusted technical partner." in prompt
+        assert "Voice profile: Assistant: warm and lucid." in prompt
+        assert "Scene: A private voice note to the user." in prompt
+        assert "Sample context: Helpful assistant response." in prompt
         assert "Style: Empathetic" in prompt
         assert "Pacing: Natural" in prompt
         assert "Accent: Neutral" in prompt
         assert "Director notes: Do not sound like an announcer." in prompt
         assert "Speak this text exactly:" in prompt
-        assert prompt.rstrip().endswith("Hello MK.")
+        assert prompt.rstrip().endswith("Hello there.")
 
     def test_http_error_raises_runtime_error(self, tmp_path, monkeypatch):
         from tools.tts_tool import _generate_gemini_tts

@@ -191,6 +191,99 @@ class TestVoiceAttachmentSSRFProtection:
         assert kwargs.get("follow_redirects") is True
         assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
 
+
+# ---------------------------------------------------------------------------
+# Non-image, non-voice attachment fallback (#16979)
+# ---------------------------------------------------------------------------
+
+class TestProcessAttachmentsFallback:
+    """File / video attachments must surface to the agent even when the QQ
+    file CDN download fails — otherwise the user sends a PDF and the agent
+    silently sees nothing."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def test_file_download_returns_none_emits_failure_marker(self):
+        adapter = self._make_adapter()
+        adapter._download_and_cache = mock.AsyncMock(return_value=None)
+
+        result = asyncio.run(
+            adapter._process_attachments(
+                [
+                    {
+                        "content_type": "application/pdf",
+                        "url": "https://grouptalk.c2c.qq.com/qqdownloadftnv5?sign=abc",
+                        "filename": "report.pdf",
+                    }
+                ]
+            )
+        )
+
+        assert "report.pdf" in result["attachment_info"]
+        assert "download failed" in result["attachment_info"]
+
+    def test_file_download_raises_emits_failure_marker(self):
+        adapter = self._make_adapter()
+        adapter._download_and_cache = mock.AsyncMock(
+            side_effect=ValueError("Blocked unsafe URL")
+        )
+
+        result = asyncio.run(
+            adapter._process_attachments(
+                [
+                    {
+                        "content_type": "application/pdf",
+                        "url": "http://127.0.0.1/private.pdf",
+                        "filename": "private.pdf",
+                    }
+                ]
+            )
+        )
+
+        assert "private.pdf" in result["attachment_info"]
+        assert "download failed" in result["attachment_info"]
+
+    def test_file_download_succeeds_omits_failure_marker(self):
+        adapter = self._make_adapter()
+        adapter._download_and_cache = mock.AsyncMock(return_value="/tmp/cached.pdf")
+
+        result = asyncio.run(
+            adapter._process_attachments(
+                [
+                    {
+                        "content_type": "application/pdf",
+                        "url": "https://grouptalk.c2c.qq.com/qqdownloadftnv5?sign=abc",
+                        "filename": "report.pdf",
+                    }
+                ]
+            )
+        )
+
+        assert "report.pdf" in result["attachment_info"]
+        assert "download failed" not in result["attachment_info"]
+
+    def test_file_failure_falls_back_to_content_type_when_filename_missing(self):
+        adapter = self._make_adapter()
+        adapter._download_and_cache = mock.AsyncMock(return_value=None)
+
+        result = asyncio.run(
+            adapter._process_attachments(
+                [
+                    {
+                        "content_type": "video/mp4",
+                        "url": "https://grouptalk.c2c.qq.com/qqdownloadftnv5?sign=abc",
+                        "filename": "",
+                    }
+                ]
+            )
+        )
+
+        assert "video/mp4" in result["attachment_info"]
+        assert "download failed" in result["attachment_info"]
+
+
 # ---------------------------------------------------------------------------
 # _strip_at_mention
 # ---------------------------------------------------------------------------

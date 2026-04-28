@@ -70,3 +70,7 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
+
+# habibiserver-local — never commit
+.venv-pr/
+PR_BODY.md

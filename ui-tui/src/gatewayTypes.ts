@@ -60,6 +60,7 @@ export interface ConfigDisplayConfig {
   show_reasoning?: boolean
   streaming?: boolean
   thinking_mode?: string
+  tui_auto_resume_recent?: boolean
   tui_compact?: boolean
   tui_mouse?: boolean
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
@@ -117,6 +118,13 @@ export interface SessionListItem {
 
 export interface SessionListResponse {
   sessions?: SessionListItem[]
+}
+
+export interface SessionMostRecentResponse {
+  session_id?: null | string
+  source?: string
+  started_at?: number
+  title?: string
 }
 
 export interface SessionTitleResponse {

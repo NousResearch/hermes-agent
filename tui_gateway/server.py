@@ -3184,6 +3184,14 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.tui_mouse", nv)
         return _ok(rid, {"key": key, "value": "on" if nv else "off"})
 
+    if key == "indicator":
+        raw = str(value or "").strip().lower()
+        allowed = {"ascii", "emoji", "kaomoji", "unicode"}
+        if raw not in allowed:
+            return _err(rid, 4002, f"unknown indicator: {value}; pick one of {sorted(allowed)}")
+        _write_config_key("display.tui_status_indicator", raw)
+        return _ok(rid, {"key": key, "value": raw})
+
     if key in ("prompt", "personality", "skin"):
         try:
             cfg = _load_cfg()
@@ -3253,6 +3261,15 @@ def _(rid, params: dict) -> dict:
     if key == "skin":
         return _ok(
             rid, {"value": (_load_cfg().get("display") or {}).get("skin", "default")}
+        )
+    if key == "indicator":
+        return _ok(
+            rid,
+            {
+                "value": (_load_cfg().get("display") or {}).get(
+                    "tui_status_indicator", "kaomoji"
+                )
+            },
         )
     if key == "personality":
         return _ok(

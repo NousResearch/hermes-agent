@@ -12,6 +12,7 @@ import type {
 } from '../../../gatewayTypes.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
+import type { IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -265,6 +266,45 @@ export const sessionCommands: SlashCommand[] = [
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'skin', value: arg })
         .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`skin → ${r.value}`)))
+    }
+  },
+
+  {
+    aliases: ['indicator-style'],
+    help: 'pick the busy indicator: kaomoji (default), emoji, unicode (braille), or ascii',
+    name: 'indicator',
+    usage: '/indicator [kaomoji|emoji|unicode|ascii]',
+    run: (arg, ctx) => {
+      const value = arg.trim().toLowerCase()
+      const allowed: ReadonlyArray<IndicatorStyle> = ['ascii', 'emoji', 'kaomoji', 'unicode']
+
+      if (!value) {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'indicator' })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(r => ctx.transcript.sys(`indicator: ${r.value || 'kaomoji'}`))
+          )
+      }
+
+      if (!(allowed as readonly string[]).includes(value)) {
+        return ctx.transcript.sys(`usage: /indicator [${allowed.join('|')}]`)
+      }
+
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'indicator', value })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (!r.value) {
+              return
+            }
+
+            // Hot-swap the running TUI immediately so the next render
+            // uses the new style without waiting for the 5s mtime poll
+            // to re-apply config.full.
+            patchUiState({ indicatorStyle: value as IndicatorStyle })
+            ctx.transcript.sys(`indicator → ${r.value}`)
+          })
+        )
     }
   },
 

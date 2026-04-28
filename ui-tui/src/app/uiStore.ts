@@ -13,6 +13,7 @@ const buildUiState = (): UiState => ({
   compact: false,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
+  indicatorStyle: 'kaomoji',
   info: null,
   inlineDiffs: true,
   mouseTracking: MOUSE_TRACKING,

@@ -1,8 +1,11 @@
 import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useState } from 'react'
+import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
+import type { IndicatorStyle } from '../app/interfaces.js'
+import { $uiState } from '../app/uiStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
@@ -17,23 +20,80 @@ import type { Msg, Usage } from '../types.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
+// Stable verb width keeps cwd / ctx bar / bg counter from shifting on
+// every rotation when the verb changes from `cogitating` (10) to
+// `synthesizing` (12).  Pad to longest-verb + ellipsis + a trailing
+// space so the duration suffix has a stable separator.
+const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1
+
+export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN + 1, ' ')
+
+// Compact alternates for the `emoji` and `ascii` indicator styles.
+// Each entry is a fixed-width (display-width) glyph.
+const EMOJI_FRAMES = ['⚕ ', '🌀', '🤔', '✨', '🍵', '🔮']
+const ASCII_FRAMES = ['|', '/', '-', '\\']
+
+// Faster tick for spinner-style indicators — they read as motion only
+// at frame rates closer to their authored interval.
+const SPINNER_TICK_MS = 100
+
+interface IndicatorRender {
+  frame: string
+  intervalMs: number
+}
+
+const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
+  if (style === 'kaomoji') {
+    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS }
+  }
+
+  if (style === 'emoji') {
+    return { frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '⚕ ', intervalMs: SPINNER_TICK_MS * 6 }
+  }
+
+  if (style === 'ascii') {
+    return { frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|', intervalMs: SPINNER_TICK_MS }
+  }
+
+  // 'unicode' — braille spinner (fixed 1-col).  Authored interval is
+  // ~80ms; honour it but bound below at a safe minimum so React
+  // re-renders stay reasonable.
+  const spinner = unicodeSpinners.braille
+  const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
+
+  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval) }
+}
+
 function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
+  const ui = useStore($uiState)
+  const style = ui.indicatorStyle
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
+  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
 
+  // Pre-compute the cadence for the active style so an `/indicator` switch
+  // re-arms the interval without leaving the previous timer dangling.
+  const intervalMs = renderIndicator(style, 0).intervalMs
+
   useEffect(() => {
-    const face = setInterval(() => setTick(n => n + 1), FACE_TICK_MS)
+    const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
+    const verb = setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS)
     const clock = setInterval(() => setNow(Date.now()), 1000)
 
     return () => {
-      clearInterval(face)
+      clearInterval(glyph)
+      clearInterval(verb)
       clearInterval(clock)
     }
-  }, [])
+  }, [intervalMs])
+
+  const { frame } = renderIndicator(style, tick)
+  const verb = VERBS[verbTick % VERBS.length] ?? ''
 
   return (
     <Text color={color}>
-      {FACES[tick % FACES.length]} {VERBS[tick % VERBS.length]}…{startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''}
+      {frame} {padVerb(verb)}
+      {startedAt ? `· ${fmtDuration(now - startedAt)}` : ''}
     </Text>
   )
 }

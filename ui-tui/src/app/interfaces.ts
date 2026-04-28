@@ -27,7 +27,11 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
+<<<<<<< HEAD
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
+=======
+export type IndicatorStyle = 'ascii' | 'emoji' | 'kaomoji' | 'unicode'
+>>>>>>> e202ca5db (feat(tui): pluggable busy-indicator styles (kaomoji/emoji/unicode/ascii))
 
 export interface SelectionApi {
   captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void
@@ -97,6 +101,7 @@ export interface UiState {
   sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
+  indicatorStyle: IndicatorStyle
   sid: null | string
   status: string
   statusBar: StatusBarMode

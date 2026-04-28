@@ -9,7 +9,7 @@ import {
   LogIn,
 } from "lucide-react";
 import { api, type OAuthProvider } from "@/lib/api";
-import { Button, CopyButton } from "@nous-research/ui";
+import { Button, CopyButton, Spinner } from "@nous-research/ui";
 import {
   Card,
   CardContent,
@@ -106,9 +106,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
             outlined
             onClick={refresh}
             disabled={loading}
-            prefix={
-              <RefreshCw className={loading ? "animate-spin" : undefined} />
-            }
+            prefix={loading ? <Spinner /> : <RefreshCw />}
           >
             {t.common.refresh}
           </Button>
@@ -122,7 +120,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
       <CardContent>
         {loading && providers === null && (
           <div className="flex items-center justify-center py-8">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            <Spinner className="text-xl text-primary" />
           </div>
         )}
         {providers && providers.length === 0 && (
@@ -238,13 +236,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       outlined
                       onClick={() => handleDisconnect(p)}
                       disabled={isBusy}
-                      prefix={
-                        isBusy ? (
-                          <RefreshCw className="animate-spin" />
-                        ) : (
-                          <LogOut />
-                        )
-                      }
+                      prefix={isBusy ? <Spinner /> : <LogOut />}
                     >
                       {t.oauth.disconnect}
                     </Button>

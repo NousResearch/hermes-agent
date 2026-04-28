@@ -12,6 +12,7 @@ import {
   Button,
   FilterGroup,
   Segmented,
+  Spinner,
   Switch,
 } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -82,9 +83,7 @@ export default function LogsPage() {
   useLayoutEffect(() => {
     setAfterTitle(
       <span className="flex items-center gap-2">
-        {loading && (
-          <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-        )}
+        {loading && <Spinner className="shrink-0 text-base text-primary" />}
         <Badge tone="secondary" className="text-[10px]">
           {file} · {level} · {component}
         </Badge>
@@ -114,7 +113,7 @@ export default function LogsPage() {
           outlined
           onClick={fetchLogs}
           disabled={loading}
-          prefix={<RefreshCw />}
+          prefix={loading ? <Spinner /> : <RefreshCw />}
         >
           {t.common.refresh}
         </Button>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Brain, Eye, Gauge, Lightbulb, Wrench, Loader2 } from "lucide-react";
+import { Brain, Eye, Gauge, Lightbulb, Wrench } from "lucide-react";
+import { Spinner } from "@nous-research/ui";
 import { api } from "@/lib/api";
 import type { ModelInfoResponse } from "@/lib/api";
 import { formatTokenCount } from "@/lib/format";
@@ -36,7 +37,7 @@ export function ModelInfoCard({
   if (loading) {
     return (
       <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
-        <Loader2 className="h-3 w-3 animate-spin" />
+        <Spinner className="text-xs" />
         Loading model info…
       </div>
     );

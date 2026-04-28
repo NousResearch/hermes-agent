@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Clock, Pause, Play, Plus, Trash2, Zap } from "lucide-react";
-import { Badge, Button, H2, Select, SelectOption } from "@nous-research/ui";
+import { Badge, Button, H2, Select, SelectOption, Spinner } from "@nous-research/ui";
 import { api } from "@/lib/api";
 import type { CronJob } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -136,7 +136,7 @@ export default function CronPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <Spinner className="text-2xl text-primary" />
       </div>
     );
   }

@@ -21,7 +21,7 @@ import { Toast } from "@/components/Toast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { useToast } from "@/hooks/useToast";
 import { OAuthProvidersCard } from "@/components/OAuthProvidersCard";
-import { Button, ListItem } from "@nous-research/ui";
+import { Button, ListItem, Spinner } from "@nous-research/ui";
 import {
   Card,
   CardContent,
@@ -651,7 +651,7 @@ export default function EnvPage() {
   if (!vars) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <Spinner className="text-2xl text-primary" />
       </div>
     );
   }

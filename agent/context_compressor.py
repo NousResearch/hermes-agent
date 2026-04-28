@@ -1418,6 +1418,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 # Merge the summary into the first tail message instead
                 # of inserting a standalone message that breaks alternation.
                 _merge_summary_into_tail = True
+
+        # When the summary lands as a standalone role="user" message,
+        # weak models read the verbatim "## Active Task" quote of a past
+        # user request as fresh input (#11475, #14521). Append the explicit
+        # end marker — the same one used in the merge-into-tail path — so
+        # the model has a clear "summary above, not new input" signal.
+        if not _merge_summary_into_tail and summary_role == "user":
+            summary = (
+                summary
+                + "\n\n--- END OF CONTEXT SUMMARY — "
+                "respond to the message below, not the summary above ---"
+            )
+
         if not _merge_summary_into_tail:
             compressed.append({"role": summary_role, "content": summary})
 

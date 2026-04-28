@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,75 @@ try:
     HAS_CRONITER = True
 except ImportError:
     HAS_CRONITER = False
+
+# Cron weekday convention: Sun=0..Sat=6.
+_CRON_WEEKDAYS = {
+    "sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6,
+}
+
+
+def _parse_local_with_tz(schedule: str) -> Optional[str]:
+    """Recognize "<spec> HH:MM <IANA_TZ>" and return a UTC cron expression.
+
+    Accepted shapes:
+        "daily HH:MM <TZ>"
+        "weekly <Day> HH:MM <TZ>"
+
+    Returns None if the input does not match this shape (caller falls
+    through to existing parse_schedule branches).
+
+    Raises ValueError if the shape matches but the time / weekday / tz
+    is invalid.
+    """
+    parts = schedule.strip().split()
+    if len(parts) < 3:
+        return None
+
+    tz_str = parts[-1]
+    if "/" not in tz_str:
+        return None
+    try:
+        tz = ZoneInfo(tz_str)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"Unknown timezone {tz_str!r}: {exc}")
+
+    time_str = parts[-2]
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", time_str)
+    if not m:
+        return None
+    hour, minute = int(m.group(1)), int(m.group(2))
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Invalid time {time_str!r}")
+
+    head = [p.lower() for p in parts[:-2]]
+
+    if head == ["daily"]:
+        today_local = datetime.now(tz).date()
+        local_dt = datetime(
+            today_local.year, today_local.month, today_local.day,
+            hour, minute, tzinfo=tz,
+        )
+        utc_dt = local_dt.astimezone(ZoneInfo("UTC"))
+        return f"{utc_dt.minute} {utc_dt.hour} * * *"
+
+    if len(head) == 2 and head[0] == "weekly":
+        day_token = head[1][:3]
+        if day_token not in _CRON_WEEKDAYS:
+            raise ValueError(f"Unknown weekday {head[1]!r}")
+        cron_wd = _CRON_WEEKDAYS[day_token]
+        target_py_wd = (cron_wd - 1) % 7  # cron Sun=0 → python Sun=6
+        today_local = datetime.now(tz).date()
+        days_ahead = (target_py_wd - today_local.weekday()) % 7
+        target = today_local.fromordinal(today_local.toordinal() + days_ahead)
+        local_dt = datetime(
+            target.year, target.month, target.day,
+            hour, minute, tzinfo=tz,
+        )
+        utc_dt = local_dt.astimezone(ZoneInfo("UTC"))
+        utc_cron_wd = (utc_dt.weekday() + 1) % 7
+        return f"{utc_dt.minute} {utc_dt.hour} * * {utc_cron_wd}"
+
+    return None
 
 # =============================================================================
 # Configuration
@@ -135,7 +205,25 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
-    
+
+    # Artemis fork addition: "daily HH:MM <IANA_TZ>" / "weekly <Day> HH:MM <IANA_TZ>".
+    # Server-side wall-clock → UTC conversion so callers (Coach) don't have to
+    # compute UTC themselves. Returns a cron expression that the cron branch
+    # below picks up; non-matching inputs fall through unchanged.
+    converted = _parse_local_with_tz(schedule)
+    if converted is not None:
+        if not HAS_CRONITER:
+            raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
+        try:
+            croniter(converted)
+        except Exception as e:
+            raise ValueError(f"Invalid converted cron expression '{converted}': {e}")
+        return {
+            "kind": "cron",
+            "expr": converted,
+            "display": f"{schedule} (= {converted} UTC)",
+        }
+
     # "every X" pattern → recurring interval
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()

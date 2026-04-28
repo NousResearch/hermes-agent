@@ -220,9 +220,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
   //   - 'interrupt' (default): cancel the in-flight turn, then send the
   //                   new text as a fresh prompt so it actually moves.
   //
-  // Returns whether the steer fallback should re-insert at the front of
-  // the queue (used by the queue-edit path to preserve a picked item's
-  // position; the mainline submit path always appends).
+  // `opts.fallbackToFront` controls whether a steer fallback re-inserts
+  // at the front of the queue (used by the queue-edit path to preserve
+  // a picked item's position); the mainline submit path always appends.
   const handleBusyInput = useCallback(
     (full: string, opts: { fallbackToFront?: boolean } = {}) => {
       const live = getUiState()

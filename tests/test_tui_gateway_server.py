@@ -980,6 +980,14 @@ def test_complete_slash_includes_tui_details_command():
     assert any(item["text"] == "/details" for item in resp["result"]["items"])
 
 
+def test_complete_slash_includes_tui_mouse_command():
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/mou"}}
+    )
+
+    assert any(item["text"] == "/mouse" for item in resp["result"]["items"])
+
+
 def test_complete_slash_details_args():
     resp_root = server.handle_request(
         {"id": "0", "method": "complete.slash", "params": {"text": "/details"}}
@@ -1545,6 +1553,19 @@ def test_commands_catalog_surfaces_quick_commands(monkeypatch):
 
     assert resp["result"]["canon"]["/build"] == "/build"
     assert resp["result"]["canon"]["/notes"] == "/notes"
+
+
+def test_commands_catalog_includes_tui_mouse_command():
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    pairs = dict(resp["result"]["pairs"])
+    tui_cat = next(c for c in resp["result"]["categories"] if c["name"] == "TUI")
+    tui_pairs = dict(tui_cat["pairs"])
+
+    assert "/mouse" in pairs
+    assert "/mouse" in tui_pairs
 
 
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):

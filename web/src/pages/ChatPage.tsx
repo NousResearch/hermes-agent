@@ -128,11 +128,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // /chat re-runs the effect (derived flips back to true) and re-locks.
   // Keying on the raw state would leak the body.overflow="hidden" across
   // tabs because the dep wouldn't change on tab switch.
-  const [mobilePanelOpenRaw, setMobilePanelOpen] = useState(false);
+  const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
   const { setEnd } = usePageHeader();
   const { t } = useI18n();
-  const closeMobilePanel = useCallback(() => setMobilePanelOpen(false), []);
+  const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
   const modelToolsLabel = useMemo(
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
     [t.app.modelToolsSheetSubtitle, t.app.modelToolsSheetTitle],
@@ -174,7 +174,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   useEffect(() => {
     const mql = window.matchMedia("(min-width: 1024px)");
     const onChange = (e: MediaQueryListEvent) => {
-      if (e.matches) setMobilePanelOpen(false);
+      if (e.matches) setMobilePanelOpenRaw(false);
     };
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
@@ -194,7 +194,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setEnd(
       <button
         type="button"
-        onClick={() => setMobilePanelOpen(true)}
+        onClick={() => setMobilePanelOpenRaw(true)}
         className={cn(
           "inline-flex items-center gap-1.5 rounded border border-current/20",
           "px-2 py-1 text-[0.65rem] font-medium tracking-wide normal-case",

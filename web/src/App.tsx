@@ -80,11 +80,12 @@ const CHAT_NAV_ITEM: NavItem = {
 
 /**
  * Built-in routes except /chat.  Chat is rendered persistently (outside
- * <Routes>) when embedded — see ChatPageHost below — so the PTY child,
- * WebSocket, and xterm instance survive when the user visits another tab
- * and comes back.  A `display:none` toggle hides the terminal without
- * unmounting.  Routing still owns the URL so /chat deep-links, browser
- * back/forward, and nav highlight keep working.
+ * <Routes>) when embedded — see the persistent chat host block rendered
+ * inline near the bottom of this file — so the PTY child, WebSocket,
+ * and xterm instance survive when the user visits another tab and comes
+ * back.  A `display:none` toggle hides the terminal without unmounting.
+ * Routing still owns the URL so /chat deep-links, browser back/forward,
+ * and nav highlight keep working.
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
@@ -578,17 +579,37 @@ export default function App() {
                   or idle-disconnect after N minutes hidden; neither is
                   shipped today.
                 */}
-                {embeddedChat && !pluginsLoading && !chatOverriddenByPlugin && (
-                  <div
-                    data-chat-active={isChatRoute ? "true" : "false"}
-                    className={cn(
-                      "min-h-0 min-w-0",
-                      isChatRoute ? "flex flex-1 flex-col" : "hidden",
-                    )}
-                    aria-hidden={!isChatRoute}
-                  >
-                    <ChatPage isActive={isChatRoute} />
-                  </div>
+                {embeddedChat && !chatOverriddenByPlugin && (
+                  pluginsLoading ? (
+                    // Direct /chat deep-link: plugin manifests haven't resolved
+                    // yet, so we can't tell if a plugin is going to claim this
+                    // route.  Show a lightweight placeholder instead of a
+                    // blank page.  Typical wait is <50ms; worst case is the
+                    // 2s plugin-registration safety timeout.
+                    isChatRoute ? (
+                      <div
+                        className="flex min-h-0 min-w-0 flex-1 items-center justify-center"
+                        aria-busy="true"
+                        aria-live="polite"
+                      >
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                          <span>Loading chat…</span>
+                        </div>
+                      </div>
+                    ) : null
+                  ) : (
+                    <div
+                      data-chat-active={isChatRoute ? "true" : "false"}
+                      className={cn(
+                        "min-h-0 min-w-0",
+                        isChatRoute ? "flex flex-1 flex-col" : "hidden",
+                      )}
+                      aria-hidden={!isChatRoute}
+                    >
+                      <ChatPage isActive={isChatRoute} />
+                    </div>
+                  )
                 )}
               </div>
               <PluginSlot name="post-main" />

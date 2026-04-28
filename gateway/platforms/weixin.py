@@ -1538,7 +1538,16 @@ class WeixinAdapter(BasePlatformAdapter):
                             or errcode == RATE_LIMIT_ERRCODE
                         )
                         if is_rate_limited:
-                            wait = self._send_chunk_retry_delay_seconds * 3  # 3s backoff for rate limit
+                            errmsg = resp.get("errmsg") or resp.get("msg") or "rate limited"
+                            # Record the error so we raise a descriptive
+                            # RuntimeError (instead of AssertionError) if the
+                            # loop exhausts with the server still rate-limiting.
+                            last_error = RuntimeError(
+                                f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg}"
+                            )
+                            if attempt >= self._send_chunk_retries:
+                                break
+                            wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
                             logger.warning(
                                 "[%s] rate limited for %s; backing off %.1fs before retry",
                                 self.name, _safe_id(chat_id), wait,

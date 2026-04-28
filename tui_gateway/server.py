@@ -3429,6 +3429,26 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5015, str(e))
 
 
+@method("reload.env")
+def _(rid, params: dict) -> dict:
+    """Re-read ~/.hermes/.env into the gateway process — TUI parity with
+    classic CLI's ``/reload`` (cli.py).  Newly added API keys take effect
+    on the next agent call without restarting the TUI.
+
+    The credential pool / provider routing for any *already-constructed*
+    agent does not auto-rebuild — that's the same behaviour as classic
+    CLI's ``/reload``.  Users who want a brand-new credential resolution
+    should follow with ``/new``.
+    """
+    try:
+        from hermes_cli.config import reload_env
+
+        count = reload_env()
+        return _ok(rid, {"updated": int(count)})
+    except Exception as e:
+        return _err(rid, 5015, str(e))
+
+
 _TUI_HIDDEN: frozenset[str] = frozenset(
     {
         "sethome",

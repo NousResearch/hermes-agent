@@ -61,6 +61,10 @@ from acp_adapter.events import (
 )
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+from tools.approval import (
+    reset_hermes_interactive_context,
+    set_hermes_interactive_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -569,7 +573,7 @@ class HermesACPAgent(acp.Agent):
         # callback shape — not the gateway-queue HERMES_EXEC_ASK path.
 
         def _run_agent() -> dict:
-            nonlocal previous_approval_cb, previous_interactive
+            nonlocal previous_approval_cb
             # Bind HERMES_SESSION_KEY for this session so per-session caches
             # (e.g. the interactive sudo password cache in tools.terminal_tool)
             # scope to the ACP session rather than leaking across sessions

@@ -62,6 +62,7 @@ from .config import (
 )
 from .whatsapp_identity import (
     canonical_whatsapp_identifier,
+    normalize_whatsapp_identifier,
 )
 from utils import atomic_replace
 

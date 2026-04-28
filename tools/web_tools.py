@@ -68,6 +68,9 @@ from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
 
+# Optional SDK symbol kept at module scope for test patching compatibility.
+Firecrawl = None
+
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
@@ -240,7 +243,10 @@ def _get_firecrawl_client():
         return _firecrawl_client
 
     # Lazy import — ~200 ms of SDK init, only paid when firecrawl is actually used.
-    from firecrawl import Firecrawl  # noqa: E402
+    global Firecrawl
+    if Firecrawl is None:
+        from firecrawl import Firecrawl as _Firecrawl  # noqa: E402
+        Firecrawl = _Firecrawl
     _firecrawl_client = Firecrawl(**kwargs)
     _firecrawl_client_config = client_config
     return _firecrawl_client

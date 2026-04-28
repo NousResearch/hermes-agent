@@ -339,6 +339,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "dashboard": "display",
     "code_execution": "agent",
     "prompt_caching": "agent",  # only cache_ttl; avoid lone single-field "prompt_caching" tab
+    "telegram": "agent",  # singleton platform section; avoid one-field category tab
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.

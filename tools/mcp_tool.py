@@ -1962,6 +1962,23 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+def _get_server_rpc_lock(server: Any) -> asyncio.Lock:
+    """Return per-server RPC lock, creating one for legacy test stubs.
+
+    Some unit tests inject lightweight ``SimpleNamespace`` server objects
+    without ``_rpc_lock``. Keep handlers backward compatible by lazily
+    attaching a lock when missing.
+    """
+    lock = getattr(server, "_rpc_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        try:
+            setattr(server, "_rpc_lock", lock)
+        except Exception:
+            pass
+    return lock
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -2005,7 +2022,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
-            async with server._rpc_lock:
+            async with _get_server_rpc_lock(server):
                 result = await server.session.call_tool(tool_name, arguments=args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
@@ -2104,7 +2121,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
-            async with server._rpc_lock:
+            async with _get_server_rpc_lock(server):
                 result = await server.session.list_resources()
             resources = []
             for r in (result.resources if hasattr(result, "resources") else []):
@@ -2168,7 +2185,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             return tool_error("Missing required parameter 'uri'")
 
         async def _call():
-            async with server._rpc_lock:
+            async with _get_server_rpc_lock(server):
                 result = await server.session.read_resource(uri)
             # read_resource returns ReadResourceResult with .contents list
             parts: List[str] = []
@@ -2222,7 +2239,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
-            async with server._rpc_lock:
+            async with _get_server_rpc_lock(server):
                 result = await server.session.list_prompts()
             prompts = []
             for p in (result.prompts if hasattr(result, "prompts") else []):
@@ -2292,7 +2309,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         arguments = args.get("arguments", {})
 
         async def _call():
-            async with server._rpc_lock:
+            async with _get_server_rpc_lock(server):
                 result = await server.session.get_prompt(name, arguments=arguments)
             # GetPromptResult has .messages list
             messages = []

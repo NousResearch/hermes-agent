@@ -584,6 +584,7 @@ AUTHOR_MAP = {
     "hekaru.agent@gmail.com": "hekaru-agent",
     "jas9000@gmail.com": "twozle",
     "r.filgueiras@apheris.com": "rfilgueiras",
+    "leihaibo1992@gmail.com": "Leihb",
 }
 
 

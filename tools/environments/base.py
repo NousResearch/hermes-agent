@@ -334,8 +334,13 @@ class BaseEnvironment(ABC):
         ``_snapshot_ready = True`` so subsequent commands source the snapshot
         instead of running with ``bash -l``.
         """
+        # Start in the configured cwd so the snapshot captures the right directory.
+        quoted_cwd = (
+            shlex.quote(self.cwd) if self.cwd != "~" and not self.cwd.startswith("~/") else self.cwd
+        )
         # Full capture: env vars, functions (filtered), aliases, shell options.
         bootstrap = (
+            f"cd {quoted_cwd} 2>/dev/null || true\n"
             f"export -p > {self._snapshot_path}\n"
             f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
             f"alias -p >> {self._snapshot_path}\n"

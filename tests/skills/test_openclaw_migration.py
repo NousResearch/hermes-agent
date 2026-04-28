@@ -970,3 +970,140 @@ def test_migrate_soul_rebrands_content(tmp_path):
     result = (target_root / "SOUL.md").read_text(encoding="utf-8")
     assert "OpenClaw" not in result
     assert "You are Hermes" in result
+
+
+# ── migrate_model_config: alias resolution (issue #16745) ──────────────────
+
+def _run_model_migration(tmp_path: Path, openclaw_json: dict) -> dict:
+    """Helper: run just migrate_model_config on an openclaw.json and return
+    the parsed destination config.yaml."""
+    import yaml
+
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    source.mkdir(parents=True)
+    target.mkdir(parents=True)
+    (source / "openclaw.json").write_text(json.dumps(openclaw_json), encoding="utf-8")
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=True,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+    )
+    migrator.migrate_model_config()
+
+    cfg_path = target / "config.yaml"
+    if not cfg_path.exists():
+        return {}
+    return yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+
+
+def _extract_model(parsed: dict) -> str | None:
+    model = parsed.get("model")
+    if isinstance(model, dict):
+        return model.get("default")
+    return model
+
+
+def test_migrate_model_config_resolves_alias_against_real_openclaw_schema(tmp_path: Path):
+    """Regression for #16745 — OpenClaw's catalog is keyed by the full
+    provider/model API ID with an "alias" field on the value.  The migration
+    must reverse-lookup the alias to find the API ID."""
+    parsed = _run_model_migration(
+        tmp_path,
+        {
+            "agents": {
+                "defaults": {
+                    "model": {"primary": "Claude Opus 4.6"},
+                    "models": {
+                        "anthropic/claude-opus-4-6": {"alias": "Claude Opus 4.6"},
+                        "openai/gpt-5.2": {"alias": "GPT"},
+                    },
+                }
+            }
+        },
+    )
+    assert _extract_model(parsed) == "anthropic/claude-opus-4-6"
+
+
+def test_migrate_model_config_resolves_alias_with_bare_string_model(tmp_path: Path):
+    parsed = _run_model_migration(
+        tmp_path,
+        {
+            "agents": {
+                "defaults": {
+                    "model": "Sonnet",
+                    "models": {"anthropic/claude-sonnet-4-7": {"alias": "Sonnet"}},
+                }
+            }
+        },
+    )
+    assert _extract_model(parsed) == "anthropic/claude-sonnet-4-7"
+
+
+def test_migrate_model_config_passes_through_existing_api_id(tmp_path: Path):
+    """If the model value is already a provider/model API ID that appears as
+    a key in the catalog, it should be written verbatim — not double-rewritten."""
+    parsed = _run_model_migration(
+        tmp_path,
+        {
+            "agents": {
+                "defaults": {
+                    "model": "anthropic/claude-opus-4-6",
+                    "models": {
+                        "anthropic/claude-opus-4-6": {"alias": "Claude Opus 4.6"},
+                    },
+                }
+            }
+        },
+    )
+    assert _extract_model(parsed) == "anthropic/claude-opus-4-6"
+
+
+def test_migrate_model_config_passes_through_unknown_alias(tmp_path: Path):
+    """If the model value matches no catalog entry, leave it alone and let
+    downstream surface the mismatch."""
+    parsed = _run_model_migration(
+        tmp_path,
+        {
+            "agents": {
+                "defaults": {
+                    "model": "Totally Unknown Name",
+                    "models": {
+                        "anthropic/claude-opus-4-6": {"alias": "Claude Opus 4.6"},
+                    },
+                }
+            }
+        },
+    )
+    assert _extract_model(parsed) == "Totally Unknown Name"
+
+
+def test_migrate_model_config_handles_string_valued_catalog_entries(tmp_path: Path):
+    """Belt-and-suspenders: some catalogs store the alias as a plain string
+    value instead of a dict with an "alias" field."""
+    parsed = _run_model_migration(
+        tmp_path,
+        {
+            "agents": {
+                "defaults": {
+                    "model": "MyModel",
+                    "models": {"provider/some-id": "MyModel"},
+                }
+            }
+        },
+    )
+    assert _extract_model(parsed) == "provider/some-id"
+
+
+def test_migrate_model_config_no_catalog_leaves_value_alone(tmp_path: Path):
+    parsed = _run_model_migration(
+        tmp_path,
+        {"agents": {"defaults": {"model": "some-model-id"}}},
+    )
+    assert _extract_model(parsed) == "some-model-id"

@@ -4760,210 +4760,168 @@ def _is_default_local_cdp(parsed) -> bool:
     )
 
 
-def _browser_connect_error(url: str, port: int) -> str:
+def _http_ok(url: str, timeout: float) -> bool:
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return 200 <= getattr(resp, "status", 200) < 300
+    except Exception:
+        return False
+
+
+def _probe_urls(parsed) -> list[str]:
+    scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
+    root = f"{scheme}://{parsed.netloc}".rstrip("/")
+    return [f"{root}/json/version", f"{root}/json"]
+
+
+def _normalize_cdp_url(parsed) -> str:
+    # Concrete ``/devtools/browser/<id>`` endpoints (Browserbase et al.)
+    # are connectable as-is. Discovery-style inputs collapse to bare
+    # ``scheme://host:port`` so ``_resolve_cdp_override`` can append
+    # ``/json/version`` later without doubling the path.
+    if parsed.path.startswith("/devtools/browser/"):
+        return parsed.geturl()
+    return parsed._replace(path="", params="", query="", fragment="").geturl()
+
+
+def _failure_messages(url: str, port: int) -> list[str]:
     from hermes_cli.browser_connect import manual_chrome_debug_command
 
     command = manual_chrome_debug_command(port)
-    if not command:
-        return (
-            f"Chrome is not reachable at {url}. "
-            "No Chrome/Chromium executable was found in this environment; "
-            f"install one or start Chrome with --remote-debugging-port={port}, then retry /browser connect."
-        )
-
-    return (
-        f"Chrome is not reachable at {url}. "
-        "Start Chrome with remote debugging, then retry /browser connect:\n"
-        f"{command}"
+    hint = (
+        ["Start Chrome with remote debugging, then retry /browser connect:", command]
+        if command
+        else [
+            "No Chrome/Chromium executable was found in this environment.",
+            f"Install one or start Chrome with --remote-debugging-port={port}, then retry /browser connect.",
+        ]
     )
-
-
-def _browser_connect_failure_messages(url: str, port: int) -> list[str]:
-    command = _browser_connect_error(url, port)
     return [
-        "Chrome isn't running with remote debugging — attempting to launch...",
-        *command.splitlines(),
+        f"Chrome is not reachable at {url}.",
+        *hint,
         "Browser not connected — start Chrome with remote debugging and retry /browser connect",
     ]
-
-
-def _browser_progress(sid: str, message: str, *, level: str = "info") -> None:
-    _emit("browser.progress", sid, {"message": message, "level": level})
 
 
 @method("browser.manage")
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
+
     if action == "status":
-        resolved_url = _resolve_browser_cdp_url()
-        return _ok(
-            rid,
-            {
-                "connected": bool(resolved_url),
-                "url": resolved_url,
-            },
-        )
-    if action == "connect":
-        from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
+        url = _resolve_browser_cdp_url()
+        return _ok(rid, {"connected": bool(url), "url": url})
 
-        url = params.get("url", DEFAULT_BROWSER_CDP_URL)
-        sid = params.get("session_id") or ""
-        messages: list[str] = []
-
-        def announce(message: str, *, level: str = "info") -> None:
-            messages.append(message)
-            _browser_progress(sid, message, level=level)
-
-        try:
-            import urllib.request
-            from urllib.parse import urlparse
-            from tools.browser_tool import cleanup_all_browsers
-
-            parsed = urlparse(url if "://" in url else f"http://{url}")
-            if parsed.scheme not in {"http", "https", "ws", "wss"}:
-                return _err(rid, 4015, f"unsupported browser url: {url}")
-            if _is_default_local_cdp(parsed):
-                url = DEFAULT_BROWSER_CDP_URL
-                parsed = urlparse(url)
-
-            # A concrete ``ws[s]://.../devtools/browser/<id>`` endpoint is
-            # already directly connectable — those are the URLs Browserbase
-            # / browserless / hosted CDP providers return, and they
-            # generally DON'T serve the discovery-style ``/json/version``
-            # path.  Probing it would just reject valid endpoints.  Skip
-            # the HTTP probe and do a TCP-level reachability check instead;
-            # the actual CDP handshake happens on the next ``browser_navigate``.
-            is_concrete_ws = parsed.scheme in {"ws", "wss"} and parsed.path.startswith(
-                "/devtools/browser/"
-            )
-            if is_concrete_ws:
-                import socket
-
-                host = parsed.hostname
-                port = parsed.port or (443 if parsed.scheme == "wss" else 80)
-                if not host:
-                    return _err(rid, 4015, f"missing host in browser url: {url}")
-                try:
-                    with socket.create_connection((host, port), timeout=2.0):
-                        pass
-                except OSError as e:
-                    return _err(rid, 5031, f"could not reach browser CDP at {url}: {e}")
-            else:
-                probe_root = f"{'https' if parsed.scheme == 'wss' else 'http' if parsed.scheme == 'ws' else parsed.scheme}://{parsed.netloc}"
-                probe_urls = [
-                    f"{probe_root.rstrip('/')}/json/version",
-                    f"{probe_root.rstrip('/')}/json",
-                ]
-                ok = False
-                for probe in probe_urls:
-                    try:
-                        with urllib.request.urlopen(probe, timeout=2.0) as resp:
-                            if 200 <= getattr(resp, "status", 200) < 300:
-                                ok = True
-                                break
-                    except Exception:
-                        continue
-                if not ok:
-                    if _is_default_local_cdp(parsed):
-                        import platform
-                        from hermes_cli.browser_connect import try_launch_chrome_debug
-
-                        port = parsed.port or 9222
-                        announce(
-                            "Chrome isn't running with remote debugging — attempting to launch..."
-                        )
-                        launched = try_launch_chrome_debug(port, platform.system())
-                        if launched:
-                            for _ in range(20):
-                                time.sleep(0.5)
-                                for probe in probe_urls:
-                                    try:
-                                        with urllib.request.urlopen(
-                                            probe, timeout=1.0
-                                        ) as resp:
-                                            if (
-                                                200
-                                                <= getattr(resp, "status", 200)
-                                                < 300
-                                            ):
-                                                ok = True
-                                                break
-                                    except Exception:
-                                        continue
-                                if ok:
-                                    break
-                            if ok:
-                                announce(
-                                    f"Chrome launched and listening on port {port}"
-                                )
-                        if not ok:
-                            for line in _browser_connect_failure_messages(url, port)[1:]:
-                                announce(line, level="error")
-                            return _ok(
-                                rid,
-                                {"connected": False, "url": url, "messages": messages},
-                            )
-                    else:
-                        return _err(rid, 5031, f"could not reach browser CDP at {url}")
-                elif _is_default_local_cdp(parsed):
-                    announce(
-                        f"Chrome is already listening on port {parsed.port or 9222}"
-                    )
-
-            # Persist a normalized URL for downstream CDP resolution.
-            # Discovery-style inputs (`http://host:port` or
-            # `http://host:port/json[/version]`) collapse to bare
-            # ``scheme://host:port`` so ``_resolve_cdp_override`` can
-            # safely append ``/json/version`` without producing a
-            # double-discovery path like ``.../json/json/version``.
-            # Concrete websocket endpoints (``/devtools/browser/<id>``
-            # — what Browserbase and other cloud providers return)
-            # are preserved verbatim.
-            if parsed.path.startswith("/devtools/browser/"):
-                normalized = parsed.geturl()
-            else:
-                normalized = parsed._replace(
-                    path="",
-                    params="",
-                    query="",
-                    fragment="",
-                ).geturl()
-
-            # Order matters: clear any cached browser sessions BEFORE
-            # publishing the new env var so an in-flight tool call
-            # observing the old supervisor is reaped first, and the
-            # next call freshly resolves the new URL.  The previous
-            # ordering left a brief window where ``_ensure_cdp_supervisor``
-            # could re-attach to the *old* supervisor.
-            cleanup_all_browsers()
-            os.environ["BROWSER_CDP_URL"] = normalized
-            # Drain any further cached state that could outlive the
-            # cleanup pass (CDP supervisor for the default task,
-            # cached agent-browser timeouts, etc.) so the next
-            # ``browser_navigate`` definitively reaches ``normalized``.
-            cleanup_all_browsers()
-        except Exception as e:
-            return _err(rid, 5031, str(e))
-        payload = {"connected": True, "url": normalized}
-        if messages:
-            payload["messages"] = messages
-        return _ok(rid, payload)
     if action == "disconnect":
+        return _browser_disconnect(rid)
+
+    if action != "connect":
+        return _err(rid, 4015, f"unknown action: {action}")
+
+    return _browser_connect(rid, params)
+
+
+def _browser_connect(rid, params: dict) -> dict:
+    from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
+    from tools.browser_tool import cleanup_all_browsers
+    from urllib.parse import urlparse
+
+    url = params.get("url", DEFAULT_BROWSER_CDP_URL)
+    sid = params.get("session_id") or ""
+    messages: list[str] = []
+
+    def announce(message: str, *, level: str = "info") -> None:
+        messages.append(message)
+        _emit("browser.progress", sid, {"message": message, "level": level})
+
+    parsed = urlparse(url if "://" in url else f"http://{url}")
+    if parsed.scheme not in {"http", "https", "ws", "wss"}:
+        return _err(rid, 4015, f"unsupported browser url: {url}")
+
+    # Always normalize default-local to 127.0.0.1:9222 so downstream
+    # comparisons + messaging match what we'll actually persist.
+    if _is_default_local_cdp(parsed):
+        url = DEFAULT_BROWSER_CDP_URL
+        parsed = urlparse(url)
+
+    try:
+        # ws[s]://.../devtools/browser/<id> endpoints (hosted CDP
+        # providers) don't serve the HTTP discovery path; just check
+        # TCP-level reachability and let browser_navigate handshake.
+        if parsed.scheme in {"ws", "wss"} and parsed.path.startswith("/devtools/browser/"):
+            import socket
+
+            if not parsed.hostname:
+                return _err(rid, 4015, f"missing host in browser url: {url}")
+            port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+            try:
+                with socket.create_connection((parsed.hostname, port), timeout=2.0):
+                    pass
+            except OSError as e:
+                return _err(rid, 5031, f"could not reach browser CDP at {url}: {e}")
+        else:
+            probes = _probe_urls(parsed)
+            ok = any(_http_ok(p, timeout=2.0) for p in probes)
+
+            if not ok and _is_default_local_cdp(parsed):
+                import platform
+                from hermes_cli.browser_connect import try_launch_chrome_debug
+
+                port = parsed.port or 9222
+                announce("Chrome isn't running with remote debugging — attempting to launch...")
+
+                if try_launch_chrome_debug(port, platform.system()):
+                    for _ in range(20):
+                        time.sleep(0.5)
+                        if any(_http_ok(p, timeout=1.0) for p in probes):
+                            ok = True
+                            break
+
+                if ok:
+                    announce(f"Chrome launched and listening on port {port}")
+                else:
+                    for line in _failure_messages(url, port)[1:]:
+                        announce(line, level="error")
+                    return _ok(rid, {"connected": False, "url": url, "messages": messages})
+            elif not ok:
+                return _err(rid, 5031, f"could not reach browser CDP at {url}")
+            elif _is_default_local_cdp(parsed):
+                announce(f"Chrome is already listening on port {parsed.port or 9222}")
+
+        normalized = _normalize_cdp_url(parsed)
+
+        # Order matters: reap sessions BEFORE publishing the new env
+        # so an in-flight tool call sees the old supervisor closed,
+        # then again AFTER so the default task's cached supervisor
+        # is drained against the new URL.
+        cleanup_all_browsers()
+        os.environ["BROWSER_CDP_URL"] = normalized
+        cleanup_all_browsers()
+    except Exception as e:
+        return _err(rid, 5031, str(e))
+
+    payload: dict[str, object] = {"connected": True, "url": normalized}
+    if messages:
+        payload["messages"] = messages
+    return _ok(rid, payload)
+
+
+def _browser_disconnect(rid) -> dict:
+    # Reap, drop the env override, reap again — closes the same swap
+    # window covered by ``_browser_connect``.
+    def reap() -> None:
         try:
             from tools.browser_tool import cleanup_all_browsers
 
             cleanup_all_browsers()
         except Exception:
             pass
-        os.environ.pop("BROWSER_CDP_URL", None)
-        try:
-            from tools.browser_tool import cleanup_all_browsers as _again
 
-            _again()
-        except Exception:
-            pass
-        return _ok(rid, {"connected": False})
-    return _err(rid, 4015, f"unknown action: {action}")
+    reap()
+    os.environ.pop("BROWSER_CDP_URL", None)
+    reap()
+    return _ok(rid, {"connected": False})
 
 
 @method("plugins.list")

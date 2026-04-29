@@ -93,9 +93,8 @@ export const opsCommands: SlashCommand[] = [
     help: 'manage browser CDP connection [connect|disconnect|status]',
     name: 'browser',
     run: (arg, ctx) => {
-      const trimmed = arg.trim()
-      const [rawAction, ...rest] = trimmed ? trimmed.split(/\s+/) : ['status']
-      const action = (rawAction || 'status').toLowerCase()
+      const [rawAction = 'status', ...rest] = arg.trim().split(/\s+/).filter(Boolean)
+      const action = rawAction.toLowerCase()
 
       if (!['connect', 'disconnect', 'status'].includes(action)) {
         return ctx.transcript.sys(
@@ -104,21 +103,19 @@ export const opsCommands: SlashCommand[] = [
       }
 
       const sid = ctx.sid ?? null
-      const payload: Record<string, unknown> = { action, session_id: sid }
-      const requested = rest.join(' ').trim()
+      const url = action === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
 
-      if (action === 'connect') {
-        payload.url = requested || 'http://127.0.0.1:9222'
-        ctx.transcript.sys(`checking Chrome remote debugging at ${payload.url}...`)
+      if (url) {
+        ctx.transcript.sys(`checking Chrome remote debugging at ${url}...`)
       }
 
       ctx.gateway
-        .rpc<BrowserManageResponse>('browser.manage', payload)
+        .rpc<BrowserManageResponse>('browser.manage', { action, session_id: sid, ...(url && { url }) })
         .then(
           ctx.guarded<BrowserManageResponse>(r => {
-            if (!sid) {
-              r.messages?.forEach(message => ctx.transcript.sys(message))
-            }
+            // Without a session we can't subscribe to streamed
+            // browser.progress events, so flush the bundled list.
+            if (!sid) r.messages?.forEach(message => ctx.transcript.sys(message))
 
             if (action === 'status') {
               return ctx.transcript.sys(
@@ -128,19 +125,15 @@ export const opsCommands: SlashCommand[] = [
               )
             }
 
-            if (action === 'connect') {
-              if (r.connected) {
-                ctx.transcript.sys(`Browser connected to live Chrome via CDP`)
-                ctx.transcript.sys(`Endpoint: ${r.url || '(url unavailable)'}`)
-                ctx.transcript.sys('next browser tool call will use this CDP endpoint')
-
-                return
-              }
-
-              return
+            if (action === 'disconnect') {
+              return ctx.transcript.sys('browser disconnected')
             }
 
-            ctx.transcript.sys('browser disconnected')
+            if (r.connected) {
+              ctx.transcript.sys('Browser connected to live Chrome via CDP')
+              ctx.transcript.sys(`Endpoint: ${r.url || '(url unavailable)'}`)
+              ctx.transcript.sys('next browser tool call will use this CDP endpoint')
+            }
           })
         )
         .catch(ctx.guardedErr)

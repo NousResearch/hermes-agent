@@ -9,7 +9,6 @@ binary inside ``_make_tui_argv`` for node-direct invocations.
 """
 
 from pathlib import Path
-import os
 
 import pytest
 

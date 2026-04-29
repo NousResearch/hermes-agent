@@ -566,3 +566,151 @@ class TestSecurityScanGate:
 
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
             assert _guard_agent_created_enabled() is False
+
+
+# ---------------------------------------------------------------------------
+# External skills directories (skills.external_dirs) — mutations in place
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _two_roots(local_dir: Path, external_dir: Path):
+    """Patch the skill manager so local SKILLS_DIR = local_dir and
+    get_all_skills_dirs() returns [local_dir, external_dir] in order."""
+    with patch("tools.skill_manager_tool.SKILLS_DIR", local_dir), \
+         patch("agent.skill_utils.get_all_skills_dirs",
+               return_value=[local_dir, external_dir]):
+        yield
+
+
+def _write_external_skill(external_dir: Path, name: str = "ext-skill") -> Path:
+    skill_dir = external_dir / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: An external skill.\n---\n\n"
+        "# External\n\nBody with OLD_MARKER here.\n"
+    )
+    return skill_dir
+
+
+class TestExternalSkillMutations:
+    """Verify skill_manage can patch/edit/write/remove/delete skills that live
+    under skills.external_dirs — in place, without duplicating to local.
+
+    Regression for issues #4759 and #4381: the read-only gate used to refuse
+    with 'Skill X is in an external directory and cannot be modified', which
+    caused agents to create duplicate copies in ~/.hermes/skills/ as a
+    workaround.
+    """
+
+    def test_patch_external_skill_writes_in_place(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external):
+            result = _patch_skill("ext-skill", "OLD_MARKER", "NEW_MARKER")
+
+        assert result["success"] is True, result
+        assert "NEW_MARKER" in (skill_dir / "SKILL.md").read_text()
+        # No duplicate in local
+        assert not (local / "ext-skill").exists()
+
+    def test_edit_external_skill_writes_in_place(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        new_content = (
+            "---\nname: ext-skill\ndescription: Rewritten.\n---\n\n"
+            "# Rewritten\n\nBrand new body.\n"
+        )
+        with _two_roots(local, external):
+            result = _edit_skill("ext-skill", new_content)
+
+        assert result["success"] is True, result
+        assert "Brand new body" in (skill_dir / "SKILL.md").read_text()
+        assert not (local / "ext-skill").exists()
+
+    def test_write_file_on_external_skill(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external):
+            result = _write_file("ext-skill", "references/notes.md", "# Notes\n")
+
+        assert result["success"] is True, result
+        assert (skill_dir / "references" / "notes.md").read_text() == "# Notes\n"
+        assert not (local / "ext-skill").exists()
+
+    def test_remove_file_on_external_skill(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "notes.md").write_text("# Notes\n")
+
+        with _two_roots(local, external):
+            result = _remove_file("ext-skill", "references/notes.md")
+
+        assert result["success"] is True, result
+        assert not (skill_dir / "references" / "notes.md").exists()
+
+    def test_delete_external_skill_removes_skill_not_root(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external):
+            result = _delete_skill("ext-skill")
+
+        assert result["success"] is True, result
+        assert not skill_dir.exists()
+        # The external root must NOT be rmdir'd, even when empty after deletion
+        assert external.exists() and external.is_dir()
+
+    def test_delete_external_skill_cleans_empty_category(self, tmp_path):
+        """When a skill lives under external/<category>/<name>, deleting the
+        last skill in the category should rmdir the empty category dir but
+        stop at the external root."""
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        cat_dir = external / "team"
+        cat_dir.mkdir()
+        skill_dir = cat_dir / "ext-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: ext-skill\ndescription: An external skill.\n---\n\n"
+            "# External\n\nBody.\n"
+        )
+
+        with _two_roots(local, external):
+            result = _delete_skill("ext-skill")
+
+        assert result["success"] is True, result
+        assert not skill_dir.exists()
+        assert not cat_dir.exists()  # empty category cleaned up
+        assert external.exists()     # but never the external root
+
+    def test_create_still_writes_to_local_root(self, tmp_path):
+        """Creating a new skill always lands in local SKILLS_DIR, never
+        external_dirs — create is unchanged by this PR."""
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+
+        with _two_roots(local, external):
+            result = _create_skill("fresh-skill", VALID_SKILL_CONTENT.replace(
+                "name: test-skill", "name: fresh-skill"))
+
+        assert result["success"] is True, result
+        assert (local / "fresh-skill" / "SKILL.md").exists()
+        assert not (external / "fresh-skill").exists()
+

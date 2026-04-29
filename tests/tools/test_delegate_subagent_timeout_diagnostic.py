@@ -284,3 +284,257 @@ class TestRunSingleChildTimeoutDump:
         if logs_dir.is_dir():
             dumps = list(logs_dir.glob("subagent-timeout-*.log"))
             assert dumps == []
+
+
+# ── #17308: N-API-call timeout structured diagnostics ─────────────────────
+
+class _StubChildWithMessages(_StubChild):
+    """_StubChild + a `_session_messages` view + configurable `current_tool`.
+
+    Mirrors the real AIAgent: ``_session_messages`` is the chat-completions
+    transcript that the assistant writes to as it works, and
+    ``get_activity_summary()['current_tool']`` reflects whatever tool the
+    main loop is currently dispatching.
+    """
+
+    def __init__(
+        self,
+        *,
+        session_messages=None,
+        current_tool=None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._session_messages = list(session_messages or [])
+        self._current_tool = current_tool
+
+    def get_activity_summary(self):
+        s = super().get_activity_summary()
+        s["current_tool"] = self._current_tool
+        return s
+
+
+class TestRunSingleChildTimeoutToolTrace:
+    """#17308: when a subagent times out *after* making API calls, the result
+    must surface ``tool_trace``, ``last_tool``, ``last_tool_status``, and
+    ``current_tool`` so the lead agent can tell 'tool finished, next LLM call
+    stuck' from 'tool itself hung'."""
+
+    def _invoke(self, child, monkeypatch):
+        from tools import delegate_tool
+        monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.3)
+        parent = MagicMock()
+        parent._touch_activity = MagicMock()
+        parent._current_task_id = None
+        return delegate_tool._run_single_child(
+            task_index=0,
+            goal="test goal",
+            child=child,
+            parent_agent=parent,
+        )
+
+    def test_timeout_after_completed_tool_marks_status_ok(self, hermes_home, monkeypatch):
+        """Tool finished cleanly, then the next LLM request hung. The trace
+        must show ``status=ok`` on the last tool, and ``current_tool`` must
+        be None — the lead agent knows the suspect is the LLM call."""
+        msgs = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "web_search", "arguments": '{"q":"x"}'}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "results: ..."},
+        ]
+        child = _StubChildWithMessages(
+            api_call_count=2,
+            hang_seconds=10.0,
+            session_messages=msgs,
+            current_tool=None,
+        )
+        result = self._invoke(child, monkeypatch)
+
+        assert result["status"] == "timeout"
+        assert result["api_calls"] == 2
+        assert result["last_tool"] == "web_search"
+        assert result["last_tool_status"] == "ok"
+        assert result["current_tool"] is None
+        assert isinstance(result["tool_trace"], list) and len(result["tool_trace"]) == 1
+        entry = result["tool_trace"][0]
+        assert entry["tool"] == "web_search"
+        assert entry["status"] == "ok"
+        assert entry["result_bytes"] > 0
+        # Error message references the last tool for the lead agent's eyes.
+        assert "last_tool=web_search" in result["error"]
+        assert "status=ok" in result["error"]
+        # 0-API-call diagnostic dump must NOT fire on this branch.
+        assert result.get("diagnostic_path") is None
+
+    def test_timeout_inside_running_tool_marks_status_in_progress(
+        self, hermes_home, monkeypatch
+    ):
+        """Assistant invoked a tool but no tool-role response was written
+        before the timeout fired — the tool itself is hung. Status must be
+        ``in_progress`` so the lead agent suspects the tool, not the LLM."""
+        msgs = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "terminal", "arguments": '{"cmd":"sleep 9999"}'}},
+                ],
+            },
+            # No tool-role reply yet — the tool is still running.
+        ]
+        child = _StubChildWithMessages(
+            api_call_count=1,
+            hang_seconds=10.0,
+            session_messages=msgs,
+            current_tool="terminal",
+        )
+        result = self._invoke(child, monkeypatch)
+
+        assert result["status"] == "timeout"
+        assert result["last_tool"] == "terminal"
+        assert result["last_tool_status"] == "in_progress"
+        assert result["current_tool"] == "terminal"
+        assert result["tool_trace"][-1]["status"] == "in_progress"
+        assert "last_tool=terminal" in result["error"]
+        assert "status=in_progress" in result["error"]
+
+    def test_timeout_with_tool_error_preserves_error_status(self, hermes_home, monkeypatch):
+        """A tool returned an error, then the next LLM call hung. The trace
+        must keep ``status=error`` on that entry — don't lie and call it ok."""
+        msgs = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "Error: rate limit"},
+        ]
+        child = _StubChildWithMessages(
+            api_call_count=1,
+            hang_seconds=10.0,
+            session_messages=msgs,
+            current_tool=None,
+        )
+        result = self._invoke(child, monkeypatch)
+        assert result["last_tool"] == "web_search"
+        assert result["last_tool_status"] == "error"
+        assert result["tool_trace"][-1]["status"] == "error"
+
+    def test_timeout_with_parallel_tool_calls_pairs_by_id(self, hermes_home, monkeypatch):
+        """Parallel tool_calls must be paired by tool_call_id, not order."""
+        msgs = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "a", "function": {"name": "web_search", "arguments": "{}"}},
+                    {"id": "b", "function": {"name": "terminal", "arguments": "{}"}},
+                ],
+            },
+            # Replies arrive in reverse order — must still pair correctly.
+            {"role": "tool", "tool_call_id": "b", "content": "shell ok"},
+            {"role": "tool", "tool_call_id": "a", "content": "search ok"},
+        ]
+        child = _StubChildWithMessages(
+            api_call_count=1,
+            hang_seconds=10.0,
+            session_messages=msgs,
+            current_tool=None,
+        )
+        result = self._invoke(child, monkeypatch)
+        trace = result["tool_trace"]
+        assert [e["tool"] for e in trace] == ["web_search", "terminal"]
+        # web_search entry got the matching 'a' content; terminal got 'b'.
+        assert all(e["status"] == "ok" for e in trace)
+        # last_tool is the trailing assistant call — terminal in this case.
+        assert result["last_tool"] == "terminal"
+
+    def test_zero_api_call_timeout_skips_tool_trace(self, hermes_home, monkeypatch):
+        """0-API-call timeouts are covered by diagnostic_path (#15105). The
+        new tool_trace fields must be empty/None on that branch — not stale."""
+        child = _StubChildWithMessages(
+            api_call_count=0,
+            hang_seconds=10.0,
+            session_messages=[{"role": "user", "content": "x"}],
+            current_tool=None,
+        )
+        result = self._invoke(child, monkeypatch)
+        assert result["status"] == "timeout"
+        assert result["api_calls"] == 0
+        assert result["diagnostic_path"] is not None
+        assert result["tool_trace"] == []
+        assert result["last_tool"] is None
+        assert result["last_tool_status"] is None
+        assert result["current_tool"] is None
+
+    def test_timeout_with_no_session_messages_attr_does_not_crash(
+        self, hermes_home, monkeypatch
+    ):
+        """Some agent shapes (mocks, exotic providers) won't expose
+        _session_messages. Reconstruction must degrade to an empty trace."""
+        child = _StubChild(api_call_count=2, hang_seconds=10.0)
+        # Note: plain _StubChild does NOT define _session_messages.
+        assert not hasattr(child, "_session_messages")
+        result = self._invoke(child, monkeypatch)
+        assert result["status"] == "timeout"
+        assert result["api_calls"] == 2
+        assert result["tool_trace"] == []
+        assert result["last_tool"] is None
+        assert result["last_tool_status"] is None
+        # Error message stays the legacy 'stuck on a slow API call' — no last_tool=
+        # suffix because we have nothing reliable to report.
+        assert "stuck on a slow API call" in result["error"]
+        assert "last_tool=" not in result["error"]
+
+
+# ── _build_tool_trace_from_messages helper ────────────────────────────
+
+class TestBuildToolTraceFromMessages:
+    """Pin the helper extracted from _run_single_child's normal-completion
+    branch so the timeout path can reuse it (#17308)."""
+
+    def test_handles_non_list_input(self):
+        from tools.delegate_tool import _build_tool_trace_from_messages
+        assert _build_tool_trace_from_messages(None) == []
+        assert _build_tool_trace_from_messages("not a list") == []
+        assert _build_tool_trace_from_messages({"role": "user"}) == []
+
+    def test_skips_non_dict_entries(self):
+        from tools.delegate_tool import _build_tool_trace_from_messages
+        msgs = [
+            "junk",
+            None,
+            {"role": "assistant", "tool_calls": [
+                {"id": "x", "function": {"name": "t", "arguments": "{}"}}
+            ]},
+        ]
+        out = _build_tool_trace_from_messages(msgs)
+        assert len(out) == 1
+        assert out[0]["tool"] == "t"
+
+    def test_assistant_with_no_tool_calls_is_ignored(self):
+        from tools.delegate_tool import _build_tool_trace_from_messages
+        msgs = [{"role": "assistant", "content": "hello"}]
+        assert _build_tool_trace_from_messages(msgs) == []
+
+    def test_tool_response_without_call_id_falls_back_to_last_entry(self):
+        from tools.delegate_tool import _build_tool_trace_from_messages
+        msgs = [
+            {"role": "assistant", "tool_calls": [
+                {"id": None, "function": {"name": "web_search", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "content": "ok"},
+        ]
+        out = _build_tool_trace_from_messages(msgs)
+        assert out == [{"tool": "web_search", "args_bytes": 2, "result_bytes": 2, "status": "ok"}]

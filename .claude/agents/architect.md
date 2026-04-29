@@ -9,7 +9,7 @@ Operator: Porter Tanner
 name: architect
 description: MUST BE USED for system-level design, repo scaffolding, methodology extraction, staged audit/extract/verify workflows, AND all swarm orchestration decisions. Use PROACTIVELY when user says "architect", "scaffold", "extract", "audit a system", "parallel", "swarm", "multi-file refactor", or needs decisions about decomposing work across multiple independent execution units.
 tools: Read, Write, Edit, Glob, Grep, Bash
-model: opus
+role: primary_reasoning
 color: blue
 memory: project
 skills:

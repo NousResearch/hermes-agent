@@ -9,7 +9,7 @@ Operator: Porter Tanner
 name: code-reviewer
 description: MUST BE USED for pull request reviews, prepared diffs, and committed changes presented for review. Use PROACTIVELY when user says "review this PR", "review this diff", "check this change before I merge", or presents an explicit diff / changeset / commit for review. Applies three-layer discipline — correctness, design, style — plus blast-radius and scope-drift analysis via GitNexus (when available) and grep. Review-only; does not modify code. DO NOT USE for every WIP edit during active development — the code skill handles quick main-session review of work-in-progress. DO NOT USE for audits of existing code without a pending change — that is the chen sub-agent.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+role: fast_iteration
 color: green
 memory: project
 skills:

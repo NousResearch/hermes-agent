@@ -9,7 +9,7 @@ Operator: Porter Tanner
 name: architect
 description: MUST BE USED for system-level design, repo scaffolding, methodology extraction, staged audit/extract/verify workflows, AND all swarm orchestration decisions. Use PROACTIVELY when user says "architect", "scaffold", "extract", "audit a system", "parallel", "swarm", "multi-file refactor", or needs decisions about decomposing work across multiple independent execution units. [Reference — authoritative form at .claude/agents/architect.md]
 tools: Read, Grep, Glob, Bash, Write, Edit, WebFetch
-model: opus
+role: primary_reasoning
 effort: high
 maxTurns: 60
 ---

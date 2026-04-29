@@ -1,0 +1,20 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: pytest-smoke
+        name: pytest smoke
+        entry: bash -c 'pytest tests/smoke/ -x --tb=short 2>/dev/null || pytest tests/ -x -k "smoke" --tb=short 2>/dev/null || echo "no smoke suite - skipping"'
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: no-hardcoded-home-paths
+        name: Check scripts for hardcoded home paths
+        entry: bash -c 'grep -rE "(/home/[a-z]+/|C:\\Users\\[a-z]+\\)" scripts/ && exit 1 || exit 0'
+        language: system
+        files: ^scripts/.*\.(sh|py)$

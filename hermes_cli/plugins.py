@@ -760,6 +760,8 @@ class PluginManager:
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
+            if hasattr(self, "_context_engine_commands_synced_for"):
+                delattr(self, "_context_engine_commands_synced_for")
             self._context_engine = None
         self._discovered = True
 
@@ -1443,7 +1445,13 @@ def get_plugin_context_engine():
 
 def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
-    entry = _ensure_plugins_discovered()._plugin_commands.get(name)
+    manager = _ensure_plugins_discovered()
+    try:
+        from plugins.context_engine import sync_configured_context_engine_commands
+        sync_configured_context_engine_commands()
+    except Exception:
+        pass
+    entry = manager._plugin_commands.get(name)
     return entry["handler"] if entry else None
 
 
@@ -1502,7 +1510,13 @@ def get_plugin_commands() -> Dict[str, dict]:
     Triggers idempotent plugin discovery so callers can use plugin commands
     before any explicit discover_plugins() call.
     """
-    return _ensure_plugins_discovered()._plugin_commands
+    manager = _ensure_plugins_discovered()
+    try:
+        from plugins.context_engine import sync_configured_context_engine_commands
+        sync_configured_context_engine_commands()
+    except Exception:
+        pass
+    return manager._plugin_commands
 
 
 def get_plugin_toolsets() -> List[tuple]:

@@ -30,6 +30,46 @@ logger = logging.getLogger(__name__)
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
 
 
+def _selected_context_engine_name() -> str:
+    """Return the configured context engine name."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        config = load_config()
+        return cfg_get(config, "context", "engine", default="compressor") or "compressor"
+    except Exception:
+        return "compressor"
+
+
+def mark_context_engine_commands_synced(engine_name: str) -> None:
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        setattr(get_plugin_manager(), "_context_engine_commands_synced_for", engine_name)
+    except Exception:
+        pass
+
+
+def sync_configured_context_engine_commands() -> None:
+    """Ensure slash commands for the configured context engine are registered.
+
+    Gateway help/menu/dispatch can run before the first AIAgent instance is
+    created.  In that path no one has loaded the configured context engine yet,
+    so command enumeration must explicitly preload its command surface.
+    """
+    engine_name = _selected_context_engine_name()
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        manager = get_plugin_manager()
+    except Exception:
+        manager = None
+    if manager is not None and getattr(manager, "_context_engine_commands_synced_for", None) == engine_name:
+        return
+    if engine_name == "compressor":
+        clear_context_engine_commands()
+        mark_context_engine_commands_synced(engine_name)
+        return
+    load_context_engine(engine_name)
+
+
 def discover_context_engines() -> List[Tuple[str, str, bool]]:
     """Scan plugins/context_engine/ for available engines.
 
@@ -63,7 +103,7 @@ def discover_context_engines() -> List[Tuple[str, str, bool]]:
         # Quick availability check — try loading and calling is_available()
         available = True
         try:
-            engine = _load_engine_from_dir(child)
+            engine = _load_engine_from_dir(child, register_commands=False)
             if engine is None:
                 available = False
             elif hasattr(engine, "is_available"):
@@ -82,22 +122,43 @@ def load_context_engine(name: str) -> Optional["ContextEngine"]:
     Returns None if the engine is not found or fails to load.
     """
     engine_dir = _CONTEXT_ENGINE_PLUGINS_DIR / name
+    clear_context_engine_commands()
     if not engine_dir.is_dir():
         logger.debug("Context engine '%s' not found in %s", name, _CONTEXT_ENGINE_PLUGINS_DIR)
+        mark_context_engine_commands_synced(name)
         return None
 
     try:
-        engine = _load_engine_from_dir(engine_dir)
+        engine = _load_engine_from_dir(engine_dir, register_commands=True)
         if engine:
+            mark_context_engine_commands_synced(name)
             return engine
         logger.warning("Context engine '%s' loaded but no engine instance found", name)
+        mark_context_engine_commands_synced(name)
         return None
     except Exception as e:
         logger.warning("Failed to load context engine '%s': %s", name, e)
+        mark_context_engine_commands_synced(name)
         return None
 
 
-def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
+def clear_context_engine_commands() -> None:
+    """Remove slash commands registered by a previously loaded context engine."""
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+    except Exception:
+        return
+    try:
+        commands = get_plugin_manager()._plugin_commands
+    except Exception:
+        return
+    for command_name, meta in list(commands.items()):
+        plugin_name = meta.get("plugin") if isinstance(meta, dict) else None
+        if isinstance(plugin_name, str) and plugin_name.startswith("context_engine:"):
+            commands.pop(command_name, None)
+
+
+def _load_engine_from_dir(engine_dir: Path, *, register_commands: bool = False) -> Optional["ContextEngine"]:
     """Import an engine module and extract the ContextEngine instance.
 
     The module must have either:
@@ -174,12 +235,15 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
 
     # Try register(ctx) pattern first (how plugins are written)
     if hasattr(mod, "register"):
-        collector = _EngineCollector()
+        collector = _EngineCollector(name, register_commands=register_commands)
         try:
             mod.register(collector)
             if collector.engine:
+                collector.commit_commands()
                 return collector.engine
         except Exception as e:
+            if register_commands:
+                clear_context_engine_commands()
             logger.debug("register() failed for %s: %s", name, e)
 
     # Fallback: find a ContextEngine subclass and instantiate it
@@ -197,13 +261,70 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
 
 
 class _EngineCollector:
-    """Fake plugin context that captures register_context_engine calls."""
+    """Plugin-like context that captures context-engine registrations."""
 
-    def __init__(self):
+    def __init__(self, engine_name: str, *, register_commands: bool = False):
+        self.engine_name = engine_name
+        self.register_commands = register_commands
         self.engine = None
+        self._pending_commands = []
 
     def register_context_engine(self, engine):
         self.engine = engine
+
+    def register_command(self, name, handler, description="", args_hint=""):
+        """Register an in-session slash command for the active context engine."""
+        if not self.register_commands:
+            return
+        clean = str(name).lower().strip().lstrip("/").replace(" ", "-")
+        if not clean:
+            logger.warning(
+                "Context engine '%s' tried to register a command with an empty name.",
+                self.engine_name,
+            )
+            return
+        try:
+            from hermes_cli.commands import resolve_command
+            if resolve_command(clean) is not None:
+                logger.warning(
+                    "Context engine '%s' tried to register command '/%s' which conflicts "
+                    "with a built-in command. Skipping.",
+                    self.engine_name, clean,
+                )
+                return
+        except Exception:
+            pass
+        self._pending_commands.append((clean, handler, description, str(args_hint or "").strip()))
+
+    def commit_commands(self):
+        """Commit buffered slash commands after the engine registered successfully."""
+        if not self.register_commands or not self._pending_commands:
+            return
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            commands = get_plugin_manager()._plugin_commands
+        except Exception as exc:
+            logger.debug(
+                "Context engine '%s' failed to register commands: %s",
+                self.engine_name, exc,
+            )
+            return
+        for clean, handler, description, args_hint in self._pending_commands:
+            existing = commands.get(clean)
+            existing_plugin = existing.get("plugin") if isinstance(existing, dict) else None
+            if existing is not None and existing_plugin != f"context_engine:{self.engine_name}":
+                logger.warning(
+                    "Context engine '%s' tried to register command '/%s' which is "
+                    "already registered by plugin '%s'. Skipping.",
+                    self.engine_name, clean, existing_plugin or "unknown",
+                )
+                continue
+            commands[clean] = {
+                "handler": handler,
+                "description": description or "Plugin command",
+                "plugin": f"context_engine:{self.engine_name}",
+                "args_hint": args_hint,
+            }
 
     # No-op for other registration methods
     def register_tool(self, *args, **kwargs):

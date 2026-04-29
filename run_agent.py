@@ -2302,6 +2302,13 @@ class AIAgent:
                     _engine_name,
                 )
         # else: config says "compressor" — use built-in, don't auto-activate plugins
+        else:
+            try:
+                from plugins.context_engine import clear_context_engine_commands, mark_context_engine_commands_synced
+                clear_context_engine_commands()
+                mark_context_engine_commands_synced("compressor")
+            except Exception:
+                pass
 
         if _selected_engine is not None:
             self.context_compressor = _selected_engine

@@ -344,7 +344,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
 
 
 def should_bypass_active_session(command_name: str | None) -> bool:
-    """Return True for any resolvable slash command.
+    """Return True for any gateway-known slash command.
 
     Rationale: every gateway-registered slash command either has a
     specific Level-2 handler in gateway/run.py (/stop, /new, /model,
@@ -362,8 +362,10 @@ def should_bypass_active_session(command_name: str | None) -> bool:
 
     ACTIVE_SESSION_BYPASS_COMMANDS remains the subset of commands with
     explicit Level-2 handlers; the rest fall through to the catch-all.
+    Plugin and context-engine commands are gateway-known too, so they
+    must bypass the pending user-message queue during active sessions.
     """
-    return resolve_command(command_name) is not None if command_name else False
+    return is_gateway_known_command(command_name) if command_name else False
 
 
 def _resolve_config_gates() -> set[str]:
@@ -432,6 +434,9 @@ def gateway_help_lines() -> list[str]:
             alias_parts.append(f"`/{a}`")
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
         lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+    for name, description, args_hint in _iter_plugin_command_entries():
+        args = f" {args_hint}" if args_hint else ""
+        lines.append(f"`/{name}{args}` -- {description}")
     return lines
 
 

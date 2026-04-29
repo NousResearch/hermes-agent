@@ -7,6 +7,7 @@ context_length, causing the CLI status bar to show 'ctx --'.
 from unittest.mock import MagicMock, patch
 
 from agent.context_engine import ContextEngine
+from hermes_cli.plugins import PluginManager
 
 
 class _StubEngine(ContextEngine):
@@ -44,7 +45,7 @@ def test_plugin_engine_gets_context_length_on_init():
         from run_agent import AIAgent
 
         agent = AIAgent(
-            api_key="test-key-1234567890",
+            api_key="test",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
@@ -75,7 +76,7 @@ def test_plugin_engine_update_model_args():
 
         agent = AIAgent(
             model="openrouter/auto",
-            api_key="test-key-1234567890",
+            api_key="test",
             base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
@@ -89,3 +90,43 @@ def test_plugin_engine_update_model_args():
     assert "provider" in kw
     # Should NOT pass api_mode — the ABC doesn't accept it
     assert "api_mode" not in kw
+
+
+def test_compressor_selection_clears_stale_context_engine_commands():
+    """Switching back to the built-in compressor should remove context-engine commands."""
+    cfg = {"context": {"engine": "compressor"}, "agent": {}}
+    manager = PluginManager()
+    manager._discovered = True
+    manager._plugin_commands["lcm"] = {
+        "handler": lambda raw_args: "stale",
+        "description": "Stale LCM",
+        "plugin": "context_engine:lcm",
+        "args_hint": "",
+    }
+    manager._plugin_commands["normal"] = {
+        "handler": lambda raw_args: "keep",
+        "description": "Normal plugin command",
+        "plugin": "normal-plugin",
+        "args_hint": "",
+    }
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.plugins._plugin_manager", manager),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.context_compressor.name == "compressor"
+    assert "lcm" not in manager._plugin_commands
+    assert "normal" in manager._plugin_commands

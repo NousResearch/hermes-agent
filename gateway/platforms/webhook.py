@@ -202,6 +202,12 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
+        # Rose Command Centre callback — POST the agent's response back to a
+        # Rose-controlled callback URL with HMAC-SHA256 signing using the same
+        # secret as the inbound dispatch.  See _deliver_rose_callback() below.
+        if deliver_type == "rose_callback":
+            return await self._deliver_rose_callback(content, delivery)
+
         # Cross-platform delivery — any platform with a gateway adapter
         if self.gateway_runner and deliver_type in (
             "telegram",
@@ -507,6 +513,16 @@ class WebhookAdapter(BasePlatformAdapter):
                 route_config.get("deliver_extra", {}), payload
             ),
             "payload": payload,
+            # ── rose_callback support (Rose Command Centre integration) ──
+            # When deliver == "rose_callback" the agent's response is POSTed
+            # back to Rose's callback endpoint with the same HMAC secret used
+            # for inbound dispatch.  We capture the inbound request's secret
+            # and X-Rose-Request-Id here so send() can sign and route the
+            # callback without re-reading the route config.
+            "secret": secret,
+            "rose_request_id": request.headers.get("X-Rose-Request-Id", ""),
+            "delivery_id": delivery_id,
+            "started_at": now,
         }
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
@@ -674,6 +690,118 @@ class WebhookAdapter(BasePlatformAdapter):
         return await self._deliver_cross_platform(
             deliver_type, content, delivery
         )
+
+    async def _deliver_rose_callback(
+        self, content: str, delivery: dict
+    ) -> SendResult:
+        """POST agent response back to Rose's /api/hermes-callback endpoint.
+
+        Used by Rose Command Centre dispatches (``deliver: rose_callback``).
+        Signs the body with HMAC-SHA256 using the same per-route secret that
+        verified the inbound dispatch, and includes the Rose-side request ID
+        so Rose's callback handler can match the result to its hermes_jobs
+        row.
+
+        Body format matches Rose's HermesCallbackPayload type
+        (server/hermesClient.ts):
+            {
+              "job_id": str,
+              "rose_request_id": str,
+              "status": "completed" | "failed",
+              "summary": str,
+              "artifacts": list[{type, path?, value?, url?}],
+              "duration_ms": int,
+              "token_cost_usd": float | null,
+              "error": str | null
+            }
+
+        Headers:
+            X-Hermes-Signature: sha256=<hex HMAC of raw body>
+            X-Rose-Timestamp:    unix-seconds (replay protection, 5 min window)
+            Content-Type:        application/json
+        """
+        extra = delivery.get("deliver_extra", {})
+        callback_url = extra.get("callback_url", "") or delivery.get(
+            "payload", {}
+        ).get("payload", {}).get("callback_url", "")
+        secret = delivery.get("secret", "")
+        rose_request_id = delivery.get("rose_request_id", "") or delivery.get(
+            "payload", {}
+        ).get("context", {}).get("rose_request_id", "")
+        delivery_id = delivery.get("delivery_id", "")
+        started_at = delivery.get("started_at")
+
+        if not callback_url:
+            logger.error(
+                "[webhook] rose_callback delivery missing callback_url"
+            )
+            return SendResult(
+                success=False, error="Missing callback_url"
+            )
+        if not secret:
+            logger.error("[webhook] rose_callback delivery missing secret")
+            return SendResult(success=False, error="Missing secret")
+        if not rose_request_id:
+            logger.error(
+                "[webhook] rose_callback delivery missing X-Rose-Request-Id"
+            )
+            return SendResult(
+                success=False, error="Missing rose_request_id"
+            )
+
+        duration_ms = (
+            int((time.time() - started_at) * 1000) if started_at else None
+        )
+
+        body_obj = {
+            "job_id": delivery_id or rose_request_id,
+            "rose_request_id": rose_request_id,
+            "status": "completed",
+            "summary": content,
+            "artifacts": [],
+            "duration_ms": duration_ms,
+            "token_cost_usd": None,
+            "error": None,
+        }
+        body_bytes = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
+        signature = "sha256=" + hmac.new(
+            secret.encode(), body_bytes, hashlib.sha256
+        ).hexdigest()
+        timestamp = str(int(time.time()))
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Hermes-Signature": signature,
+            "X-Rose-Timestamp": timestamp,
+        }
+
+        try:
+            import aiohttp as _aiohttp  # local import to keep top of file clean
+            timeout = _aiohttp.ClientTimeout(total=30)
+            async with _aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    callback_url, data=body_bytes, headers=headers
+                ) as resp:
+                    response_text = await resp.text()
+                    if resp.status >= 400:
+                        logger.warning(
+                            "[webhook] rose_callback target returned HTTP %d: %s",
+                            resp.status,
+                            response_text[:200],
+                        )
+                        return SendResult(
+                            success=False,
+                            error=f"HTTP {resp.status}: {response_text[:200]}",
+                        )
+                    logger.info(
+                        "[webhook] rose_callback delivered to %s (HTTP %d)",
+                        callback_url,
+                        resp.status,
+                    )
+                    return SendResult(success=True)
+        except Exception as e:
+            logger.exception("[webhook] rose_callback delivery failed")
+            return SendResult(success=False, error=str(e))
 
     async def _deliver_github_comment(
         self, content: str, delivery: dict

@@ -101,6 +101,14 @@ from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_
 logger = logging.getLogger(__name__)
 
 
+def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
+    """Return False instead of raising when a patched symbol is not a type."""
+    try:
+        return isinstance(obj, maybe_type)
+    except TypeError:
+        return False
+
+
 def _extract_url_query_params(url: str):
     """Extract query params from URL, return (clean_url, default_query dict or None)."""
     parsed = urlparse(url)
@@ -861,20 +869,20 @@ def _maybe_wrap_anthropic(
     - The ``anthropic`` SDK is not installed (falls back to OpenAI wire).
     """
     # Already wrapped — don't double-wrap.
-    if isinstance(client_obj, AnthropicAuxiliaryClient):
+    if _safe_isinstance(client_obj, AnthropicAuxiliaryClient):
         return client_obj
     # Other specialized adapters we should never re-dispatch.
-    if isinstance(client_obj, CodexAuxiliaryClient):
+    if _safe_isinstance(client_obj, CodexAuxiliaryClient):
         return client_obj
     try:
         from agent.gemini_native_adapter import GeminiNativeClient
-        if isinstance(client_obj, GeminiNativeClient):
+        if _safe_isinstance(client_obj, GeminiNativeClient):
             return client_obj
     except ImportError:
         pass
     try:
         from agent.copilot_acp_client import CopilotACPClient
-        if isinstance(client_obj, CopilotACPClient):
+        if _safe_isinstance(client_obj, CopilotACPClient):
             return client_obj
     except ImportError:
         pass

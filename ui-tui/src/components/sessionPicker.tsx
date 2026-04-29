@@ -133,7 +133,12 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
               </Text>
             </Box>
 
-            <Text bold={selected} color={selected ? t.color.accent : t.color.muted} inverse={selected} wrap="truncate-end">
+            <Text
+              bold={selected}
+              color={selected ? t.color.accent : t.color.muted}
+              inverse={selected}
+              wrap="truncate-end"
+            >
               {s.title || s.preview || '(untitled)'}
             </Text>
           </Box>

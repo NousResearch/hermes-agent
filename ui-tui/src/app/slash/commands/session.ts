@@ -290,21 +290,19 @@ export const sessionCommands: SlashCommand[] = [
         return ctx.transcript.sys(`usage: /indicator [${INDICATOR_STYLES.join('|')}]`)
       }
 
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'indicator', value })
-        .then(
-          ctx.guarded<ConfigSetResponse>(r => {
-            if (!r.value) {
-              return
-            }
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'indicator', value }).then(
+        ctx.guarded<ConfigSetResponse>(r => {
+          if (!r.value) {
+            return
+          }
 
-            // Hot-swap the running TUI immediately so the next render
-            // uses the new style without waiting for the 5s mtime poll
-            // to re-apply config.full.
-            patchUiState({ indicatorStyle: value as IndicatorStyle })
-            ctx.transcript.sys(`indicator → ${r.value}`)
-          })
-        )
+          // Hot-swap the running TUI immediately so the next render
+          // uses the new style without waiting for the 5s mtime poll
+          // to re-apply config.full.
+          patchUiState({ indicatorStyle: value as IndicatorStyle })
+          ctx.transcript.sys(`indicator → ${r.value}`)
+        })
+      )
     }
   },
 

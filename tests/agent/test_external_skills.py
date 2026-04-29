@@ -93,15 +93,21 @@ class TestGetExternalSkillsDirs:
 
 
 class TestGetAllSkillsDirs:
-    def test_local_always_first(self, hermes_home, external_skills_dir):
+    def test_local_always_first(self, hermes_home, external_skills_dir, tmp_path):
+        user_skills_dir = tmp_path / "user-skills"
+        user_skills_dir.mkdir()
         (hermes_home / "config.yaml").write_text(
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
-        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+        with patch.dict(os.environ, {
+            "HERMES_HOME": str(hermes_home),
+            "HERMES_USER_SKILLS_DIR": str(user_skills_dir),
+        }):
             from agent.skill_utils import get_all_skills_dirs
             result = get_all_skills_dirs()
         assert result[0] == hermes_home / "skills"
-        assert result[1] == external_skills_dir.resolve()
+        assert result[1] == user_skills_dir.resolve()
+        assert result[2] == external_skills_dir.resolve()
 
 
 class TestExternalSkillsInFindAll:

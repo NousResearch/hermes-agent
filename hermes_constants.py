@@ -238,6 +238,16 @@ def get_skills_dir() -> Path:
     return get_hermes_home() / "skills"
 
 
+def get_user_skills_dir() -> Path:
+    """Return the path for user-created skills (separate from bundled).
+
+    Honors the ``HERMES_USER_SKILLS_DIR`` environment variable.
+    Falls back to ``~/agent-skills/skills``.
+    """
+    from pathlib import Path
+    raw = os.getenv("HERMES_USER_SKILLS_DIR", "") or ""
+    return Path(raw if raw.strip() else (Path.home() / "agent-skills" / "skills")).resolve()
+
 
 def get_env_path() -> Path:
     """Return the path to the ``.env`` file under HERMES_HOME."""

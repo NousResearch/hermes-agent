@@ -225,12 +225,20 @@ def get_external_skills_dirs() -> List[Path]:
 
 
 def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+    """Return all skill directories: local ``~/.hermes/skills/`` first, user skills
+    dir (``HERMES_USER_SKILLS_DIR``) second, then any configured external dirs.
 
     The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    yet — callers handle that).  User and external dirs follow in order.
     """
     dirs = [get_skills_dir()]
+
+    # User-created skills directory (separate from bundled)
+    from hermes_constants import get_user_skills_dir
+    user_dir = get_user_skills_dir()
+    if user_dir.resolve() != dirs[0].resolve() and user_dir.is_dir():
+        dirs.append(user_dir)
+
     dirs.extend(get_external_skills_dirs())
     return dirs
 

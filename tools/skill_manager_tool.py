@@ -104,17 +104,28 @@ import yaml
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 
+# User-created skills go to this directory (separate from bundled)
+# Honors HERMES_USER_SKILLS_DIR env var, falls back to ~/agent-skills/skills
+from hermes_constants import get_user_skills_dir
+_USER_SKILLS_DIR = get_user_skills_dir()
+
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
 
 def _is_local_skill(skill_path: Path) -> bool:
-    """Check if a skill path is within the local SKILLS_DIR.
+    """Check if a skill path is within a writable skill directory.
 
+    Skills in SKILLS_DIR or _USER_SKILLS_DIR are considered local (writable).
     Skills found in external_dirs are read-only from the agent's perspective.
     """
     try:
         skill_path.resolve().relative_to(SKILLS_DIR.resolve())
+        return True
+    except ValueError:
+        pass
+    try:
+        skill_path.resolve().relative_to(_USER_SKILLS_DIR)
         return True
     except ValueError:
         return False
@@ -226,10 +237,14 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 
 
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
-    """Build the directory path for a new skill, optionally under a category."""
+    """Build the directory path for a new skill, optionally under a category.
+
+    User-created skills go to _USER_SKILLS_DIR (configurable via
+    HERMES_USER_SKILLS_DIR env var), keeping them separate from bundled skills.
+    """
     if category:
-        return SKILLS_DIR / category / name
-    return SKILLS_DIR / name
+        return _USER_SKILLS_DIR / category / name
+    return _USER_SKILLS_DIR / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -367,10 +382,16 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
 
+    # Compute relative path from the appropriate skills root
+    try:
+        rel_path = str(skill_dir.relative_to(SKILLS_DIR))
+    except ValueError:
+        rel_path = str(skill_dir.relative_to(_USER_SKILLS_DIR))
+
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(SKILLS_DIR)),
+        "path": rel_path,
         "skill_md": str(skill_md),
     }
     if category:

@@ -726,6 +726,11 @@ DEFAULT_CONFIG = {
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        # Optional Codex-style live CLI status bar field order. Empty keeps the
+        # legacy responsive Hermes layout. Examples: model-with-reasoning,
+        # current-dir, project-root, git-branch, context-usage, five-hour-limit,
+        # weekly-limit, fast-mode, used-tokens, thread-title.
+        "status_line": [],
         # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
         # spinner), or ascii.  Live-swappable via `/indicator <style>`.
         "tui_status_indicator": "kaomoji",

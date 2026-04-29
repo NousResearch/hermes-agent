@@ -1087,8 +1087,11 @@ display:
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
+  status_line: []         # Optional custom CLI status bar fields (empty = default responsive layout)
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
 ```
+
+`status_line` lets you opt into a Codex-style ordered CLI status bar. Leave it empty to keep the default responsive Hermes layout, or provide fields such as `model-with-reasoning`, `current-dir`, `project-root`, `git-branch`, `context-usage`, `five-hour-limit`, `weekly-limit`, `fast-mode`, `used-tokens`, and `thread-title`. Unknown fields are ignored so configs remain forward-compatible.
 
 | Mode | What you see |
 |------|-------------|

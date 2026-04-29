@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import json
 import re
@@ -71,10 +72,90 @@ from agent.usage_pricing import (
 )
 # NOTE: `from agent.account_usage import ...` is deliberately NOT at module
 # top — it transitively pulls the OpenAI SDK chain (~230 ms cold) and is only
-# needed when the user runs `/limits`. Lazy-imported inside the handler below.
+# needed for `/usage`/`/limits` and optional quota fields in the status bar.
 from hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+_STATUS_LINE_FIELD_ALIASES = {
+    # Codex-compatible names
+    "model-with-reasoning": "model-with-reasoning",
+    "current-dir": "current-dir",
+    "project-root": "project-root",
+    "git-branch": "git-branch",
+    "context-usage": "context-usage",
+    "five-hour-limit": "five-hour-limit",
+    "weekly-limit": "weekly-limit",
+    "fast-mode": "fast-mode",
+    "used-tokens": "used-tokens",
+    "thread-title": "thread-title",
+    # Hermes/native aliases
+    "model": "model",
+    "cwd": "current-dir",
+    "current-directory": "current-dir",
+    "directory": "current-dir",
+    "dir": "current-dir",
+    "root": "project-root",
+    "repo": "project-root",
+    "repo-root": "project-root",
+    "branch": "git-branch",
+    "git": "git-branch",
+    "context": "context-usage",
+    "ctx": "context-usage",
+    "context-percent": "context-percent",
+    "context-pct": "context-percent",
+    "context_pct": "context-percent",
+    "context-bar": "context-bar",
+    "fast": "fast-mode",
+    "priority": "fast-mode",
+    "priority-processing": "fast-mode",
+    "service-tier": "fast-mode",
+    "service_tier": "fast-mode",
+    "tokens": "used-tokens",
+    "total-tokens": "used-tokens",
+    "used_tokens": "used-tokens",
+    "input-tokens": "input-tokens",
+    "output-tokens": "output-tokens",
+    "cache-tokens": "cache-tokens",
+    "api-calls": "api-calls",
+    "calls": "api-calls",
+    "duration": "session-duration",
+    "session-duration": "session-duration",
+    "prompt-elapsed": "prompt-elapsed",
+    "turn-elapsed": "prompt-elapsed",
+    "title": "thread-title",
+    "session-title": "thread-title",
+}
+_ACCOUNT_USAGE_STATUS_LINE_FIELDS = {"five-hour-limit", "weekly-limit"}
+_STATUS_BAR_ACCOUNT_USAGE_TTL_SECONDS = 60.0
+
+
+def _normalize_status_line_fields(raw_fields: Any) -> list[str]:
+    """Normalize ``display.status_line`` into canonical field names.
+
+    Accepts either a YAML list or a comma-separated string so users can paste a
+    Codex-style ``status_line = [...]`` list into Hermes config with minimal
+    translation. Unknown fields are preserved and skipped at render time; this
+    keeps forward compatibility with future field names.
+    """
+    if raw_fields is None or raw_fields is False:
+        return []
+    if isinstance(raw_fields, str):
+        pieces = re.split(r"[,\s]+", raw_fields.strip())
+    elif isinstance(raw_fields, (list, tuple)):
+        pieces = raw_fields
+    else:
+        return []
+
+    fields: list[str] = []
+    for item in pieces:
+        field = str(item).strip().lower().replace("_", "-")
+        if not field:
+            continue
+        field = _STATUS_LINE_FIELD_ALIASES.get(field, field)
+        if field not in fields:
+            fields.append(field)
+    return fields
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -337,6 +418,12 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
 
             "skin": "default",
+            # Optional Codex-style live CLI status bar field order. Empty =
+            # Hermes legacy responsive layout. Examples: model-with-reasoning,
+            # current-dir, project-root, git-branch, context-usage,
+            # five-hour-limit, weekly-limit, fast-mode, used-tokens,
+            # thread-title.
+            "status_line": [],
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
@@ -1886,6 +1973,17 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        # Optional Codex-style live CLI status bar field list. Empty keeps the
+        # legacy responsive Hermes layout.
+        self.status_line_fields = _normalize_status_line_fields(
+            CLI_CONFIG["display"].get("status_line", [])
+        )
+        self.reasoning_effort_label = str(
+            CLI_CONFIG.get("agent", {}).get("reasoning_effort", "") or ""
+        ).strip().lower()
+        self._status_bar_git_cache: dict[str, Any] = {}
+        self._status_bar_title_cache: dict[str, Any] = {}
+        self._status_bar_account_usage_cache: dict[str, Any] = {}
         # busy_input_mode: "interrupt" (Enter interrupts current run),
         # "queue" (Enter queues for next turn), or "steer" (Enter injects
         # mid-run via /steer, arriving after the next tool call).
@@ -2258,6 +2356,284 @@ class HermesCLI:
         emoji = "⏱" if live else "⏲"
         return f"{emoji} {time_str}"
 
+    @staticmethod
+    def _status_bar_home_relative_path(path: str) -> str:
+        """Return a compact path for status bar display."""
+        if not path:
+            return ""
+        try:
+            home = os.path.expanduser("~")
+            p = os.path.abspath(path)
+            if home and (p == home or p.startswith(home + os.sep)):
+                return "~" + p[len(home):]
+            return p
+        except Exception:
+            return path
+
+    def _status_bar_current_dir(self) -> str:
+        """Return the terminal working directory used by local tools, if known."""
+        cwd = os.environ.get("TERMINAL_CWD") or os.getcwd()
+        return self._status_bar_home_relative_path(cwd)
+
+    def _status_bar_git_info(self, cwd: str) -> Dict[str, str]:
+        """Return cached git root/branch metadata for the status bar.
+
+        The status bar can repaint many times per second, so never run git on
+        every render. Cache per cwd for a few seconds and fail closed outside a
+        git repository.
+        """
+        if not cwd:
+            return {}
+        cwd = os.path.abspath(os.path.expanduser(cwd))
+        now = time.monotonic()
+        cache = getattr(self, "_status_bar_git_cache", None) or {}
+        if cache.get("cwd") == cwd and (now - float(cache.get("checked_at", 0.0))) < 5.0:
+            cached = cache.get("info")
+            return cached if isinstance(cached, dict) else {}
+
+        info: Dict[str, str] = {}
+        try:
+            root_result = subprocess.run(
+                ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=0.25,
+                check=False,
+            )
+            if root_result.returncode == 0:
+                root = root_result.stdout.strip()
+                if root:
+                    info["project_root"] = root
+                    branch_result = subprocess.run(
+                        ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                        timeout=0.25,
+                        check=False,
+                    )
+                    branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
+                    if branch == "HEAD":
+                        sha_result = subprocess.run(
+                            ["git", "-C", cwd, "rev-parse", "--short", "HEAD"],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL,
+                            text=True,
+                            timeout=0.25,
+                            check=False,
+                        )
+                        branch = sha_result.stdout.strip() if sha_result.returncode == 0 else ""
+                    if branch:
+                        info["git_branch"] = branch
+        except Exception:
+            info = {}
+
+        self._status_bar_git_cache = {"cwd": cwd, "checked_at": now, "info": info}
+        return info
+
+    def _status_bar_thread_title(self) -> str:
+        """Return the current session title if it is available cheaply."""
+        pending = getattr(self, "_pending_title", None)
+        if pending:
+            return str(pending)
+
+        session_id = getattr(self, "session_id", "")
+        db = getattr(self, "_session_db", None)
+        if not session_id or not db:
+            return ""
+
+        now = time.monotonic()
+        cache = getattr(self, "_status_bar_title_cache", None) or {}
+        if cache.get("session_id") == session_id and (now - float(cache.get("checked_at", 0.0))) < 5.0:
+            return str(cache.get("title", "") or "")
+
+        title = ""
+        try:
+            session = db.get_session(session_id)
+            if session and session.get("title"):
+                title = str(session["title"])
+        except Exception:
+            title = ""
+        self._status_bar_title_cache = {"session_id": session_id, "checked_at": now, "title": title}
+        return title
+
+    def _status_bar_account_usage_snapshot(self) -> Optional[Any]:
+        """Return cached account-limit data and refresh it off-thread when stale."""
+        agent = getattr(self, "agent", None)
+        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
+        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
+        api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
+        provider = str(provider or "").strip().lower()
+        if not provider:
+            return None
+
+        route_key = (provider, str(base_url or ""), bool(api_key))
+        now = time.monotonic()
+        cache = dict(getattr(self, "_status_bar_account_usage_cache", None) or {})
+        if cache.get("route_key") != route_key:
+            cache = {"route_key": route_key}
+
+        snapshot = cache.get("snapshot")
+        checked_at = float(cache.get("checked_at", 0.0) or 0.0)
+        if snapshot is not None and (now - checked_at) < _STATUS_BAR_ACCOUNT_USAGE_TTL_SECONDS:
+            self._status_bar_account_usage_cache = cache
+            return snapshot
+
+        if not cache.get("refreshing") and (now - checked_at) >= _STATUS_BAR_ACCOUNT_USAGE_TTL_SECONDS:
+            cache["refreshing"] = True
+            cache["checked_at"] = now
+            self._status_bar_account_usage_cache = cache
+
+            def _refresh_account_usage() -> None:
+                fetched = None
+                try:
+                    from agent.account_usage import fetch_account_usage
+                    fetched = fetch_account_usage(provider, base_url=base_url, api_key=api_key)
+                except Exception:
+                    fetched = None
+                finally:
+                    latest = dict(getattr(self, "_status_bar_account_usage_cache", None) or {})
+                    if latest.get("route_key") == route_key:
+                        latest["snapshot"] = fetched
+                        latest["checked_at"] = time.monotonic()
+                        latest["refreshing"] = False
+                        self._status_bar_account_usage_cache = latest
+                    try:
+                        self._invalidate(min_interval=0.0)
+                    except Exception:
+                        pass
+
+            threading.Thread(
+                target=_refresh_account_usage,
+                name="hermes-status-bar-account-usage",
+                daemon=True,
+            ).start()
+
+        return snapshot
+
+    @staticmethod
+    def _status_bar_account_usage_window(snapshot: Any, field: str) -> Optional[Any]:
+        windows = list(getattr(snapshot, "windows", ()) or ()) if snapshot is not None else []
+        if not windows:
+            return None
+
+        def _label(window: Any) -> str:
+            return re.sub(r"[^a-z0-9]+", " ", str(getattr(window, "label", "") or "").lower()).strip()
+
+        if field == "five-hour-limit":
+            for window in windows:
+                label = _label(window)
+                if "session" in label or "five hour" in label or label.startswith("5h") or "primary" in label:
+                    return window
+            return windows[0]
+
+        if field == "weekly-limit":
+            for window in windows:
+                label = _label(window)
+                if "week" in label and "opus" not in label and "sonnet" not in label:
+                    return window
+            return windows[1] if len(windows) > 1 else None
+
+        return None
+
+    def _render_status_line_quota_field(self, field: str) -> str:
+        snapshot = self._status_bar_account_usage_snapshot()
+        window = self._status_bar_account_usage_window(snapshot, field)
+        used_percent = getattr(window, "used_percent", None) if window is not None else None
+        if used_percent is None:
+            return ""
+        try:
+            remaining = max(0, min(100, round(100 - float(used_percent))))
+        except (TypeError, ValueError):
+            return ""
+        label = "5h" if field == "five-hour-limit" else "week"
+        return f"{label} {remaining}%"
+
+    def _render_status_line_field(self, field: str, snapshot: Dict[str, Any]) -> str:
+        """Render one configured status line field."""
+        field = _STATUS_LINE_FIELD_ALIASES.get(str(field).strip().lower().replace("_", "-"), field)
+        if not field:
+            return ""
+        if field in _ACCOUNT_USAGE_STATUS_LINE_FIELDS:
+            return self._render_status_line_quota_field(field)
+
+        if field in {"model", "model-with-reasoning"}:
+            label = snapshot.get("model_short") or snapshot.get("model_name") or ""
+            if field == "model-with-reasoning":
+                effort = getattr(self, "reasoning_effort_label", "") or ""
+                if effort:
+                    label = f"{label}[{effort}]"
+            return label
+
+        if field == "current-dir":
+            return self._status_bar_current_dir()
+
+        if field in {"project-root", "git-branch"}:
+            cwd = os.environ.get("TERMINAL_CWD") or os.getcwd()
+            git_info = self._status_bar_git_info(cwd)
+            if field == "project-root":
+                root = git_info.get("project_root", "")
+                return f"root {Path(root).name}" if root else ""
+            branch = git_info.get("git_branch", "")
+            return f"git {branch}" if branch else ""
+
+        percent = snapshot.get("context_percent")
+        percent_label = f"{percent}%" if percent is not None else "--"
+        if field == "context-usage":
+            if snapshot.get("context_length"):
+                ctx_total = _format_context_length(snapshot["context_length"])
+                ctx_used = format_token_count_compact(snapshot.get("context_tokens", 0))
+                return f"ctx {ctx_used}/{ctx_total} {percent_label}"
+            return "ctx --"
+        if field == "context-percent":
+            return percent_label
+        if field == "context-bar":
+            return self._build_context_bar(percent)
+        if field == "fast-mode":
+            try:
+                if not self._fast_command_available():
+                    return "fast n/a"
+            except Exception:
+                pass
+            return "fast on" if getattr(self, "service_tier", None) == "priority" else "fast off"
+
+        if field == "used-tokens":
+            total = snapshot.get("session_total_tokens", 0) or 0
+            return f"{format_token_count_compact(total)} used" if total else ""
+        if field == "input-tokens":
+            total = snapshot.get("session_input_tokens", 0) or 0
+            return f"in {format_token_count_compact(total)}" if total else ""
+        if field == "output-tokens":
+            total = snapshot.get("session_output_tokens", 0) or 0
+            return f"out {format_token_count_compact(total)}" if total else ""
+        if field == "cache-tokens":
+            total = (snapshot.get("session_cache_read_tokens", 0) or 0) + (
+                snapshot.get("session_cache_write_tokens", 0) or 0
+            )
+            return f"cache {format_token_count_compact(total)}" if total else ""
+        if field == "api-calls":
+            calls = snapshot.get("session_api_calls", 0) or 0
+            return f"{calls} calls" if calls else ""
+
+        if field == "session-duration":
+            return snapshot.get("duration", "") or ""
+        if field == "prompt-elapsed":
+            return snapshot.get("prompt_elapsed", "") or ""
+        if field == "thread-title":
+            return self._status_bar_thread_title()
+
+        return ""
+
+    def _build_configured_status_bar_text(self, snapshot: Dict[str, Any], width: int) -> str:
+        fields = getattr(self, "status_line_fields", None) or []
+        parts: list[str] = []
+        for field in fields:
+            rendered = self._render_status_line_field(field, snapshot).strip()
+            if rendered:
+                parts.append(rendered)
+        return self._trim_status_bar_text(" │ ".join(parts), width) if parts else ""
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -2450,6 +2826,9 @@ class HermesCLI:
             snapshot = self._get_status_bar_snapshot()
             if width is None:
                 width = self._get_tui_terminal_width()
+            configured = self._build_configured_status_bar_text(snapshot, width)
+            if configured:
+                return configured
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
@@ -2489,6 +2868,9 @@ class HermesCLI:
             # actually renders, causing the fragments to overflow to a second
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
+            configured = self._build_configured_status_bar_text(snapshot, max(1, width - 2))
+            if configured:
+                return [("class:status-bar", f" {configured} ")]
             duration_label = snapshot["duration"]
 
             if width < 52:

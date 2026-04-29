@@ -1,0 +1,59 @@
+# Role registry - copy to config/models.yml (gitignored), edit, run scripts/apply-models-yml.sh
+# Model IDs are examples; operator choices are per-machine.
+roles:
+  primary_reasoning:
+    provider: anthropic
+    model: claude-opus-4.7
+    fallback:
+      - { provider: openai, model: gpt-5 }
+      - { provider: google, model: gemini-2.5-pro }
+  fast_iteration:
+    provider: anthropic
+    model: claude-sonnet-4.6
+    fallback:
+      - { provider: openai, model: gpt-5-mini }
+  adversarial_review:
+    provider: openai
+    model: gpt-5
+    fallback:
+      - { provider: google, model: gemini-2.5-pro }
+      - { provider: xai, model: grok-3 }
+  legal_tech_review:
+    provider: anthropic
+    model: claude-opus-4.7
+    fallback:
+      - { provider: openai, model: gpt-5 }
+  escalate_head:
+    provider: openai
+    model: gpt-5
+    fallback:
+      - { provider: anthropic, model: claude-opus-4.7 }
+  cheap_routine:
+    provider: anthropic
+    model: claude-haiku-4.5
+    fallback:
+      - { provider: openai, model: gpt-5-mini }
+
+escalate:
+  sub_agents:
+    minimum: 3
+    target: 4
+    families_required: 3
+    selection: round_robin_by_family
+    pool:
+      - { provider: anthropic, model: claude-opus-4.7, family: anthropic }
+      - { provider: openai, model: gpt-5, family: openai }
+      - { provider: google, model: gemini-2.5-pro, family: google }
+      - { provider: xai, model: grok-3, family: xai }
+      - { provider: deepseek, model: deepseek-r2, family: deepseek }
+      - { provider: openai, model: meta-llama-405b, family: meta }
+  head_agent: escalate_head
+  retry_rounds_max: null
+  cost_cap_default: 100
+  cost_cap_max: 250
+
+convergence:
+  rounds_threshold: 3
+  similarity_method: keyword_match
+
+families: [anthropic, openai, google, meta, xai, deepseek, local, other]

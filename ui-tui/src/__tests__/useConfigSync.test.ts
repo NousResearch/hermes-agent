@@ -5,6 +5,7 @@ import {
   applyDisplay,
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
+  normalizeMouseTracking,
   normalizeStatusBar
 } from '../app/useConfigSync.js'
 
@@ -68,6 +69,19 @@ describe('applyDisplay', () => {
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
     expect(s.sections).toEqual({})
+  })
+
+  it('uses documented mouse_tracking with legacy tui_mouse fallback', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { mouse_tracking: false } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe(false)
+
+    applyDisplay({ config: { display: { mouse_tracking: true, tui_mouse: false } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe(true)
+
+    applyDisplay({ config: { display: { tui_mouse: false } } }, setBell)
+    expect($uiState.get().mouseTracking).toBe(false)
   })
 
   it('parses display.sections into per-section overrides', () => {
@@ -163,6 +177,19 @@ describe('normalizeStatusBar', () => {
     expect(normalizeStatusBar('TOP')).toBe('top')
     expect(normalizeStatusBar('  on  ')).toBe('top')
     expect(normalizeStatusBar('OFF')).toBe('off')
+  })
+})
+
+describe('normalizeMouseTracking', () => {
+  it('defaults on and prefers canonical mouse_tracking over legacy tui_mouse', () => {
+    expect(normalizeMouseTracking({})).toBe(true)
+    expect(normalizeMouseTracking({ mouse_tracking: false })).toBe(false)
+    expect(normalizeMouseTracking({ mouse_tracking: 0 })).toBe(false)
+    expect(normalizeMouseTracking({ mouse_tracking: 'off' })).toBe(false)
+    expect(normalizeMouseTracking({ mouse_tracking: 'false' })).toBe(false)
+    expect(normalizeMouseTracking({ mouse_tracking: null, tui_mouse: false })).toBe(true)
+    expect(normalizeMouseTracking({ mouse_tracking: true, tui_mouse: false })).toBe(true)
+    expect(normalizeMouseTracking({ tui_mouse: false })).toBe(false)
   })
 })
 

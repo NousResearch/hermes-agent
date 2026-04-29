@@ -28,7 +28,7 @@ A run has two phases:
 1. **Automatic transitions** (deterministic, no LLM). Skills unused for `stale_after_days` (30) become `stale`; skills unused for `archive_after_days` (90) are moved to `~/.hermes/skills/.archive/`.
 2. **LLM review** (single aux-model pass, `max_iterations=8`). The forked agent surveys the agent-created skills, can read any of them with `skill_view`, and decides per-skill whether to keep, patch (via `skill_manage`), consolidate overlapping ones, or archive via the terminal tool.
 
-Pinned skills bypass all auto-transitions and the LLM is instructed not to touch them.
+Pinned skills are off-limits to both the curator's auto-transitions and the agent's own `skill_manage` tool. See [Pinning a skill](#pinning-a-skill) below.
 
 ## Configuration
 
@@ -80,7 +80,27 @@ Everything else in `~/.hermes/skills/` is fair game for the curator. This includ
 - Skills you created manually with a hand-written `SKILL.md`.
 - Skills added via external skill directories you've pointed Hermes at.
 
-If you want to protect a specific skill from ever being touched — for example a hand-authored skill you rely on — use `hermes curator pin <name>`. The pin is a hard guarantee enforced at the shared mutation helper; no code path that would archive, consolidate, or state-transition a skill can bypass it.
+If you want to protect a specific skill from ever being touched — for example a hand-authored skill you rely on — use `hermes curator pin <name>`. See the next section.
+
+## Pinning a skill
+
+Pinning is a hard fence against both automated and agent-driven changes. Once a skill is pinned:
+
+- The **curator** skips it during auto-transitions (`active → stale → archived`), and its LLM review pass is instructed to leave it alone.
+- The **agent's `skill_manage` tool** refuses every write action on it. Calls to `edit`, `patch`, `delete`, `write_file`, and `remove_file` return a refusal that tells the model to ask the user to run `hermes curator unpin <name>`. This prevents the agent from silently rewriting a skill mid-conversation.
+
+Pin and unpin with:
+
+```bash
+hermes curator pin <skill>
+hermes curator unpin <skill>
+```
+
+The flag is stored as `"pinned": true` on the skill's entry in `~/.hermes/skills/.usage.json`, so it survives across sessions.
+
+Only **agent-created** skills can be pinned — bundled and hub-installed skills are never subject to curator mutation in the first place, and `hermes curator pin` will refuse with an explanatory message if you try.
+
+If you need to update a pinned skill yourself, edit `~/.hermes/skills/<name>/SKILL.md` directly with your editor. The pin only guards the agent's tool path, not your own filesystem access.
 
 ## Usage telemetry
 

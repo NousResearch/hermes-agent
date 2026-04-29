@@ -5,6 +5,7 @@ Exposes an HTTP server with endpoints:
 - POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id header)
 - POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id)
 - GET  /v1/responses/{response_id} — Retrieve a stored response
+- GET  /v1/responses/{response_id}/events — Replay + live-tail SSE events for a response (resume-from-cursor)
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent as an available model
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
@@ -315,6 +316,25 @@ class ResponseStore:
                 response_id TEXT NOT NULL
             )"""
         )
+        # Per-response event log for /v1/responses/{id}/events replay.
+        # Populated as events are emitted by the streaming handler so a client
+        # that drops mid-stream can reconnect with ?after=<sequence_number>
+        # and resume without losing events.  Rows are deleted when the
+        # parent response is evicted from ``responses`` (see ``put``/``delete``).
+        self._conn.execute(
+            """CREATE TABLE IF NOT EXISTS response_events (
+                response_id TEXT NOT NULL,
+                sequence_number INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                data TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (response_id, sequence_number)
+            )"""
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_response_events_rid "
+            "ON response_events(response_id, sequence_number)"
+        )
         self._conn.commit()
 
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
@@ -340,11 +360,29 @@ class ResponseStore:
         # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
         if count > self._max_size:
-            self._conn.execute(
-                "DELETE FROM responses WHERE response_id IN "
-                "(SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?)",
-                (count - self._max_size,),
-            )
+            # Fetch the ids we're about to evict so we can cascade-delete
+            # their event-log rows in the same transaction.  We can't rely
+            # on SQLite foreign keys because ``responses`` is intentionally
+            # bounded in size while ``response_events`` is keyed by the
+            # same id, not an FK to the parent row.
+            to_evict = [
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT response_id FROM responses "
+                    "ORDER BY accessed_at ASC LIMIT ?",
+                    (count - self._max_size,),
+                ).fetchall()
+            ]
+            if to_evict:
+                placeholders = ",".join("?" for _ in to_evict)
+                self._conn.execute(
+                    f"DELETE FROM responses WHERE response_id IN ({placeholders})",
+                    to_evict,
+                )
+                self._conn.execute(
+                    f"DELETE FROM response_events WHERE response_id IN ({placeholders})",
+                    to_evict,
+                )
         self._conn.commit()
 
     def delete(self, response_id: str) -> bool:
@@ -352,8 +390,107 @@ class ResponseStore:
         cursor = self._conn.execute(
             "DELETE FROM responses WHERE response_id = ?", (response_id,)
         )
+        # Drop any event-log rows for this response too so we don't leak
+        # rows for an id that can no longer be looked up.
+        self._conn.execute(
+            "DELETE FROM response_events WHERE response_id = ?", (response_id,)
+        )
         self._conn.commit()
         return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Per-response event log (used by GET /v1/responses/{id}/events)
+    # ------------------------------------------------------------------
+
+    def append_event(
+        self,
+        response_id: str,
+        sequence_number: int,
+        event_type: str,
+        data: Dict[str, Any],
+    ) -> None:
+        """Persist an SSE event for later replay.
+
+        ``(response_id, sequence_number)`` is the primary key so duplicate
+        appends for the same sequence number are idempotent via INSERT OR
+        IGNORE — a useful safety net if the streaming handler ever retries
+        a write.
+        """
+        try:
+            payload = json.dumps(data, default=str)
+        except (TypeError, ValueError):
+            # Last-resort: stringify the entire payload so we never drop an
+            # event because of a rogue non-serializable value.
+            payload = json.dumps({"repr": repr(data)})
+        self._conn.execute(
+            "INSERT OR IGNORE INTO response_events "
+            "(response_id, sequence_number, event_type, data, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (response_id, int(sequence_number), event_type, payload, time.time()),
+        )
+        self._conn.commit()
+
+    def get_events(
+        self,
+        response_id: str,
+        after: int = -1,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return stored events for ``response_id`` with ``sequence_number > after``.
+
+        Each row is returned as a dict with keys ``sequence_number``,
+        ``event_type``, and ``data`` (already parsed back from JSON).
+        Rows are ordered by ``sequence_number`` ASC.
+        """
+        query = (
+            "SELECT sequence_number, event_type, data FROM response_events "
+            "WHERE response_id = ? AND sequence_number > ? "
+            "ORDER BY sequence_number ASC"
+        )
+        params: List[Any] = [response_id, int(after)]
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(int(limit))
+        rows = self._conn.execute(query, params).fetchall()
+        out: List[Dict[str, Any]] = []
+        for seq, event_type, data_json in rows:
+            try:
+                data = json.loads(data_json)
+            except (TypeError, ValueError):
+                data = {}
+            out.append({
+                "sequence_number": seq,
+                "event_type": event_type,
+                "data": data,
+            })
+        return out
+
+    def has_events(self, response_id: str) -> bool:
+        """Return True iff at least one event row exists for ``response_id``."""
+        row = self._conn.execute(
+            "SELECT 1 FROM response_events WHERE response_id = ? LIMIT 1",
+            (response_id,),
+        ).fetchone()
+        return row is not None
+
+    def latest_event_sequence(self, response_id: str) -> Optional[int]:
+        """Return the highest stored ``sequence_number`` for a response, or None."""
+        row = self._conn.execute(
+            "SELECT MAX(sequence_number) FROM response_events WHERE response_id = ?",
+            (response_id,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return int(row[0])
+
+    def clear_events(self, response_id: str) -> int:
+        """Delete every stored event row for ``response_id``.  Returns rowcount."""
+        cursor = self._conn.execute(
+            "DELETE FROM response_events WHERE response_id = ?",
+            (response_id,),
+        )
+        self._conn.commit()
+        return int(cursor.rowcount or 0)
 
     def get_conversation(self, name: str) -> Optional[str]:
         """Get the latest response_id for a conversation name."""
@@ -590,6 +727,19 @@ class APIServerAdapter(BasePlatformAdapter):
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
+        # --- Phase 2 replay state (POST /v1/responses streaming) ---
+        # response_id -> set of asyncio.Queue subscribers.  Each queue gets
+        # a copy of every SSE event the writer emits for that response so
+        # GET /v1/responses/{id}/events can tail the live stream after
+        # catching up on stored events.  The sentinel None is pushed when
+        # the response reaches a terminal event (completed/failed) so
+        # subscribers know to close.
+        self._response_event_subscribers: Dict[str, set] = {}
+        # response_id -> True while the streaming handler is actively
+        # emitting events.  Set to False (via pop) in the writer's finally
+        # block so GET /events can tell the response is over even if no
+        # terminal event was persisted (e.g. agent task crashed hard).
+        self._active_responses: Dict[str, bool] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
     @staticmethod
@@ -1206,14 +1356,18 @@ class APIServerAdapter(BasePlatformAdapter):
           shape as the non-streaming path for parity)
         - ``response.failed`` — terminal event on agent error
 
-        If the client disconnects mid-stream, ``agent.interrupt()`` is
-        called so the agent stops issuing upstream LLM calls, then the
-        asyncio task is cancelled.  When ``store=True`` an initial
-        ``in_progress`` snapshot is persisted immediately after
-        ``response.created`` and disconnects update it to an
-        ``incomplete`` snapshot so GET /v1/responses/{id} and
-        ``previous_response_id`` chaining still have something to
-        recover from.
+        When ``store=True`` an initial ``in_progress`` snapshot is persisted
+        immediately after ``response.created``. If the client disconnects
+        mid-stream, the agent is allowed to continue running so the completed
+        response is persisted to ``ResponseStore`` and can be recovered via
+        ``GET /v1/responses/{response_id}``. Server-side cancellation still
+        updates the snapshot to ``incomplete`` so GET /v1/responses/{id} and
+        ``previous_response_id`` chaining have something to recover from.
+
+        For ``store=False`` the legacy behavior is preserved: ``agent.interrupt()``
+        is called on disconnect so the agent stops issuing upstream LLM calls
+        and the asyncio task is cancelled — no token spend on a response no one
+        will ever read.
         """
         import queue as _q
 
@@ -1230,6 +1384,15 @@ class APIServerAdapter(BasePlatformAdapter):
             sse_headers["X-Hermes-Session-Id"] = session_id
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
+
+        # When `store=True` we want the run to complete and be persisted
+        # even if the client drops. This flag flips to False the first time
+        # a write raises a disconnect error; subsequent writes become no-ops
+        # and the main loop keeps draining the stream queue so the agent
+        # reaches its natural completion. The terminal persistence block
+        # still writes into ResponseStore so a later GET /v1/responses/{id}
+        # returns the completed snapshot.
+        client_connected = True
 
         # State accumulated during the stream
         final_text_parts: List[str] = []
@@ -1254,13 +1417,89 @@ class APIServerAdapter(BasePlatformAdapter):
         message_output_index: Optional[int] = None
         message_opened = False
 
+        async def _safe_write(payload: bytes) -> None:
+            """Write to the client; flip ``client_connected=False`` on drop.
+
+            When ``store=True`` we want the loop to keep running after the
+            client disconnects so the response can be persisted.  This helper
+            turns disconnect-related ``response.write`` failures into a
+            silent transition rather than an exception that would abort the
+            whole coroutine and skip the persistence branch.
+
+            For ``store=False`` we re-raise so the outer exception handler
+            can interrupt the agent and cancel the task promptly.
+            """
+            nonlocal client_connected
+            if not client_connected:
+                return
+            try:
+                await response.write(payload)
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError) as exc:
+                client_connected = False
+                if not store:
+                    raise
+                logger.info(
+                    "SSE client disconnected mid-stream; continuing agent run "
+                    "for store=True response %s (%s)",
+                    response_id,
+                    type(exc).__name__,
+                )
+
         async def _write_event(event_type: str, data: Dict[str, Any]) -> None:
+            """Emit one SSE event: persist + publish + write.
+
+            Order matters here.  We persist to ``ResponseStore.append_event``
+            and broadcast to any GET ``/events`` subscribers BEFORE writing
+            to the live client.  That way a client disconnect in the middle
+            of a write never costs subscribers (or the replay cursor) an
+            event they should have received.
+
+            When ``store=False`` we skip persistence — the whole point of
+            store=False is that the response is ephemeral and disconnect
+            should interrupt the agent anyway (see the outer exception
+            handler in ``_write_sse_responses``).
+            """
             nonlocal sequence_number
             if "sequence_number" not in data:
                 data["sequence_number"] = sequence_number
+            seq_used = sequence_number
             sequence_number += 1
+
+            # 1) Persistent event log for replay after drop.
+            if store:
+                try:
+                    self._response_store.append_event(
+                        response_id, seq_used, event_type, data,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "append_event failed for response %s seq %d",
+                        response_id, seq_used, exc_info=True,
+                    )
+
+            # 2) Fan-out to live /events subscribers.  Each queue gets its
+            #    own dict snapshot so a subscriber can't mutate the shared
+            #    payload.  Copy the subscriber set first so that a
+            #    subscriber unsubscribing mid-broadcast can't mutate us.
+            subs = self._response_event_subscribers.get(response_id)
+            if subs:
+                event_record = {
+                    "sequence_number": seq_used,
+                    "event_type": event_type,
+                    "data": dict(data),
+                }
+                for q in list(subs):
+                    try:
+                        q.put_nowait(event_record)
+                    except Exception:
+                        # A full or closed subscriber queue is not the
+                        # writer's problem — the replay handler owns its
+                        # own lifecycle.
+                        pass
+
+            # 3) Live client write.  Safe-write quietly no-ops after drop.
             payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-            await response.write(payload.encode())
+            await _safe_write(payload.encode())
 
         def _envelope(status: str) -> Dict[str, Any]:
             env: Dict[str, Any] = {
@@ -1329,6 +1568,24 @@ class APIServerAdapter(BasePlatformAdapter):
                 incomplete_env,
                 conversation_history_snapshot=incomplete_history,
             )
+
+        # Mark the response as active so GET /v1/responses/{id}/events knows
+        # it should tail live events rather than only replay stored ones.
+        # Cleared in ``_finalize_active_response`` below, which also pushes
+        # a ``None`` sentinel to every /events subscriber so they close
+        # cleanly instead of waiting on a dead producer.
+        self._active_responses[response_id] = True
+
+        def _finalize_active_response() -> None:
+            self._active_responses.pop(response_id, None)
+            subs = self._response_event_subscribers.get(response_id)
+            if not subs:
+                return
+            for q in list(subs):
+                try:
+                    q.put_nowait(None)
+                except Exception:
+                    pass
 
         try:
             # response.created — initial envelope, status=in_progress
@@ -1518,7 +1775,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                 break
                         break
                     if time.monotonic() - last_activity >= CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS:
-                        await response.write(b": keepalive\n\n")
+                        await _safe_write(b": keepalive\n\n")
                         last_activity = time.monotonic()
                     continue
 
@@ -1636,9 +1893,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
 
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            _persist_incomplete_if_needed()
-            # Client disconnected — interrupt the agent so it stops
-            # making upstream LLM calls, then cancel the task.
+            # Only reached for ``store=False``: the _safe_write helper flips
+            # the connected flag silently when ``store=True``.  For ephemeral
+            # responses the user will never look at the output, so interrupt
+            # the agent to save tokens and cancel its task.
             agent = agent_ref[0] if agent_ref else None
             if agent is not None:
                 try:
@@ -1668,6 +1926,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_task.cancel()
             logger.info("SSE task cancelled; persisted incomplete snapshot for %s", response_id)
             raise
+        finally:
+            # The response is no longer live.  Wake any /events subscribers
+            # waiting on our queue so they can settle to a completed/failed
+            # state (or, for store=False, give up cleanly).
+            _finalize_active_response()
 
         return response
 
@@ -1965,6 +2228,212 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "response",
             "deleted": True,
         })
+
+    async def _handle_get_response_events(
+        self, request: "web.Request"
+    ) -> "web.StreamResponse":
+        """GET /v1/responses/{response_id}/events?after=<sequence_number>
+
+        Phase 2 replay endpoint for the OpenAI Responses API streaming flow.
+
+        Behavior:
+        - Replay every stored event with ``sequence_number > after`` in the
+          same on-the-wire format as the original SSE stream
+          (``event: <type>\\ndata: <json>\\n\\n``).
+        - If the response is still active (live ``POST /v1/responses``
+          handler emitting events), keep the HTTP connection open and tail
+          the live event stream via an in-memory pub/sub queue.  Closes
+          naturally when the streaming handler finalizes.
+        - If the response is already complete, replay whatever was stored
+          and close without waiting.
+        - If the response id is unknown and nothing was ever stored,
+          return 404 with an OpenAI-style error envelope.
+
+        The ``after`` query parameter defaults to -1, which means "send me
+        every event from the beginning" — matching the client-side reducer
+        sentinel documented in the resumable-sse-streaming skill.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        response_id = request.match_info["response_id"]
+
+        # Parse the ?after cursor; reject garbage explicitly so clients
+        # don't silently get "everything from the start" when they meant
+        # something else.
+        raw_after = request.query.get("after", "-1")
+        try:
+            after = int(raw_after)
+        except (TypeError, ValueError):
+            return web.json_response(
+                _openai_error(
+                    "'after' must be an integer sequence number",
+                    param="after",
+                    code="invalid_query_parameter",
+                ),
+                status=400,
+            )
+
+        # 404 when we have no trace of this response at all.  Note: a
+        # completed response keeps its event-log rows in ResponseStore, so
+        # a successful replay for a completed-but-forgotten response is
+        # still possible until the row is evicted by LRU.
+        has_events = self._response_store.has_events(response_id)
+        has_stored_response = self._response_store.get(response_id) is not None
+        is_active = response_id in self._active_responses
+        if not has_events and not has_stored_response and not is_active:
+            return web.json_response(
+                _openai_error(
+                    f"Response not found: {response_id}",
+                    code="response_not_found",
+                ),
+                status=404,
+            )
+
+        # Subscribe to live events BEFORE replaying stored ones.  This
+        # ordering closes a narrow race: if the writer emits seq=N+1 after
+        # we read the store but before we add our queue, the event would
+        # otherwise be lost.  Since stored + live are deduplicated client-
+        # side by sequence_number (and we dedupe via a local "seen set"
+        # below), a temporary double-delivery is fine.
+        live_q: "asyncio.Queue" = asyncio.Queue()
+        subs = self._response_event_subscribers.setdefault(response_id, set())
+        subs.add(live_q)
+
+        sse_headers = {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            sse_headers.update(cors)
+        response = web.StreamResponse(status=200, headers=sse_headers)
+        await response.prepare(request)
+
+        last_seq_sent = after
+        seen_seqs: set = set()
+        client_alive = True
+
+        async def _safe_write_replay(payload: bytes) -> bool:
+            nonlocal client_alive
+            if not client_alive:
+                return False
+            try:
+                await response.write(payload)
+                return True
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+                client_alive = False
+                return False
+
+        async def _emit(seq: int, event_type: str, data: Dict[str, Any]) -> bool:
+            nonlocal last_seq_sent
+            if seq in seen_seqs:
+                return True
+            seen_seqs.add(seq)
+            # Make sure the sequence_number is carried on the event
+            # payload so clients that only parse `data:` can still drive
+            # their cursor without inspecting `event:`.
+            if "sequence_number" not in data:
+                data = dict(data)
+                data["sequence_number"] = seq
+            line = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+            ok = await _safe_write_replay(line.encode())
+            if ok:
+                last_seq_sent = max(last_seq_sent, seq)
+            return ok
+
+        try:
+            # 1) Replay phase: stored events that beat the cursor.
+            stored_events = self._response_store.get_events(response_id, after=after)
+            for row in stored_events:
+                if not client_alive:
+                    break
+                await _emit(
+                    int(row["sequence_number"]),
+                    str(row["event_type"]),
+                    row.get("data") or {},
+                )
+
+            # 2) Live tail phase: only if the streaming handler is still
+            #    active.  Otherwise the response is either already fully
+            #    persisted or was never live in this process; in both
+            #    cases the replay above is the whole story.
+            keepalive_every = 15.0
+            while client_alive and response_id in self._active_responses:
+                try:
+                    event = await asyncio.wait_for(live_q.get(), timeout=keepalive_every)
+                except asyncio.TimeoutError:
+                    if not await _safe_write_replay(b": keepalive\n\n"):
+                        break
+                    continue
+                if event is None:
+                    # Writer signaled terminal state.
+                    break
+                seq = int(event.get("sequence_number", -1))
+                if seq <= last_seq_sent:
+                    continue
+                if not await _emit(
+                    seq,
+                    str(event.get("event_type", "")),
+                    event.get("data") or {},
+                ):
+                    break
+
+            # 3) Terminal drain: after the live producer finalizes, there
+            #    might still be queued events we haven't relayed yet
+            #    (e.g. the final response.completed that was published
+            #    just before the finalize sentinel).  Drain without
+            #    blocking.
+            while client_alive:
+                try:
+                    event = live_q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if event is None:
+                    continue
+                seq = int(event.get("sequence_number", -1))
+                if seq <= last_seq_sent:
+                    continue
+                if not await _emit(
+                    seq,
+                    str(event.get("event_type", "")),
+                    event.get("data") or {},
+                ):
+                    break
+
+            # 4) Final sweep of stored rows in case the writer committed
+            #    events we never saw on the queue (defensive; closes the
+            #    race where we subscribed after the writer emitted the
+            #    last event but before the finalize sentinel reached us).
+            if client_alive and last_seq_sent >= -1:
+                for row in self._response_store.get_events(response_id, after=last_seq_sent):
+                    if not client_alive:
+                        break
+                    await _emit(
+                        int(row["sequence_number"]),
+                        str(row["event_type"]),
+                        row.get("data") or {},
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[api_server] /v1/responses/%s/events error: %s",
+                response_id, exc,
+            )
+        finally:
+            subs = self._response_event_subscribers.get(response_id)
+            if subs is not None:
+                subs.discard(live_q)
+                if not subs:
+                    self._response_event_subscribers.pop(response_id, None)
+            try:
+                await _safe_write_replay(b": stream closed\n\n")
+            except Exception:
+                pass
+
+        return response
 
     # ------------------------------------------------------------------
     # Cron jobs API
@@ -2624,6 +3093,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
+            self._app.router.add_get(
+                "/v1/responses/{response_id}/events",
+                self._handle_get_response_events,
+            )
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)

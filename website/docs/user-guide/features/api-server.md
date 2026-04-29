@@ -186,9 +186,34 @@ The server automatically chains to the latest response in that conversation. Lik
 
 Retrieve a previously stored response by ID.
 
+### GET /v1/responses/\{id\}/events
+
+Replay + live-tail the Server-Sent Events stream of a stored response.
+Designed to let clients resume a dropped `/v1/responses` stream without
+replaying the user turn or creating a duplicate response.
+
+- `?after=<sequence_number>` — return only events strictly newer than the
+  given cursor.  Defaults to `-1`, meaning replay every event from the
+  start (matching the client-side sentinel for "nothing applied yet").
+- If the response is still running, the connection stays open and tails
+  new events as they are emitted, then closes when the response reaches
+  a terminal event (`response.completed` / `response.failed`).
+- If the response is already complete, the replay closes as soon as the
+  stored event log has been flushed.
+- Returns `404 response_not_found` when the id has never existed and is
+  not currently active.  Returns `400` for non-integer `after` values.
+- The `sequence_number` on each event is monotonic and matches the
+  original stream; clients should dedupe by `sequence_number` to make
+  reconnects idempotent.
+
+Combined with `store: true` and the "continue after disconnect" behavior
+of the streaming POST, this closes the loop on resumable Responses
+streams without requiring `EventSource`'s `Last-Event-ID` handshake.
+
 ### DELETE /v1/responses/\{id\}
 
-Delete a stored response.
+Delete a stored response.  This also clears the replay event log for
+that response.
 
 ### GET /v1/models
 

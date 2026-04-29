@@ -21,14 +21,11 @@
  * no effect.
  */
 
-if (
-  process.env.HERMES_TUI_TRUECOLOR !== '0' &&
-  !process.env.NO_COLOR &&
-  !process.env.FORCE_COLOR
-) {
+if (process.env.HERMES_TUI_TRUECOLOR !== '0' && !process.env.NO_COLOR && !process.env.FORCE_COLOR) {
   if (!process.env.COLORTERM) {
     process.env.COLORTERM = 'truecolor'
   }
+
   process.env.FORCE_COLOR = '3'
 }
 

@@ -11,11 +11,11 @@ import type {
 import { asRpcResult } from '../lib/rpc.js'
 
 import {
+  type BusyInputMode,
   DEFAULT_INDICATOR_STYLE,
   INDICATOR_STYLES,
-  type BusyInputMode,
   type IndicatorStyle,
-  type StatusBarMode,
+  type StatusBarMode
 } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'

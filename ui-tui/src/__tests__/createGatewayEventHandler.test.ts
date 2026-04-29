@@ -714,9 +714,7 @@ describe('createGatewayEventHandler', () => {
       } as any)
 
       // Pre-interrupt todos should land in turn state.
-      expect(getTurnState().todos).toEqual([
-        { content: 'pre-interrupt', id: 'todo-1', status: 'pending' }
-      ])
+      expect(getTurnState().todos).toEqual([{ content: 'pre-interrupt', id: 'todo-1', status: 'pending' }])
 
       turnController.interruptTurn({
         appendMessage: (msg: Msg) => appended.push(msg),

@@ -671,9 +671,7 @@ function DiffView({
         <Text color={t.color.text}>
           {diffMetricLine('duration', aTotals.totalDuration, bTotals.totalDuration, n => `${n.toFixed(1)}s`)}
         </Text>
-        <Text color={t.color.text}>
-          {diffMetricLine('tokens', sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}
-        </Text>
+        <Text color={t.color.text}>{diffMetricLine('tokens', sumTokens(aTotals), sumTokens(bTotals), fmtTokens)}</Text>
         <Text color={t.color.text}>{diffMetricLine('cost', aTotals.costUsd, bTotals.costUsd, dollars)}</Text>
       </Box>
     </Box>

@@ -373,6 +373,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // 120-char clip used for `gateway.stderr` activity entries.
         const STDERR_LINE_CAP = 120
         const STDERR_LINES_MAX = 8
+
         const tailLines = (stderrTail ?? '')
           .split('\n')
           .map(l => l.trim())

@@ -227,6 +227,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (full: string, opts: { fallbackToFront?: boolean } = {}) => {
       const live = getUiState()
       const mode = live.busyInputMode
+
       const fallback = (note: string) => {
         if (opts.fallbackToFront) {
           composerRefs.queueRef.current.unshift(full)
@@ -234,6 +235,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         } else {
           composerActions.enqueue(full)
         }
+
         sys(note)
       }
 
@@ -350,17 +352,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       send(full)
     },
-    [
-      appendMessage,
-      composerActions,
-      composerRefs,
-      handleBusyInput,
-      interpolate,
-      send,
-      sendQueued,
-      shellExec,
-      slashRef
-    ]
+    [appendMessage, composerActions, composerRefs, handleBusyInput, interpolate, send, sendQueued, shellExec, slashRef]
   )
 
   const submit = useCallback(

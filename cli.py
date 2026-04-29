@@ -15,10 +15,10 @@ Usage:
 
 import logging
 import os
-import platform
-import shutil
-import json
 import re
+import shutil
+import sys
+import json
 import concurrent.futures
 import base64
 import atexit

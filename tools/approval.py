@@ -17,6 +17,7 @@ import threading
 import time
 import unicodedata
 from typing import Optional
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -711,7 +712,7 @@ def _get_cron_approval_mode() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        mode = str(config.get("approvals", {}).get("cron_mode", "deny")).lower().strip()
+        mode = str(cfg_get(config, "approvals", "cron_mode", default="deny")).lower().strip()
         if mode in ("approve", "off", "allow", "yes"):
             return "approve"
         return "deny"

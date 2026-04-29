@@ -25,6 +25,7 @@ import os
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Dict, List
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,7 @@ def _load_config_files() -> List[Dict[str, str]]:
         from hermes_cli.config import read_raw_config
         hermes_home = _resolve_hermes_home()
         cfg = read_raw_config()
-        cred_files = cfg.get("terminal", {}).get("credential_files")
+        cred_files = cfg_get(cfg, "terminal", "credential_files")
         if isinstance(cred_files, list):
             from tools.path_security import validate_within_dir
 

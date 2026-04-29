@@ -1,6 +1,7 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+import logging
 import threading
 import time
 import pytest
@@ -493,6 +494,27 @@ class TestPluginMemoryDiscovery:
         """load_memory_provider returns None for unknown names."""
         from plugins.memory import load_memory_provider
         assert load_memory_provider("nonexistent_provider") is None
+
+    def test_holographic_warns_when_numpy_missing(self, monkeypatch, tmp_path, caplog):
+        """Holographic provider should not silently hide degraded HRR mode."""
+        from plugins.memory.holographic import HolographicMemoryProvider
+        from plugins.memory.holographic import holographic as hrr
+
+        monkeypatch.setattr(hrr, "_HAS_NUMPY", False)
+        provider = HolographicMemoryProvider(config={"db_path": str(tmp_path / "memory.db")})
+
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.holographic"):
+            provider.initialize("session-1")
+            provider.initialize("session-2")
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if "degraded mode" in record.getMessage()
+        ]
+        assert len(messages) == 1
+        assert "numpy is not installed" in messages[0]
+        assert "HRR semantic retrieval" in messages[0]
 
 
 class TestUserInstalledProviderDiscovery:

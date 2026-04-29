@@ -2473,6 +2473,17 @@ def run_doctor(args):
             _provider = load_memory_provider(_active_memory_provider)
             if _provider and _provider.is_available():
                 check_ok(f"{_active_memory_provider} provider active")
+                if _active_memory_provider == "holographic":
+                    try:
+                        from plugins.memory.holographic import holographic as _holographic_hrr
+                        if not getattr(_holographic_hrr, "_HAS_NUMPY", False):
+                            check_warn(
+                                "Holographic memory degraded",
+                                "numpy not installed; HRR semantic retrieval disabled",
+                            )
+                            issues.append("Holographic memory provider is missing numpy")
+                    except Exception as _e:
+                        check_warn("Holographic numpy check failed", str(_e))
             elif _provider:
                 check_warn(f"{_active_memory_provider} configured but not available", "run: hermes memory status")
             else:

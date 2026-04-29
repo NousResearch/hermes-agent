@@ -322,6 +322,58 @@ class TestWatchUpdateProgress:
         # (may be cleared by the time we check since update finished)
 
     @pytest.mark.asyncio
+    async def test_prompt_forwarding_preserves_thread_metadata(self, tmp_path):
+        """Forwarded update prompts keep the originating thread/topic metadata."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {
+            "platform": "telegram",
+            "chat_id": "111",
+            "thread_id": "777",
+            "user_id": "222",
+            "session_key": "agent:main:telegram:group:111:777",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("")
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": "Restore local changes? [Y/n]",
+            "default": "y",
+            "id": "threaded-prompt",
+        }))
+
+        class _PromptCapableAdapter:
+            def __init__(self):
+                self.send = AsyncMock()
+                self.prompt_calls = AsyncMock()
+
+            async def send_update_prompt(self, **kwargs):
+                return await self.prompt_calls(**kwargs)
+
+        mock_adapter = _PromptCapableAdapter()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        async def finish_after_prompt():
+            await asyncio.sleep(0.3)
+            (hermes_home / ".update_response").write_text("y")
+            await asyncio.sleep(0.2)
+            (hermes_home / ".update_exit_code").write_text("0")
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            task = asyncio.create_task(finish_after_prompt())
+            await runner._watch_update_progress(
+                poll_interval=0.1,
+                stream_interval=0.2,
+                timeout=5.0,
+            )
+            await task
+
+        assert mock_adapter.prompt_calls.call_args.kwargs["metadata"] == {
+            "thread_id": "777"
+        }
+
+    @pytest.mark.asyncio
     async def test_cleans_up_on_completion(self, tmp_path):
         """All marker files are cleaned up when update finishes."""
         runner = _make_runner()

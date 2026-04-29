@@ -26,7 +26,7 @@ import json
 import sys
 import argparse
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 try:
     import requests
@@ -86,7 +86,10 @@ def check_deps(workflow_path: str, host: str = "http://127.0.0.1:8188", api_key:
     if api_key:
         headers["X-API-Key"] = api_key
 
-    is_cloud = "cloud.comfy.org" in host or api_key is not None
+    parsed_host = urlparse(host)
+    hostname = (parsed_host.hostname or "").lower()
+    is_cloud_host = hostname == "cloud.comfy.org" or hostname.endswith(".cloud.comfy.org")
+    is_cloud = is_cloud_host or api_key is not None
     base = host.rstrip("/")
 
     # Get installed node types

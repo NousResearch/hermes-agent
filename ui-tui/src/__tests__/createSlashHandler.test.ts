@@ -207,6 +207,33 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
+  it('renders browser connect progress messages from the gateway', async () => {
+    const rpc = vi.fn(() =>
+      Promise.resolve({
+        connected: false,
+        messages: [
+          "Chrome isn't running with remote debugging — attempting to launch...",
+          'Browser not connected — start Chrome with remote debugging and retry /browser connect'
+        ],
+        url: 'http://127.0.0.1:9222'
+      })
+    )
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/browser connect')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('checking Chrome remote debugging at http://127.0.0.1:9222...')
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        "Chrome isn't running with remote debugging — attempting to launch..."
+      )
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        'Browser not connected — start Chrome with remote debugging and retry /browser connect'
+      )
+      expect(ctx.transcript.sys).not.toHaveBeenCalledWith('browser connect failed')
+    })
+  })
+
   it('routes /rollback through native RPC when a session is active', () => {
     patchUiState({ sid: 'sid-abc' })
     const rpc = vi.fn(() => Promise.resolve({}))

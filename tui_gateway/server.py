@@ -4777,6 +4777,15 @@ def _browser_connect_error(url: str, port: int) -> str:
     )
 
 
+def _browser_connect_failure_messages(url: str, port: int) -> list[str]:
+    command = _browser_connect_error(url, port)
+    return [
+        "Chrome isn't running with remote debugging — attempting to launch...",
+        *command.splitlines(),
+        "Browser not connected — start Chrome with remote debugging and retry /browser connect",
+    ]
+
+
 @method("browser.manage")
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
@@ -4793,6 +4802,7 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
 
         url = params.get("url", DEFAULT_BROWSER_CDP_URL)
+        messages: list[str] = []
         try:
             import urllib.request
             from urllib.parse import urlparse
@@ -4801,6 +4811,9 @@ def _(rid, params: dict) -> dict:
             parsed = urlparse(url if "://" in url else f"http://{url}")
             if parsed.scheme not in {"http", "https", "ws", "wss"}:
                 return _err(rid, 4015, f"unsupported browser url: {url}")
+            if _is_default_local_cdp(parsed):
+                url = DEFAULT_BROWSER_CDP_URL
+                parsed = urlparse(url)
 
             # A concrete ``ws[s]://.../devtools/browser/<id>`` endpoint is
             # already directly connectable — those are the URLs Browserbase
@@ -4846,8 +4859,10 @@ def _(rid, params: dict) -> dict:
                         from hermes_cli.browser_connect import try_launch_chrome_debug
 
                         port = parsed.port or 9222
-                        if try_launch_chrome_debug(port, platform.system()):
-                            for _ in range(10):
+                        messages.append("Chrome isn't running with remote debugging — attempting to launch...")
+                        launched = try_launch_chrome_debug(port, platform.system())
+                        if launched:
+                            for _ in range(20):
                                 time.sleep(0.5)
                                 for probe in probe_urls:
                                     try:
@@ -4859,10 +4874,15 @@ def _(rid, params: dict) -> dict:
                                         continue
                                 if ok:
                                     break
+                            if ok:
+                                messages.append(f"Chrome launched and listening on port {port}")
                         if not ok:
-                            return _err(rid, 5031, _browser_connect_error(url, port))
+                            messages.extend(_browser_connect_failure_messages(url, port)[1:])
+                            return _ok(rid, {"connected": False, "url": url, "messages": messages})
                     else:
                         return _err(rid, 5031, f"could not reach browser CDP at {url}")
+                elif _is_default_local_cdp(parsed):
+                    messages.append(f"Chrome is already listening on port {parsed.port or 9222}")
 
             # Persist a normalized URL for downstream CDP resolution.
             # Discovery-style inputs (`http://host:port` or
@@ -4898,7 +4918,10 @@ def _(rid, params: dict) -> dict:
             cleanup_all_browsers()
         except Exception as e:
             return _err(rid, 5031, str(e))
-        return _ok(rid, {"connected": True, "url": normalized})
+        payload = {"connected": True, "url": normalized}
+        if messages:
+            payload["messages"] = messages
+        return _ok(rid, payload)
     if action == "disconnect":
         try:
             from tools.browser_tool import cleanup_all_browsers

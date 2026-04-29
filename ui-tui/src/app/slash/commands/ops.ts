@@ -108,12 +108,15 @@ export const opsCommands: SlashCommand[] = [
 
       if (action === 'connect') {
         payload.url = requested || 'http://127.0.0.1:9222'
+        ctx.transcript.sys(`checking Chrome remote debugging at ${payload.url}...`)
       }
 
       ctx.gateway
         .rpc<BrowserManageResponse>('browser.manage', payload)
         .then(
           ctx.guarded<BrowserManageResponse>(r => {
+            r.messages?.forEach(message => ctx.transcript.sys(message))
+
             if (action === 'status') {
               return ctx.transcript.sys(
                 r.connected
@@ -124,13 +127,14 @@ export const opsCommands: SlashCommand[] = [
 
             if (action === 'connect') {
               if (r.connected) {
-                ctx.transcript.sys(`browser connected: ${r.url || '(url unavailable)'}`)
+                ctx.transcript.sys(`Browser connected to live Chrome via CDP`)
+                ctx.transcript.sys(`Endpoint: ${r.url || '(url unavailable)'}`)
                 ctx.transcript.sys('next browser tool call will use this CDP endpoint')
 
                 return
               }
 
-              return ctx.transcript.sys('browser connect failed')
+              return
             }
 
             ctx.transcript.sys('browser disconnected')

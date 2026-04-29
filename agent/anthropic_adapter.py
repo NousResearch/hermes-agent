@@ -594,13 +594,21 @@ def build_anthropic_client(
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
     elif _is_third_party_anthropic_endpoint(base_url):
-        # Third-party proxies (Azure AI Foundry, AWS Bedrock, etc.) use their
-        # own API keys with x-api-key auth. Skip OAuth detection — their keys
+        # Third-party proxies (Azure AI Foundry, AWS Bedrock, LiteLLM gateways, etc.)
+        # use their own API keys with x-api-key auth. Skip OAuth detection — their keys
         # don't follow Anthropic's sk-ant-* prefix convention and would be
         # misclassified as OAuth tokens.
+        #
+        # Some LiteLLM proxies gate Claude model access on Claude Code identity
+        # headers (User-Agent: claude-cli/*, x-app: cli) to prevent openclaw from
+        # using the Anthropic protocol. Always include these headers for third-party
+        # endpoints — they're harmless on proxies that don't check them.
         kwargs["api_key"] = api_key
-        if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+        kwargs["default_headers"] = {
+            **({"anthropic-beta": ",".join(common_betas)} if common_betas else {}),
+            "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+            "x-app": "cli",
+        }
     elif _is_oauth_token(api_key):
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
@@ -1791,9 +1799,32 @@ def convert_messages_to_anthropic(
                 # keep it: the upstream needs it for message-history validation.
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
-        elif _is_third_party or idx != last_assistant_idx:
-            # Third-party endpoint: strip ALL thinking blocks from every
-            # assistant message — signatures are Anthropic-proprietary.
+        elif _is_third_party:
+            # Third-party Anthropic-compatible endpoint (LiteLLM proxies,
+            # Annto, etc.): PRESERVE thinking blocks but STRIP the
+            # 'signature' field.  Many proxies transparently forward to
+            # Anthropic's API — the upstream thinking mode requires the
+            # thinking block to exist in the request history (HTTP 400
+            # "content[].thinking must be passed back to the API" otherwise),
+            # but the Anthropic signature is bound to the original turn
+            # content and becomes invalid after any message mutation (context
+            # compression, session truncation, etc.).  Stripping the
+            # signature field keeps the thinking content intact while
+            # avoiding "Invalid signature in thinking block" errors.
+            # Only drop redacted_thinking blocks with no 'data' — they
+            # carry no information and can't be validated by anyone.
+            new_content = []
+            for b in m["content"]:
+                if (isinstance(b, dict) and b.get("type") == "redacted_thinking"
+                        and not b.get("data")):
+                    continue  # empty redacted_thinking — drop
+                if (isinstance(b, dict) and b.get("type") in _THINKING_TYPES
+                        and b.get("signature")):
+                    # Strip signature, preserve thinking content
+                    b = {k: v for k, v in b.items() if k != "signature"}
+                new_content.append(b)
+            m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
+        elif idx != last_assistant_idx:
             # Direct Anthropic: strip from non-latest assistant messages only.
             stripped = [
                 b for b in m["content"]

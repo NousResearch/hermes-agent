@@ -4762,10 +4762,18 @@ def _is_default_local_cdp(parsed) -> bool:
 def _browser_connect_error(url: str, port: int) -> str:
     from hermes_cli.browser_connect import manual_chrome_debug_command
 
+    command = manual_chrome_debug_command(port)
+    if not command:
+        return (
+            f"Chrome is not reachable at {url}. "
+            "No Chrome/Chromium executable was found in this environment; "
+            f"install one or start Chrome with --remote-debugging-port={port}, then retry /browser connect."
+        )
+
     return (
         f"Chrome is not reachable at {url}. "
         "Start Chrome with remote debugging, then retry /browser connect:\n"
-        f"{manual_chrome_debug_command(port)}"
+        f"{command}"
     )
 
 

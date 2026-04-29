@@ -198,6 +198,11 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "TERMINAL_DOCKER_RUN_AS_HOST_USER",
     "BROWSER_CDP_URL",
     "CAMOFOX_URL",
+    # Terminal backend selectors are process-global and can leak between tests
+    # in a reused xdist worker, changing check_terminal_requirements() results.
+    "TERMINAL_ENV",
+    "TERMINAL_CWD",
+    "TERMINAL_MODAL_MODE",
     # Platform allowlists — not credentials, but if set from any source
     # (user shell, earlier leaky test, CI env), they change gateway auth
     # behavior and flake button-authorization tests.
@@ -338,10 +343,16 @@ def _reset_module_state():
     that don't exist yet (test collection before production import) are
     skipped silently — production import later creates fresh empty state.
     """
-    # --- logging — legacy tests sometimes call logging.disable() directly.
-    # Re-enable logs before every test so caplog-based assertions are not
-    # affected by worker-local state from earlier tests.
+    # --- logging — legacy tests sometimes mutate global logging state.
+    # Re-enable global logging threshold and undo per-logger "disabled" flags
+    # so caplog assertions are not affected by earlier tests on the same worker.
     logging.disable(logging.NOTSET)
+    try:
+        for _obj in logging.root.manager.loggerDict.values():
+            if isinstance(_obj, logging.Logger):
+                _obj.disabled = False
+    except Exception:
+        pass
     for _logger_name in ("tools", "run_agent", "trajectory_compressor", "cron", "hermes_cli"):
         _logger = logging.getLogger(_logger_name)
         _logger.disabled = False
@@ -459,6 +470,31 @@ def _reset_module_state():
             _ft_mod._read_tracker.clear()
         with _ft_mod._file_ops_lock:
             _ft_mod._file_ops_cache.clear()
+    except Exception:
+        pass
+
+    # --- tools.terminal_tool — live environment maps are process-global ---
+    # Stale entries here override TERMINAL_CWD in file_tools._resolve_path(),
+    # causing relative paths to resolve against an old repo/workdir.
+    try:
+        from tools import terminal_tool as _tt_mod
+        with _tt_mod._env_lock:
+            _tt_mod._active_environments.clear()
+            _tt_mod._last_activity.clear()
+        _tt_mod._task_env_overrides.clear()
+        with _tt_mod._creation_locks_lock:
+            _tt_mod._creation_locks.clear()
+    except Exception:
+        pass
+
+    # --- tools.browser_tool — cached probes leak across tests ---
+    # _run_browser_command short-circuits before _write_owner_pid when a stale
+    # cached Chromium-missing result survives from an earlier test.
+    try:
+        from tools import browser_tool as _bt_mod
+        _bt_mod._cached_chromium_installed = None
+        _bt_mod._cached_cloud_provider = None
+        _bt_mod._cloud_provider_resolved = False
     except Exception:
         pass
 

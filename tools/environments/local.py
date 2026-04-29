@@ -153,8 +153,25 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
+    # On Windows, shutil.which("bash") often returns C:\Windows\System32\bash.exe (WSL),
+    # which is NOT what we want. We need MinGW/Git Bash for host execution.
+    # Try to find it relative to git.exe first.
+    git_bin = shutil.which("git")
+    if git_bin:
+        # git is usually at ...\Git\cmd\git.exe or ...\Git\bin\git.exe
+        # bash is usually at ...\Git\bin\bash.exe
+        git_root = os.path.dirname(os.path.dirname(git_bin))
+        candidate = os.path.join(git_root, "bin", "bash.exe")
+        if os.path.isfile(candidate):
+            return candidate
+        # Try one more level up just in case
+        git_root_up = os.path.dirname(git_root)
+        candidate = os.path.join(git_root_up, "bin", "bash.exe")
+        if os.path.isfile(candidate):
+            return candidate
+
     found = shutil.which("bash")
-    if found:
+    if found and "System32" not in found:
         return found
 
     for candidate in (
@@ -166,7 +183,8 @@ def _find_bash() -> str:
             return candidate
 
     raise RuntimeError(
-        "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
+        "Git Bash not found (detected WSL bash but it is unsupported).\n"
+        "Hermes Agent requires Git for Windows for host execution.\n"
         "Install it from: https://git-scm.com/download/win\n"
         "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
     )
@@ -333,6 +351,24 @@ class LocalEnvironment(BaseEnvironment):
             return candidate.rstrip("/") or "/"
 
         return "/tmp"
+    
+    def _resolve_windows_cwd(self) -> str:
+        """Resolve self.cwd to a valid Windows path for subprocess.Popen."""
+        if not _IS_WINDOWS or not self.cwd:
+            return self.cwd
+        
+        path = self.cwd
+        # Convert /mnt/c/... to C:\...
+        if path.startswith("/mnt/"):
+            drive = path[5:6].upper()
+            if drive.isalpha() and (len(path) == 6 or path[6] == "/"):
+                path = drive + ":" + path[6:]
+        # Convert /c/... to C:\...
+        elif len(path) >= 2 and path[0] == "/" and path[1].isalpha() and (len(path) == 2 or path[2] == "/"):
+            drive = path[1:2].upper()
+            path = drive + ":" + path[2:]
+            
+        return path.replace("/", "\\")
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
@@ -361,7 +397,7 @@ class LocalEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            cwd=self.cwd,
+            cwd=self._resolve_windows_cwd(),
         )
 
         if stdin_data is not None:

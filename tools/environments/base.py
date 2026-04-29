@@ -368,17 +368,6 @@ class BaseEnvironment(ABC):
     # Command wrapping
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _quote_cwd_for_cd(cwd: str) -> str:
-        """Quote a ``cd`` target while preserving ``~`` expansion."""
-        if cwd == "~":
-            return cwd
-        if cwd == "~/":
-            return "$HOME"
-        if cwd.startswith("~/"):
-            return f"$HOME/{shlex.quote(cwd[2:])}"
-        return shlex.quote(cwd)
-
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
@@ -386,20 +375,14 @@ class BaseEnvironment(ABC):
 
         parts = []
 
-        # Source snapshot (env vars from previous commands).
-        # Redirect stdout to /dev/null: on macOS (bash 3.2 and certain
-        # Homebrew bash builds) sourcing a file containing ``declare -x``
-        # can emit the declarations to stdout, leaking ~60 lines of env
-        # vars into every tool response (issue #15459).  Linux bash is
-        # silent here, but the redirect is harmless.
+        # Source snapshot (env vars from previous commands)
         if self._snapshot_ready:
-            parts.append(
-                f"source {self._snapshot_path} >/dev/null 2>&1 || true"
-            )
+            parts.append(f"source {self._snapshot_path} 2>/dev/null || true")
 
-        # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
-        # ``$HOME`` so suffixes with spaces remain a single shell word.
-        quoted_cwd = self._quote_cwd_for_cd(cwd)
+        # cd to working directory — let bash expand ~ natively
+        quoted_cwd = (
+            shlex.quote(cwd) if cwd != "~" and not cwd.startswith("~/") else cwd
+        )
         parts.append(f"builtin cd {quoted_cwd} || exit 126")
 
         # Run the actual command
@@ -482,30 +465,47 @@ class BaseEnvironment(ABC):
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _drain():
+            import platform
+            is_windows = platform.system() == "Windows"
             fd = proc.stdout.fileno()
             idle_after_exit = 0
             try:
                 while True:
-                    try:
-                        ready, _, _ = select.select([fd], [], [], 0.1)
-                    except (ValueError, OSError):
-                        break  # fd already closed
-                    if ready:
+                    if is_windows:
+                        # Windows does not support select() on pipes.
+                        # Use a simple blocking read with a short sleep instead,
+                        # or just rely on the fact that Windows pipe inheritance
+                        # is less prone to the orphaned-grandchild hang.
                         try:
+                            # Use os.read in a non-blocking-ish way if possible,
+                            # or just read small chunks.
                             chunk = os.read(fd, 4096)
+                            if not chunk:
+                                break
+                            output_chunks.append(decoder.decode(chunk))
                         except (ValueError, OSError):
                             break
-                        if not chunk:
-                            break  # true EOF — all writers closed
-                        output_chunks.append(decoder.decode(chunk))
-                        idle_after_exit = 0
-                    elif proc.poll() is not None:
-                        # bash is gone and the pipe was idle for ~100ms.  Give
-                        # it two more cycles to catch any buffered tail, then
-                        # stop — otherwise we wait forever on a grandchild pipe.
-                        idle_after_exit += 1
-                        if idle_after_exit >= 3:
-                            break
+                    else:
+                        try:
+                            ready, _, _ = select.select([fd], [], [], 0.1)
+                        except (ValueError, OSError):
+                            break  # fd already closed
+                        if ready:
+                            try:
+                                chunk = os.read(fd, 4096)
+                            except (ValueError, OSError):
+                                break
+                            if not chunk:
+                                break  # true EOF — all writers closed
+                            output_chunks.append(decoder.decode(chunk))
+                            idle_after_exit = 0
+                        elif proc.poll() is not None:
+                            # bash is gone and the pipe was idle for ~100ms.  Give
+                            # it two more cycles to catch any buffered tail, then
+                            # stop — otherwise we wait forever on a grandchild pipe.
+                            idle_after_exit += 1
+                            if idle_after_exit >= 3:
+                                break
             finally:
                 # Flush any bytes buffered mid-sequence.  With ``errors="replace"``
                 # this emits U+FFFD for any final incomplete sequence rather than

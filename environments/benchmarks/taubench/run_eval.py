@@ -131,15 +131,22 @@ def run_eval(
     if is_openrouter and not user_model.startswith("openrouter/"):
         user_model = f"openrouter/{user_model}"
 
-    # Resolve API key
+    # Resolve API key for agent
     if is_openrouter:
         api_key = api_key or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        # litellm reads OPENAI_API_KEY for base_url overrides; set it so the
-        # user simulator's generate() call also authenticates correctly.
         if api_key and not os.environ.get("OPENAI_API_KEY"):
             os.environ["OPENAI_API_KEY"] = api_key
     else:
         api_key = api_key or os.environ.get("OPENAI_API_KEY")
+
+    # Resolve user sim auth — user sim may use OpenRouter even when agent is local.
+    # Check if user_model has openrouter/ prefix or OPENROUTER_API_KEY is set.
+    user_model_is_openrouter = user_model.startswith("openrouter/")
+    if not user_model_is_openrouter and "openrouter" in user_model.lower():
+        user_model = f"openrouter/{user_model}"
+        user_model_is_openrouter = True
+
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
 
     _register_agent(
         model=model,
@@ -171,10 +178,12 @@ def run_eval(
     save_path = Path(log_dir) / f"tau2-{env_name}-{model.split('/')[-1]}.json"
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Pass api_key/base_url to user sim via llm_args so tau2's generate() authenticates.
-    # When using OpenRouter for the user sim, mirror the agent's key + endpoint.
+    # Pass auth to user sim. User sim may be on OpenRouter even if agent is local.
     user_llm_args: dict = {}
-    if is_openrouter and api_key:
+    if user_model_is_openrouter and openrouter_key:
+        user_llm_args["api_key"] = openrouter_key
+        user_llm_args["base_url"] = OPENROUTER_BASE_URL
+    elif is_openrouter and api_key:
         user_llm_args["api_key"] = api_key
         user_llm_args["base_url"] = base_url
 

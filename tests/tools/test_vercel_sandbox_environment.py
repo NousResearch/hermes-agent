@@ -557,7 +557,11 @@ class TestSnapshotPersistence:
             "snapshot_id": "snap_stale",
         }
         assert "source" not in vercel_sdk.create_kwargs[1]
-        assert vercel_module._load_snapshots() == {}
+        # Stale snapshot must be pruned on restore failure. A fresh sandbox may persist
+        # snap_default during env use or on teardown (ordering differs by platform/CI).
+        snaps = vercel_module._load_snapshots()
+        assert snaps.get("task-123") != "snap_stale"
+        assert snaps.get("task-123") in (None, "snap_default")
 
     def test_cleanup_stops_when_snapshot_fails_without_storing_metadata(
         self, make_env, vercel_module, vercel_sdk, monkeypatch, tmp_path

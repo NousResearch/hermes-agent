@@ -10,8 +10,10 @@ from tests.gateway.restart_test_helpers import make_restart_runner, make_restart
 
 
 @pytest.mark.asyncio
-async def test_cancel_background_tasks_cancels_inflight_message_processing():
+async def test_cancel_background_tasks_cancels_inflight_message_processing(monkeypatch):
     _runner, adapter = make_restart_runner()
+    # Avoid a long-lived typing refresh loop racing cancellation teardown on CI.
+    monkeypatch.setattr(adapter, "_keep_typing", AsyncMock(return_value=None))
     release = asyncio.Event()
 
     async def block_forever(_event):

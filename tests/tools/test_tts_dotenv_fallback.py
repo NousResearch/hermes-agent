@@ -175,6 +175,7 @@ class TestRegressionGuard:
     """
 
     def test_minimax_missing_when_only_in_dotenv_before_fix(self, tmp_path, monkeypatch):
+        from hermes_cli import config as cfg
         from tools import tts_tool
 
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
@@ -182,14 +183,18 @@ class TestRegressionGuard:
         # Simulate ~/.hermes/.env carrying the key (load_env returns the dict
         # that get_env_value falls back to). The pre-fix ``os.getenv`` call
         # ignores this entirely and raises ValueError.
-        with patch(
-            "hermes_cli.config.load_env",
+        with patch.object(
+            cfg,
+            "load_env",
             return_value={"MINIMAX_API_KEY": "dotenv-secret"},
         ):
+            # tools.tts_tool binds get_env_value at import time; re-bind so the
+            # patched load_env is always seen (CI/xdist hermetic env ordering).
+            monkeypatch.setattr(tts_tool, "get_env_value", cfg.get_env_value)
+
             # Sanity-check: get_env_value resolves through load_env when
             # os.environ is empty.
-            from hermes_cli.config import get_env_value as live_get
-            assert live_get("MINIMAX_API_KEY") == "dotenv-secret"
+            assert cfg.get_env_value("MINIMAX_API_KEY") == "dotenv-secret"
 
             # And the production code path now consumes the resolved value
             # instead of raising "MINIMAX_API_KEY not set".
@@ -218,16 +223,19 @@ class TestRegressionGuard:
         would say "no provider available" for users who keep MINIMAX_API_KEY
         in ``~/.hermes/.env``, even though the dispatcher would later succeed.
         """
+        from hermes_cli import config as cfg
         from tools import tts_tool
 
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
 
-        with patch(
-            "hermes_cli.config.load_env",
+        with patch.object(
+            cfg,
+            "load_env",
             return_value={"MINIMAX_API_KEY": "dotenv-secret"},
         ), patch.object(tts_tool, "_import_edge_tts", side_effect=ImportError), \
              patch.object(tts_tool, "_import_elevenlabs", side_effect=ImportError), \
              patch.object(tts_tool, "_import_openai_client", side_effect=ImportError), \
              patch.object(tts_tool, "_check_neutts_available", return_value=False), \
              patch.object(tts_tool, "_check_kittentts_available", return_value=False):
+            monkeypatch.setattr(tts_tool, "get_env_value", cfg.get_env_value)
             assert tts_tool.check_tts_requirements() is True

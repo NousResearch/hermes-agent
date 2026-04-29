@@ -147,12 +147,3 @@ def relaunch(
         extra_args, preserve_inherited=preserve_inherited, original_argv=original_argv
     )
     os.execvp(new_argv[0], new_argv)
-
-
-def relaunch_chat(
-    *,
-    preserve_inherited: bool = True,
-    original_argv: Optional[Sequence[str]] = None,
-) -> None:
-    """Convenience wrapper: relaunch into ``hermes chat``."""
-    relaunch(["chat"], preserve_inherited=preserve_inherited, original_argv=original_argv)

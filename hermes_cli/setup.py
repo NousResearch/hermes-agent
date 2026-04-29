@@ -3255,8 +3255,8 @@ def _offer_launch_chat():
     if not prompt_yes_no("Launch hermes chat now?", True):
         return
 
-    from hermes_cli.relaunch import relaunch_chat
-    relaunch_chat()
+    from hermes_cli.relaunch import relaunch
+    relaunch(["chat"])
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):

@@ -2930,7 +2930,11 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
                 {
                     "id": "1",
                     "method": "browser.manage",
-                    "params": {"action": "connect", "url": "http://localhost:9222"},
+                    "params": {
+                        "action": "connect",
+                        "session_id": "sess-1",
+                        "url": "http://localhost:9222",
+                    },
                 }
             )
 
@@ -2950,6 +2954,45 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     assert "BROWSER_CDP_URL" not in os.environ
     progress = [p["message"] for evt, p in emitted if evt == "browser.progress"]
     assert progress == resp["result"]["messages"]
+
+
+def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
+    """Without a session_id the TUI prints messages from the response;
+    emitting ``browser.progress`` events would double-render. Gate the
+    emit so callers without a session see the bundled list only."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda evt, sid, payload=None: emitted.append((evt, payload or {})),
+    )
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=False)
+        with (
+            patch(
+                "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
+            ),
+            patch(
+                "hermes_cli.browser_connect.get_chrome_debug_candidates",
+                return_value=[],
+            ),
+        ):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "browser.manage",
+                    "params": {"action": "connect", "url": "http://localhost:9222"},
+                }
+            )
+
+    assert resp["result"]["connected"] is False
+    assert resp["result"]["messages"]  # bundled list still populated
+    assert [evt for evt, _ in emitted if evt == "browser.progress"] == []
 
 
 def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):

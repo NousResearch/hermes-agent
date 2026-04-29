@@ -33,6 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import (
+    cfg_get,
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
     get_config_path,
@@ -2902,7 +2903,7 @@ async def get_dashboard_themes():
     them without a stub.
     """
     config = load_config()
-    active = config.get("dashboard", {}).get("theme", "default")
+    active = cfg_get(config, "dashboard", "theme", default="default")
     user_themes = _discover_user_themes()
     seen = set()
     themes = []

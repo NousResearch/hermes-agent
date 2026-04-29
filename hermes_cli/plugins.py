@@ -45,6 +45,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
+from hermes_cli.config import cfg_get
 
 try:
     import yaml
@@ -115,7 +116,7 @@ def _get_disabled_plugins() -> set:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        disabled = config.get("plugins", {}).get("disabled", [])
+        disabled = cfg_get(config, "plugins", "disabled", default=[])
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
         return set()

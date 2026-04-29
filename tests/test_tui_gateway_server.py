@@ -2779,6 +2779,30 @@ def _stub_urlopen(monkeypatch, *, ok: bool):
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
 
 
+def _stub_urlopen_capture(monkeypatch, *, ok: bool):
+    urls: list[str] = []
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+        urls.append(url)
+        if not ok:
+            raise OSError("probe failed")
+        return _Resp()
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    return urls
+
+
 def test_browser_manage_status_reads_env_var(monkeypatch):
     """Status returns the env var verbatim (no network I/O)."""
     monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
@@ -2854,6 +2878,79 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
     assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
     # First cleanup runs against the OLD env (none here), second against the NEW.
     assert cleanup_calls == ["", "http://127.0.0.1:9222"]
+
+
+def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        urls = _stub_urlopen_capture(monkeypatch, ok=True)
+        resp = server.handle_request(
+            {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
+        )
+
+    assert resp["result"] == {"connected": True, "url": "http://127.0.0.1:9222"}
+    assert urls[0] == "http://127.0.0.1:9222/json/version"
+
+
+def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=False)
+        with patch("hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False):
+            resp = server.handle_request(
+                {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
+            )
+
+    assert resp["error"]["code"] == 5031
+    assert "Start Chrome with remote debugging" in resp["error"]["message"]
+    assert "google-chrome --remote-debugging-port=9222" in resp["error"]["message"]
+    assert "BROWSER_CDP_URL" not in os.environ
+
+
+def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    attempts = {"n": 0}
+
+    def _opener(_url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise OSError("not ready")
+        return _Resp()
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        with patch("hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True):
+            resp = server.handle_request(
+                {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
+            )
+
+    assert resp["result"] == {"connected": True, "url": "http://127.0.0.1:9222"}
+    assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
 
 
 def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):

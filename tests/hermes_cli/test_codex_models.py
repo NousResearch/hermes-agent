@@ -113,7 +113,7 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
     from hermes_cli.main import _model_flow_openai_codex
 
     captured = {"login_calls": 0}
-    choices = iter(["2"])
+    choices = iter(["2", "1"])
 
     monkeypatch.setattr("builtins.input", lambda prompt="": next(choices))
     monkeypatch.setattr(

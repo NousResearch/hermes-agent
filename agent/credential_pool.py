@@ -82,7 +82,7 @@ CUSTOM_POOL_PREFIX = "custom:"
 _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
-    "agent_key_obtained_at", "tls",
+    "agent_key_obtained_at", "tls", "account_id", "accountId", "auth_mode", "expires",
 })
 
 
@@ -511,7 +511,14 @@ class CredentialPool:
                 }
                 if state.get("last_refresh"):
                     field_updates["last_refresh"] = state["last_refresh"]
-                updated = replace(entry, **field_updates)
+                if state.get("expires_at_ms"):
+                    field_updates["expires_at_ms"] = state["expires_at_ms"]
+                extra_updates = dict(entry.extra)
+                for extra_key in ("account_id", "accountId", "auth_mode", "expires"):
+                    val = state.get(extra_key) or tokens.get(extra_key)
+                    if val is not None:
+                        extra_updates[extra_key] = val
+                updated = replace(entry, extra=extra_updates, **field_updates)
                 self._replace_entry(entry, updated)
                 self._persist()
                 return updated
@@ -626,6 +633,14 @@ class CredentialPool:
                         tokens["refresh_token"] = entry.refresh_token
                     if entry.last_refresh:
                         state["last_refresh"] = entry.last_refresh
+                    if entry.expires_at_ms:
+                        state["expires_at_ms"] = entry.expires_at_ms
+                        tokens["expires_at_ms"] = entry.expires_at_ms
+                    for extra_key in ("account_id", "accountId", "auth_mode", "expires"):
+                        val = entry.extra.get(extra_key)
+                        if val is not None:
+                            state[extra_key] = val
+                            tokens[extra_key] = val
                     _save_provider_state(auth_store, "openai-codex", state)
 
                 else:
@@ -673,11 +688,18 @@ class CredentialPool:
                     entry.access_token,
                     entry.refresh_token,
                 )
+                extra_updates = dict(entry.extra)
+                for extra_key in ("account_id", "accountId", "auth_mode", "expires"):
+                    val = refreshed.get(extra_key)
+                    if val is not None:
+                        extra_updates[extra_key] = val
                 updated = replace(
                     entry,
                     access_token=refreshed["access_token"],
                     refresh_token=refreshed["refresh_token"],
                     last_refresh=refreshed.get("last_refresh"),
+                    expires_at_ms=refreshed.get("expires_at_ms") or entry.expires_at_ms,
+                    extra=extra_updates,
                 )
             elif self.provider == "nous":
                 synced = self._sync_nous_entry_from_auth_store(entry)
@@ -1370,7 +1392,12 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "refresh_token": tokens.get("refresh_token"),
                     "base_url": "https://chatgpt.com/backend-api/codex",
                     "last_refresh": state.get("last_refresh"),
-                    "label": label_from_token(tokens.get("access_token", ""), "device_code"),
+                    "expires_at_ms": state.get("expires_at_ms") or tokens.get("expires_at_ms"),
+                    "account_id": state.get("account_id") or tokens.get("account_id"),
+                    "accountId": state.get("accountId") or tokens.get("accountId"),
+                    "auth_mode": state.get("auth_mode"),
+                    "expires": state.get("expires") or tokens.get("expires"),
+                    "label": label_from_token(tokens.get("access_token", ""), state.get("auth_mode") or "device_code"),
                 },
             )
 

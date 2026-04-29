@@ -133,8 +133,17 @@ Register a **Desktop app** OAuth client at
 with the Generative Language API enabled.
 
 :::info Codex Note
-The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
+The OpenAI Codex provider supports two login methods from `hermes model`: device code (open a URL, enter a code) and Browser OAuth / ChatGPT OAuth with PKCE. Browser OAuth listens on `http://127.0.0.1:1455/auth/callback` when possible, and falls back to pasting the redirect URL or authorization code for SSH/headless sessions. Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
 :::
+
+#### OpenAI Codex auth troubleshooting
+
+- **Device code is not available on your account:** rerun `hermes model`, choose OpenAI Codex, then choose **Browser OAuth / ChatGPT OAuth**.
+- **Browser did not open:** copy the printed URL into a browser manually, then paste the final localhost redirect URL back into the terminal when prompted.
+- **Port 1455 is occupied:** Hermes falls back to manual paste. Close the process using port 1455 if you want automatic callback capture.
+- **Working over SSH/headless:** open the printed URL on any browser where you can sign in, then paste the full redirect URL. Pasting only the code also works, but Hermes cannot verify OAuth `state` from a bare code.
+- **Refresh failed / token expired:** rerun `hermes model` and re-authenticate OpenAI Codex. Hermes persists rotated refresh tokens, but a revoked or externally consumed refresh token requires a fresh login.
+
 
 :::warning
 Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use a separate "auxiliary" model. By default (`auxiliary.*.provider: "auto"`), Hermes routes these tasks to your **main chat model** — the same model you picked in `hermes model`. You can override each task individually to route it to a cheaper/faster model (e.g. Gemini Flash on OpenRouter) — see [Auxiliary Models](/docs/user-guide/configuration#auxiliary-models).

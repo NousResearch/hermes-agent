@@ -30,6 +30,8 @@ import threading
 import time
 import uuid
 import webbrowser
+import socket
+import secrets
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -86,9 +88,16 @@ DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
-CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
-CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+CODEX_OAUTH_CLIENT_ID="app_EMoamEEZ73f0CkXaXp7hrann"
+CODEX_OAUTH_TOKEN_URL="https://auth.openai.com/oauth/token"
+CODEX_OAUTH_AUTHORIZE_URL="https://auth.openai.com/oauth/authorize"
+CODEX_OAUTH_REDIRECT_URI="http://localhost:1455/auth/callback"
+CODEX_OAUTH_CALLBACK_HOST="127.0.0.1"
+CODEX_OAUTH_CALLBACK_PORT=1455
+CODEX_OAUTH_CALLBACK_PATH="/auth/callback"
+CODEX_OAUTH_SCOPE="openid profile email offline_access api.connectors.read api.connectors.invoke"
+CODEX_OAUTH_ORIGINATOR="codex_cli_rs"
+CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS=60
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -2181,6 +2190,446 @@ def _is_remote_session() -> bool:
 # where one app's refresh invalidates the other's session.
 # =============================================================================
 
+
+def _codex_pkce_verifier() -> str:
+    """Generate a RFC 7636 PKCE verifier (43-128 URL-safe chars)."""
+    verifier = secrets.token_urlsafe(64)
+    if len(verifier) < 43:
+        verifier = (verifier + secrets.token_urlsafe(32))[:43]
+    return verifier[:128]
+
+
+def _codex_pkce_challenge(code_verifier: str) -> str:
+    digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _codex_pkce_pair() -> tuple[str, str, str]:
+    verifier = _codex_pkce_verifier()
+    challenge = _codex_pkce_challenge(verifier)
+    state = secrets.token_urlsafe(32)
+    return verifier, challenge, state
+
+
+def _codex_build_authorize_url(*, code_challenge: str, state: str) -> str:
+    params = {
+        "response_type": "code",
+        "client_id": CODEX_OAUTH_CLIENT_ID,
+        "redirect_uri": CODEX_OAUTH_REDIRECT_URI,
+        "scope": os.getenv("HERMES_CODEX_OAUTH_SCOPE", CODEX_OAUTH_SCOPE).strip() or CODEX_OAUTH_SCOPE,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+        "id_token_add_organizations": "true",
+        "codex_cli_simplified_flow": "true",
+        "state": state,
+        "originator": os.getenv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", CODEX_OAUTH_ORIGINATOR).strip() or CODEX_OAUTH_ORIGINATOR,
+    }
+    workspace_id = os.getenv("HERMES_CODEX_ALLOWED_WORKSPACE_ID", "").strip()
+    if workspace_id:
+        params["allowed_workspace_id"] = workspace_id
+    return f"{CODEX_OAUTH_AUTHORIZE_URL}?{urlencode(params)}"
+
+
+def _codex_extract_account_id(access_token: Any) -> str:
+    claims = _decode_jwt_claims(access_token)
+    candidates = (
+        "chatgpt_account_id",
+        "account_id",
+        "accountId",
+        "account",
+        "https://api.openai.com/auth",
+        "https://api.openai.com/auth/account_id",
+        "https://api.openai.com/auth/accountId",
+    )
+    for key in candidates:
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            for nested_key in ("chatgpt_account_id", "id", "account_id", "accountId"):
+                nested = value.get(nested_key)
+                if isinstance(nested, str) and nested.strip():
+                    return nested.strip()
+    accounts = claims.get("accounts")
+    if isinstance(accounts, list):
+        for item in accounts:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+            if isinstance(item, dict):
+                for nested_key in ("chatgpt_account_id", "id", "account_id", "accountId"):
+                    nested = item.get(nested_key)
+                    if isinstance(nested, str) and nested.strip():
+                        return nested.strip()
+    raise AuthError(
+        "Could not extract OpenAI Codex accountId from access token. Re-authentication completed, but Hermes cannot safely save unusable credentials.",
+        provider="openai-codex",
+        code="codex_account_id_extraction_failed",
+        relogin_required=True,
+    )
+
+
+def _codex_token_expiry_metadata(token_payload: Dict[str, Any], access_token: str) -> Dict[str, Any]:
+    expires_at_epoch: Optional[float] = None
+    expires_in = token_payload.get("expires_in")
+    try:
+        if expires_in is not None:
+            expires_at_epoch = time.time() + max(0, int(expires_in))
+    except Exception:
+        expires_at_epoch = None
+    if expires_at_epoch is None:
+        claims = _decode_jwt_claims(access_token)
+        exp = claims.get("exp")
+        if isinstance(exp, (int, float)):
+            expires_at_epoch = float(exp)
+    if expires_at_epoch is None:
+        return {}
+    return {
+        "expires_at": datetime.fromtimestamp(expires_at_epoch, tz=timezone.utc).isoformat(),
+        "expires_at_ms": int(expires_at_epoch * 1000),
+        "expires": int(expires_at_epoch),
+    }
+
+
+def _codex_parse_authorization_response(value: str, *, expected_state: str) -> Dict[str, Any]:
+    raw = (value or "").strip()
+    if not raw:
+        raise AuthError(
+            "No authorization code or redirect URL was provided.",
+            provider="openai-codex",
+            code="codex_manual_code_missing",
+        )
+    if raw.startswith("http://") or raw.startswith("https://"):
+        parsed = urlparse(raw)
+        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+            raise AuthError(
+                "Redirect URL must be the localhost OpenAI Codex callback URL.",
+                provider="openai-codex",
+                code="codex_manual_redirect_invalid_host",
+            )
+        if parsed.port not in {None, CODEX_OAUTH_CALLBACK_PORT}:
+            raise AuthError(
+                f"Redirect URL port must be {CODEX_OAUTH_CALLBACK_PORT}.",
+                provider="openai-codex",
+                code="codex_manual_redirect_invalid_port",
+            )
+        if parsed.path != CODEX_OAUTH_CALLBACK_PATH:
+            raise AuthError(
+                f"Redirect URL path must be {CODEX_OAUTH_CALLBACK_PATH}.",
+                provider="openai-codex",
+                code="codex_manual_redirect_invalid_path",
+            )
+        query = parse_qs(parsed.query)
+        if query.get("error"):
+            err = query.get("error", ["authorization_error"])[0]
+            desc = query.get("error_description", [""])[0]
+            raise AuthError(
+                f"OpenAI Codex authorization failed: {err}" + (f" — {desc}" if desc else ""),
+                provider="openai-codex",
+                code="codex_authorization_denied",
+                relogin_required=True,
+            )
+        state = (query.get("state") or [""])[0]
+        if not state or state != expected_state:
+            raise AuthError(
+                "OpenAI Codex OAuth state mismatch. Refusing to continue.",
+                provider="openai-codex",
+                code="codex_oauth_state_mismatch",
+                relogin_required=True,
+            )
+        code = (query.get("code") or [""])[0]
+        if not code:
+            raise AuthError(
+                "Redirect URL did not contain an authorization code.",
+                provider="openai-codex",
+                code="codex_manual_redirect_missing_code",
+            )
+        return {"code": code, "state_verified": True}
+
+    # Manual code-only fallback for headless/SSH users. The state cannot be
+    # verified from a bare code, so callers must warn before accepting it.
+    return {"code": raw, "state_verified": False}
+
+
+class _CodexOAuthCallbackHandler(BaseHTTPRequestHandler):
+    server_version = "HermesCodexOAuth/1.0"
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A003
+        return
+
+    def _send_page(self, status: int, title: str, body: str) -> None:
+        html = (
+            "<!doctype html><html><head><meta charset='utf-8'><title>Hermes Codex OAuth</title></head>"
+            f"<body><h1>{title}</h1><p>{body}</p></body></html>"
+        ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html)))
+        self.end_headers()
+        self.wfile.write(html)
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        result = getattr(self.server, "oauth_result", None)
+        if not isinstance(result, dict):
+            result = {}
+            setattr(self.server, "oauth_result", result)
+        expected_state = getattr(self.server, "expected_state", "")
+        if parsed.path != CODEX_OAUTH_CALLBACK_PATH:
+            self._send_page(404, "Not found", "This is the Hermes OpenAI Codex OAuth callback server.")
+            return
+        query = parse_qs(parsed.query)
+        if query.get("error"):
+            err = query.get("error", ["authorization_error"])[0]
+            desc = query.get("error_description", [""])[0]
+            result.update({"error": err, "error_description": desc})
+            self._send_page(400, "Authorization failed", "You can return to the terminal and try again.")
+            return
+        state = (query.get("state") or [""])[0]
+        if not state or state != expected_state:
+            result.update({"error": "state_mismatch"})
+            self._send_page(400, "Authorization failed", "State mismatch. Return to the terminal and try again.")
+            return
+        code = (query.get("code") or [""])[0]
+        if not code:
+            result.update({"error": "missing_code"})
+            self._send_page(400, "Authorization failed", "Missing authorization code. Return to the terminal and try again.")
+            return
+        result.update({"code": code, "state": state})
+        self._send_page(200, "Authorization successful", "You can close this tab and return to Hermes in your terminal.")
+
+
+def _codex_create_callback_server(expected_state: str) -> HTTPServer:
+    server = HTTPServer(
+        (CODEX_OAUTH_CALLBACK_HOST, CODEX_OAUTH_CALLBACK_PORT),
+        _CodexOAuthCallbackHandler,
+    )
+    server.timeout = 0.5
+    server.expected_state = expected_state  # type: ignore[attr-defined]
+    server.oauth_result = {}  # type: ignore[attr-defined]
+    return server
+
+
+def _codex_wait_for_callback_server(server: HTTPServer, timeout_seconds: float) -> Dict[str, Any]:
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    try:
+        while time.monotonic() < deadline and not server.oauth_result:  # type: ignore[attr-defined]
+            server.handle_request()
+        return dict(server.oauth_result)  # type: ignore[attr-defined]
+    finally:
+        server.server_close()
+
+
+def _codex_wait_for_local_callback(expected_state: str, timeout_seconds: float) -> Dict[str, Any]:
+    server = _codex_create_callback_server(expected_state)
+    return _codex_wait_for_callback_server(server, timeout_seconds)
+
+
+def _codex_exchange_authorization_code(
+    *,
+    authorization_code: str,
+    code_verifier: str,
+    redirect_uri: str = CODEX_OAUTH_REDIRECT_URI,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    try:
+        with httpx.Client(timeout=httpx.Timeout(max(5.0, float(timeout_seconds))), headers={"Accept": "application/json"}) as client:
+            response = client.post(
+                CODEX_OAUTH_TOKEN_URL,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": authorization_code,
+                    "redirect_uri": redirect_uri,
+                    "client_id": CODEX_OAUTH_CLIENT_ID,
+                    "code_verifier": code_verifier,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+    except Exception as exc:
+        raise AuthError(
+            f"OpenAI Codex token exchange failed: {exc}",
+            provider="openai-codex",
+            code="codex_token_exchange_failed",
+        ) from exc
+
+    if response.status_code != 200:
+        message = f"OpenAI Codex token exchange failed with status {response.status_code}."
+        code = "codex_token_exchange_failed"
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                err = payload.get("error")
+                if isinstance(err, dict):
+                    code = str(err.get("code") or err.get("type") or code)
+                    if err.get("message"):
+                        message = f"OpenAI Codex token exchange failed: {err.get('message')}"
+                elif isinstance(err, str):
+                    code = err
+                    desc = payload.get("error_description") or payload.get("message")
+                    if desc:
+                        message = f"OpenAI Codex token exchange failed: {desc}"
+        except Exception:
+            pass
+        raise AuthError(message, provider="openai-codex", code=code, relogin_required=True)
+
+    try:
+        token_payload = response.json()
+    except Exception as exc:
+        raise AuthError(
+            "OpenAI Codex token exchange returned invalid JSON.",
+            provider="openai-codex",
+            code="codex_token_exchange_invalid_json",
+            relogin_required=True,
+        ) from exc
+    if not isinstance(token_payload, dict):
+        raise AuthError(
+            "OpenAI Codex token exchange returned an invalid response.",
+            provider="openai-codex",
+            code="codex_token_exchange_invalid_response",
+            relogin_required=True,
+        )
+    access_token = str(token_payload.get("access_token", "") or "").strip()
+    refresh_token = str(token_payload.get("refresh_token", "") or "").strip()
+    if not access_token or not refresh_token:
+        raise AuthError(
+            "OpenAI Codex token exchange response was missing access_token or refresh_token.",
+            provider="openai-codex",
+            code="codex_token_exchange_missing_tokens",
+            relogin_required=True,
+        )
+    try:
+        account_id = _codex_extract_account_id(access_token)
+    except AuthError:
+        id_token = token_payload.get("id_token")
+        account_id = _codex_extract_account_id(id_token)
+    metadata = _codex_token_expiry_metadata(token_payload, access_token)
+    tokens = dict(token_payload)
+    tokens["access_token"] = access_token
+    tokens["refresh_token"] = refresh_token
+    tokens["account_id"] = account_id
+    tokens["accountId"] = account_id
+    tokens.update(metadata)
+    return tokens
+
+
+def _codex_browser_oauth_login(*, open_browser: bool = True, callback_timeout_seconds: float = 120.0) -> Dict[str, Any]:
+    verifier, challenge, state = _codex_pkce_pair()
+    authorize_url = _codex_build_authorize_url(code_challenge=challenge, state=state)
+    remote_session = _is_remote_session()
+    if remote_session:
+        open_browser = False
+
+    print()
+    print("Signing in to OpenAI Codex via Browser OAuth / ChatGPT OAuth...")
+    print("Hermes will try to catch the callback at:")
+    print(f"  {CODEX_OAUTH_REDIRECT_URI}")
+    print()
+    print("Open this URL in your browser:")
+    print(f"  \033[94m{authorize_url}\033[0m")
+    print()
+
+    callback_available = True
+    result: Dict[str, Any] = {}
+    callback_server: Optional[HTTPServer] = None
+    try:
+        callback_server = _codex_create_callback_server(state)
+    except OSError as exc:
+        callback_available = False
+        print(f"Could not bind callback server on 127.0.0.1:1455: {exc}")
+    except Exception as exc:
+        callback_available = False
+        print(f"Could not start callback server: {exc}")
+
+    browser_opened = False
+    if open_browser:
+        try:
+            if webbrowser.open(authorize_url):
+                browser_opened = True
+                print("Opened browser for authorization.")
+            else:
+                print("Could not open browser automatically. Use the URL above.")
+        except Exception:
+            print("Could not open browser automatically. Use the URL above.")
+    elif remote_session:
+        print("SSH/headless session detected. Paste the redirect URL/code when prompted.")
+
+    try:
+        if callback_server is not None and browser_opened:
+            print("Waiting for browser callback... (press Ctrl+C to paste redirect URL/code manually)")
+            result = _codex_wait_for_callback_server(callback_server, callback_timeout_seconds)
+        elif callback_server is not None:
+            callback_available = False
+            callback_server.server_close()
+    except KeyboardInterrupt:
+        print()
+        result = {}
+    except OSError as exc:
+        callback_available = False
+        if isinstance(exc, socket.error):
+            print(f"Could not bind callback server on 127.0.0.1:1455: {exc}")
+        else:
+            print(f"Could not start callback server: {exc}")
+    except Exception as exc:
+        callback_available = False
+        print(f"Could not use callback server: {exc}")
+
+    if result.get("error"):
+        err = str(result.get("error") or "authorization_error")
+        desc = str(result.get("error_description") or "")
+        if err == "state_mismatch":
+            raise AuthError(
+                "OpenAI Codex OAuth state mismatch. Refusing to continue.",
+                provider="openai-codex",
+                code="codex_oauth_state_mismatch",
+                relogin_required=True,
+            )
+        raise AuthError(
+            f"OpenAI Codex authorization failed: {err}" + (f" — {desc}" if desc else ""),
+            provider="openai-codex",
+            code="codex_authorization_denied",
+            relogin_required=True,
+        )
+
+    code = str(result.get("code") or "").strip()
+    if not code:
+        if callback_available:
+            print("No callback was received before the timeout.")
+        print()
+        print("Manual fallback:")
+        print("  1. Open the URL above on any machine where you can sign in.")
+        print("  2. After redirect, copy the full redirect URL or just the authorization code.")
+        try:
+            pasted = input("Paste redirect URL or authorization code: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise AuthError(
+                "OpenAI Codex OAuth cancelled before an authorization code was provided.",
+                provider="openai-codex",
+                code="codex_oauth_cancelled",
+                relogin_required=True,
+            )
+        parsed = _codex_parse_authorization_response(pasted, expected_state=state)
+        if not parsed.get("state_verified"):
+            print("Warning: state could not be verified because only an authorization code was pasted.")
+        code = str(parsed["code"])
+
+    tokens = _codex_exchange_authorization_code(
+        authorization_code=code,
+        code_verifier=verifier,
+    )
+    base_url = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return {
+        "tokens": tokens,
+        "base_url": base_url,
+        "last_refresh": now,
+        "auth_mode": "browser_oauth_pkce",
+        "source": "browser_oauth_pkce",
+        "account_id": tokens.get("account_id") or tokens.get("accountId"),
+        "expires_at": tokens.get("expires_at"),
+        "expires_at_ms": tokens.get("expires_at_ms"),
+        "expires": tokens.get("expires"),
+    }
+
+
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
     
@@ -2227,19 +2676,53 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     return {
         "tokens": tokens,
         "last_refresh": state.get("last_refresh"),
+        "auth_mode": state.get("auth_mode"),
+        "account_id": state.get("account_id") or tokens.get("account_id") or tokens.get("accountId"),
+        "accountId": state.get("accountId") or tokens.get("accountId") or tokens.get("account_id"),
+        "expires_at": state.get("expires_at") or tokens.get("expires_at"),
+        "expires_at_ms": state.get("expires_at_ms") or tokens.get("expires_at_ms"),
+        "expires": state.get("expires") or tokens.get("expires"),
     }
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
+def _save_codex_tokens(
+    tokens: Dict[str, Any],
+    last_refresh: Optional[str] = None,
+    *,
+    auth_mode: Optional[str] = None,
+    account_id: Optional[str] = None,
+    expires_at: Any = None,
+    expires_at_ms: Any = None,
+    expires: Any = None,
+) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    token_copy = dict(tokens)
+    resolved_account_id = (
+        account_id
+        or token_copy.get("account_id")
+        or token_copy.get("accountId")
+        or ""
+    )
+    resolved_expires_at = expires_at if expires_at is not None else token_copy.get("expires_at")
+    resolved_expires_at_ms = expires_at_ms if expires_at_ms is not None else token_copy.get("expires_at_ms")
+    resolved_expires = expires if expires is not None else token_copy.get("expires")
     with _auth_store_lock():
         auth_store = _load_auth_store()
         state = _load_provider_state(auth_store, "openai-codex") or {}
-        state["tokens"] = tokens
+        state["tokens"] = token_copy
         state["last_refresh"] = last_refresh
-        state["auth_mode"] = "chatgpt"
+        state["auth_mode"] = auth_mode or state.get("auth_mode") or "chatgpt"
+        if resolved_account_id:
+            state["account_id"] = resolved_account_id
+            state["accountId"] = resolved_account_id
+        if resolved_expires_at is not None:
+            state["expires_at"] = resolved_expires_at
+        if resolved_expires_at_ms is not None:
+            state["expires_at_ms"] = resolved_expires_at_ms
+        if resolved_expires is not None:
+            state["expires"] = resolved_expires
         _save_provider_state(auth_store, "openai-codex", state)
         _save_auth_store(auth_store)
 
@@ -2264,8 +2747,8 @@ def refresh_codex_oauth_pure(
     with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
         response = client.post(
             CODEX_OAUTH_TOKEN_URL,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
+            headers={"Content-Type": "application/json"},
+            json={
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
                 "client_id": CODEX_OAUTH_CLIENT_ID,
@@ -2337,14 +2820,31 @@ def refresh_codex_oauth_pure(
             relogin_required=True,
         )
 
+    refreshed_access = refreshed_access.strip()
     updated = {
-        "access_token": refreshed_access.strip(),
+        "access_token": refreshed_access,
         "refresh_token": refresh_token.strip(),
         "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     next_refresh = refresh_payload.get("refresh_token")
     if isinstance(next_refresh, str) and next_refresh.strip():
         updated["refresh_token"] = next_refresh.strip()
+    refreshed_id_token = refresh_payload.get("id_token")
+    if isinstance(refreshed_id_token, str) and refreshed_id_token.strip():
+        updated["id_token"] = refreshed_id_token.strip()
+    try:
+        account_id = _codex_extract_account_id(refreshed_access)
+    except AuthError:
+        try:
+            account_id = _codex_extract_account_id(refreshed_id_token)
+        except AuthError:
+            # Older device-code tokens may not expose account id; do not break an
+            # already-working refresh path for legacy credentials.
+            account_id = ""
+    if account_id:
+        updated["account_id"] = account_id
+        updated["accountId"] = account_id
+    updated.update(_codex_token_expiry_metadata(refresh_payload, refreshed_access))
     return updated
 
 
@@ -2364,8 +2864,18 @@ def _refresh_codex_auth_tokens(
     updated_tokens = dict(tokens)
     updated_tokens["access_token"] = refreshed["access_token"]
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
+    for meta_key in ("id_token", "account_id", "accountId", "expires_at", "expires_at_ms", "expires"):
+        if refreshed.get(meta_key) is not None:
+            updated_tokens[meta_key] = refreshed[meta_key]
 
-    _save_codex_tokens(updated_tokens)
+    _save_codex_tokens(
+        updated_tokens,
+        refreshed.get("last_refresh"),
+        account_id=refreshed.get("account_id") or refreshed.get("accountId") or tokens.get("account_id") or tokens.get("accountId"),
+        expires_at=refreshed.get("expires_at") or tokens.get("expires_at"),
+        expires_at_ms=refreshed.get("expires_at_ms") or tokens.get("expires_at_ms"),
+        expires=refreshed.get("expires") or tokens.get("expires"),
+    )
     return updated_tokens
 
 
@@ -2444,7 +2954,12 @@ def resolve_codex_runtime_credentials(
         "api_key": access_token,
         "source": "hermes-auth-store",
         "last_refresh": data.get("last_refresh"),
-        "auth_mode": "chatgpt",
+        "auth_mode": data.get("auth_mode") or "chatgpt",
+        "account_id": data.get("account_id") or data.get("accountId"),
+        "accountId": data.get("accountId") or data.get("account_id"),
+        "expires_at": data.get("expires_at"),
+        "expires_at_ms": data.get("expires_at_ms"),
+        "expires": data.get("expires"),
     }
 
 
@@ -3922,10 +4437,12 @@ def _login_openai_codex(
     pconfig: ProviderConfig,
     *,
     force_new_login: bool = False,
+    auth_method: Optional[str] = None,
 ) -> None:
-    """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
+    """OpenAI Codex login. Tokens stored in ~/.hermes/auth.json."""
 
-    del args, pconfig  # kept for parity with other provider login helpers
+    del pconfig  # kept for parity with other provider login helpers
+    args_obj = args or object()
 
     # Check for existing Hermes-owned credentials
     if not force_new_login:
@@ -3973,16 +4490,39 @@ def _login_openai_codex(
                 print(f"  Config updated: {config_path} (model.provider=openai-codex)")
                 return
 
-    # Run a fresh device code flow — Hermes gets its own OAuth session
-    print()
-    print("Signing in to OpenAI Codex...")
-    print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
-    print()
+    # Run a fresh OAuth flow — Hermes gets its own OAuth session
+    selected_method = (auth_method or getattr(args_obj, "auth_method", None) or "").strip().lower()
+    if selected_method not in {"device", "device_code", "browser", "browser_oauth", "browser_oauth_pkce", "pkce"}:
+        print()
+        print("Choose OpenAI Codex auth method:")
+        print("  1. Device code")
+        print("  2. Browser OAuth / ChatGPT OAuth")
+        print()
+        try:
+            choice = input("Choice [1/2]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            choice = "1"
+        selected_method = "browser_oauth_pkce" if choice == "2" else "device_code"
 
-    creds = _codex_device_code_login()
+    if selected_method in {"browser", "browser_oauth", "browser_oauth_pkce", "pkce"}:
+        creds = _codex_browser_oauth_login(open_browser=not bool(getattr(args_obj, "no_browser", False)))
+    else:
+        print()
+        print("Signing in to OpenAI Codex via device code...")
+        print("(Hermes creates its own session — won't affect Codex CLI or VS Code)")
+        print()
+        creds = _codex_device_code_login()
 
     # Save tokens to Hermes auth store
-    _save_codex_tokens(creds["tokens"], creds.get("last_refresh"))
+    _save_codex_tokens(
+        creds["tokens"],
+        creds.get("last_refresh"),
+        auth_mode=creds.get("auth_mode"),
+        account_id=creds.get("account_id") or creds.get("accountId"),
+        expires_at=creds.get("expires_at"),
+        expires_at_ms=creds.get("expires_at_ms"),
+        expires=creds.get("expires"),
+    )
     config_path = _update_config_for_provider("openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))
     print()
     print("Login successful!")
@@ -4123,16 +4663,31 @@ def _codex_device_code_login() -> Dict[str, Any]:
         os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
         or DEFAULT_CODEX_BASE_URL
     )
+    token_data = {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    }
+    metadata = _codex_token_expiry_metadata(tokens, access_token)
+    token_data.update(metadata)
+    account_id = ""
+    try:
+        account_id = _codex_extract_account_id(access_token)
+    except AuthError:
+        account_id = ""
+    if account_id:
+        token_data["account_id"] = account_id
+        token_data["accountId"] = account_id
 
     return {
-        "tokens": {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-        },
+        "tokens": token_data,
         "base_url": base_url,
         "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "auth_mode": "chatgpt",
+        "auth_mode": "device_code",
         "source": "device-code",
+        "account_id": account_id,
+        "expires_at": metadata.get("expires_at"),
+        "expires_at_ms": metadata.get("expires_at_ms"),
+        "expires": metadata.get("expires"),
     }
 
 
@@ -4175,10 +4730,10 @@ def _minimax_request_user_code(
             provider="minimax-oauth", code="authorization_failed",
         )
     payload = response.json()
-    for field in ("user_code", "verification_uri", "expired_in"):
-        if field not in payload:
+    for payload_field in ("user_code", "verification_uri", "expired_in"):
+        if payload_field not in payload:
             raise AuthError(
-                f"MiniMax OAuth response missing field: {field}",
+                f"MiniMax OAuth response missing field: {payload_field}",
                 provider="minimax-oauth", code="authorization_incomplete",
             )
     if payload.get("state") != state:

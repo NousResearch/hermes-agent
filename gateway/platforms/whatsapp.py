@@ -229,12 +229,40 @@ class WhatsAppAdapter(BasePlatformAdapter):
             .lstrip("+")     # normalise leading +
         )
 
+    def _resolve_lid_to_phone(self, lid_identifier: str) -> str:
+        """Resolve a WhatsApp LID (Linked Identity Device) to a phone number.
+
+        When the WhatsApp account uses linked devices, incoming DM ``senderId``
+        values may arrive as a LID such as ``125619388076125`` rather than the
+        human-readable phone number ``85296456787``.  The bridge writes
+        ``lid-mapping-{lid}_reverse.json`` files in the session directory that
+        map LID → phone number.  This method consults those files so the
+        Python-level allowlist can match against phone numbers regardless of
+        whether the sender was identified by LID or phone.
+        """
+        import json as _json
+        mapping_file = self._session_path / f"lid-mapping-{lid_identifier}_reverse.json"
+        try:
+            if mapping_file.exists():
+                phone = _json.loads(mapping_file.read_text()).strip().lstrip("+")
+                if phone:
+                    return phone
+        except Exception:
+            pass
+        return lid_identifier
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Check whether a DM from the given sender should be processed."""
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return self._normalize_jid(sender_id) in self._allow_from
+            normalized = self._normalize_jid(sender_id)
+            if normalized in self._allow_from:
+                return True
+            # LID format: sender may arrive as a LID (e.g. "125619388076125@lid").
+            # Try resolving LID → phone via session mapping files.
+            phone = self._resolve_lid_to_phone(normalized)
+            return phone in self._allow_from
         # "open" — all DMs allowed
         return True
 

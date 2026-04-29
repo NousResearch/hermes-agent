@@ -123,6 +123,24 @@ def get_available_skills() -> Dict[str, List[str]]:
 _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 
 
+def _git_rev(repo_dir: Path, rev: str) -> Optional[str]:
+    """Resolve a git revision to its full hash, or None on failure."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", rev],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
+
+
 def check_for_updates() -> Optional[int]:
     """Check how many commits behind origin/main the local repo is.
 
@@ -140,13 +158,23 @@ def check_for_updates() -> Optional[int]:
     if not (repo_dir / ".git").exists():
         return None
 
-    # Read cache
+    current_head = _git_rev(repo_dir, "HEAD")
+    current_upstream = _git_rev(repo_dir, "origin/main")
+
+    # Read cache. Only trust a fresh cache if the local and upstream refs
+    # still match the refs that were current when the cache was written.
     now = time.time()
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
             if now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS:
-                return cached.get("behind")
+                cached_head = cached.get("head")
+                cached_upstream = cached.get("upstream")
+                if (
+                    cached_head == current_head
+                    and cached_upstream == current_upstream
+                ):
+                    return cached.get("behind")
     except Exception:
         pass
 
@@ -159,6 +187,9 @@ def check_for_updates() -> Optional[int]:
         )
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
+
+    refreshed_head = _git_rev(repo_dir, "HEAD")
+    refreshed_upstream = _git_rev(repo_dir, "origin/main")
 
     # Count commits behind
     try:
@@ -176,7 +207,16 @@ def check_for_updates() -> Optional[int]:
 
     # Write cache
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind}))
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "ts": now,
+                    "behind": behind,
+                    "head": refreshed_head,
+                    "upstream": refreshed_upstream,
+                }
+            )
+        )
     except Exception:
         pass
 

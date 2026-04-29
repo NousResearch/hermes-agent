@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle } from "lucide-react";
-import { Button } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
 import { cn } from "@/lib/utils";
 
 export function ConfirmDialog({

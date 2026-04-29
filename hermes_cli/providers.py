@@ -513,6 +513,12 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
             return "codex_responses"
         if hostname.startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com"):
             return "bedrock_converse"
+        # Check for "/anthropic" anywhere in the URL path (custom proxy gateways).
+        # If the URL ends with /v1, it's an OpenAI-compatible endpoint on the same
+        # gateway (e.g. /api-sse-anthropic/v1 → chat_completions, not anthropic).
+        if "anthropic" in url_lower and "api.anthropic.com" not in url_lower:
+            if not url_lower.endswith("/v1"):
+                return "anthropic_messages"
 
     return "chat_completions"
 
@@ -598,10 +604,22 @@ def resolve_custom_provider(
         if requested not in {display_name.lower(), slug}:
             continue
 
+        # Auto-detect transport from the URL when not explicitly set.
+        # URLs with "/anthropic" in the path → Anthropic Messages API,
+        # unless the URL ends with "/v1" which signals an OpenAI-compatible
+        # endpoint on the same gateway.
+        url_lower = api_url.rstrip("/").lower()
+        transport = "openai_chat"
+        if "anthropic" in url_lower and not url_lower.endswith("/v1"):
+            transport = "anthropic_messages"
+        # Allow explicit override from config entry
+        if entry.get("transport"):
+            transport = entry.get("transport")
+
         return ProviderDef(
             id=slug,
             name=display_name,
-            transport="openai_chat",
+            transport=transport,
             api_key_env_vars=(),
             base_url=api_url,
             is_aggregator=False,

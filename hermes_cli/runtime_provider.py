@@ -72,6 +72,11 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     - Kimi Code's ``api.kimi.com/coding`` endpoint also speaks the
       Anthropic Messages protocol (the /coding route accepts Claude
       Code's native request shape).
+    - URLs containing "/anthropic" in their path are treated as
+      Anthropic-compatible, **unless** the path ends with "/v1" which
+      signals an OpenAI-compatible endpoint on the same gateway.
+      (e.g. ``/api-sse-anthropic`` → anthropic_messages,
+      ``/api-sse-anthropic/v1`` → chat_completions).
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
     hostname = base_url_hostname(base_url)
@@ -79,10 +84,15 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "codex_responses"
     if hostname == "api.openai.com":
         return "codex_responses"
-    if normalized.endswith("/anthropic"):
-        return "anthropic_messages"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
+    # Check for "/anthropic" anywhere in the URL path (custom proxy gateways).
+    # Skip api.anthropic.com (handled by the known-provider path).
+    # If the URL ends with /v1 after the anthropic path, it's an OpenAI-compatible
+    # endpoint on the same gateway (e.g. /api-sse-anthropic/v1 → chat_completions).
+    if "anthropic" in normalized and "api.anthropic.com" not in normalized:
+        if not normalized.endswith("/v1"):
+            return "anthropic_messages"
     return None
 
 

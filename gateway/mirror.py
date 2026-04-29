@@ -28,6 +28,7 @@ def mirror_to_session(
     message_text: str,
     source_label: str = "cli",
     thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> bool:
     """
     Append a delivery-mirror message to the target session's transcript.
@@ -39,9 +40,20 @@ def mirror_to_session(
     All errors are caught -- this is never fatal.
     """
     try:
-        session_id = _find_session_id(platform, str(chat_id), thread_id=thread_id)
+        session_id = _find_session_id(
+            platform,
+            str(chat_id),
+            thread_id=thread_id,
+            user_id=user_id,
+        )
         if not session_id:
-            logger.debug("Mirror: no session found for %s:%s:%s", platform, chat_id, thread_id)
+            logger.debug(
+                "Mirror: no session found for %s:%s:%s:%s",
+                platform,
+                chat_id,
+                thread_id,
+                user_id,
+            )
             return False
 
         mirror_msg = {
@@ -59,17 +71,33 @@ def mirror_to_session(
         return True
 
     except Exception as e:
-        logger.debug("Mirror failed for %s:%s:%s: %s", platform, chat_id, thread_id, e)
+        logger.debug(
+            "Mirror failed for %s:%s:%s:%s: %s",
+            platform,
+            chat_id,
+            thread_id,
+            user_id,
+            e,
+        )
         return False
 
 
-def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = None) -> Optional[str]:
+def _find_session_id(
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> Optional[str]:
     """
     Find the active session_id for a platform + chat_id pair.
 
     Scans sessions.json entries and matches where origin.chat_id == chat_id
     on the right platform.  DM session keys don't embed the chat_id
     (e.g. "agent:main:telegram:dm"), so we check the origin dict.
+
+    When *user_id* is provided, prefer exact sender matches. If multiple
+    same-chat candidates exist and none matches the user, return None instead
+    of guessing and contaminating another participant's session.
     """
     if not _SESSIONS_INDEX.exists():
         return None
@@ -81,8 +109,7 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
         return None
 
     platform_lower = platform.lower()
-    best_match = None
-    best_updated = ""
+    candidates = []
 
     for _key, entry in data.items():
         origin = entry.get("origin") or {}
@@ -96,12 +123,31 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
             origin_thread_id = origin.get("thread_id")
             if thread_id is not None and str(origin_thread_id or "") != str(thread_id):
                 continue
-            updated = entry.get("updated_at", "")
-            if updated > best_updated:
-                best_updated = updated
-                best_match = entry.get("session_id")
+            candidates.append(entry)
 
-    return best_match
+    if not candidates:
+        return None
+
+    if user_id:
+        exact_user_matches = [
+            entry for entry in candidates
+            if str((entry.get("origin") or {}).get("user_id") or "") == str(user_id)
+        ]
+        if exact_user_matches:
+            candidates = exact_user_matches
+        elif len(candidates) > 1:
+            return None
+    elif len(candidates) > 1:
+        distinct_user_ids = {
+            str((entry.get("origin") or {}).get("user_id") or "").strip()
+            for entry in candidates
+            if str((entry.get("origin") or {}).get("user_id") or "").strip()
+        }
+        if len(distinct_user_ids) > 1:
+            return None
+
+    best_entry = max(candidates, key=lambda entry: entry.get("updated_at", ""))
+    return best_entry.get("session_id")
 
 
 def _append_to_jsonl(session_id: str, message: dict) -> None:

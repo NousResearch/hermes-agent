@@ -2,6 +2,22 @@
 
 Complete guide to GGUF quantization formats and model conversion.
 
+## Hub-first quant selection
+
+Before using generic tables, open the model repo with:
+
+```text
+https://huggingface.co/<repo>?local-app=llama.cpp
+```
+
+Prefer the exact quant labels and sizes shown in the `Hardware compatibility` section of the fetched `?local-app=llama.cpp` page text or HTML. Then confirm the matching filenames in:
+
+```text
+https://huggingface.co/api/models/<repo>/tree/main?recursive=true
+```
+
+Use the Hub page first, and only fall back to the generic heuristics below when the repo page does not expose a clear recommendation.
+
 ## Quantization Overview
 
 **GGUF** (GPT-Generated Unified Format) - Standard format for llama.cpp models.
@@ -23,11 +39,11 @@ Complete guide to GGUF quantization formats and model conversion.
 
 ## Converting Models
 
-### HuggingFace to GGUF
+### Hugging Face to GGUF
 
 ```bash
-# 1. Download HuggingFace model
-huggingface-cli download meta-llama/Llama-2-7b-chat-hf \
+# 1. Download Hugging Face model
+hf download meta-llama/Llama-2-7b-chat-hf \
     --local-dir models/llama-2-7b-chat/
 
 # 2. Convert to FP16 GGUF
@@ -152,18 +168,32 @@ Q2_K or Q3_K_S - Fit in limited RAM
 
 ## Finding Pre-Quantized Models
 
-**TheBloke** on HuggingFace:
-- https://huggingface.co/TheBloke
-- Most models available in all GGUF formats
-- No conversion needed
+Use the Hub search with the llama.cpp app filter:
 
-**Example**:
+```text
+https://huggingface.co/models?apps=llama.cpp&sort=trending
+https://huggingface.co/models?search=<term>&apps=llama.cpp&sort=trending
+https://huggingface.co/models?search=<term>&apps=llama.cpp&num_parameters=min:0,max:24B&sort=trending
+```
+
+For a specific repo, open:
+
+```text
+https://huggingface.co/<repo>?local-app=llama.cpp
+https://huggingface.co/api/models/<repo>/tree/main?recursive=true
+```
+
+Then launch directly from the Hub without extra Hub tooling:
+
 ```bash
-# Download pre-quantized Llama 2-7B
-huggingface-cli download \
-    TheBloke/Llama-2-7B-Chat-GGUF \
-    llama-2-7b-chat.Q4_K_M.gguf \
-    --local-dir models/
+llama-cli -hf <repo>:Q4_K_M
+llama-server -hf <repo>:Q4_K_M
+```
+
+If you need the exact file name from the tree API:
+
+```bash
+llama-server --hf-repo <repo> --hf-file <filename.gguf>
 ```
 
 ## Importance Matrices (imatrix)

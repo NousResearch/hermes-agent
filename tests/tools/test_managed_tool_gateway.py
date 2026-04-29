@@ -19,11 +19,10 @@ def test_resolve_managed_tool_gateway_derives_vendor_origin_from_shared_domain()
     with patch.dict(
         os.environ,
         {
-            "HERMES_ENABLE_NOUS_MANAGED_TOOLS": "1",
             "TOOL_GATEWAY_DOMAIN": "nousresearch.com",
         },
         clear=False,
-    ):
+    ), patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
         result = resolve_managed_tool_gateway(
             "firecrawl",
             token_reader=lambda: "nous-token",
@@ -39,11 +38,10 @@ def test_resolve_managed_tool_gateway_uses_vendor_specific_override():
     with patch.dict(
         os.environ,
         {
-            "HERMES_ENABLE_NOUS_MANAGED_TOOLS": "1",
             "BROWSER_USE_GATEWAY_URL": "http://browser-use-gateway.localhost:3009/",
         },
         clear=False,
-    ):
+    ), patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
         result = resolve_managed_tool_gateway(
             "browser-use",
             token_reader=lambda: "nous-token",
@@ -57,11 +55,10 @@ def test_resolve_managed_tool_gateway_is_inactive_without_nous_token():
     with patch.dict(
         os.environ,
         {
-            "HERMES_ENABLE_NOUS_MANAGED_TOOLS": "1",
             "TOOL_GATEWAY_DOMAIN": "nousresearch.com",
         },
         clear=False,
-    ):
+    ), patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
         result = resolve_managed_tool_gateway(
             "firecrawl",
             token_reader=lambda: None,
@@ -70,8 +67,9 @@ def test_resolve_managed_tool_gateway_is_inactive_without_nous_token():
     assert result is None
 
 
-def test_resolve_managed_tool_gateway_is_disabled_without_feature_flag():
-    with patch.dict(os.environ, {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"}, clear=False):
+def test_resolve_managed_tool_gateway_is_disabled_without_subscription():
+    with patch.dict(os.environ, {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"}, clear=False), \
+         patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=False):
         result = resolve_managed_tool_gateway(
             "firecrawl",
             token_reader=lambda: "nous-token",

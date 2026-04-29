@@ -8,11 +8,16 @@ Different LLM providers expect model identifiers in different formats:
   hyphens: ``claude-sonnet-4-6``.
 - **Copilot** expects bare names *with* dots preserved:
   ``claude-sonnet-4.6``.
-- **OpenCode Zen** follows the same dot-to-hyphen convention as
-  Anthropic: ``claude-sonnet-4-6``.
+- **OpenCode Zen** preserves dots for GPT/GLM/Gemini/Kimi/MiniMax-style
+  model IDs, but Claude still uses hyphenated native names like
+  ``claude-sonnet-4-6``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
-- **DeepSeek** only accepts two model identifiers:
-  ``deepseek-chat`` and ``deepseek-reasoner``.
+- **DeepSeek** accepts ``deepseek-chat`` (V3), ``deepseek-reasoner``
+  (R1-family), and the first-class V-series IDs (``deepseek-v4-pro``,
+  ``deepseek-v4-flash``, and any future ``deepseek-v<N>-*``).  Older
+  Hermes revisions folded every non-reasoner input into
+  ``deepseek-chat``, which on aggregators routes to V3 — so a user
+  picking V4 Pro was silently downgraded.
 - **Custom** and remaining providers pass the name through as-is.
 
 This module centralises that translation so callers can simply write::
@@ -24,6 +29,7 @@ Inspired by Clawdbot's ``normalizeAnthropicModelId`` pattern.
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -50,6 +56,7 @@ _VENDOR_PREFIXES: dict[str, str] = {
     "grok": "x-ai",
     "qwen": "qwen",
     "mimo": "xiaomi",
+    "trinity": "arcee-ai",
     "nemotron": "nvidia",
     "llama": "meta-llama",
     "step": "stepfun",
@@ -67,7 +74,6 @@ _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
 # Providers that want bare names with dots replaced by hyphens.
 _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
     "anthropic",
-    "opencode-zen",
 })
 
 # Providers that want bare names with dots preserved.
@@ -88,12 +94,24 @@ _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
 _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "zai",
     "kimi-coding",
+    "kimi-coding-cn",
     "minimax",
     "minimax-cn",
     "alibaba",
     "qwen-oauth",
     "xiaomi",
+    "arcee",
+    "ollama-cloud",
     "custom",
+})
+
+# Providers whose APIs require lowercase model IDs.  Xiaomi's
+# ``api.xiaomimimo.com`` rejects mixed-case names like ``MiMo-V2.5-Pro``
+# that users might copy from marketing docs — it only accepts
+# ``mimo-v2.5-pro``.  After stripping a matching provider prefix, these
+# providers also get ``.lower()`` applied.
+_LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
+    "xiaomi",
 })
 
 # ---------------------------------------------------------------------------
@@ -111,17 +129,30 @@ _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
 })
 
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-chat",
-    "deepseek-reasoner",
+    "deepseek-chat",       # V3 on DeepSeek direct and most aggregators
+    "deepseek-reasoner",   # R1-family reasoning model
+    "deepseek-v4-pro",     # V4 Pro — first-class model ID
+    "deepseek-v4-flash",   # V4 Flash — first-class model ID
 })
+
+# First-class V-series IDs (``deepseek-v4-pro``, ``deepseek-v4-flash``,
+# future ``deepseek-v5-*``, dated variants like ``deepseek-v4-flash-20260423``).
+# Verified empirically 2026-04-24: DeepSeek's Chat Completions API returns
+# ``provider: DeepSeek`` / ``model: deepseek-v4-flash-20260423`` when called
+# with ``model=deepseek/deepseek-v4-flash``, so these names are not aliases
+# of ``deepseek-chat`` and must not be folded into it.
+_DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+([-.].+)?$")
 
 
 def _normalize_for_deepseek(model_name: str) -> str:
-    """Map any model input to one of DeepSeek's two accepted identifiers.
+    """Map a model input to a DeepSeek-accepted identifier.
 
     Rules:
-    - Already ``deepseek-chat`` or ``deepseek-reasoner`` -> pass through.
-    - Contains any reasoner keyword (r1, think, reasoning, cot, reasoner)
+    - Already a known canonical (``deepseek-chat``/``deepseek-reasoner``/
+      ``deepseek-v4-pro``/``deepseek-v4-flash``) -> pass through.
+    - Matches the V-series pattern ``deepseek-v<digit>...`` -> pass through
+      (covers future ``deepseek-v5-*`` and dated variants without a release).
+    - Contains a reasoner keyword (r1, think, reasoning, cot, reasoner)
       -> ``deepseek-reasoner``.
     - Everything else -> ``deepseek-chat``.
 
@@ -129,11 +160,15 @@ def _normalize_for_deepseek(model_name: str) -> str:
         model_name: The bare model name (vendor prefix already stripped).
 
     Returns:
-        One of ``"deepseek-chat"`` or ``"deepseek-reasoner"``.
+        A DeepSeek-accepted model identifier.
     """
     bare = _strip_vendor_prefix(model_name).lower()
 
     if bare in _DEEPSEEK_CANONICAL_MODELS:
+        return bare
+
+    # V-series first-class IDs (v4-pro, v4-flash, future v5-*, dated variants)
+    if _DEEPSEEK_V_SERIES_RE.match(bare):
         return bare
 
     # Check for reasoner-like keywords anywhere in the name
@@ -329,6 +364,9 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         >>> normalize_model_for_provider("claude-sonnet-4.6", "opencode-zen")
         'claude-sonnet-4-6'
 
+        >>> normalize_model_for_provider("minimax-m2.5-free", "opencode-zen")
+        'minimax-m2.5-free'
+
         >>> normalize_model_for_provider("deepseek-v3", "deepseek")
         'deepseek-chat'
 
@@ -340,6 +378,9 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
         >>> normalize_model_for_provider("claude-sonnet-4.6", "zai")
         'claude-sonnet-4.6'
+
+        >>> normalize_model_for_provider("MiMo-V2.5-Pro", "xiaomi")
+        'mimo-v2.5-pro'
     """
     name = (model_input or "").strip()
     if not name:
@@ -351,14 +392,42 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)
 
-    # --- Anthropic / OpenCode: strip matching provider prefix, dots -> hyphens ---
+    # --- OpenCode Zen: Claude stays hyphenated; other models keep dots ---
+    if provider == "opencode-zen":
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            return bare
+        if bare.lower().startswith("claude-"):
+            return _dots_to_hyphens(bare)
+        return bare
+
+    # --- Anthropic: strip matching provider prefix, dots -> hyphens ---
     if provider in _DOT_TO_HYPHEN_PROVIDERS:
         bare = _strip_matching_provider_prefix(name, provider)
         if "/" in bare:
             return bare
         return _dots_to_hyphens(bare)
 
-    # --- Copilot: strip matching provider prefix, keep dots ---
+    # --- Copilot / Copilot ACP: delegate to the Copilot-specific
+    #     normalizer.  It knows about the alias table (vendor-prefix
+    #     stripping for Anthropic/OpenAI, dash-to-dot repair for Claude)
+    #     and live-catalog lookups.  Without this, vendor-prefixed or
+    #     dash-notation Claude IDs survive to the Copilot API and hit
+    #     HTTP 400 "model_not_supported".  See issue #6879.
+    if provider in {"copilot", "copilot-acp"}:
+        try:
+            from hermes_cli.models import normalize_copilot_model_id
+
+            normalized = normalize_copilot_model_id(name)
+            if normalized:
+                return normalized
+        except Exception:
+            # Fall through to the generic strip-vendor behaviour below
+            # if the Copilot-specific path is unavailable for any reason.
+            pass
+
+    # --- Copilot / Copilot ACP / openai-codex fallback:
+    #     strip matching provider prefix, keep dots ---
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
         stripped = _strip_matching_provider_prefix(name, provider)
         if stripped == name and name.startswith("openai/"):
@@ -375,7 +444,12 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     # --- Direct providers: repair matching provider prefixes only ---
     if provider in _MATCHING_PREFIX_STRIP_PROVIDERS:
-        return _strip_matching_provider_prefix(name, provider)
+        result = _strip_matching_provider_prefix(name, provider)
+        # Some providers require lowercase model IDs (e.g. Xiaomi's API
+        # rejects "MiMo-V2.5-Pro" but accepts "mimo-v2.5-pro").
+        if provider in _LOWERCASE_MODEL_PROVIDERS:
+            result = result.lower()
+        return result
 
     # --- Authoritative native providers: preserve user-facing slugs as-is ---
     if provider in _AUTHORITATIVE_NATIVE_PROVIDERS:

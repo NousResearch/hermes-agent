@@ -44,7 +44,7 @@ def _cmd_list(store):
         for p in pending:
             print(
                 f"  {p['platform']:<12} {p['code']:<10} {p['user_id']:<20} "
-                f"{p.get('user_name', ''):<20} {p['age_minutes']}m ago"
+                f"{(p.get('user_name') or ''):<20} {p['age_minutes']}m ago"
             )
     else:
         print("\n  No pending pairing requests.")
@@ -54,7 +54,7 @@ def _cmd_list(store):
         print(f"  {'Platform':<12} {'User ID':<20} {'Name':<20}")
         print(f"  {'--------':<12} {'-------':<20} {'----':<20}")
         for a in approved:
-            print(f"  {a['platform']:<12} {a['user_id']:<20} {a.get('user_name', ''):<20}")
+            print(f"  {a['platform']:<12} {a['user_id']:<20} {(a.get('user_name') or ''):<20}")
     else:
         print("\n  No approved users.")
 
@@ -69,7 +69,7 @@ def _cmd_approve(store, platform: str, code: str):
     result = store.approve_code(platform, code)
     if result:
         uid = result["user_id"]
-        name = result.get("user_name", "")
+        name = result.get("user_name") or ""
         display = f"{name} ({uid})" if name else uid
         print(f"\n  Approved! User {display} on {platform} can now use the bot~")
         print("  They'll be recognized automatically on their next message.\n")

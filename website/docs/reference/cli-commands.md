@@ -27,6 +27,10 @@ hermes [global-options] <command> [subcommand/options]
 | `--worktree`, `-w` | Start in an isolated git worktree for parallel-agent workflows. |
 | `--yolo` | Bypass dangerous-command approval prompts. |
 | `--pass-session-id` | Include the session ID in the agent's system prompt. |
+| `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and fall back to built-in defaults. Credentials in `.env` are still loaded. |
+| `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, memory, and preloaded skills. |
+| `--tui` | Launch the [TUI](../user-guide/tui.md) instead of the classic CLI. Equivalent to `HERMES_TUI=1`. |
+| `--dev` | With `--tui`: run the TypeScript sources directly via `tsx` instead of the prebuilt bundle (for TUI contributors). |
 
 ## Top-level commands
 
@@ -37,6 +41,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
+| `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
 | `hermes auth` | Manage credentials — add, list, remove, reset, set strategy. Handles OAuth flows for Codex/Nous/Anthropic. |
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes status` | Show agent, auth, and platform status. |
@@ -44,6 +49,9 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes doctor` | Diagnose config and dependency issues. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
+| `hermes debug` | Debug tools — upload logs and system info for support. |
+| `hermes backup` | Back up Hermes home directory to a zip file. |
+| `hermes import` | Restore a Hermes backup from a zip file. |
 | `hermes logs` | View, tail, and filter agent/gateway/error log files. |
 | `hermes config` | Show, edit, migrate, and query configuration files. |
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
@@ -57,6 +65,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration helpers. |
+| `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh). |
 | `hermes version` | Show version information. |
@@ -76,15 +85,18 @@ Common options:
 | `-q`, `--query "..."` | One-shot, non-interactive prompt. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `deepseek`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `alibaba`. |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `google-gemini-cli`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry`. |
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
+| `--image <path>` | Attach a local image to a single query. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
 | `--worktree` | Create an isolated git worktree for this run. |
 | `--checkpoints` | Enable filesystem checkpoints before destructive file changes. |
 | `--yolo` | Skip approval prompts. |
 | `--pass-session-id` | Pass the session ID into the system prompt. |
+| `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and use built-in defaults. Credentials in `.env` are still loaded. Useful for isolated CI runs, reproducible bug reports, and third-party integrations. |
+| `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, persistent memory, and preloaded skills. Combine with `--ignore-user-config` for a fully isolated run. |
 | `--source <tag>` | Session source tag for filtering (default: `cli`). Use `tool` for third-party integrations that should not appear in user session lists. |
 | `--max-turns <N>` | Maximum tool-calling iterations per conversation turn (default: 90, or `agent.max_turns` in config). |
 
@@ -97,26 +109,36 @@ hermes chat --provider openrouter --model anthropic/claude-sonnet-4.6
 hermes chat --toolsets web,terminal,skills
 hermes chat --quiet -q "Return only JSON"
 hermes chat --worktree -q "Review this repo and open a PR"
+hermes chat --ignore-user-config --ignore-rules -q "Repro without my personal setup"
 ```
 
 ## `hermes model`
 
-Interactive provider + model selector.
+Interactive provider + model selector. **This is the command for adding new providers, setting up API keys, and running OAuth flows.** Run it from your terminal — not from inside an active Hermes chat session.
 
 ```bash
 hermes model
 ```
 
 Use this when you want to:
-- switch default providers
-- log into OAuth-backed providers during model selection
+- **add a new provider** (OpenRouter, Anthropic, Copilot, DeepSeek, custom, etc.)
+- log into OAuth-backed providers (Anthropic, Copilot, Codex, Nous Portal)
+- enter or update API keys
 - pick from provider-specific model lists
 - configure a custom/self-hosted endpoint
 - save the new default into config
 
+:::warning hermes model vs /model — know the difference
+**`hermes model`** (run from your terminal, outside any Hermes session) is the **full provider setup wizard**. It can add new providers, run OAuth flows, prompt for API keys, and configure endpoints.
+
+**`/model`** (typed inside an active Hermes chat session) can only **switch between providers and models you've already set up**. It cannot add new providers, run OAuth, or prompt for API keys.
+
+**If you need to add a new provider:** Exit your Hermes session first (`Ctrl+C` or `/quit`), then run `hermes model` from your terminal prompt.
+:::
+
 ### `/model` slash command (mid-session)
 
-Switch models without leaving a session:
+Switch between already-configured models without leaving a session:
 
 ```
 /model                              # Show current model and available options
@@ -127,6 +149,16 @@ Switch models without leaving a session:
 /model custom:local:qwen-2.5        # Use a named custom provider
 /model openrouter:anthropic/claude-sonnet-4  # Switch back to cloud
 ```
+
+By default, `/model` changes apply **to the current session only**. Add `--global` to persist the change to `config.yaml`:
+
+```
+/model claude-sonnet-4 --global     # Switch and save as new default
+```
+
+:::info What if I only see OpenRouter models?
+If you've only configured OpenRouter, `/model` will only show OpenRouter models. To add another provider (Anthropic, DeepSeek, Copilot, etc.), exit your session and run `hermes model` from the terminal.
+:::
 
 Provider and base URL changes are persisted to `config.yaml` automatically. When switching away from a custom endpoint, the stale base URL is cleared to prevent it leaking into other providers.
 
@@ -156,10 +188,14 @@ Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd sup
 ## `hermes setup`
 
 ```bash
-hermes setup [model|terminal|gateway|tools|agent] [--non-interactive] [--reset]
+hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--reset] [--quick] [--reconfigure]
 ```
 
-Use the full wizard or jump into one section:
+**First run:** launches the first-time wizard.
+
+**Returning user (already configured):** drops straight into the full reconfigure wizard — every prompt shows your current value as its default, press Enter to keep or type a new value. No menu.
+
+Jump into one section instead of the full wizard:
 
 | Section | Description |
 |---------|-------------|
@@ -173,8 +209,10 @@ Options:
 
 | Option | Description |
 |--------|-------------|
+| `--quick` | On returning-user runs: only prompt for items that are missing or unset. Skip items you already have configured. |
 | `--non-interactive` | Use defaults / environment values without prompts. |
 | `--reset` | Reset configuration to defaults before setup. |
+| `--reconfigure` | Backwards-compat alias — bare `hermes setup` on an existing install now does this by default. |
 
 ## `hermes whatsapp`
 
@@ -183,6 +221,33 @@ hermes whatsapp
 ```
 
 Runs the WhatsApp pairing/setup flow, including mode selection and QR-code pairing.
+
+## `hermes slack`
+
+```bash
+hermes slack manifest              # print manifest to stdout
+hermes slack manifest --write      # write to ~/.hermes/slack-manifest.json
+hermes slack manifest --slashes-only  # just the features.slash_commands array
+```
+
+Generates a Slack app manifest that registers every gateway command in
+`COMMAND_REGISTRY` (`/btw`, `/stop`, `/model`, …) as a first-class
+Slack slash command — matching Discord and Telegram parity. Paste the
+output into your Slack app config at
+[https://api.slack.com/apps](https://api.slack.com/apps) → your app →
+**Features → App Manifest → Edit**, then **Save**. Slack prompts for
+reinstall if scopes or slash commands changed.
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--write [PATH]` | stdout | Write to a file instead of stdout. Bare `--write` writes `$HERMES_HOME/slack-manifest.json`. |
+| `--name NAME` | `Hermes` | Bot display name in Slack. |
+| `--description DESC` | default blurb | Bot description shown in the Slack app directory. |
+| `--slashes-only` | off | Emit only `features.slash_commands` for merging into a manually-maintained manifest. |
+
+Run `hermes slack manifest --write` again after `hermes update` to pick
+up any new commands.
+
 
 ## `hermes login` / `hermes logout` *(Deprecated)*
 
@@ -354,6 +419,70 @@ config_overrides:
 `hermes dump` is specifically designed for sharing. For interactive diagnostics, use `hermes doctor`. For a visual overview, use `hermes status`.
 :::
 
+## `hermes debug`
+
+```bash
+hermes debug share [options]
+```
+
+Upload a debug report (system info + recent logs) to a paste service and get a shareable URL. Useful for quick support requests — includes everything a helper needs to diagnose your issue.
+
+| Option | Description |
+|--------|-------------|
+| `--lines <N>` | Number of log lines to include per log file (default: 200). |
+| `--expire <days>` | Paste expiry in days (default: 7). |
+| `--local` | Print the report locally instead of uploading. |
+
+The report includes system info (OS, Python version, Hermes version), recent agent and gateway logs (512 KB limit per file), and redacted API key status. Keys are always redacted — no secrets are uploaded.
+
+Paste services tried in order: paste.rs, dpaste.com.
+
+### Examples
+
+```bash
+hermes debug share              # Upload debug report, print URL
+hermes debug share --lines 500  # Include more log lines
+hermes debug share --expire 30  # Keep paste for 30 days
+hermes debug share --local      # Print report to terminal (no upload)
+```
+
+## `hermes backup`
+
+```bash
+hermes backup [options]
+```
+
+Create a zip archive of your Hermes configuration, skills, sessions, and data. The backup excludes the hermes-agent codebase itself.
+
+| Option | Description |
+|--------|-------------|
+| `-o`, `--output <path>` | Output path for the zip file (default: `~/hermes-backup-<timestamp>.zip`). |
+| `-q`, `--quick` | Quick snapshot: only critical state files (config.yaml, state.db, .env, auth, cron jobs). Much faster than a full backup. |
+| `-l`, `--label <name>` | Label for the snapshot (only used with `--quick`). |
+
+The backup uses SQLite's `backup()` API for safe copying, so it works correctly even when Hermes is running (WAL-mode safe).
+
+### Examples
+
+```bash
+hermes backup                           # Full backup to ~/hermes-backup-*.zip
+hermes backup -o /tmp/hermes.zip        # Full backup to specific path
+hermes backup --quick                   # Quick state-only snapshot
+hermes backup --quick --label "pre-upgrade"  # Quick snapshot with label
+```
+
+## `hermes import`
+
+```bash
+hermes import <zipfile> [options]
+```
+
+Restore a previously created Hermes backup into your Hermes home directory.
+
+| Option | Description |
+|--------|-------------|
+| `-f`, `--force` | Overwrite existing files without confirmation. |
+
 ## `hermes logs`
 
 ```bash
@@ -380,6 +509,7 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 | `--level <LEVEL>` | Minimum log level to show: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
 | `--session <ID>` | Filter lines containing a session ID substring. |
 | `--since <TIME>` | Show lines from a relative time ago: `30m`, `1h`, `2d`, etc. Supports `s` (seconds), `m` (minutes), `h` (hours), `d` (days). |
+| `--component <NAME>` | Filter by component: `gateway`, `agent`, `tools`, `cli`, `cron`. |
 
 ### Examples
 
@@ -487,6 +617,8 @@ hermes skills inspect official/security/1password
 hermes skills inspect skills-sh/vercel-labs/json-render/json-render-react
 hermes skills install official/migration/openclaw-migration
 hermes skills install skills-sh/anthropics/skills/pdf --force
+hermes skills install https://sharethis.chat/SKILL.md                     # Direct URL (single-file SKILL.md)
+hermes skills install https://example.com/SKILL.md --name my-skill        # Override name when frontmatter has none
 hermes skills check
 hermes skills update
 hermes skills config
@@ -497,6 +629,7 @@ Notes:
 - `--force` does not override a `dangerous` scan verdict.
 - `--source skills-sh` searches the public `skills.sh` directory.
 - `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
+- Passing an `http(s)://…/*.md` URL installs a single-file SKILL.md directly. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
 
 ## `hermes honcho`
 
@@ -665,9 +798,10 @@ Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom pat
 | Option | Description |
 |--------|-------------|
 | `--dry-run` | Preview what would be migrated without writing anything. |
-| `--preset <name>` | Migration preset: `full` (default, includes secrets) or `user-data` (excludes API keys). |
-| `--overwrite` | Overwrite existing Hermes files on conflicts (default: skip). |
-| `--migrate-secrets` | Include API keys in migration (enabled by default with `--preset full`). |
+| `--preset <name>` | Migration preset: `full` (all compatible settings) or `user-data` (excludes infrastructure config). Neither preset imports secrets — pass `--migrate-secrets` explicitly. |
+| `--overwrite` | Overwrite existing Hermes files on conflicts (default: refuse to apply when the plan has conflicts). |
+| `--migrate-secrets` | Include API keys in migration. Required even under `--preset full`. |
+| `--no-backup` | Skip the pre-migration zip snapshot of `~/.hermes/` (by default a single restore-point archive is written to `~/.hermes/backups/pre-migration-*.zip` before apply; restorable with `hermes import`). |
 | `--source <path>` | Custom OpenClaw directory (default: `~/.openclaw`). |
 | `--workspace-target <path>` | Target directory for workspace instructions (AGENTS.md). |
 | `--skill-conflict <mode>` | Handle skill name collisions: `skip` (default), `overwrite`, or `rename`. |
@@ -691,14 +825,39 @@ For the complete config key mapping, SecretRef handling details, and post-migrat
 # Preview what would be migrated
 hermes claw migrate --dry-run
 
-# Full migration including API keys
+# Full migration (all compatible settings, no secrets)
 hermes claw migrate --preset full
+
+# Full migration including API keys
+hermes claw migrate --preset full --migrate-secrets
 
 # Migrate user data only (no secrets), overwrite conflicts
 hermes claw migrate --preset user-data --overwrite
 
 # Migrate from a custom OpenClaw path
 hermes claw migrate --source /home/user/old-openclaw
+```
+
+## `hermes dashboard`
+
+```bash
+hermes dashboard [options]
+```
+
+Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. Requires `pip install hermes-agent[web]` (FastAPI + Uvicorn). See [Web Dashboard](/docs/user-guide/features/web-dashboard) for full documentation.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--port` | `9119` | Port to run the web server on |
+| `--host` | `127.0.0.1` | Bind address |
+| `--no-open` | — | Don't auto-open the browser |
+
+```bash
+# Default — opens browser to http://127.0.0.1:9119
+hermes dashboard
+
+# Custom port, no browser
+hermes dashboard --port 8080 --no-open
 ```
 
 ## `hermes profile`

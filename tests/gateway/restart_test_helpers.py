@@ -35,6 +35,7 @@ def make_restart_source(chat_id: str = "123456", chat_type: str = "dm") -> Sessi
         platform=Platform.TELEGRAM,
         chat_id=chat_id,
         chat_type=chat_type,
+        user_id="u1",
     )
 
 
@@ -92,6 +93,12 @@ def make_restart_runner(
     runner._running_agent_count = GatewayRunner._running_agent_count.__get__(
         runner, GatewayRunner
     )
+    runner._snapshot_running_agents = GatewayRunner._snapshot_running_agents.__get__(
+        runner, GatewayRunner
+    )
+    runner._notify_active_sessions_of_shutdown = (
+        GatewayRunner._notify_active_sessions_of_shutdown.__get__(runner, GatewayRunner)
+    )
     runner._launch_detached_restart_command = GatewayRunner._launch_detached_restart_command.__get__(
         runner, GatewayRunner
     )
@@ -101,6 +108,7 @@ def make_restart_runner(
     runner.hooks.emit = AsyncMock()
     runner.pairing_store = MagicMock()
     runner.session_store = MagicMock()
+    runner.session_store._entries = {}
     runner.delivery_router = MagicMock()
 
     platform_adapter = adapter or RestartTestAdapter()

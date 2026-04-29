@@ -55,10 +55,12 @@ CHANNEL_ID = "C0AQWDLHY9M"
 OTHER_CHANNEL_ID = "C9999999999"
 
 
-def _make_adapter(require_mention=None, free_response_channels=None):
+def _make_adapter(require_mention=None, strict_mention=None, free_response_channels=None):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
+    if strict_mention is not None:
+        extra["strict_mention"] = strict_mention
     if free_response_channels is not None:
         extra["free_response_channels"] = free_response_channels
 
@@ -132,6 +134,48 @@ def test_require_mention_env_var_default_true(monkeypatch):
     monkeypatch.delenv("SLACK_REQUIRE_MENTION", raising=False)
     adapter = _make_adapter()
     assert adapter._slack_require_mention() is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: _slack_strict_mention
+# ---------------------------------------------------------------------------
+
+def test_strict_mention_defaults_to_false(monkeypatch):
+    monkeypatch.delenv("SLACK_STRICT_MENTION", raising=False)
+    adapter = _make_adapter()
+    assert adapter._slack_strict_mention() is False
+
+
+def test_strict_mention_true():
+    adapter = _make_adapter(strict_mention=True)
+    assert adapter._slack_strict_mention() is True
+
+
+def test_strict_mention_false():
+    adapter = _make_adapter(strict_mention=False)
+    assert adapter._slack_strict_mention() is False
+
+
+def test_strict_mention_string_true():
+    adapter = _make_adapter(strict_mention="true")
+    assert adapter._slack_strict_mention() is True
+
+
+def test_strict_mention_string_off():
+    adapter = _make_adapter(strict_mention="off")
+    assert adapter._slack_strict_mention() is False
+
+
+def test_strict_mention_malformed_stays_false():
+    """Unrecognised values keep strict mode OFF (fail-open to legacy behavior)."""
+    adapter = _make_adapter(strict_mention="maybe")
+    assert adapter._slack_strict_mention() is False
+
+
+def test_strict_mention_env_var_fallback(monkeypatch):
+    monkeypatch.setenv("SLACK_STRICT_MENTION", "true")
+    adapter = _make_adapter()  # no config value -> falls back to env
+    assert adapter._slack_strict_mention() is True
 
 
 # ---------------------------------------------------------------------------
@@ -310,3 +354,184 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     import os as _os
     assert _os.environ["SLACK_REQUIRE_MENTION"] == "false"
     assert _os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C0AQWDLHY9M,C9999999999"
+
+
+def test_top_level_slack_settings_do_not_disable_env_token_setup(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  require_mention: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.delenv("SLACK_REQUIRE_MENTION", raising=False)
+
+    config = load_gateway_config()
+
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.enabled is True
+    assert slack_config.token == "xoxb-test"
+    assert slack_config.extra.get("require_mention") is False
+    assert "_enabled_explicit" not in slack_config.extra
+
+
+def test_explicit_top_level_slack_enabled_false_wins_over_env_token(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  enabled: false\n"
+        "  require_mention: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.delenv("SLACK_REQUIRE_MENTION", raising=False)
+
+    config = load_gateway_config()
+
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.enabled is False
+    assert slack_config.token == "xoxb-test"
+    assert slack_config.extra.get("require_mention") is False
+    assert "_enabled_explicit" not in slack_config.extra
+
+
+def test_explicit_platforms_slack_enabled_false_wins_over_env_token(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "platforms:\n"
+        "  slack:\n"
+        "    enabled: false\n"
+        "    extra:\n"
+        "      reply_in_thread: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+
+    config = load_gateway_config()
+
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.enabled is False
+    assert slack_config.token == "xoxb-test"
+    assert slack_config.extra.get("reply_in_thread") is False
+    assert "_enabled_explicit" not in slack_config.extra
+
+
+def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  reply_in_thread: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+
+    config = load_gateway_config()
+
+    assert config is not None
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.extra.get("reply_in_thread") is False
+
+    adapter = SlackAdapter(slack_config)
+    assert adapter._resolve_thread_ts(reply_to="171.000", metadata={}) is None
+
+    # Top-level channel messages arrive with metadata.thread_id == reply_to
+    # because the inbound handler uses event.ts as a session-keying fallback.
+    # Those must be treated as non-threaded so reply_in_thread=false takes
+    # effect in channels, not just DMs.
+    assert adapter._resolve_thread_ts(
+        reply_to="171.000",
+        metadata={"thread_id": "171.000"},
+    ) is None
+
+    # Real thread replies (reply_to differs from thread parent) must still
+    # resolve to the parent thread so conversation context is preserved.
+    assert adapter._resolve_thread_ts(
+        reply_to="171.500",
+        metadata={"thread_id": "171.000"},
+    ) == "171.000"
+
+
+def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  strict_mention: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("SLACK_STRICT_MENTION", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    import os as _os
+    assert _os.environ["SLACK_STRICT_MENTION"] == "true"
+
+
+# ---------------------------------------------------------------------------
+# Regression: strict mode must NOT persist mentions into _mentioned_threads
+# ---------------------------------------------------------------------------
+# Prevents agent-to-agent ack loops — if a strict-mode bot remembered every
+# thread it was mentioned in, the next message from the other agent in that
+# thread would re-trigger the bot and defeat the entire feature.
+
+def test_mention_in_strict_mode_does_not_register_thread():
+    adapter = _make_adapter(strict_mention=True)
+    adapter._bot_user_id = "U_BOT"
+    adapter._mentioned_threads = set()
+    adapter._MENTIONED_THREADS_MAX = 5000
+
+    thread_ts = "1700000000.100200"
+    event_thread_ts = thread_ts  # incoming message is inside an existing thread
+
+    # Mirror the handler's @mention + strict-mode guard that protects
+    # _mentioned_threads.add(). If strict is on, we must skip the add.
+    text = "<@U_BOT> hello"
+    is_mentioned = f"<@{adapter._bot_user_id}>" in text
+    assert is_mentioned
+    if event_thread_ts and not adapter._slack_strict_mention():
+        adapter._mentioned_threads.add(event_thread_ts)
+
+    assert thread_ts not in adapter._mentioned_threads
+
+
+def test_mention_outside_strict_mode_still_registers_thread():
+    adapter = _make_adapter(strict_mention=False)
+    adapter._bot_user_id = "U_BOT"
+    adapter._mentioned_threads = set()
+    adapter._MENTIONED_THREADS_MAX = 5000
+
+    thread_ts = "1700000000.100200"
+    event_thread_ts = thread_ts
+
+    text = "<@U_BOT> hello"
+    is_mentioned = f"<@{adapter._bot_user_id}>" in text
+    assert is_mentioned
+    if event_thread_ts and not adapter._slack_strict_mention():
+        adapter._mentioned_threads.add(event_thread_ts)
+
+    assert thread_ts in adapter._mentioned_threads

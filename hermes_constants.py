@@ -14,7 +14,8 @@ def get_hermes_home() -> Path:
     Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
     """
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    val = os.environ.get("HERMES_HOME", "").strip()
+    return Path(val) if val else Path.home() / ".hermes"
 
 
 def get_default_hermes_root() -> Path:
@@ -189,6 +190,37 @@ def is_wsl() -> bool:
     return _wsl_detected
 
 
+_container_detected: bool | None = None
+
+
+def is_container() -> bool:
+    """Return True when running inside a Docker/Podman container.
+
+    Checks ``/.dockerenv`` (Docker), ``/run/.containerenv`` (Podman),
+    and ``/proc/1/cgroup`` for container runtime markers.  Result is
+    cached for the process lifetime.  Import-safe — no heavy deps.
+    """
+    global _container_detected
+    if _container_detected is not None:
+        return _container_detected
+    if os.path.exists("/.dockerenv"):
+        _container_detected = True
+        return True
+    if os.path.exists("/run/.containerenv"):
+        _container_detected = True
+        return True
+    try:
+        with open("/proc/1/cgroup", "r") as f:
+            cgroup = f.read()
+            if "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup:
+                _container_detected = True
+                return True
+    except OSError:
+        pass
+    _container_detected = False
+    return False
+
+
 # ─── Well-Known Paths ─────────────────────────────────────────────────────────
 
 
@@ -205,10 +237,6 @@ def get_skills_dir() -> Path:
     """Return the path to the skills directory under HERMES_HOME."""
     return get_hermes_home() / "skills"
 
-
-def get_logs_dir() -> Path:
-    """Return the path to the logs directory under HERMES_HOME."""
-    return get_hermes_home() / "logs"
 
 
 def get_env_path() -> Path:
@@ -265,5 +293,3 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
-
-NOUS_API_BASE_URL = "https://inference-api.nousresearch.com/v1"

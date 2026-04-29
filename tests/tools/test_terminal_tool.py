@@ -4,11 +4,11 @@ import tools.terminal_tool as terminal_tool
 
 
 def setup_function():
-    terminal_tool._cached_sudo_password = ""
+    terminal_tool._reset_cached_sudo_passwords()
 
 
 def teardown_function():
-    terminal_tool._cached_sudo_password = ""
+    terminal_tool._reset_cached_sudo_passwords()
 
 
 def test_searching_for_sudo_does_not_trigger_rewrite(monkeypatch):
@@ -82,9 +82,38 @@ def test_explicit_empty_sudo_password_tries_empty_without_prompt(monkeypatch):
 def test_cached_sudo_password_is_used_when_env_is_unset(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-    terminal_tool._cached_sudo_password = "cached-pass"
+    terminal_tool._set_cached_sudo_password("cached-pass")
 
     transformed, sudo_stdin = terminal_tool._transform_sudo_command("echo ok && sudo whoami")
 
     assert transformed == "echo ok && sudo -S -p '' whoami"
     assert sudo_stdin == "cached-pass\n"
+
+
+def test_cached_sudo_password_isolated_by_session_key(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", "session-a")
+    terminal_tool._set_cached_sudo_password("alpha-pass")
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", "session-b")
+    assert terminal_tool._get_cached_sudo_password() == ""
+
+    monkeypatch.setenv("HERMES_SESSION_KEY", "session-a")
+    assert terminal_tool._get_cached_sudo_password() == "alpha-pass"
+
+
+def test_validate_workdir_allows_windows_drive_paths():
+    assert terminal_tool._validate_workdir(r"C:\Users\Alice\project") is None
+    assert terminal_tool._validate_workdir("C:/Users/Alice/project") is None
+
+
+def test_validate_workdir_allows_windows_unc_paths():
+    assert terminal_tool._validate_workdir(r"\\server\share\project") is None
+
+
+def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
+    assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
+    assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")
+    assert terminal_tool._validate_workdir("C:\\Users\\Alice\\project\nwhoami")

@@ -215,6 +215,46 @@ class TestBuildToolComplete:
         assert len(display_text) < 6000
         assert "truncated" in display_text
 
+    def test_build_tool_complete_for_patch_uses_diff_blocks(self):
+        """Completed patch calls should keep structured diff content for Zed."""
+        patch_result = (
+            '{"success": true, "diff": "--- a/README.md\\n+++ b/README.md\\n@@ -1 +1,2 @@\\n old line\\n+new line\\n", '
+            '"files_modified": ["README.md"]}'
+        )
+        result = build_tool_complete("tc-p1", "patch", patch_result)
+        assert isinstance(result, ToolCallProgress)
+        assert len(result.content) == 1
+        diff_item = result.content[0]
+        assert isinstance(diff_item, FileEditToolCallContent)
+        assert diff_item.path == "README.md"
+        assert diff_item.old_text == "old line"
+        assert diff_item.new_text == "old line\nnew line"
+
+    def test_build_tool_complete_for_patch_falls_back_to_text_when_no_diff(self):
+        result = build_tool_complete("tc-p2", "patch", '{"success": true}')
+        assert isinstance(result, ToolCallProgress)
+        assert isinstance(result.content[0], ContentToolCallContent)
+
+    def test_build_tool_complete_for_write_file_uses_snapshot_diff(self, tmp_path):
+        target = tmp_path / "diff-test.txt"
+        snapshot = type("Snapshot", (), {"paths": [target], "before": {str(target): None}})()
+        target.write_text("hello from hermes\n", encoding="utf-8")
+
+        result = build_tool_complete(
+            "tc-wf1",
+            "write_file",
+            '{"bytes_written": 18, "dirs_created": false}',
+            function_args={"path": str(target), "content": "hello from hermes\n"},
+            snapshot=snapshot,
+        )
+        assert isinstance(result, ToolCallProgress)
+        assert len(result.content) == 1
+        diff_item = result.content[0]
+        assert isinstance(diff_item, FileEditToolCallContent)
+        assert diff_item.path.endswith("diff-test.txt")
+        assert diff_item.old_text is None
+        assert diff_item.new_text == "hello from hermes"
+
 
 # ---------------------------------------------------------------------------
 # extract_locations

@@ -24,9 +24,10 @@ import json
 import asyncio
 import logging
 import threading
+import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import registry
+from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -108,9 +109,15 @@ def _run_async(coro):
     if loop and loop.is_running():
         # Inside an async context (gateway, RL env) — run in a fresh thread.
         import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, coro)
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(asyncio.run, coro)
+        try:
             return future.result(timeout=300)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     # If we're on a worker thread (e.g., parallel tool execution in
     # delegate_task), use a per-thread persistent loop.  This avoids
@@ -129,52 +136,20 @@ def _run_async(coro):
 # Tool Discovery  (importing each module triggers its registry.register calls)
 # =============================================================================
 
-def _discover_tools():
-    """Import all tool modules to trigger their registry.register() calls.
+discover_builtin_tools()
 
-    Wrapped in a function so import errors in optional tools (e.g., fal_client
-    not installed) don't prevent the rest from loading.
-    """
-    _modules = [
-        "tools.web_tools",
-        "tools.terminal_tool",
-        "tools.file_tools",
-        "tools.vision_tools",
-        "tools.mixture_of_agents_tool",
-        "tools.image_generation_tool",
-        "tools.skills_tool",
-        "tools.skill_manager_tool",
-        "tools.browser_tool",
-        "tools.cronjob_tools",
-        "tools.rl_training_tool",
-        "tools.tts_tool",
-        "tools.todo_tool",
-        "tools.memory_tool",
-        "tools.session_search_tool",
-        "tools.clarify_tool",
-        "tools.code_execution_tool",
-        "tools.delegate_tool",
-        "tools.process_registry",
-        "tools.send_message_tool",
-        # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
-        "tools.homeassistant_tool",
-    ]
-    import importlib
-    for mod_name in _modules:
-        try:
-            importlib.import_module(mod_name)
-        except Exception as e:
-            logger.warning("Could not import tool module %s: %s", mod_name, e)
-
-
-_discover_tools()
-
-# MCP tool discovery (external MCP servers from config)
-try:
-    from tools.mcp_tool import discover_mcp_tools
-    discover_mcp_tools()
-except Exception as e:
-    logger.debug("MCP tool discovery failed: %s", e)
+# MCP tool discovery (external MCP servers from config) used to run here as
+# a module-level side effect.  It was removed because discover_mcp_tools()
+# internally uses a blocking future.result(timeout=120) wait, and the
+# gateway lazy-imports this module from inside the asyncio event loop on
+# the first user message — freezing Discord/Telegram heartbeats for up to
+# 120s whenever any configured MCP server was slow or unreachable (#16856).
+#
+# Each entry point now runs discovery explicitly at its own startup:
+#   - gateway/run.py            -> start_gateway() uses run_in_executor
+#   - cli.py, hermes_cli/*      -> inline on startup (no event loop)
+#   - tui_gateway/server.py     -> inline on startup (no event loop)
+#   - acp_adapter/server.py     -> asyncio.to_thread on session init
 
 # Plugin tool discovery (user/project/pip plugins)
 try:
@@ -231,6 +206,27 @@ _LEGACY_TOOLSET_MAP = {
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
 
+# Module-level memoization for get_tool_definitions(). Keyed on
+# (frozenset(enabled_toolsets), frozenset(disabled_toolsets), registry._generation).
+# Hot callers (gateway runner, AIAgent.__init__) invoke this on every turn
+# with quiet_mode=True; caching avoids ~7 ms of registry walking + schema
+# filtering + check_fn probing per call. Only active when quiet_mode=True
+# because quiet_mode=False has stdout side effects (tool-selection prints).
+#
+# Invalidation happens transparently via the registry's _generation counter,
+# which bumps on register() / deregister() / register_toolset_alias(). The
+# inner check_fn TTL cache in registry.py handles environment drift (Docker
+# daemon start/stop, env var changes, etc.) on a 30 s horizon.
+_tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+
+
+def _clear_tool_defs_cache() -> None:
+    """Drop memoized get_tool_definitions() results. Called when dynamic
+    schema dependencies change (e.g. discord capability cache reset,
+    execute_code sandbox reconfigured)."""
+    _tool_defs_cache.clear()
+
+
 def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
@@ -249,6 +245,50 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    # Fast path: memoized result when the caller doesn't need stdout prints.
+    # The cache key captures every argument-level input; the registry
+    # generation captures registry mutations (MCP refresh, plugin load).
+    # check_fn results are TTL-cached one level down, inside
+    # registry.get_definitions. The config-mtime fingerprint below captures
+    # user-visible config edits that affect dynamic schemas (execute_code
+    # mode, discord action allowlist, etc.) without needing an explicit
+    # invalidate hook on every config-writer.
+    if quiet_mode:
+        try:
+            from hermes_cli.config import get_config_path
+            cfg_path = get_config_path()
+            cfg_stat = cfg_path.stat()
+            cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
+        except (FileNotFoundError, OSError, ImportError):
+            cfg_fp = None
+        cache_key = (
+            frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
+            frozenset(disabled_toolsets) if disabled_toolsets else None,
+            registry._generation,
+            cfg_fp,
+        )
+        cached = _tool_defs_cache.get(cache_key)
+        if cached is not None:
+            # Update _last_resolved_tool_names so downstream callers see
+            # consistent state even on a cache hit.
+            global _last_resolved_tool_names
+            _last_resolved_tool_names = [t["function"]["name"] for t in cached]
+            # Return a shallow copy of the list but share the dict references —
+            # schemas are treated as read-only by all known callers.
+            return list(cached)
+
+    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)
+    if quiet_mode:
+        _tool_defs_cache[cache_key] = result
+    return result
+
+
+def _compute_tool_definitions(
+    enabled_toolsets: List[str] = None,
+    disabled_toolsets: List[str] = None,
+    quiet_mode: bool = False,
+) -> List[Dict[str, Any]]:
+    """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
     tools_to_include: set = set()
 
@@ -312,13 +352,42 @@ def get_tool_definitions(
     # execute_code" even when the API key isn't configured or the toolset is
     # disabled (#560-discord).
     if "execute_code" in available_tool_names:
-        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema
+        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema, _get_execution_mode
         sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
-        dynamic_schema = build_execute_code_schema(sandbox_enabled)
+        dynamic_schema = build_execute_code_schema(sandbox_enabled, mode=_get_execution_mode())
         for i, td in enumerate(filtered_tools):
             if td.get("function", {}).get("name") == "execute_code":
                 filtered_tools[i] = {"type": "function", "function": dynamic_schema}
                 break
+
+    # Rebuild discord / discord_admin schemas based on the bot's privileged
+    # intents (detected from GET /applications/@me) and the user's action
+    # allowlist in config.  Hides actions the bot's intents don't support so
+    # the model never attempts them, and annotates fetch_messages when the
+    # MESSAGE_CONTENT intent is missing.
+    _discord_schema_fns = {
+        "discord": "get_dynamic_schema_core",
+        "discord_admin": "get_dynamic_schema_admin",
+    }
+    for discord_tool_name in _discord_schema_fns:
+        if discord_tool_name in available_tool_names:
+            try:
+                from tools import discord_tool as _dt
+                schema_fn = getattr(_dt, _discord_schema_fns[discord_tool_name])
+                dynamic = schema_fn()
+            except Exception:
+                dynamic = None
+            if dynamic is None:
+                filtered_tools = [
+                    t for t in filtered_tools
+                    if t.get("function", {}).get("name") != discord_tool_name
+                ]
+                available_tool_names.discard(discord_tool_name)
+            else:
+                for i, td in enumerate(filtered_tools):
+                    if td.get("function", {}).get("name") == discord_tool_name:
+                        filtered_tools[i] = {"type": "function", "function": dynamic}
+                        break
 
     # Strip web tool cross-references from browser_navigate description when
     # web_search / web_extract are not available.  The static schema says
@@ -349,6 +418,18 @@ def get_tool_definitions(
 
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+
+    # Sanitize schemas for broad backend compatibility. llama.cpp's
+    # json-schema-to-grammar converter (used by its OAI server to build
+    # GBNF tool-call parsers) rejects some shapes that cloud providers
+    # silently accept — bare "type": "object" with no properties,
+    # string-valued schema nodes from malformed MCP servers, etc. This
+    # is a no-op for schemas that are already well-formed.
+    try:
+        from tools.schema_sanitizer import sanitize_tool_schemas
+        filtered_tools = sanitize_tool_schemas(filtered_tools)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning("Schema sanitization skipped: %s", e)
 
     return filtered_tools
 
@@ -399,24 +480,27 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if not prop_schema:
             continue
         expected = prop_schema.get("type")
-        if not expected:
+        if not expected and not _schema_allows_null(prop_schema):
             continue
-        coerced = _coerce_value(value, expected)
+        coerced = _coerce_value(value, expected, schema=prop_schema)
         if coerced is not value:
             args[key] = coerced
 
     return args
 
 
-def _coerce_value(value: str, expected_type):
+def _coerce_value(value: str, expected_type, schema: dict | None = None):
     """Attempt to coerce a string *value* to *expected_type*.
 
     Returns the original string when coercion is not applicable or fails.
     """
+    if _schema_allows_null(schema) and value.strip().lower() == "null":
+        return None
+
     if isinstance(expected_type, list):
         # Union type — try each in order, return first successful coercion
         for t in expected_type:
-            result = _coerce_value(value, t)
+            result = _coerce_value(value, t, schema=schema)
             if result is not value:
                 return result
         return value
@@ -425,6 +509,57 @@ def _coerce_value(value: str, expected_type):
         return _coerce_number(value, integer_only=(expected_type == "integer"))
     if expected_type == "boolean":
         return _coerce_boolean(value)
+    if expected_type == "array":
+        return _coerce_json(value, list)
+    if expected_type == "object":
+        return _coerce_json(value, dict)
+    if expected_type == "null" and value.strip().lower() == "null":
+        return None
+    return value
+
+
+def _schema_allows_null(schema: dict | None) -> bool:
+    """Return True when a JSON Schema fragment explicitly permits null."""
+    if not isinstance(schema, dict):
+        return False
+
+    schema_type = schema.get("type")
+    if schema_type == "null":
+        return True
+    if isinstance(schema_type, list) and "null" in schema_type:
+        return True
+    if schema.get("nullable") is True:
+        return True
+
+    for union_key in ("anyOf", "oneOf"):
+        variants = schema.get(union_key)
+        if not isinstance(variants, list):
+            continue
+        for variant in variants:
+            if isinstance(variant, dict) and variant.get("type") == "null":
+                return True
+
+    return False
+
+
+def _coerce_json(value: str, expected_python_type: type):
+    """Parse *value* as JSON when the schema expects an array or object.
+
+    Handles model output drift where a complex oneOf/discriminated-union schema
+    causes the LLM to emit the array/object as a JSON string instead of a native
+    structure.  Returns the original string if parsing fails or yields the wrong
+    Python type.
+    """
+    try:
+        parsed = json.loads(value)
+    except (ValueError, TypeError):
+        return value
+    if isinstance(parsed, expected_python_type):
+        logger.debug(
+            "coerce_tool_args: coerced string to %s via json.loads",
+            expected_python_type.__name__,
+        )
+        return parsed
     return value
 
 
@@ -434,9 +569,9 @@ def _coerce_number(value: str, integer_only: bool = False):
         f = float(value)
     except (ValueError, OverflowError):
         return value
-    # Guard against inf/nan before int() conversion
+    # Guard against inf/nan — not JSON-serializable, keep original string
     if f != f or f == float("inf") or f == float("-inf"):
-        return f
+        return value
     # If it looks like an integer (no fractional part), return int
     if f == int(f):
         return int(f)
@@ -464,6 +599,7 @@ def handle_function_call(
     session_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    skip_pre_tool_call_hook: bool = False,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -484,32 +620,62 @@ def handle_function_call(
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
 
-    # Notify the read-loop tracker when a non-read/search tool runs,
-    # so the *consecutive* counter resets (reads after other work are fine).
-    if function_name not in _READ_SEARCH_TOOLS:
-        try:
-            from tools.file_tools import notify_other_tool_call
-            notify_other_tool_call(task_id or "default")
-        except Exception:
-            pass  # file_tools may not be loaded yet
-
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
-        try:
-            from hermes_cli.plugins import invoke_hook
-            invoke_hook(
-                "pre_tool_call",
-                tool_name=function_name,
-                args=function_args,
-                task_id=task_id or "",
-                session_id=session_id or "",
-                tool_call_id=tool_call_id or "",
-            )
-        except Exception:
-            pass
+        # Check plugin hooks for a block directive (unless caller already
+        # checked — e.g. run_agent._invoke_tool passes skip=True to
+        # avoid double-firing the hook).
+        if not skip_pre_tool_call_hook:
+            block_message: Optional[str] = None
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                block_message = get_pre_tool_call_block_message(
+                    function_name,
+                    function_args,
+                    task_id=task_id or "",
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
+                )
+            except Exception:
+                pass
 
+            if block_message is not None:
+                return json.dumps({"error": block_message}, ensure_ascii=False)
+        else:
+            # Still fire the hook for observers — just don't check for blocking
+            # (the caller already did that).
+            try:
+                from hermes_cli.plugins import invoke_hook
+                invoke_hook(
+                    "pre_tool_call",
+                    tool_name=function_name,
+                    args=function_args,
+                    task_id=task_id or "",
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
+                )
+            except Exception:
+                pass
+
+        # Notify the read-loop tracker when a non-read/search tool runs,
+        # so the *consecutive* counter resets (reads after other work are fine).
+        if function_name not in _READ_SEARCH_TOOLS:
+            try:
+                from tools.file_tools import notify_other_tool_call
+                notify_other_tool_call(task_id or "default")
+            except Exception:
+                pass  # file_tools may not be loaded yet
+
+        # Measure tool dispatch latency so post_tool_call and
+        # transform_tool_result hooks can observe per-tool duration.
+        # Inspired by Claude Code 2.1.119, which added ``duration_ms`` to
+        # PostToolUse hook inputs so plugin authors can build latency
+        # dashboards, budget alerts, and regression canaries without having
+        # to wrap every tool manually.  We use monotonic() so the value is
+        # unaffected by wall-clock adjustments during the call.
+        _dispatch_start = time.monotonic()
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
@@ -525,6 +691,7 @@ def handle_function_call(
                 task_id=task_id,
                 user_task=user_task,
             )
+        duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
         try:
             from hermes_cli.plugins import invoke_hook
@@ -536,7 +703,33 @@ def handle_function_call(
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
+                duration_ms=duration_ms,
             )
+        except Exception:
+            pass
+
+        # Generic tool-result canonicalization seam: plugins receive the
+        # final result string (JSON, usually) and may replace it by
+        # returning a string from transform_tool_result. Runs after
+        # post_tool_call (which stays observational) and before the result
+        # is appended back into conversation context. Fail-open; the first
+        # valid string return wins; non-string returns are ignored.
+        try:
+            from hermes_cli.plugins import invoke_hook
+            hook_results = invoke_hook(
+                "transform_tool_result",
+                tool_name=function_name,
+                args=function_args,
+                result=result,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+                duration_ms=duration_ms,
+            )
+            for hook_result in hook_results:
+                if isinstance(hook_result, str):
+                    result = hook_result
+                    break
         except Exception:
             pass
 

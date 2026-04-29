@@ -8,9 +8,13 @@ description: "Text-to-speech and voice message transcription across all platform
 
 Hermes Agent supports both text-to-speech output and voice message transcription across all messaging platforms.
 
+:::tip Nous Subscribers
+If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, OpenAI TTS is available through the **[Tool Gateway](tool-gateway.md)** without a separate OpenAI API key. Run `hermes model` or `hermes tools` to enable it.
+:::
+
 ## Text-to-Speech
 
-Convert text to speech with six providers:
+Convert text to speech with nine providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -19,7 +23,10 @@ Convert text to speech with six providers:
 | **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
 | **MiniMax TTS** | Excellent | Paid | `MINIMAX_API_KEY` |
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
-| **NeuTTS** | Good | Free | None needed |
+| **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
+| **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
+| **NeuTTS** | Good | Free (local) | None needed |
+| **KittenTTS** | Good | Free (local) | None needed |
 
 ### Platform Delivery
 
@@ -35,9 +42,11 @@ Convert text to speech with six providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "neutts"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts"
+  speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
+    speed: 1.0                  # Converted to rate percentage (+/-%)
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
     model_id: "eleven_multilingual_v2"
@@ -45,6 +54,7 @@ tts:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
+    speed: 1.0                  # 0.25 - 4.0
   minimax:
     model: "speech-2.8-hd"     # speech-2.8-hd (default), speech-2.8-turbo
     voice_id: "English_Graceful_Lady"  # See https://platform.minimax.io/faq/system-voice-id
@@ -54,12 +64,28 @@ tts:
   mistral:
     model: "voxtral-mini-tts-2603"
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
+  gemini:
+    model: "gemini-2.5-flash-preview-tts"  # or gemini-2.5-pro-preview-tts
+    voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
+  xai:
+    voice_id: "eve"             # xAI TTS voice (see https://docs.x.ai/docs/api-reference#tts)
+    language: "en"              # ISO 639-1 code
+    sample_rate: 24000          # 22050 / 24000 (default) / 44100 / 48000
+    bit_rate: 128000            # MP3 bitrate; only applies when codec=mp3
+    # base_url: "https://api.x.ai/v1"   # Override via XAI_BASE_URL env var
   neutts:
     ref_audio: ''
     ref_text: ''
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
+  kittentts:
+    model: KittenML/kitten-tts-nano-0.8-int8   # 25MB int8; also: kitten-tts-micro-0.8 (41MB), kitten-tts-mini-0.8 (80MB)
+    voice: Jasper                               # Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo
+    speed: 1.0                                  # 0.5 - 2.0
+    clean_text: true                            # Expand numbers, currencies, units
 ```
+
+**Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
 
 ### Telegram Voice Bubbles & ffmpeg
 
@@ -68,7 +94,10 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **OpenAI, ElevenLabs, and Mistral** produce Opus natively — no extra setup
 - **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert:
 - **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
+- **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles
+- **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 
 ```bash
 # Ubuntu/Debian
@@ -81,7 +110,7 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, and NeuTTS audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, and KittenTTS audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.

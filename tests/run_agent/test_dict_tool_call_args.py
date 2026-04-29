@@ -66,6 +66,7 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
         quiet_mode=True,
         skip_memory=True,
     )
+    agent._disable_streaming = True
 
     result = agent.run_conversation("read the file")
 

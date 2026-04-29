@@ -184,8 +184,14 @@ class TestMatrixVoiceMessageDetection:
             f"Expected MessageType.AUDIO for non-voice, got {captured_event.message_type}"
 
     @pytest.mark.asyncio
-    async def test_regular_audio_has_http_url(self):
-        """Regular audio uploads should keep HTTP URL (not cached locally)."""
+    async def test_regular_audio_is_cached_locally(self):
+        """Regular audio uploads are cached locally for downstream tool access.
+
+        Since PR #bec02f37 (encrypted-media caching refactor), all media
+        types — photo, audio, video, document — are cached locally when
+        received so tools can read them as real files. This applies equally
+        to voice messages and regular audio.
+        """
         event = _make_audio_event(is_voice=False)
 
         captured_event = None
@@ -200,10 +206,10 @@ class TestMatrixVoiceMessageDetection:
 
         assert captured_event is not None
         assert captured_event.media_urls is not None
-        # Should be HTTP URL, not local path
-        assert captured_event.media_urls[0].startswith("http"), \
-            f"Non-voice audio should have HTTP URL, got {captured_event.media_urls[0]}"
-        self.adapter._client.download_media.assert_not_awaited()
+        # Should be a local path, not an HTTP URL.
+        assert not captured_event.media_urls[0].startswith("http"), \
+            f"Regular audio should be cached locally, got {captured_event.media_urls[0]}"
+        self.adapter._client.download_media.assert_awaited_once()
         assert captured_event.media_types == ["audio/ogg"]
 
 

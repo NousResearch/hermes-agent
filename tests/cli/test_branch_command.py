@@ -160,6 +160,30 @@ class TestBranchCommandCLI:
         assert agent.reset_session_state.called
         assert agent._last_flushed_db_idx == 4  # len(conversation_history)
 
+    def test_branch_updates_agent_session_log_file(self, cli_instance, session_db, tmp_path):
+        """Branching must redirect the agent's session_log_file to the new session's path."""
+        from cli import HermesCLI
+        from pathlib import Path
+
+        logs_dir = tmp_path / "sessions"
+        logs_dir.mkdir()
+
+        agent = MagicMock()
+        agent._last_flushed_db_idx = 0
+        agent.logs_dir = logs_dir
+        agent.session_log_file = logs_dir / f"session_{cli_instance.session_id}.json"
+        cli_instance.agent = agent
+
+        old_log_file = agent.session_log_file
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        new_session_id = cli_instance.session_id
+        expected_log = logs_dir / f"session_{new_session_id}.json"
+        assert agent.session_log_file == expected_log, (
+            "session_log_file must point to the branch session, not the original"
+        )
+        assert agent.session_log_file != old_log_file
+
     def test_branch_sets_resumed_flag(self, cli_instance, session_db):
         """Branch should set _resumed=True to prevent auto-title generation."""
         from cli import HermesCLI

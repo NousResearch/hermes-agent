@@ -4800,10 +4800,10 @@ def _normalize_cdp_url(parsed) -> str:
     return parsed._replace(path="", params="", query="", fragment="").geturl()
 
 
-def _failure_messages(url: str, port: int) -> list[str]:
+def _failure_messages(url: str, port: int, system: str) -> list[str]:
     from hermes_cli.browser_connect import manual_chrome_debug_command
 
-    command = manual_chrome_debug_command(port)
+    command = manual_chrome_debug_command(port, system)
     hint = (
         ["Start Chrome with remote debugging, then retry /browser connect:", command]
         if command
@@ -4837,17 +4837,24 @@ def _(rid, params: dict) -> dict:
 
 
 def _browser_connect(rid, params: dict) -> dict:
+    import platform
+
     from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
     from tools.browser_tool import cleanup_all_browsers
     from urllib.parse import urlparse
 
     url = params.get("url", DEFAULT_BROWSER_CDP_URL)
     sid = params.get("session_id") or ""
+    system = platform.system()
     messages: list[str] = []
 
     def announce(message: str, *, level: str = "info") -> None:
         messages.append(message)
-        _emit("browser.progress", sid, {"message": message, "level": level})
+        # Without a session id the TUI prints `messages` from the
+        # response; emitting an event would double-render. Only stream
+        # progress when there's a real session to scope it to.
+        if sid:
+            _emit("browser.progress", sid, {"message": message, "level": level})
 
     parsed = urlparse(url if "://" in url else f"http://{url}")
     if parsed.scheme not in {"http", "https", "ws", "wss"}:
@@ -4883,12 +4890,11 @@ def _browser_connect(rid, params: dict) -> dict:
             ok = any(_http_ok(p, timeout=2.0) for p in probes)
 
             if not ok and _is_default_local_cdp(parsed):
-                import platform
                 from hermes_cli.browser_connect import try_launch_chrome_debug
 
                 announce("Chrome isn't running with remote debugging — attempting to launch...")
 
-                if try_launch_chrome_debug(port, platform.system()):
+                if try_launch_chrome_debug(port, system):
                     for _ in range(20):
                         time.sleep(0.5)
                         if any(_http_ok(p, timeout=1.0) for p in probes):
@@ -4898,7 +4904,7 @@ def _browser_connect(rid, params: dict) -> dict:
                 if ok:
                     announce(f"Chrome launched and listening on port {port}")
                 else:
-                    for line in _failure_messages(url, port)[1:]:
+                    for line in _failure_messages(url, port, system)[1:]:
                         announce(line, level="error")
                     return _ok(rid, {"connected": False, "url": url, "messages": messages})
             elif not ok:

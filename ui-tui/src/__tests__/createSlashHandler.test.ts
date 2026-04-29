@@ -218,6 +218,7 @@ describe('createSlashHandler', () => {
         url: 'http://127.0.0.1:9222'
       })
     )
+
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     expect(createSlashHandler(ctx)('/browser connect')).toBe(true)

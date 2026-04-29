@@ -146,9 +146,10 @@ class TestMemoryStoreAdd:
         result = store.add("memory", "project seed URL: https://example.test/fifth")
 
         assert result["success"] is False
-        assert "compact/replace" in result["error"]
+        assert "memory.replace" in result["error"]
+        assert "memory.remove" in result["error"]
         assert "skill" in result["error"]
-        assert "canonical artifact" in result["error"]
+        assert "workspace file/artifact" in result["error"]
         assert "semantic memory" in result["error"]
         assert "DO NOT claim" in result["error"]
         assert "mental" in result["error"]

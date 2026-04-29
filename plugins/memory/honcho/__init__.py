@@ -38,7 +38,7 @@ PROFILE_SCHEMA = {
     "description": (
         "Retrieve or update a peer card from Honcho — a curated list of key facts "
         "about that peer (name, role, preferences, communication style, patterns). "
-        "Pass `card` to update; omit `card` to read.  If the card is empty, the "
+        "Pass `card` to overwrite the entire peer card; omit `card` to read.  If the card is empty, the "
         "result includes a `hint` field explaining why (observation disabled, "
         "fresh peer, dialectic layer still warming up, etc.) — this is NOT an "
         "error.  Peer cards accumulate over time from observed conversation."
@@ -53,7 +53,11 @@ PROFILE_SCHEMA = {
             "card": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "New peer card as a list of fact strings. Omit to read the current card.",
+                "description": (
+                    "New peer card as a list of fact strings. Providing card overwrites "
+                    "the entire peer card; include all existing facts that should be preserved. "
+                    "Omit to read the current card."
+                ),
             },
         },
         "required": [],
@@ -1222,7 +1226,7 @@ class HonchoMemoryProvider(MemoryProvider):
             if tool_name == "honcho_profile":
                 peer = args.get("peer", "user")
                 card_update = args.get("card")
-                if card_update:
+                if "card" in args and card_update is not None:
                     result = self._manager.set_peer_card(self._session_key, card_update, peer=peer)
                     if result is None:
                         return tool_error("Failed to update peer card.")

@@ -274,25 +274,20 @@ class TestPeerLookupHelpers:
             search_query="assistant",
         )
 
-    def test_get_prefetch_context_fetches_user_and_ai_from_peer_api(self):
+    def test_get_prefetch_context_uses_assistant_observer_for_user_when_ai_observes_others(self):
         mgr, session = self._make_cached_manager()
-        user_peer = MagicMock()
-        user_peer.context.return_value = SimpleNamespace(
-            representation="User representation",
-            peer_card=["Name: Robert"],
-        )
-        ai_peer = MagicMock()
-        ai_peer.context.side_effect = lambda **kwargs: SimpleNamespace(
+        assistant_peer = MagicMock()
+        assistant_peer.context.side_effect = lambda **kwargs: SimpleNamespace(
             representation=(
-                "AI representation" if kwargs.get("target") == session.assistant_peer_id
-                else "Mixed representation"
+                "User representation" if kwargs.get("target") == session.user_peer_id
+                else "AI representation"
             ),
             peer_card=(
-                ["Role: Assistant"] if kwargs.get("target") == session.assistant_peer_id
-                else ["Name: Robert"]
+                ["Name: Robert"] if kwargs.get("target") == session.user_peer_id
+                else ["Role: Assistant"]
             ),
         )
-        mgr._get_or_create_peer = MagicMock(side_effect=[user_peer, ai_peer])
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
 
         result = mgr.get_prefetch_context(session.key)
 
@@ -302,7 +297,37 @@ class TestPeerLookupHelpers:
             "ai_representation": "AI representation",
             "ai_card": "Role: Assistant",
         }
-        user_peer.context.assert_called_once_with(target=session.user_peer_id)
+        assert mgr._get_or_create_peer.call_args_list == [
+            ((session.assistant_peer_id,),),
+            ((session.assistant_peer_id,),),
+        ]
+        assistant_peer.context.assert_any_call(target=session.user_peer_id)
+        assistant_peer.context.assert_any_call(target=session.assistant_peer_id)
+
+    def test_get_prefetch_context_uses_user_self_card_when_ai_observe_others_disabled(self):
+        mgr, session = self._make_cached_manager()
+        mgr._ai_observe_others = False
+        user_peer = MagicMock()
+        user_peer.context.return_value = SimpleNamespace(
+            representation="User self representation",
+            peer_card=["Name: Robert"],
+        )
+        ai_peer = MagicMock()
+        ai_peer.context.return_value = SimpleNamespace(
+            representation="AI representation",
+            peer_card=["Role: Assistant"],
+        )
+        mgr._get_or_create_peer = MagicMock(side_effect=[user_peer, ai_peer])
+
+        result = mgr.get_prefetch_context(session.key)
+
+        assert result == {
+            "representation": "User self representation",
+            "card": "Name: Robert",
+            "ai_representation": "AI representation",
+            "ai_card": "Role: Assistant",
+        }
+        user_peer.context.assert_called_once_with()
         ai_peer.context.assert_called_once_with(target=session.assistant_peer_id)
 
     def test_get_ai_representation_uses_peer_api(self):
@@ -441,6 +466,51 @@ class TestConcludeToolDispatch:
 
         assert "Role: Assistant" in result
         provider._manager.get_peer_card.assert_called_once_with("telegram:123", peer="hermes")
+
+    def test_honcho_profile_update_read_round_trip_through_handler(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.set_peer_card.return_value = ["Name: Robert"]
+        provider._manager.get_peer_card.return_value = ["Name: Robert"]
+
+        update_result = provider.handle_tool_call(
+            "honcho_profile",
+            {"peer": "user", "card": ["Name: Robert"]},
+        )
+        read_result = provider.handle_tool_call("honcho_profile", {"peer": "user"})
+
+        assert "Peer card updated (1 facts)." in update_result
+        assert "Name: Robert" in read_result
+        provider._manager.set_peer_card.assert_called_once_with(
+            "telegram:123", ["Name: Robert"], peer="user"
+        )
+        provider._manager.get_peer_card.assert_called_once_with("telegram:123", peer="user")
+
+    def test_honcho_profile_schema_warns_card_overwrites_entire_card(self):
+        schema = HonchoMemoryProvider().get_tool_schemas()[0]
+        description = schema["parameters"]["properties"]["card"]["description"]
+
+        assert "overwrites the entire peer card" in description
+        assert "preserved" in description
+
+    def test_honcho_profile_empty_card_update_clears_card_through_handler(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.set_peer_card.return_value = []
+
+        result = provider.handle_tool_call(
+            "honcho_profile",
+            {"peer": "user", "card": []},
+        )
+
+        assert "Peer card updated (0 facts)." in result
+        provider._manager.set_peer_card.assert_called_once_with(
+            "telegram:123", [], peer="user"
+        )
 
     def test_honcho_search_can_target_explicit_peer_id(self):
         provider = HonchoMemoryProvider()
@@ -1768,8 +1838,8 @@ class TestGetSessionContextFallback:
         # Deliberately NOT adding to _sessions_cache to trigger fallback path
         return mgr
 
-    def test_fallback_uses_user_peer_for_user(self):
-        """On cache miss, peer='user' fetches user peer context."""
+    def test_fallback_uses_assistant_observer_for_user_when_ai_observes_others(self):
+        """On cache miss, peer='user' uses the same assistant->user route as profile/search."""
         mgr = self._make_manager_with_session()
         fetch_calls = []
 
@@ -1781,10 +1851,85 @@ class TestGetSessionContextFallback:
 
         mgr.get_session_context("test", peer="user")
 
-        assert len(fetch_calls) == 1
-        peer_id, target = fetch_calls[0]
-        assert peer_id == "user-peer"
-        assert target == "user-peer"
+        assert fetch_calls == [("ai-peer", "user-peer")]
+
+    def test_fallback_uses_user_self_context_when_ai_observe_others_disabled(self):
+        """On cache miss, unified mode fetches user self context without a target."""
+        mgr = self._make_manager_with_session()
+        mgr._ai_observe_others = False
+        fetch_calls = []
+
+        def _fake_fetch(peer_id, search_query=None, *, target=None):
+            fetch_calls.append((peer_id, target))
+            return {"representation": "user rep", "card": []}
+
+        mgr._fetch_peer_context = _fake_fetch
+
+        mgr.get_session_context("test", peer="user")
+
+        assert fetch_calls == [("user-peer", None)]
+
+    def test_session_context_uses_assistant_observer_for_user_when_ai_observes_others(self):
+        mgr = self._make_manager_with_session()
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = SimpleNamespace(
+            summary=None,
+            peer_representation="user rep",
+            peer_card=["Name: Robert"],
+            messages=[],
+        )
+        mgr._sessions_cache["sid-missing-from-sessions-cache"] = honcho_session
+
+        result = mgr.get_session_context("test", peer="user")
+
+        assert result["representation"] == "user rep"
+        assert result["card"] == "Name: Robert"
+        honcho_session.context.assert_called_once_with(
+            summary=True,
+            peer_target="user-peer",
+            peer_perspective="ai-peer",
+        )
+
+    def test_session_context_uses_user_self_context_when_ai_observe_others_disabled(self):
+        mgr = self._make_manager_with_session()
+        mgr._ai_observe_others = False
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = SimpleNamespace(
+            summary=None,
+            peer_representation="user rep",
+            peer_card=["Name: Robert"],
+            messages=[],
+        )
+        mgr._sessions_cache["sid-missing-from-sessions-cache"] = honcho_session
+
+        result = mgr.get_session_context("test", peer="user")
+
+        assert result["representation"] == "user rep"
+        honcho_session.context.assert_called_once_with(
+            summary=True,
+            peer_target="user-peer",
+            peer_perspective="user-peer",
+        )
+
+    def test_session_context_uses_assistant_observer_for_custom_peer(self):
+        mgr = self._make_manager_with_session()
+        honcho_session = MagicMock()
+        honcho_session.context.return_value = SimpleNamespace(
+            summary=None,
+            peer_representation="custom rep",
+            peer_card=["Role: Reviewer"],
+            messages=[],
+        )
+        mgr._sessions_cache["sid-missing-from-sessions-cache"] = honcho_session
+
+        result = mgr.get_session_context("test", peer="reviewer")
+
+        assert result["representation"] == "custom rep"
+        honcho_session.context.assert_called_once_with(
+            summary=True,
+            peer_target="reviewer",
+            peer_perspective="ai-peer",
+        )
 
     def test_fallback_uses_ai_peer_for_ai(self):
         """On cache miss, peer='ai' fetches assistant peer context, not user."""

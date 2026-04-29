@@ -170,7 +170,7 @@ class TestMcpRegistrationE2E:
         assert len(starts) >= 1, f"Expected ToolCallStart, got updates: {[getattr(u, 'session_update', '?') for u in updates]}"
         start_event = starts[0]
         assert isinstance(start_event, ToolCallStart)
-        assert start_event.title.startswith("terminal:")
+        assert start_event.title == "正在处理后台任务"
 
         # Should have at least one ToolCallUpdate (completion) with rawOutput
         assert len(completions) >= 1, f"Expected ToolCallUpdate, got updates: {[getattr(u, 'session_update', '?') for u in updates]}"

@@ -1,0 +1,96 @@
+{
+  "profile_id": "director_group",
+  "name": "导演组",
+  "enabled": true,
+  "dispatcher_role": "pm",
+  "roles": [
+    {
+      "role_id": "dd",
+      "name": "总导演",
+      "profile": "dd",
+      "aliases": ["DD", "导演", "总导演", "主控"],
+      "capabilities": ["direction_decision", "final_decision"],
+      "can_review": true,
+      "can_finalize": true
+    },
+    {
+      "role_id": "pm",
+      "name": "PM",
+      "profile": "pm",
+      "aliases": ["PM", "项目经理", "流程", "统筹"],
+      "capabilities": ["dispatch", "workflow_management"],
+      "can_review": false,
+      "can_finalize": false
+    },
+    {
+      "role_id": "sy",
+      "name": "摄影指导",
+      "profile": "sy",
+      "aliases": ["SY", "摄影", "镜头", "摄影指导"],
+      "capabilities": ["shot_planning", "visual_integration"],
+      "can_review": false,
+      "can_finalize": false
+    },
+    {
+      "role_id": "wz",
+      "name": "武指",
+      "profile": "wz",
+      "aliases": ["WZ", "武术指导", "武指", "动作"],
+      "capabilities": ["action_design"],
+      "can_review": false,
+      "can_finalize": false
+    },
+    {
+      "role_id": "art",
+      "name": "灯光",
+      "profile": "art",
+      "aliases": ["ART", "灯光", "美术", "氛围"],
+      "capabilities": ["lighting_design", "look_design"],
+      "can_review": false,
+      "can_finalize": false
+    },
+    {
+      "role_id": "by",
+      "name": "表演",
+      "profile": "by",
+      "aliases": ["BY", "表演", "演员", "情绪"],
+      "capabilities": ["performance_design"],
+      "can_review": false,
+      "can_finalize": false
+    },
+    {
+      "role_id": "fx",
+      "name": "Fx",
+      "profile": "fx",
+      "aliases": ["FX", "Fx", "特效", "视觉反馈"],
+      "capabilities": ["effects_design"],
+      "can_review": false,
+      "can_finalize": false
+    },
+    {
+      "role_id": "cj",
+      "name": "场记",
+      "profile": "cj",
+      "aliases": ["CJ", "场记", "连续性"],
+      "capabilities": ["continuity_review"],
+      "can_review": true,
+      "can_finalize": false
+    },
+    {
+      "role_id": "sc",
+      "name": "生成制片",
+      "profile": "sc",
+      "aliases": ["SC", "生成制片", "生成", "整合"],
+      "capabilities": ["production_coordination"],
+      "can_review": false,
+      "can_finalize": false
+    }
+  ],
+  "message_rules": {
+    "multi_target_mode": "separate_message_events",
+    "hide_internal_commands": true,
+    "require_real_send_confirmation": true,
+    "dispatcher_cannot_review": true,
+    "require_return_to": true
+  }
+}

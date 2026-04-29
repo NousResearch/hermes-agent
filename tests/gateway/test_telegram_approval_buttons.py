@@ -87,7 +87,7 @@ class TestTelegramExecApproval:
         kwargs = adapter._bot.send_message.call_args[1]
         assert kwargs["chat_id"] == 12345
         assert "rm -rf /important" in kwargs["text"]
-        assert "dangerous deletion" in kwargs["text"]
+        assert "这条命令会删除关键内容" in kwargs["text"]
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
 
     @pytest.mark.asyncio
@@ -211,7 +211,7 @@ class TestTelegramApprovalCallback:
 
         mock_resolve.assert_called_once_with("some-session", "deny")
         edit_kwargs = query.edit_message_text.call_args[1]
-        assert "Denied" in edit_kwargs["text"]
+        assert "已拒绝执行" in edit_kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_already_resolved(self):
@@ -237,7 +237,7 @@ class TestTelegramApprovalCallback:
         mock_resolve.assert_not_called()
         # Should still ack with "already resolved" message
         query.answer.assert_called_once()
-        assert "already been resolved" in query.answer.call_args[1]["text"]
+        assert "已经处理过" in query.answer.call_args[1]["text"]
 
     @pytest.mark.asyncio
     async def test_model_picker_callback_not_affected(self):

@@ -149,6 +149,22 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
+    def test_clone_config_copies_feishu_bot_identity_env(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / ".env").write_text(
+            "FEISHU_APP_ID=cli_xxx\n"
+            "FEISHU_APP_SECRET=secret_xxx\n"
+            "FEISHU_BOT_OPEN_ID=ou_bot_xxx\n"
+            "FEISHU_BOT_NAME=Hermes Bot\n"
+        )
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        env_text = (profile_dir / ".env").read_text()
+        assert "FEISHU_BOT_OPEN_ID=ou_bot_xxx" in env_text
+        assert "FEISHU_BOT_NAME=Hermes Bot" in env_text
+
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"

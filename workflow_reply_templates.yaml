@@ -1,0 +1,109 @@
+display_mode: human
+
+snippets:
+  no_review: |-
+    这一步不用别人验收，做完后直接回 {deliver_to_name}。
+  review_flow: |-
+    这一步做完后先交给{reviewer_name}看一下。
+    {reviewer_name}确认没问题后，再回到 {deliver_to_name} 这边。
+    如果{reviewer_name}觉得不成立，就退回你这边改一轮。
+
+templates:
+  dispatch_to_role:
+    human: |-
+      {target_role_name}，这单先麻烦你{task_goal}。
+
+      {user_request}
+
+      你这一步重点看：
+      {focus_points}
+
+      {review_flow}
+    debug: |-
+      task_id={task_id}
+      to_role={target_role}
+      task_type={task_type}
+      status={status}
+
+  role_result_returned:
+    human: |-
+      {from_role_name}已经回来了，我先把结果收一下。
+
+      他的判断是：
+      {upstream_summary}
+
+      这条现在可以继续往下拆给下一位。
+    debug: |-
+      workflow_id={workflow_id}
+      upstream_task_id={upstream_task_id}
+      from_role={from_role}
+      to_role={to_role}
+      upstream_summary={upstream_summary}
+
+  next_handoff:
+    human: |-
+      {from_role_name}已经回来了，我先把方向收一下。
+
+      他的判断是：
+      {upstream_summary}
+
+      基于这个方向，下一步我会继续拆给{next_role_name}。
+
+      {review_flow}
+    debug: |-
+      upstream_task_id={upstream_task_id}
+      next_role={next_role}
+      upstream_summary={upstream_summary}
+
+  review_request:
+    human: |-
+      {reviewer_name}，这一步已经做完了，先麻烦你看一下。
+
+      {from_role_name}的结果大意是：
+      {upstream_summary}
+
+      如果你确认没问题，就让这一步回到 {deliver_to_name}。
+      如果你觉得不成立，就退回给{from_role_name}改一轮。
+    debug: |-
+      reviewer_role={reviewer_role}
+      from_role={from_role}
+      deliver_to_role={deliver_to_role}
+      upstream_summary={upstream_summary}
+
+  review_rejected:
+    human: |-
+      {from_role_name}，{reviewer_name}看完后觉得这一版还需要再改一轮。
+
+      需要调整的地方是：
+      {upstream_summary}
+
+      你改完后再交给{reviewer_name}确认。
+    debug: |-
+      reviewer_role={reviewer_role}
+      from_role={from_role}
+      status=review_rejected
+      upstream_summary={upstream_summary}
+
+  workflow_waiting:
+    human: |-
+      我先交给{target_role_name}{task_goal}。
+
+      这一步主要看：
+      {focus_points}
+
+      {review_flow}
+      我等他回来，再继续往下拆。
+    debug: |-
+      next_state={next_state}
+      target_role={target_role}
+      task_type={task_type}
+
+  workflow_completed:
+    human: |-
+      这一轮已经收齐了。
+
+      最后的结果是：
+      {upstream_summary}
+    debug: |-
+      status=workflow_completed
+      workflow_id={workflow_id}

@@ -7,6 +7,7 @@ Used by AIAgent._execute_tool_calls for CLI feedback.
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -130,6 +131,152 @@ def _oneline(text: str) -> str:
     return " ".join(text.split())
 
 
+_TOOL_ACTIVITY_LABELS_ZH = {
+    "skill_view": "正在加载技能",
+    "skills_list": "正在查看技能列表",
+    "todo": "正在整理待办",
+    "read_file": "正在读取文件",
+    "write_file": "正在写入文件",
+    "search_files": "正在搜索文件",
+    "terminal": "正在处理后台任务",
+    "execute_code": "正在处理计算任务",
+    "patch": "正在修改文件",
+    "delegate_task": "正在分派任务",
+    "session_search": "正在搜索历史会话",
+    "memory": "正在处理记忆",
+    "web_search": "正在搜索网页",
+    "web_extract": "正在提取网页内容",
+    "process": "正在处理后台进程",
+    "send_message": "正在发送消息",
+    "vision_analyze": "正在分析图片",
+    "image_generate": "正在生成图片",
+    "text_to_speech": "正在合成语音",
+    "cronjob": "正在处理定时任务",
+}
+
+
+def _display_tail_path(path: str, keep_parts: int = 2) -> str:
+    """Display only the trailing path segments for long/absolute paths."""
+    if not path:
+        return ""
+    p = str(path).strip().replace("\\", "/")
+    if not p:
+        return ""
+    parts = [x for x in p.split("/") if x]
+    if not parts:
+        return p
+    if len(parts) <= keep_parts:
+        return "/".join(parts)
+    return "/".join(parts[-keep_parts:])
+
+
+def _truncate_display(text: str, max_len: int) -> str:
+    """Truncate long user-facing text while preserving the head."""
+    t = _oneline(str(text or ""))
+    if max_len <= 0 or len(t) <= max_len:
+        return t
+    return t[: max_len - 3] + "..."
+
+
+def _humanize_tool_key(tool_name: str) -> str:
+    words = re.sub(r"_+", " ", str(tool_name or "").strip()).strip()
+    return words or "unknown tool"
+
+
+def format_tool_activity_text(
+    tool_name: str,
+    args: dict | None = None,
+    preview: str | None = None,
+    max_len: int | None = None,
+) -> str:
+    """Format user-facing tool activity text in natural Chinese.
+
+    Keeps internal keys untouched elsewhere; this function is display-only.
+    """
+    args = args if isinstance(args, dict) else {}
+    if max_len is None:
+        max_len = _tool_preview_max_len if _tool_preview_max_len > 0 else 40
+
+    title = _TOOL_ACTIVITY_LABELS_ZH.get(tool_name)
+    if not title:
+        if tool_name.startswith("browser_"):
+            title = "正在操作浏览器"
+        elif tool_name.startswith("memory_"):
+            title = "正在处理记忆"
+        else:
+            title = f"正在处理工具（{tool_name}）"
+
+    detail = ""
+    if tool_name == "todo":
+        todos = args.get("todos")
+        if todos is None:
+            detail = "读取当前待办"
+        elif args.get("merge", False):
+            detail = f"更新 {len(todos)} 项"
+        else:
+            detail = f"共 {len(todos)} 项"
+    elif tool_name == "terminal":
+        # Commands are useful in logs/CLI internals, but platform chat progress
+        # should stay human-readable and must not expose shell details.
+        detail = ""
+    elif tool_name == "read_file":
+        detail = _display_tail_path(args.get("path", "")) or (preview or "")
+    elif tool_name == "write_file":
+        detail = _display_tail_path(args.get("path", "")) or (preview or "")
+    elif tool_name == "patch":
+        detail = _display_tail_path(args.get("path", "")) or (preview or "")
+    elif tool_name == "search_files":
+        detail = args.get("pattern") or preview or ""
+    elif tool_name == "skill_view":
+        name = str(args.get("name") or preview or "")
+        detail = name.replace("/", " / ")
+    elif tool_name == "execute_code":
+        detail = ""
+    elif tool_name == "process":
+        detail = ""
+    elif tool_name == "session_search":
+        detail = args.get("query") or preview or ""
+    elif tool_name == "delegate_task":
+        tasks = args.get("tasks")
+        if isinstance(tasks, list) and tasks:
+            detail = f"{len(tasks)} 个并行任务"
+        else:
+            detail = args.get("goal") or preview or ""
+    elif tool_name == "memory":
+        action = str(args.get("action") or "").strip()
+        if action == "add":
+            title = "正在写入记忆"
+            detail = args.get("content") or preview or ""
+        elif action in ("replace", "remove"):
+            title = "正在更新记忆" if action == "replace" else "正在删除记忆"
+            detail = args.get("old_text") or preview or ""
+        else:
+            detail = preview or ""
+    elif tool_name.startswith("browser_"):
+        detail = (
+            args.get("url")
+            or args.get("ref")
+            or args.get("text")
+            or args.get("key")
+            or preview
+            or ""
+        )
+    else:
+        detail = preview or ""
+        if not detail and args:
+            for key in ("query", "text", "path", "name", "prompt", "command", "goal"):
+                if args.get(key):
+                    detail = args.get(key)
+                    break
+        if not detail and not preview and tool_name not in _TOOL_ACTIVITY_LABELS_ZH:
+            detail = _humanize_tool_key(tool_name)
+
+    detail = _truncate_display(detail, max_len)
+    if detail:
+        return f"{title}：{detail}"
+    return title
+
+
 def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
     """Build a short preview of a tool call's primary argument for display.
 
@@ -171,26 +318,26 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
         if todos_arg is None:
-            return "reading task list"
+            return "读取当前待办"
         elif merge:
-            return f"updating {len(todos_arg)} task(s)"
+            return f"更新 {len(todos_arg)} 项待办"
         else:
-            return f"planning {len(todos_arg)} task(s)"
+            return f"共 {len(todos_arg)} 项待办"
 
     if tool_name == "session_search":
         query = _oneline(args.get("query", ""))
-        return f"recall: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
+        return f"搜索：\"{query[:25]}{'...' if len(query) > 25 else ''}\""
 
     if tool_name == "memory":
         action = args.get("action", "")
         target = args.get("target", "")
         if action == "add":
             content = _oneline(args.get("content", ""))
-            return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
+            return f"写入 {target}：\"{content[:25]}{'...' if len(content) > 25 else ''}\""
         elif action == "replace":
-            return f"~{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
+            return f"更新 {target}：\"{_oneline(args.get('old_text', '')[:20])}\""
         elif action == "remove":
-            return f"-{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
+            return f"删除 {target}：\"{_oneline(args.get('old_text', '')[:20])}\""
         return action
 
     if tool_name == "send_message":
@@ -198,20 +345,20 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         msg = _oneline(args.get("message", ""))
         if len(msg) > 20:
             msg = msg[:17] + "..."
-        return f"to {target}: \"{msg}\""
+        return f"发送到 {target}：\"{msg}\""
 
     if tool_name.startswith("rl_"):
         rl_previews = {
-            "rl_list_environments": "listing envs",
+            "rl_list_environments": "查看环境列表",
             "rl_select_environment": args.get("name", ""),
-            "rl_get_current_config": "reading config",
+            "rl_get_current_config": "读取配置",
             "rl_edit_config": f"{args.get('field', '')}={args.get('value', '')}",
-            "rl_start_training": "starting",
+            "rl_start_training": "开始训练",
             "rl_check_status": args.get("run_id", "")[:16],
-            "rl_stop_training": f"stopping {args.get('run_id', '')[:16]}",
+            "rl_stop_training": f"停止 {args.get('run_id', '')[:16]}",
             "rl_get_results": args.get("run_id", "")[:16],
-            "rl_list_runs": "listing runs",
-            "rl_test_inference": f"{args.get('num_steps', 3)} steps",
+            "rl_list_runs": "查看运行记录",
+            "rl_test_inference": f"{args.get('num_steps', 3)} 步",
         }
         return rl_previews.get(tool_name)
 
@@ -1029,13 +1176,18 @@ def format_context_pressure(
     color = f"{_BOLD}{_YELLOW}"
     icon = "⚠"
     if compression_enabled:
-        hint = "compaction approaching"
+        if pct_int >= 95:
+            hint = f"当前上下文占用 {pct_int}%，马上开始整理上下文"
+        elif pct_int >= 80:
+            hint = f"当前上下文占用 {pct_int}%，接近整理阈值"
+        else:
+            hint = "对话内容快满了，系统正在准备压缩整理"
     else:
-        hint = "no auto-compaction"
+        hint = "已关闭自动整理，超长上下文可能被截断"
 
     return (
-        f"  {color}{icon} context {bar} {pct_int}% to compaction{_ANSI_RESET}"
-        f"  {_DIM_ANSI}{threshold_k} threshold ({threshold_pct_int}%) · {hint}{_ANSI_RESET}"
+        f"  {color}{icon} 上下文 {bar} 当前占用 {pct_int}%{_ANSI_RESET}"
+        f"  {_DIM_ANSI}阈值 {threshold_k}（窗口的 {threshold_pct_int}%）· {hint}{_ANSI_RESET}"
     )
 
 
@@ -1057,8 +1209,14 @@ def format_context_pressure_gateway(
 
     icon = "⚠️"
     if compression_enabled:
-        hint = f"Context compaction approaching (threshold: {threshold_pct_int}% of window)."
+        if pct_int >= 95:
+            hint = f"当前上下文占用 {pct_int}%，马上开始整理上下文"
+        elif pct_int >= 80:
+            hint = f"当前上下文占用 {pct_int}%，接近整理阈值"
+        else:
+            hint = "对话内容快满了，系统正在准备压缩整理"
+        hint = f"{hint}（阈值：窗口的 {threshold_pct_int}%）"
     else:
-        hint = "Auto-compaction is disabled — context may be truncated."
+        hint = "已关闭自动整理，超长上下文可能被截断。"
 
-    return f"{icon} Context: {bar} {pct_int}% to compaction\n{hint}"
+    return f"{icon} 当前上下文占用 {pct_int}% {bar}\n{hint}"

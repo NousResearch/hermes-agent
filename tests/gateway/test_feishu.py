@@ -137,6 +137,18 @@ class TestFeishuPostParsing(unittest.TestCase):
         self.assertEqual(result.media_refs, [])
         self.assertEqual(result.mentioned_ids, [])
 
+    def test_normalize_text_content_extracts_at_tag_mentions(self):
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        result = normalize_feishu_message(
+            message_type="text",
+            raw_content=json.dumps({"text": '<at user_id="ou_pm">PM</at> 发个 1'}),
+        )
+
+        self.assertEqual(result.text_content, "@PM 发个 1")
+        self.assertEqual(result.mentioned_ids, ["ou_pm"])
+        self.assertEqual(result.metadata["mentioned_names"], ["PM"])
+
     def test_parse_post_content_preserves_rich_text_semantics(self):
         from gateway.platforms.feishu import parse_feishu_post_content
 
@@ -1119,6 +1131,365 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(adapter._should_accept_group_message(SimpleNamespace(mentions=[named_mention]), sender_id, ""))
         self.assertFalse(adapter._should_accept_group_message(SimpleNamespace(mentions=[different_mention]), sender_id, ""))
 
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open", "FEISHU_BOT_NAME_ALIASES": "PM,项目经理"}, clear=True)
+    def test_group_message_matches_bot_name_alias(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+
+        named_mention = SimpleNamespace(
+            name="项目经理",
+            id=SimpleNamespace(open_id="ou_other", user_id="u_other"),
+        )
+        different_mention = SimpleNamespace(
+            name="场记",
+            id=SimpleNamespace(open_id="ou_other", user_id="u_other"),
+        )
+
+        self.assertTrue(adapter._should_accept_group_message(SimpleNamespace(mentions=[named_mention]), sender_id, ""))
+        self.assertFalse(adapter._should_accept_group_message(SimpleNamespace(mentions=[different_mention]), sender_id, ""))
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_group_text_message_uses_at_tag_mentions_when_sdk_mentions_missing(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        message = SimpleNamespace(
+            message_type="text",
+            mentions=[],
+            content=json.dumps({"text": '<at user_id="ou_bot">Bot</at> 发个 1'}),
+        )
+
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id, ""))
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open", "FEISHU_BOT_NAME_ALIASES": "PM,项目经理"}, clear=True)
+    def test_group_text_message_matches_at_tag_name_alias_when_sdk_mentions_missing(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        message = SimpleNamespace(
+            message_type="text",
+            mentions=[],
+            content=json.dumps({"text": '<at user_id="ou_pm">PM</at> 发个 1'}),
+        )
+        other_message = SimpleNamespace(
+            message_type="text",
+            mentions=[],
+            content=json.dumps({"text": '<at user_id="ou_cj">场记</at> 发个 1'}),
+        )
+
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id, ""))
+        self.assertFalse(adapter._should_accept_group_message(other_message, sender_id, ""))
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_APP_ID": "cli_app",
+            "FEISHU_APP_SECRET": "secret_app",
+        },
+        clear=True,
+    )
+    def test_hydrate_bot_identity_accepts_zero_code_from_bot_info(self):
+        import sys
+
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        class _Response:
+            status_code = 200
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        class _Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                return _Response({"code": 0, "tenant_access_token": "token"})
+
+            async def get(self, *_args, **_kwargs):
+                return _Response(
+                    {
+                        "code": 0,
+                        "msg": "ok",
+                        "bot": {
+                            "open_id": "ou_pm",
+                            "app_name": "PM",
+                        },
+                    }
+                )
+
+        fake_httpx = SimpleNamespace(AsyncClient=lambda timeout: _Client())
+
+        with patch.dict(sys.modules, {"httpx": fake_httpx}):
+            asyncio.run(adapter._hydrate_bot_identity_from_bot_info())
+
+        self.assertEqual(adapter._bot_open_id, "ou_pm")
+        self.assertEqual(adapter._bot_name, "PM")
+
+    def test_cross_profile_relay_resolves_leading_role_code(self):
+        from gateway import cross_bot_relay as relay
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_paths = (
+                relay._RELAY_BASE_DIR,
+                relay._PROFILE_REGISTRY_PATH,
+                relay._PROFILE_REGISTRY_LOCK_PATH,
+                relay._ROLE_REGISTRY_PATH,
+                relay._GROUP_PROFILES_PATH,
+            )
+            try:
+                base = Path(tmpdir)
+                relay._RELAY_BASE_DIR = base
+                relay._PROFILE_REGISTRY_PATH = base / "_registry.json"
+                relay._PROFILE_REGISTRY_LOCK_PATH = base / "_registry.lock"
+                relay._ROLE_REGISTRY_PATH = base / "_role_registry.json"
+                relay._GROUP_PROFILES_PATH = base / "group_profiles.json"
+                relay._GROUP_PROFILES_PATH.write_text(
+                    json.dumps(
+                        {
+                            "groups": {
+                                "director": {
+                                    "chat_ids": ["oc_dir"],
+                                    "roles": {
+                                        "DD": {"profile": "dd", "aliases": ["DD", "总导演"]},
+                                        "PM": {"profile": "pm", "aliases": ["PM", "pm", "项目经理"]},
+                                    },
+                                }
+                            }
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                relay.register_profile("dd")
+                relay.register_profile("pm", bot_open_id="ou_pm")
+
+                targets = relay.compile_outbound_role_mentions("PM\n发个1", chat_id="oc_dir", exclude_profile="dd")
+
+                self.assertEqual(len(targets), 1)
+                self.assertEqual(targets[0]["profile_name"], "pm")
+                self.assertEqual(targets[0]["role_code"], "PM")
+                self.assertEqual(targets[0]["instruction"], "发个1")
+                self.assertEqual(targets[0]["mention_id"], "ou_pm")
+                self.assertEqual(
+                    relay.compile_outbound_role_mentions("请 PM 看一下", chat_id="oc_dir", exclude_profile="dd"),
+                    [],
+                )
+            finally:
+                (
+                    relay._RELAY_BASE_DIR,
+                    relay._PROFILE_REGISTRY_PATH,
+                    relay._PROFILE_REGISTRY_LOCK_PATH,
+                    relay._ROLE_REGISTRY_PATH,
+                    relay._GROUP_PROFILES_PATH,
+                ) = original_paths
+
+    def test_cross_profile_registration_preserves_identity_when_later_registration_is_blank(self):
+        from gateway import cross_bot_relay as relay
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_paths = (
+                relay._RELAY_BASE_DIR,
+                relay._PROFILE_REGISTRY_PATH,
+                relay._PROFILE_REGISTRY_LOCK_PATH,
+                relay._ROLE_REGISTRY_PATH,
+                relay._GROUP_PROFILES_PATH,
+            )
+            try:
+                base = Path(tmpdir)
+                relay._RELAY_BASE_DIR = base
+                relay._PROFILE_REGISTRY_PATH = base / "_registry.json"
+                relay._PROFILE_REGISTRY_LOCK_PATH = base / "_registry.lock"
+                relay._ROLE_REGISTRY_PATH = base / "_role_registry.json"
+                relay._GROUP_PROFILES_PATH = base / "group_profiles.json"
+
+                relay.register_profile("pm", bot_open_id="ou_pm", bot_name="PM", bot_name_aliases=["PM"])
+                relay.register_profile("pm")
+
+                registry = json.loads(relay._PROFILE_REGISTRY_PATH.read_text(encoding="utf-8"))
+                self.assertEqual(registry["pm"]["bot_open_id"], "ou_pm")
+                self.assertEqual(registry["pm"]["bot_name"], "PM")
+                self.assertEqual(registry["pm"]["bot_name_aliases"], ["PM"])
+            finally:
+                (
+                    relay._RELAY_BASE_DIR,
+                    relay._PROFILE_REGISTRY_PATH,
+                    relay._PROFILE_REGISTRY_LOCK_PATH,
+                    relay._ROLE_REGISTRY_PATH,
+                    relay._GROUP_PROFILES_PATH,
+                ) = original_paths
+
+    def test_feishu_outbound_role_dispatch_enqueues_relay(self):
+        from gateway import cross_bot_relay as relay
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"HERMES_HOME": "/Users/gouki-youdoo/.hermes/profiles/dd"},
+            clear=False,
+        ):
+            original_paths = (
+                relay._RELAY_BASE_DIR,
+                relay._PROFILE_REGISTRY_PATH,
+                relay._PROFILE_REGISTRY_LOCK_PATH,
+                relay._ROLE_REGISTRY_PATH,
+                relay._GROUP_PROFILES_PATH,
+            )
+            try:
+                base = Path(tmpdir)
+                relay._RELAY_BASE_DIR = base
+                relay._PROFILE_REGISTRY_PATH = base / "_registry.json"
+                relay._PROFILE_REGISTRY_LOCK_PATH = base / "_registry.lock"
+                relay._ROLE_REGISTRY_PATH = base / "_role_registry.json"
+                relay._GROUP_PROFILES_PATH = base / "group_profiles.json"
+                relay._GROUP_PROFILES_PATH.write_text(
+                    json.dumps(
+                        {
+                            "groups": {
+                                "director": {
+                                    "chat_ids": ["oc_dir"],
+                                    "roles": {
+                                        "DD": {"profile": "dd", "aliases": ["DD", "总导演"]},
+                                        "PM": {"profile": "pm", "aliases": ["PM", "pm", "项目经理"]},
+                                    },
+                                }
+                            }
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                relay.register_profile("pm")
+                adapter = FeishuAdapter(PlatformConfig())
+                dispatches = adapter._resolve_outbound_role_dispatches("oc_dir", "PM\n发个1")
+
+                asyncio.run(
+                    adapter._enqueue_outbound_role_relays(
+                        chat_id="oc_dir",
+                        dispatches=dispatches,
+                        sent_message_id="om_sent",
+                    )
+                )
+
+                envelopes = relay.dequeue_relays("pm")
+                self.assertEqual(len(envelopes), 1)
+                self.assertEqual(envelopes[0]["text"], "发个1")
+                self.assertEqual(envelopes[0]["sender_profile"], "dd")
+                self.assertEqual(envelopes[0]["message_id"], "om_sent")
+            finally:
+                (
+                    relay._RELAY_BASE_DIR,
+                    relay._PROFILE_REGISTRY_PATH,
+                    relay._PROFILE_REGISTRY_LOCK_PATH,
+                    relay._ROLE_REGISTRY_PATH,
+                    relay._GROUP_PROFILES_PATH,
+                ) = original_paths
+
+    def test_feishu_outbound_role_dispatch_renders_blue_at_when_identity_registered(self):
+        from gateway import cross_bot_relay as relay
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"HERMES_HOME": "/Users/gouki-youdoo/.hermes/profiles/dd"},
+            clear=False,
+        ):
+            original_paths = (
+                relay._RELAY_BASE_DIR,
+                relay._PROFILE_REGISTRY_PATH,
+                relay._PROFILE_REGISTRY_LOCK_PATH,
+                relay._ROLE_REGISTRY_PATH,
+                relay._GROUP_PROFILES_PATH,
+            )
+            try:
+                base = Path(tmpdir)
+                relay._RELAY_BASE_DIR = base
+                relay._PROFILE_REGISTRY_PATH = base / "_registry.json"
+                relay._PROFILE_REGISTRY_LOCK_PATH = base / "_registry.lock"
+                relay._ROLE_REGISTRY_PATH = base / "_role_registry.json"
+                relay._GROUP_PROFILES_PATH = base / "group_profiles.json"
+                relay._GROUP_PROFILES_PATH.write_text(
+                    json.dumps(
+                        {
+                            "groups": {
+                                "director": {
+                                    "chat_ids": ["oc_dir"],
+                                    "roles": {
+                                        "DD": {"profile": "dd", "aliases": ["DD", "总导演"]},
+                                        "PM": {"profile": "pm", "aliases": ["PM", "pm", "项目经理"]},
+                                    },
+                                }
+                            }
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                relay.register_profile("pm", bot_open_id="ou_pm")
+                adapter = FeishuAdapter(PlatformConfig())
+                dispatches = adapter._resolve_outbound_role_dispatches("oc_dir", "PM\n发个1")
+                rendered = adapter._render_outbound_role_mentions("PM\n发个1", dispatches)
+                msg_type, payload = adapter._build_outbound_payload(rendered)
+
+                self.assertEqual(rendered, '<at user_id="ou_pm">PM</at>\n发个1')
+                self.assertEqual(msg_type, "text")
+                self.assertEqual(json.loads(payload)["text"], rendered)
+            finally:
+                (
+                    relay._RELAY_BASE_DIR,
+                    relay._PROFILE_REGISTRY_PATH,
+                    relay._PROFILE_REGISTRY_LOCK_PATH,
+                    relay._ROLE_REGISTRY_PATH,
+                    relay._GROUP_PROFILES_PATH,
+                ) = original_paths
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_relay_envelope_adds_ack_reaction_to_original_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._relay_profile_name = "pm"
+        adapter._dedup_state_path = Path(tempfile.mkdtemp()) / "dedup.json"
+        adapter.get_chat_info = AsyncMock(return_value={"name": "导演组", "type": "group"})
+        adapter._handle_message_with_guards = AsyncMock()
+        adapter._add_ack_reaction = AsyncMock(return_value="reaction_id")
+
+        asyncio.run(
+            adapter._process_relay_envelope(
+                {
+                    "chat_id": "oc_dir",
+                    "text": "发个1",
+                    "sender_profile": "dd",
+                    "sender_display_name": "总导演",
+                    "message_id": "om_sent",
+                    "created_at": "2026-04-26T00:00:00",
+                }
+            )
+        )
+
+        adapter._add_ack_reaction.assert_awaited_once_with("om_sent")
+        adapter._handle_message_with_guards.assert_awaited_once()
+
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_post_message_uses_parsed_mentions_when_sdk_mentions_missing(self):
         from gateway.config import PlatformConfig
@@ -1607,6 +1978,54 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.source.user_name, "张三")
         self.assertEqual(event.source.user_id_alt, "on_union")
         self.assertEqual(event.source.chat_name, "Feishu DM")
+
+    @patch.dict(os.environ, {"FEISHU_BOT_NAME_ALIASES": "PM"}, clear=True)
+    def test_process_inbound_message_preserves_mention_metadata_for_stripped_feishu_at(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter._resolve_sender_name_from_api = AsyncMock(return_value="张三")
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "导演组", "type": "group"}
+        )
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            message_type="text",
+            content='{"text":"@_user_1 做一段武打片"}',
+            message_id="om_text",
+            mentions=[
+                SimpleNamespace(
+                    name="PM",
+                    id=SimpleNamespace(open_id="ou_pm", user_id="u_pm", union_id=None),
+                )
+            ],
+        )
+        sender_id = SimpleNamespace(
+            open_id="ou_user",
+            user_id="u_user",
+            union_id="on_union",
+        )
+        data = SimpleNamespace(event=SimpleNamespace(message=message, sender=SimpleNamespace(sender_id=sender_id)))
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=data,
+                message=message,
+                sender_id=sender_id,
+                chat_type="group",
+                message_id="om_text",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.text, "做一段武打片")
+        self.assertEqual(event.metadata["mentioned_names"], ["PM"])
+        self.assertIn("ou_pm", event.metadata["mentioned_ids"])
+        self.assertIn("u_pm", event.metadata["mentioned_ids"])
+        self.assertTrue(event.metadata["feishu_bot_mentioned"])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_text_batch_merges_rapid_messages_into_single_event(self):

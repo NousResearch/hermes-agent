@@ -19,6 +19,224 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# =========================================================================
+# Approval display localization (UI-only; internal keys remain unchanged)
+# =========================================================================
+
+_APPROVAL_TITLE_ZH = "⚠️ 这条命令有风险，执行前请你确认"
+_APPROVAL_REASON_LABEL_ZH = "原因"
+_APPROVAL_REASON_FALLBACK_ZH = "检测到潜在风险命令，请确认是否放行。"
+_APPROVAL_ALREADY_RESOLVED_ZH = "这条审批已经处理过了。"
+_APPROVAL_NOT_AUTHORIZED_ZH = "你没有权限处理这条审批。"
+_APPROVAL_UNKNOWN_DECISION_ZH = "已处理"
+
+_APPROVAL_BUTTON_LABELS_ZH = {
+    "approve_once": "✅ 只放行这一次",
+    "approve_session": "✅ 本会话内放行",
+    "approve_always": "✅ 永久放行",
+    "deny": "❌ 拒绝执行",
+    "once": "✅ 只放行这一次",
+    "session": "✅ 本会话内放行",
+    "always": "✅ 永久放行",
+}
+
+_APPROVAL_DECISION_LABELS_ZH = {
+    "once": "✅ 已放行（仅这一次）",
+    "session": "✅ 已放行（本会话内有效）",
+    "always": "✅ 已放行（后续默认允许）",
+    "deny": "❌ 已拒绝执行",
+}
+
+_SEVERITY_LABELS_ZH = {
+    "CRITICAL": "高危",
+    "HIGH": "高危",
+    "MEDIUM": "中风险",
+    "LOW": "低风险",
+    "INFO": "提示",
+}
+
+_DANGEROUS_DESC_ZH = {
+    "dangerous command": "这条命令可能有风险，请确认后再执行。",
+    "dangerous deletion": "这条命令会删除关键内容，风险很高。",
+    "delete in root path": "命令会删除根路径下的内容，风险很高。",
+    "recursive delete": "命令包含递归删除，可能一次删掉大量文件。",
+    "recursive delete (long flag)": "命令包含递归删除，可能一次删掉大量文件。",
+    "world/other-writable permissions": "命令会把权限放得过宽，其他人也可能改文件。",
+    "recursive world/other-writable (long flag)": "命令会递归放宽权限，影响范围很大。",
+    "recursive chown to root": "命令会递归改为 root 所有者，可能影响系统可用性。",
+    "recursive chown to root (long flag)": "命令会递归改为 root 所有者，可能影响系统可用性。",
+    "format filesystem": "命令疑似在格式化磁盘分区，数据可能不可恢复。",
+    "disk copy": "命令疑似直接读写磁盘设备，风险较高。",
+    "write to block device": "命令会直接写块设备，可能破坏磁盘数据。",
+    "SQL DROP": "命令包含 DROP，可能直接删库或删表。",
+    "SQL DELETE without WHERE": "命令是无条件 DELETE，可能清空整张表。",
+    "SQL TRUNCATE": "命令包含 TRUNCATE，可能清空整张表。",
+    "overwrite system config": "命令会覆盖系统配置文件，可能影响系统运行。",
+    "stop/disable system service": "命令会停用系统服务，可能导致服务中断。",
+    "kill all processes": "命令会杀掉大量进程，系统可能立刻失去响应。",
+    "force kill processes": "命令会强制终止进程，请确认不会误杀关键服务。",
+    "fork bomb": "命令疑似 fork bomb，会迅速耗尽系统资源。",
+    "shell command via -c/-lc flag": "命令通过 shell 的 -c/-lc 执行动态脚本，风险较高。",
+    "script execution via -e/-c flag": "命令通过解释器参数执行脚本，建议确认脚本内容。",
+    "pipe remote content to shell": "命令把远程内容直接喂给 shell 执行，风险很高。",
+    "execute remote script via process substitution": "命令会直接执行远程脚本，风险很高。",
+    "overwrite system file via tee": "命令会把内容写入系统敏感路径，风险较高。",
+    "overwrite system file via redirection": "命令会重定向写入系统敏感路径，风险较高。",
+    "xargs with rm": "命令通过 xargs 批量删除文件，请确认范围。",
+    "find -exec rm": "命令会用 find 批量删除文件，请确认范围。",
+    "find -delete": "命令会用 find -delete 批量删除文件，请确认范围。",
+    "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')": "命令会绕过 systemd 直接拉起 gateway，建议用 systemctl 重启。",
+    "kill hermes/gateway process (self-termination)": "命令会终止 Hermes/Gateway 进程，当前会话可能中断。",
+    "copy/move file into /etc/": "命令会改动 /etc 配置目录，请确认影响范围。",
+    "in-place edit of system config": "命令会原地修改系统配置文件，风险较高。",
+    "in-place edit of system config (long flag)": "命令会原地修改系统配置文件，风险较高。",
+}
+
+_RISK_PHRASE_ZH = {
+    "security issue detected": "检测到安全风险",
+    "shortened URL detected": "检测到短链接，可能隐藏真实跳转地址",
+    "shortened URL": "检测到短链接，可能隐藏真实跳转地址",
+    "homograph detected": "检测到疑似域名伪装（同形字符）",
+    "homograph URL": "检测到疑似域名伪装（同形字符）",
+    "terminal injection": "检测到终端注入风险",
+    "pipe to shell": "检测到管道直连执行风险",
+    "pipe detected": "检测到可疑管道执行行为",
+    "pipe to interpreter": "检测到将内容直接喂给解释器执行",
+    "downloaded content executed without inspection": "下载内容未检查就直接执行，风险较高",
+    "interpreter hijack": "检测到解释器劫持风险",
+}
+
+_RISK_TITLE_ZH = {
+    "pipe to interpreter": "管道直接喂给解释器执行",
+    "interpreter hijack": "解释器劫持风险",
+    "homograph URL": "疑似同形字符域名伪装",
+    "shortened URL": "短链接风险",
+    "terminal injection": "终端注入风险",
+}
+
+
+def approval_title_text() -> str:
+    """Return localized title for dangerous-command approval prompts."""
+    return _APPROVAL_TITLE_ZH
+
+
+def approval_reason_label_text() -> str:
+    """Return localized reason label for approval prompts."""
+    return _APPROVAL_REASON_LABEL_ZH
+
+
+def approval_button_label(action: str) -> str:
+    """Return localized button text for an approval action key."""
+    return _APPROVAL_BUTTON_LABELS_ZH.get(action, _APPROVAL_UNKNOWN_DECISION_ZH)
+
+
+def approval_decision_label(choice: str) -> str:
+    """Return localized resolved-label text for an approval choice."""
+    return _APPROVAL_DECISION_LABELS_ZH.get(choice, _APPROVAL_UNKNOWN_DECISION_ZH)
+
+
+def approval_already_resolved_text() -> str:
+    """Return localized text shown when an approval is already resolved."""
+    return _APPROVAL_ALREADY_RESOLVED_ZH
+
+
+def approval_not_authorized_text() -> str:
+    """Return localized text shown when user lacks approval permission."""
+    return _APPROVAL_NOT_AUTHORIZED_ZH
+
+
+def _translate_risk_phrase(text: str) -> str:
+    """Translate a common risk phrase into plain Chinese when possible."""
+    if not text:
+        return ""
+    stripped = text.strip()
+    if not stripped:
+        return ""
+
+    if stripped in _DANGEROUS_DESC_ZH:
+        return _DANGEROUS_DESC_ZH[stripped]
+
+    lower = stripped.lower()
+    if lower in _RISK_PHRASE_ZH:
+        return _RISK_PHRASE_ZH[lower]
+
+    translated = stripped
+    for en, zh in _RISK_PHRASE_ZH.items():
+        translated = re.sub(re.escape(en), zh, translated, flags=re.IGNORECASE)
+    return translated
+
+
+def _translate_tirith_fragment(fragment: str) -> str:
+    """Translate a single Tirith finding fragment into Chinese."""
+    text = fragment.strip()
+    if not text:
+        return ""
+
+    m = re.match(r"^\[(?P<severity>[A-Za-z]+)\]\s*(?P<body>.*)$", text)
+    severity_text = ""
+    body = text
+    if m:
+        sev = (m.group("severity") or "").upper()
+        severity_text = _SEVERITY_LABELS_ZH.get(sev, sev)
+        body = (m.group("body") or "").strip()
+
+    title = body
+    detail = ""
+    if ":" in body:
+        title, detail = body.split(":", 1)
+        title = title.strip()
+        detail = detail.strip()
+
+    title_zh = _RISK_TITLE_ZH.get(title.lower(), _translate_risk_phrase(title))
+    detail_zh = _translate_risk_phrase(detail) if detail else ""
+
+    if severity_text and title_zh and detail_zh:
+        return f"【{severity_text}】{title_zh}：{detail_zh}"
+    if severity_text and title_zh:
+        return f"【{severity_text}】{title_zh}"
+    if title_zh and detail_zh:
+        return f"{title_zh}：{detail_zh}"
+    return title_zh or detail_zh
+
+
+def localize_approval_reason(reason: str) -> str:
+    """Translate approval reason text into plain Chinese for user-facing UIs."""
+    raw = (reason or "").strip()
+    if not raw:
+        return _APPROVAL_REASON_FALLBACK_ZH
+
+    # Direct match for known dangerous-command descriptors
+    if raw in _DANGEROUS_DESC_ZH:
+        return _DANGEROUS_DESC_ZH[raw]
+
+    lower = raw.lower()
+    if lower.startswith("security scan"):
+        payload = raw
+        for sep in ("—", ":"):
+            if sep in raw:
+                payload = raw.split(sep, 1)[1].strip()
+                break
+
+        if not payload:
+            return "安全检查：检测到安全风险，请你确认后再执行。"
+
+        parts = [p.strip() for p in payload.split(";") if p.strip()]
+        translated_parts = [_translate_tirith_fragment(p) for p in parts]
+        translated_parts = [p for p in translated_parts if p]
+        if not translated_parts:
+            summary = _translate_risk_phrase(payload)
+            return f"安全检查：{summary}"
+        return "安全检查：" + "；".join(translated_parts)
+
+    translated = _translate_risk_phrase(raw).strip()
+    if translated and translated != raw:
+        return translated
+
+    if re.search(r"[\u4e00-\u9fff]", raw):
+        return raw
+
+    return f"检测到潜在风险：{raw}"
+
 # Per-thread/per-task gateway session identity.
 # Gateway runs agent turns concurrently in executor threads, so reading a
 # process-global env var for session identity is racy. Keep env fallback for
@@ -624,7 +842,7 @@ def _format_tirith_description(tirith_result: dict) -> str:
     findings = tirith_result.get("findings") or []
     if not findings:
         summary = tirith_result.get("summary") or "security issue detected"
-        return f"Security scan: {summary}"
+        return f"安全检查：{_translate_risk_phrase(summary)}"
 
     parts = []
     for f in findings:
@@ -632,14 +850,16 @@ def _format_tirith_description(tirith_result: dict) -> str:
         title = f.get("title", "")
         desc = f.get("description", "")
         if title and desc:
-            parts.append(f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}")
+            combined = f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}"
+            parts.append(_translate_tirith_fragment(combined))
         elif title:
-            parts.append(f"[{severity}] {title}" if severity else title)
+            combined = f"[{severity}] {title}" if severity else title
+            parts.append(_translate_tirith_fragment(combined))
     if not parts:
         summary = tirith_result.get("summary") or "security issue detected"
-        return f"Security scan: {summary}"
+        return f"安全检查：{_translate_risk_phrase(summary)}"
 
-    return "Security scan — " + "; ".join(parts)
+    return "安全检查：" + "；".join(p for p in parts if p)
 
 
 def check_all_command_guards(command: str, env_type: str,

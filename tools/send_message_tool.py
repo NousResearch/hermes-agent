@@ -5,6 +5,8 @@ Sends a message to a user or channel on any connected messaging platform
 human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -358,12 +360,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     # --- Non-Telegram platforms ---
     if media_files and not message.strip():
-        return {
-            "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram; "
-                f"target {platform.value} had only media attachments"
-            )
-        }
+        if platform == Platform.FEISHU:
+            message = "[image attachment]"
+        else:
+            return {
+                "error": (
+                    f"send_message MEDIA delivery is currently only supported for telegram; "
+                    f"target {platform.value} had only media attachments"
+                )
+            }
     warning = None
     if media_files:
         warning = (
@@ -394,7 +399,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
-            result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
+            result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files if chunk is chunks[-1] else [])
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
@@ -408,7 +413,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     if warning and isinstance(last_result, dict) and last_result.get("success"):
         warnings = list(last_result.get("warnings", []))
-        warnings.append(warning)
+        if platform != Platform.FEISHU:
+            warnings.append(warning)
         last_result["warnings"] = warnings
     return last_result
 

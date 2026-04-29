@@ -8,6 +8,7 @@ from agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
+    format_tool_activity_text,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
@@ -71,12 +72,12 @@ class TestBuildToolPreview:
     def test_todo_tool_read(self):
         result = build_tool_preview("todo", {"merge": False})
         assert result is not None
-        assert "reading" in result
+        assert "读取当前待办" in result
 
     def test_todo_tool_with_todos(self):
         result = build_tool_preview("todo", {"todos": [{"id": "1", "content": "test", "status": "pending"}]})
         assert result is not None
-        assert "1 task" in result
+        assert "1 项待办" in result
 
     def test_memory_tool_add(self):
         result = build_tool_preview("memory", {"action": "add", "target": "user", "content": "test note"})
@@ -86,6 +87,7 @@ class TestBuildToolPreview:
     def test_session_search_preview(self):
         result = build_tool_preview("session_search", {"query": "find something"})
         assert result is not None
+        assert "搜索" in result
         assert "find something" in result
 
     def test_false_like_args_zero(self):
@@ -93,6 +95,18 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+
+class TestToolActivityDisplay:
+    def test_terminal_activity_is_chinese_natural_text(self):
+        text = format_tool_activity_text("terminal", {"command": "python3 -V"})
+        assert text == "正在处理后台任务"
+        assert "python3 -V" not in text
+
+    def test_unknown_tool_does_not_crash_and_keeps_key(self):
+        text = format_tool_activity_text("some_new_tool", {"foo": "bar"})
+        assert "正在处理工具" in text
+        assert "some_new_tool" in text
 
 
 class TestEditDiffPreview:

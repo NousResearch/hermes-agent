@@ -40,6 +40,13 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_document_from_bytes,
 )
+from tools.approval import (
+    approval_button_label,
+    approval_decision_label,
+    approval_reason_label_text,
+    approval_title_text,
+    localize_approval_reason,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1162,9 +1169,9 @@ class SlackAdapter(BasePlatformAdapter):
                     "text": {
                         "type": "mrkdwn",
                         "text": (
-                            f":warning: *Command Approval Required*\n"
+                            f":warning: *{approval_title_text()}*\n"
                             f"```{cmd_preview}```\n"
-                            f"Reason: {description}"
+                            f"{approval_reason_label_text()}：{localize_approval_reason(description)}"
                         ),
                     },
                 },
@@ -1173,26 +1180,26 @@ class SlackAdapter(BasePlatformAdapter):
                     "elements": [
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Once"},
+                            "text": {"type": "plain_text", "text": approval_button_label("approve_once")},
                             "style": "primary",
                             "action_id": "hermes_approve_once",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Session"},
+                            "text": {"type": "plain_text", "text": approval_button_label("approve_session")},
                             "action_id": "hermes_approve_session",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Always Allow"},
+                            "text": {"type": "plain_text", "text": approval_button_label("approve_always")},
                             "action_id": "hermes_approve_always",
                             "value": session_key,
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Deny"},
+                            "text": {"type": "plain_text", "text": approval_button_label("deny")},
                             "style": "danger",
                             "action_id": "hermes_deny",
                             "value": session_key,
@@ -1203,7 +1210,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
-                "text": f"⚠️ Command approval required: {cmd_preview[:100]}",
+                "text": f"⚠️ 命令待确认：{cmd_preview[:100]}",
                 "blocks": blocks,
             }
             if thread_ts:
@@ -1245,13 +1252,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._approval_resolved[msg_ts] = True
 
         # Update the message to show the decision and remove buttons
-        label_map = {
-            "once": f"✅ Approved once by {user_name}",
-            "session": f"✅ Approved for session by {user_name}",
-            "always": f"✅ Approved permanently by {user_name}",
-            "deny": f"❌ Denied by {user_name}",
-        }
-        decision_text = label_map.get(choice, f"Resolved by {user_name}")
+        decision_text = f"{approval_decision_label(choice)}（处理人：{user_name}）"
 
         # Get original text from the section block
         original_text = ""
@@ -1265,7 +1266,7 @@ class SlackAdapter(BasePlatformAdapter):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": original_text or "Command approval request",
+                    "text": original_text or approval_title_text(),
                 },
             },
             {

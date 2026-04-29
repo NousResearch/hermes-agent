@@ -89,6 +89,41 @@ class LongPreviewAgent:
         }
 
 
+class UnsafeProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started",
+            "some_tool",
+            '{"current_tool": "terminal", "iteration": 1, "args": {"command": "python -m pytest"}}',
+            {},
+        )
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class HumanStatusProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "delegate_task", None, {"tasks": [{"to": "wz"}]})
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -144,7 +179,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '💻 terminal: "pwd"',
+            "content": "💻 正在处理后台任务",
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }
@@ -237,6 +272,75 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
     assert all(call["metadata"] == {"thread_id": "1234567890.000001"} for call in adapter.typing)
 
 
+@pytest.mark.asyncio
+async def test_run_agent_progress_skips_renderer_none(monkeypatch, tmp_path):
+    """If renderer removes every unsafe progress line, nothing is sent."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = UnsafeProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-unsafe",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_sends_human_status(monkeypatch, tmp_path):
+    """Human-readable progress should still reach chat after filtering."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = HumanStatusProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-human",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert "正在分派任务：1 个并行任务" in adapter.sent[0]["content"]
+
+
 # ---------------------------------------------------------------------------
 # Preview truncation tests (all/new mode respects tool_preview_length)
 # ---------------------------------------------------------------------------
@@ -292,45 +396,34 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     return adapter, result
 
 
-def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):
-    """When tool_preview_length is 0 (default), all/new mode truncates to 40 chars."""
+def test_all_mode_hides_terminal_command_by_default(monkeypatch, tmp_path):
+    """Terminal progress must not expose command previews in chat."""
     adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0)
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # The long command should be truncated — total preview <= 40 chars
-    assert "..." in content
-    # Extract the preview part between quotes
-    import re
-    match = re.search(r'"(.+)"', content)
-    assert match, f"No quoted preview found in: {content}"
-    preview_text = match.group(1)
-    assert len(preview_text) <= 40, f"Preview too long ({len(preview_text)}): {preview_text}"
+    assert "正在处理后台任务" in content
+    assert LongPreviewAgent.LONG_CMD not in content
+    assert "python -m pytest" not in content
 
 
-def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
-    """When tool_preview_length is explicitly set (e.g. 120), all/new mode uses that."""
+def test_all_mode_hides_terminal_command_with_custom_preview_length(monkeypatch, tmp_path):
+    """Custom preview length must not re-enable terminal command disclosure."""
     adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=120)
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # With 120-char cap, the command (165 chars) should still be truncated but longer
-    import re
-    match = re.search(r'"(.+)"', content)
-    assert match, f"No quoted preview found in: {content}"
-    preview_text = match.group(1)
-    # Should be longer than the 40-char default
-    assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
-    # But still capped at 120
-    assert len(preview_text) <= 120, f"Preview too long ({len(preview_text)}): {preview_text}"
+    assert "正在处理后台任务" in content
+    assert LongPreviewAgent.LONG_CMD not in content
+    assert "python -m pytest" not in content
 
 
-def test_all_mode_no_truncation_when_preview_fits(monkeypatch, tmp_path):
-    """Short previews (under the cap) are not truncated."""
-    # Set a generous cap — the LongPreviewAgent's command is ~165 chars
+def test_all_mode_hides_terminal_command_even_when_preview_fits(monkeypatch, tmp_path):
+    """A large preview cap must still keep terminal commands out of chat."""
     adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=200)
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # With a 200-char cap, the 165-char command should NOT be truncated
-    assert "..." not in content, f"Preview was truncated when it shouldn't be: {content}"
+    assert "正在处理后台任务" in content
+    assert LongPreviewAgent.LONG_CMD not in content
+    assert "python -m pytest" not in content

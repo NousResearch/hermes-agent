@@ -61,39 +61,15 @@ def make_tool_call_id() -> str:
 
 
 def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
-    """Build a human-readable title for a tool call."""
-    if tool_name == "terminal":
-        cmd = args.get("command", "")
-        if len(cmd) > 80:
-            cmd = cmd[:77] + "..."
-        return f"terminal: {cmd}"
-    if tool_name == "read_file":
-        return f"read: {args.get('path', '?')}"
-    if tool_name == "write_file":
-        return f"write: {args.get('path', '?')}"
-    if tool_name == "patch":
-        mode = args.get("mode", "replace")
-        path = args.get("path", "?")
-        return f"patch ({mode}): {path}"
-    if tool_name == "search_files":
-        return f"search: {args.get('pattern', '?')}"
-    if tool_name == "web_search":
-        return f"web search: {args.get('query', '?')}"
-    if tool_name == "web_extract":
-        urls = args.get("urls", [])
-        if urls:
-            return f"extract: {urls[0]}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
-        return "web extract"
-    if tool_name == "delegate_task":
-        goal = args.get("goal", "")
-        if goal and len(goal) > 60:
-            goal = goal[:57] + "..."
-        return f"delegate: {goal}" if goal else "delegate task"
-    if tool_name == "execute_code":
-        return "execute code"
-    if tool_name == "vision_analyze":
-        return f"analyze image: {args.get('question', '?')[:50]}"
-    return tool_name
+    """Build a user-facing tool title for ACP UI (internal keys remain raw_input)."""
+    from agent.display import format_tool_activity_text
+
+    return format_tool_activity_text(
+        tool_name=tool_name,
+        args=args if isinstance(args, dict) else {},
+        preview=None,
+        max_len=80,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +122,7 @@ def build_tool_start(
 
     if tool_name == "read_file":
         path = arguments.get("path", "")
-        content = [acp.tool_content(acp.text_block(f"Reading {path}"))]
+        content = [acp.tool_content(acp.text_block(f"正在读取文件：{path}"))]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
             raw_input=arguments,
@@ -155,7 +131,7 @@ def build_tool_start(
     if tool_name == "search_files":
         pattern = arguments.get("pattern", "")
         target = arguments.get("target", "content")
-        content = [acp.tool_content(acp.text_block(f"Searching for '{pattern}' ({target})"))]
+        content = [acp.tool_content(acp.text_block(f"正在搜索文件：{pattern}（范围：{target}）"))]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
             raw_input=arguments,

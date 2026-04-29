@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import html
 import itertools
 import json
 import logging
@@ -87,6 +88,14 @@ FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
+from gateway.cross_bot_relay import (
+    compile_outbound_role_mentions as _relay_compile_outbound_mentions,
+    dequeue_relays as _relay_dequeue,
+    enqueue_relay as _relay_enqueue,
+    register_profile as _relay_register_profile,
+)
+from gateway.message_validator import validate_message_event
+from gateway.outbound_log import record_outbound, summarize_raw_response
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -115,6 +124,9 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_TEXT_AT_TAG_RE = re.compile(r"<at\b(?P<attrs>[^>]*)>(?P<label>.*?)</at>", re.IGNORECASE | re.DOTALL)
+_AT_ATTR_RE = re.compile(r"([A-Za-z_:-]+)\s*=\s*(['\"])(.*?)\2")
+_BOT_ALIAS_SPLIT_RE = re.compile(r"[,;，；\n]+")
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -230,6 +242,12 @@ class FeishuPostMediaRef:
 
 
 @dataclass(frozen=True)
+class FeishuTextAtMention:
+    mentioned_ids: tuple[str, ...] = ()
+    display_name: str = ""
+
+
+@dataclass(frozen=True)
 class FeishuPostParseResult:
     text_content: str
     image_keys: List[str] = field(default_factory=list)
@@ -262,6 +280,7 @@ class FeishuAdapterSettings:
     bot_open_id: str
     bot_user_id: str
     bot_name: str
+    bot_name_aliases: frozenset[str]
     dedup_cache_size: int
     text_batch_delay_seconds: float
     text_batch_max_messages: int
@@ -386,6 +405,30 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+def _parse_bot_name_aliases(value: Any) -> frozenset[str]:
+    if isinstance(value, (list, tuple, set)):
+        raw_items = value
+    else:
+        raw_items = _BOT_ALIAS_SPLIT_RE.split(str(value or ""))
+    return frozenset(item.strip() for item in raw_items if str(item or "").strip())
+
+
+def _normalize_bot_name_alias(value: str) -> str:
+    normalized = _clean_text_at_label(value)
+    if normalized.startswith("@"):
+        normalized = normalized[1:].strip()
+    return normalized.casefold()
+
+
+def _feishu_payload_succeeded(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    try:
+        return int(payload.get("code")) == 0
+    except (TypeError, ValueError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -611,9 +654,23 @@ def normalize_feishu_message(*, message_type: str, raw_content: str) -> FeishuNo
     payload = _load_feishu_payload(raw_content)
 
     if normalized_type == "text":
+        raw_text = str(payload.get("text", "") or "")
+        text_mentions = _extract_text_at_mentions(raw_text)
+        mentioned_ids = _unique_strings(
+            mentioned_id
+            for mention in text_mentions
+            for mentioned_id in mention.mentioned_ids
+            if not _is_all_mention_id(mentioned_id)
+        )
+        mentioned_names = _unique_strings(mention.display_name for mention in text_mentions)
+        metadata: Dict[str, Any] = {}
+        if mentioned_names:
+            metadata["mentioned_names"] = mentioned_names
         return FeishuNormalizedMessage(
             raw_type=normalized_type,
-            text_content=_normalize_feishu_text(str(payload.get("text", "") or "")),
+            text_content=_normalize_feishu_text(_TEXT_AT_TAG_RE.sub(_render_text_at_tag, raw_text)),
+            mentioned_ids=mentioned_ids,
+            metadata=metadata,
         )
     if normalized_type == "post":
         parsed_post = parse_feishu_post_payload(payload)
@@ -666,6 +723,51 @@ def _load_feishu_payload(raw_content: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         return {"text": raw_content}
     return parsed if isinstance(parsed, dict) else {"content": parsed}
+
+
+def _extract_text_at_mentions(text: str) -> List[FeishuTextAtMention]:
+    mentions: List[FeishuTextAtMention] = []
+    for match in _TEXT_AT_TAG_RE.finditer(text or ""):
+        attrs = _parse_at_attrs(match.group("attrs") or "")
+        mentioned_ids = _unique_strings(
+            attrs.get(key, "")
+            for key in ("open_id", "user_id", "id", "union_id")
+        )
+        display_name = _clean_text_at_label(match.group("label") or "")
+        mentions.append(FeishuTextAtMention(mentioned_ids=tuple(mentioned_ids), display_name=display_name))
+    return mentions
+
+
+def _parse_at_attrs(attrs: str) -> Dict[str, str]:
+    parsed: Dict[str, str] = {}
+    for match in _AT_ATTR_RE.finditer(attrs or ""):
+        parsed[match.group(1).strip().lower()] = html.unescape(match.group(3)).strip()
+    return parsed
+
+
+def _render_text_at_tag(match: re.Match[str]) -> str:
+    display_name = _clean_text_at_label(match.group("label") or "")
+    return f" @{display_name} " if display_name else " "
+
+
+def _clean_text_at_label(label: str) -> str:
+    return _normalize_feishu_text(html.unescape(str(label or "")))
+
+
+def _unique_strings(values: Any) -> List[str]:
+    seen: set[str] = set()
+    unique: List[str] = []
+    for value in values:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+    return unique
+
+
+def _is_all_mention_id(value: str) -> bool:
+    return str(value or "").strip().lower() in {"all", "_all", "@_all"}
 
 
 def _normalize_merge_forward_message(payload: Dict[str, Any]) -> FeishuNormalizedMessage:
@@ -1053,6 +1155,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._media_batch_state = FeishuBatchState()
         self._pending_media_batches = self._media_batch_state.events
         self._pending_media_batch_tasks = self._media_batch_state.tasks
+        self._relay_poll_task: Optional[asyncio.Task[None]] = None
+        self._relay_profile_name: str = ""
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
@@ -1098,6 +1202,9 @@ class FeishuAdapter(BasePlatformAdapter):
             bot_open_id=os.getenv("FEISHU_BOT_OPEN_ID", "").strip(),
             bot_user_id=os.getenv("FEISHU_BOT_USER_ID", "").strip(),
             bot_name=os.getenv("FEISHU_BOT_NAME", "").strip(),
+            bot_name_aliases=_parse_bot_name_aliases(
+                extra.get("bot_name_aliases") or os.getenv("FEISHU_BOT_NAME_ALIASES", "")
+            ),
             dedup_cache_size=max(
                 32,
                 int(os.getenv("HERMES_FEISHU_DEDUP_CACHE_SIZE", str(_DEFAULT_DEDUP_CACHE_SIZE))),
@@ -1150,6 +1257,14 @@ class FeishuAdapter(BasePlatformAdapter):
         self._bot_open_id = settings.bot_open_id
         self._bot_user_id = settings.bot_user_id
         self._bot_name = settings.bot_name
+        self._bot_name_aliases = {
+            normalized
+            for normalized in (
+                _normalize_bot_name_alias(alias)
+                for alias in [settings.bot_name, *settings.bot_name_aliases]
+            )
+            if normalized
+        }
         self._dedup_cache_size = settings.dedup_cache_size
         self._text_batch_delay_seconds = settings.text_batch_delay_seconds
         self._text_batch_max_messages = settings.text_batch_max_messages
@@ -1219,6 +1334,8 @@ class FeishuAdapter(BasePlatformAdapter):
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             self._mark_connected()
+            self._register_cross_bot_relay()
+            self._start_relay_polling()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             return True
         except Exception as exc:
@@ -1231,6 +1348,9 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        if self._relay_poll_task is not None:
+            self._relay_poll_task.cancel()
+            self._relay_poll_task = None
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
@@ -1306,6 +1426,325 @@ class FeishuAdapter(BasePlatformAdapter):
             self._webhook_site = None
 
     # =========================================================================
+    # Cross-profile role relay
+    # =========================================================================
+
+    _RELAY_POLL_INTERVAL_SECONDS = 2.0
+
+    def _infer_profile_name_alias(self) -> str:
+        try:
+            home = get_hermes_home().resolve()
+            default_home = (Path.home() / ".hermes").resolve()
+            if home == default_home:
+                return "default"
+            profiles_root = (default_home / "profiles").resolve()
+            rel = home.relative_to(profiles_root)
+            if len(rel.parts) == 1:
+                return str(rel.parts[0]).strip().lower()
+        except Exception:
+            pass
+        return str(os.getenv("HERMES_PROFILE", "") or "").strip().lower()
+
+    def _register_cross_bot_relay(self) -> None:
+        profile_name = self._relay_profile_name or self._infer_profile_name_alias()
+        profile_name = str(profile_name or "").strip().lower()
+        if not profile_name:
+            return
+        self._relay_profile_name = profile_name
+        try:
+            _relay_register_profile(
+                profile_name,
+                bot_user_id=self._bot_user_id or "",
+                bot_open_id=self._bot_open_id or "",
+                bot_name=self._bot_name or "",
+                bot_name_aliases=sorted(getattr(self, "_bot_name_aliases", set())),
+            )
+        except Exception:
+            logger.warning("[Feishu] Cross-profile relay registration failed", exc_info=True)
+
+    def _start_relay_polling(self) -> None:
+        if not self._relay_profile_name:
+            return
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        if not hasattr(loop, "create_task"):
+            return
+        if self._relay_poll_task is not None and not self._relay_poll_task.done():
+            return
+        self._relay_poll_task = loop.create_task(self._relay_poll_loop(), name="feishu_cross_profile_relay")
+
+    async def _relay_poll_loop(self) -> None:
+        profile = self._relay_profile_name
+        if not profile:
+            return
+        logger.info("[Feishu] Cross-profile relay polling started for profile %s", profile)
+        try:
+            while self._running:
+                try:
+                    envelopes = await asyncio.to_thread(_relay_dequeue, profile)
+                    for envelope in envelopes:
+                        await self._process_relay_envelope(envelope)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("[Feishu] Cross-profile relay poll error", exc_info=True)
+                await asyncio.sleep(self._RELAY_POLL_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            logger.debug("[Feishu] Cross-profile relay polling cancelled")
+
+    async def _process_relay_envelope(self, envelope: Dict[str, Any]) -> None:
+        chat_id = str(envelope.get("chat_id", "") or "").strip()
+        text = str(envelope.get("text", "") or "").strip()
+        sender_profile = str(envelope.get("sender_profile", "") or "").strip()
+        sender_display = str(envelope.get("sender_display_name", "") or sender_profile or "relay").strip()
+        relay_message_id = str(envelope.get("message_id", "") or "").strip()
+        workflow_id = str(envelope.get("workflow_id", "") or "").strip()
+        task_id = str(envelope.get("task_id", "") or "").strip()
+        relay_type = str(envelope.get("relay_type", "") or "text_relay").strip()
+        if not chat_id or not text:
+            return
+
+        relay_key = str(relay_message_id or envelope.get("created_at", "") or uuid.uuid4().hex)
+        if self._is_duplicate(f"relay:{sender_profile}:{relay_key}:{text[:80]}"):
+            return
+        if relay_message_id:
+            await self._add_ack_reaction(relay_message_id)
+
+        chat_info = await self.get_chat_info(chat_id)
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
+            chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type="group"),
+            user_id=sender_profile or sender_display,
+            user_name=sender_display,
+            thread_id=None,
+            user_id_alt=None,
+        )
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=envelope,
+            message_id=None,
+            timestamp=datetime.now(),
+        )
+        logger.info(
+            "[Feishu] Processing cross-profile relay %s -> %s chat=%s text=%r",
+            sender_profile or "?",
+            self._relay_profile_name or "?",
+            chat_id,
+            text[:80],
+        )
+        if workflow_id and task_id and relay_type not in {"workflow_task_return", "workflow_review_request"}:
+            try:
+                from gateway.task_state import mark_task_received
+
+                mark_task_received(
+                    workflow_id=workflow_id,
+                    task_id=task_id,
+                    target_profile=self._relay_profile_name or "",
+                    relay_message_id=relay_message_id,
+                )
+            except Exception:
+                logger.warning("[Feishu] Failed to mark relay task received", exc_info=True)
+        await self._handle_message_with_guards(event)
+
+    def _resolve_outbound_role_dispatches(self, chat_id: str, content: str) -> List[Dict[str, str]]:
+        if not content:
+            return []
+        if not self._relay_profile_name:
+            self._register_cross_bot_relay()
+        if not self._relay_profile_name:
+            return []
+        return _relay_compile_outbound_mentions(
+            content,
+            chat_id=chat_id,
+            exclude_profile=self._relay_profile_name,
+        )
+
+    def _render_outbound_role_mentions(self, content: str, dispatches: List[Dict[str, str]]) -> str:
+        rendered = str(content or "")
+        if not rendered or not dispatches:
+            return rendered
+        for target in sorted(dispatches, key=lambda item: len(str(item.get("display_name", "") or "")), reverse=True):
+            display_name = str(target.get("display_name", "") or "").strip()
+            if not display_name:
+                continue
+            at_text = self._render_outbound_role_mention(target)
+            if not at_text:
+                continue
+            pattern = re.compile(
+                r"(^\s*)@?"
+                + re.escape(display_name)
+                + r"(?=$|[\s:：,，;；、/\\-])",
+                re.MULTILINE,
+            )
+            rendered, count = pattern.subn(lambda match: f"{match.group(1)}{at_text}", rendered, count=1)
+            if count:
+                logger.info(
+                    "[Feishu] Rendered outbound role mention %s -> %s (blue=%s)",
+                    display_name,
+                    str(target.get("profile_name", "") or "?"),
+                    bool(str(target.get("mention_id", "") or "").strip()),
+                )
+        return rendered
+
+    def _render_outbound_role_mention(self, target: Dict[str, str]) -> str:
+        display_name = str(target.get("display_name", "") or "").strip()
+        mention_id = self._normalize_at_user_id(str(target.get("mention_id", "") or "").strip())
+        if mention_id:
+            safe_id = html.escape(mention_id, quote=True)
+            safe_name = html.escape(display_name or mention_id, quote=False)
+            return f'<at user_id="{safe_id}">{safe_name}</at>'
+        return f"@{display_name}" if display_name else ""
+
+    @staticmethod
+    def _normalize_at_user_id(value: str) -> str:
+        normalized = str(value or "").strip()
+        if normalized.startswith("u_ou_") or normalized.startswith("u_on_"):
+            return normalized[2:]
+        return normalized
+
+    async def _enqueue_outbound_role_relays(
+        self,
+        *,
+        chat_id: str,
+        dispatches: List[Dict[str, str]],
+        sent_message_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not dispatches or not self._relay_profile_name:
+            return
+        metadata = metadata if isinstance(metadata, dict) else {}
+        workflow_id = self._metadata_text(metadata, "workflow_id") or ""
+        task_id = self._metadata_text(metadata, "task_id") or ""
+        workflow_delivery = str(metadata.get("workflow_delivery") or "").strip().lower() in {"1", "true", "yes"}
+        relay_type = self._metadata_text(metadata, "relay_type") or "text_relay"
+        relay_metadata = {
+            key: metadata[key]
+            for key in (
+                "profile_id",
+                "from_role",
+                "to_role",
+                "upstream_task_id",
+                "upstream_summary",
+                "workflow_delivery",
+            )
+            if key in metadata
+        }
+        seen: set[str] = set()
+        for target in dispatches:
+            target_profile = str(target.get("profile_name", "") or "").strip().lower()
+            if not target_profile or target_profile == self._relay_profile_name or target_profile in seen:
+                continue
+            seen.add(target_profile)
+            instruction = str(target.get("instruction", "") or "").strip() or "请按上一条消息执行。"
+            relay_outbound_id = f"out_{uuid.uuid4().hex}"
+            ok = False
+            try:
+                ok = await asyncio.to_thread(
+                    _relay_enqueue,
+                    target_profile=target_profile,
+                    chat_id=chat_id,
+                    text=instruction,
+                    sender_profile=self._relay_profile_name,
+                    sender_display_name=self._bot_name or self._relay_profile_name,
+                    message_id=sent_message_id or "",
+                    workflow_id=workflow_id,
+                    task_id=task_id,
+                    outbound_id=relay_outbound_id,
+                    relay_type=relay_type,
+                    metadata=relay_metadata,
+                )
+                try:
+                    record_outbound(
+                        outbound_id=relay_outbound_id,
+                        platform="feishu",
+                        chat_id=chat_id,
+                        chat_type=self._metadata_text(metadata, "chat_type", "session_type"),
+                        source_message_id=self._metadata_text(metadata, "source_message_id", "event_message_id", "inbound_message_id"),
+                        send_type="local_relay",
+                        workflow_id=workflow_id,
+                        task_id=task_id,
+                        to_role=self._metadata_text(metadata, "to_role"),
+                        target_role=str(target.get("role_code", "") or ""),
+                        target_profile=target_profile,
+                        content=instruction,
+                        send_success=ok,
+                        feishu_message_id=sent_message_id or None,
+                        real_sent=False,
+                        error=None if ok else f"failed to enqueue relay to {target_profile}",
+                    )
+                except Exception:
+                    logger.warning("[Feishu] Failed to record local relay", exc_info=True)
+                if ok:
+                    if workflow_id and task_id and not workflow_delivery:
+                        try:
+                            from gateway.task_state import mark_task_relay_enqueued
+
+                            mark_task_relay_enqueued(
+                                workflow_id=workflow_id,
+                                task_id=task_id,
+                                target_profile=target_profile,
+                                message_id=sent_message_id or "",
+                                outbound_id=relay_outbound_id,
+                            )
+                        except Exception:
+                            logger.warning("[Feishu] Failed to mark relay task enqueued", exc_info=True)
+                    logger.info(
+                        "[Feishu] Enqueued role relay %s -> %s (%s): %r",
+                        self._relay_profile_name,
+                        target_profile,
+                        str(target.get("role_code", "") or "?"),
+                        instruction[:80],
+                    )
+                else:
+                    error = f"failed to enqueue relay to {target_profile}"
+                    logger.warning("[Feishu] %s", error)
+                    if workflow_id and task_id:
+                        try:
+                            from gateway.task_state import mark_task_failed
+
+                            mark_task_failed(workflow_id=workflow_id, task_id=task_id, error=error)
+                        except Exception:
+                            logger.warning("[Feishu] Failed to mark relay task failed", exc_info=True)
+            except Exception:
+                logger.warning("[Feishu] Failed to enqueue role relay to %s", target_profile, exc_info=True)
+                try:
+                    record_outbound(
+                        outbound_id=relay_outbound_id,
+                        platform="feishu",
+                        chat_id=chat_id,
+                        chat_type=self._metadata_text(metadata, "chat_type", "session_type"),
+                        source_message_id=self._metadata_text(metadata, "source_message_id", "event_message_id", "inbound_message_id"),
+                        send_type="local_relay",
+                        workflow_id=workflow_id,
+                        task_id=task_id,
+                        to_role=self._metadata_text(metadata, "to_role"),
+                        target_role=str(target.get("role_code", "") or ""),
+                        target_profile=target_profile,
+                        content=instruction,
+                        send_success=False,
+                        feishu_message_id=sent_message_id or None,
+                        real_sent=False,
+                        error=f"failed to enqueue relay to {target_profile}",
+                    )
+                except Exception:
+                    logger.warning("[Feishu] Failed to record failed local relay", exc_info=True)
+                if workflow_id and task_id:
+                    try:
+                        from gateway.task_state import mark_task_failed
+
+                        mark_task_failed(
+                            workflow_id=workflow_id,
+                            task_id=task_id,
+                            error=f"failed to enqueue relay to {target_profile}",
+                        )
+                    except Exception:
+                        logger.warning("[Feishu] Failed to mark relay task failed", exc_info=True)
+
+    # =========================================================================
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
 
@@ -1318,8 +1757,30 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a Feishu message."""
         if not self._client:
-            return SendResult(success=False, error="Not connected")
+            result = SendResult(success=False, error="Not connected")
+            self._record_feishu_send_outbound(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+                result=result,
+            )
+            return result
 
+        validation_error = self._validate_workflow_outbound(content=content, metadata=metadata)
+        if validation_error:
+            result = SendResult(success=False, error=validation_error)
+            self._record_blocked_workflow_outbound(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+                error=validation_error,
+            )
+            return result
+
+        outbound_role_dispatches = self._resolve_outbound_role_dispatches(chat_id, content)
+        content = self._render_outbound_role_mentions(content, outbound_role_dispatches)
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
@@ -1361,10 +1822,185 @@ class FeishuAdapter(BasePlatformAdapter):
                     )
                 last_response = response
 
-            return self._finalize_send_result(last_response, "send failed")
+            result = self._finalize_send_result(last_response, "send failed")
+            self._record_feishu_send_outbound(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+                result=result,
+            )
+            if result.success and outbound_role_dispatches:
+                await self._enqueue_outbound_role_relays(
+                    chat_id=chat_id,
+                    dispatches=outbound_role_dispatches,
+                    sent_message_id=result.message_id or "",
+                    metadata=metadata,
+                )
+            return result
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+            result = SendResult(success=False, error=str(exc))
+            self._record_feishu_send_outbound(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+                result=result,
+            )
+            return result
+
+    @staticmethod
+    def _metadata_text(metadata: Optional[Dict[str, Any]], *keys: str) -> Optional[str]:
+        for key in keys:
+            value = (metadata or {}).get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return None
+
+    def _record_feishu_send_outbound(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        result: SendResult,
+    ) -> Optional[str]:
+        workflow_id = self._metadata_text(metadata, "workflow_id")
+        task_id = self._metadata_text(metadata, "task_id")
+        outbound_id: Optional[str] = None
+        try:
+            outbound_id = record_outbound(
+                platform="feishu",
+                chat_id=chat_id,
+                chat_type=self._metadata_text(metadata, "chat_type", "session_type"),
+                source_message_id=self._metadata_text(
+                    metadata,
+                    "source_message_id",
+                    "event_message_id",
+                    "inbound_message_id",
+                ),
+                reply_to_message_id=reply_to or self._metadata_text(metadata, "reply_to_message_id"),
+                send_type="feishu_real_send",
+                workflow_id=workflow_id,
+                task_id=task_id,
+                to_role=self._metadata_text(metadata, "to_role"),
+                target_role=self._metadata_text(metadata, "target_role", "role_code"),
+                target_profile=self._metadata_text(metadata, "target_profile", "profile_name"),
+                content=content,
+                send_success=result.success,
+                feishu_message_id=result.message_id,
+                real_sent=bool(result.success and result.message_id),
+                error=result.error,
+                raw_response_summary=summarize_raw_response(result.raw_response),
+            )
+        except Exception:
+            logger.warning("[Feishu] Failed to record outbound send", exc_info=True)
+        workflow_delivery = str((metadata or {}).get("workflow_delivery") or "").strip().lower() in {"1", "true", "yes"}
+        if workflow_id and task_id and not workflow_delivery:
+            try:
+                if result.success and result.message_id:
+                    from gateway.task_state import mark_task_sent
+
+                    mark_task_sent(
+                        workflow_id=workflow_id,
+                        task_id=task_id,
+                        message_id=result.message_id,
+                        outbound_id=outbound_id or "",
+                    )
+                elif not result.success:
+                    from gateway.task_state import mark_task_failed
+
+                    mark_task_failed(
+                        workflow_id=workflow_id,
+                        task_id=task_id,
+                        error=result.error or "feishu send failed",
+                    )
+            except Exception:
+                logger.warning("[Feishu] Failed to update workflow task send state", exc_info=True)
+        return outbound_id
+
+    def _record_blocked_workflow_outbound(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        error: str,
+    ) -> None:
+        workflow_id = self._metadata_text(metadata, "workflow_id")
+        task_id = self._metadata_text(metadata, "task_id")
+        try:
+            record_outbound(
+                platform="feishu",
+                chat_id=chat_id,
+                chat_type=self._metadata_text(metadata, "chat_type", "session_type"),
+                source_message_id=self._metadata_text(
+                    metadata,
+                    "source_message_id",
+                    "event_message_id",
+                    "inbound_message_id",
+                ),
+                reply_to_message_id=reply_to or self._metadata_text(metadata, "reply_to_message_id"),
+                send_type="blocked_by_validator",
+                workflow_id=workflow_id,
+                task_id=task_id,
+                to_role=self._metadata_text(metadata, "to_role"),
+                target_role=self._metadata_text(metadata, "target_role", "role_code"),
+                target_profile=self._metadata_text(metadata, "target_profile", "profile_name"),
+                content=content,
+                send_success=False,
+                real_sent=False,
+                error=error,
+            )
+        except Exception:
+            logger.warning("[Feishu] Failed to record blocked outbound send", exc_info=True)
+        if workflow_id and task_id:
+            try:
+                from gateway.task_state import mark_task_failed
+
+                mark_task_failed(workflow_id=workflow_id, task_id=task_id, error=error)
+            except Exception:
+                logger.warning("[Feishu] Failed to mark blocked workflow task failed", exc_info=True)
+
+    def _validate_workflow_outbound(
+        self,
+        *,
+        content: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        metadata = metadata if isinstance(metadata, dict) else {}
+        if not (metadata.get("workflow_id") or metadata.get("task_id") or metadata.get("to_role")):
+            return None
+        try:
+            from gateway.workflow_profile import load_workflow_profile
+
+            profile_id = str(metadata.get("profile_id") or "").strip()
+            if not profile_id:
+                return "Workflow outbound validation failed: missing workflow profile_id"
+            profile = load_workflow_profile(profile_id)
+            result = validate_message_event(
+                {
+                    "content": content,
+                    "to_role": metadata.get("to_role"),
+                    "task_type": metadata.get("task_type"),
+                    "deliverable": metadata.get("deliverable"),
+                    "return_to": metadata.get("return_to"),
+                    "send_mode": metadata.get("send_mode", "real_send"),
+                    "metadata": metadata,
+                },
+                profile,
+            )
+            if result["ok"]:
+                return None
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as exc:
+            return f"Workflow outbound validation failed: {exc}"
 
     async def edit_message(
         self,
@@ -1414,7 +2050,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             approval_id = next(self._approval_counter)
-            cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
+            # Keep the raw command in approval state/logging paths only; the
+            # Feishu card must not expose terminal command text to the group.
+            safe_reason = "需要确认一项高风险操作。"
+            try:
+                from gateway.message_renderer import sanitize_user_visible_message
+
+                safe_reason = sanitize_user_visible_message(description, fallback=safe_reason) or safe_reason
+            except Exception:
+                pass
 
             def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
                 return {
@@ -1427,13 +2071,13 @@ class FeishuAdapter(BasePlatformAdapter):
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
-                    "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
+                    "title": {"content": "⚠️ 需要确认操作", "tag": "plain_text"},
                     "template": "orange",
                 },
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        "content": safe_reason,
                     },
                     {
                         "tag": "action",
@@ -1940,13 +2584,18 @@ class FeishuAdapter(BasePlatformAdapter):
             }
             choice = choice_map.get(hermes_action, "deny")
 
-            label_map = {
-                "once": "Approved once",
-                "session": "Approved for session",
-                "always": "Approved permanently",
-                "deny": "Denied",
-            }
-            label = label_map.get(choice, "Resolved")
+            try:
+                from tools.approval import approval_decision_label
+
+                label = approval_decision_label(choice)
+            except Exception:
+                label_map = {
+                    "once": "Approved once",
+                    "session": "Approved for session",
+                    "always": "Approved permanently",
+                    "deny": "Denied",
+                }
+                label = label_map.get(choice, "Resolved")
 
             # Resolve sender name for the status card
             sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
@@ -2109,6 +2758,7 @@ class FeishuAdapter(BasePlatformAdapter):
         message_id: str,
     ) -> None:
         text, inbound_type, media_urls, media_types = await self._extract_message_content(message)
+        inbound_metadata = self._extract_inbound_metadata(message)
         if inbound_type == MessageType.TEXT and not text and not media_urls:
             logger.debug("[Feishu] Ignoring unsupported or empty message type: %s", getattr(message, "message_type", ""))
             return
@@ -2157,6 +2807,8 @@ class FeishuAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             timestamp=datetime.now(),
         )
+        if inbound_metadata:
+            normalized.metadata = inbound_metadata
         await self._dispatch_inbound_event(normalized)
 
     async def _dispatch_inbound_event(self, event: MessageEvent) -> None:
@@ -2475,6 +3127,28 @@ class FeishuAdapter(BasePlatformAdapter):
             and existing.source.thread_id == incoming.source.thread_id
         )
 
+    @staticmethod
+    def _merge_event_metadata(existing: MessageEvent, incoming: MessageEvent) -> None:
+        existing_meta = getattr(existing, "metadata", None)
+        incoming_meta = getattr(incoming, "metadata", None)
+        if not isinstance(incoming_meta, dict):
+            return
+        if not isinstance(existing_meta, dict):
+            existing_meta = {}
+            existing.metadata = existing_meta
+
+        for key in ("mentioned_names", "mentioned_ids"):
+            values = []
+            for raw in (existing_meta.get(key), incoming_meta.get(key)):
+                if isinstance(raw, list):
+                    values.extend(str(item).strip() for item in raw if str(item).strip())
+            if values:
+                seen = set()
+                existing_meta[key] = [item for item in values if not (item in seen or seen.add(item))]
+
+        if incoming_meta.get("feishu_bot_mentioned"):
+            existing_meta["feishu_bot_mentioned"] = True
+
     async def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Debounce rapid Feishu text bursts into a single MessageEvent."""
         key = self._text_batch_key(event)
@@ -2507,6 +3181,7 @@ class FeishuAdapter(BasePlatformAdapter):
         existing.timestamp = event.timestamp
         if event.message_id:
             existing.message_id = event.message_id
+        self._merge_event_metadata(existing, event)
         self._pending_text_batch_counts[key] = next_count
         self._schedule_text_batch_flush(key)
 
@@ -2581,6 +3256,44 @@ class FeishuAdapter(BasePlatformAdapter):
                 text = injected
 
         return text, inbound_type, media_urls, media_types
+
+    def _extract_inbound_metadata(self, message: Any) -> Dict[str, Any]:
+        raw_content = getattr(message, "content", "") or ""
+        raw_type = getattr(message, "message_type", "") or ""
+        normalized = normalize_feishu_message(message_type=raw_type, raw_content=raw_content)
+
+        mentioned_names = []
+        if isinstance(normalized.metadata, dict):
+            raw_names = normalized.metadata.get("mentioned_names") or []
+            if isinstance(raw_names, list):
+                mentioned_names.extend(str(name).strip() for name in raw_names if str(name).strip())
+
+        mentioned_ids = [str(item).strip() for item in normalized.mentioned_ids if str(item).strip()]
+        mentions = getattr(message, "mentions", None) or []
+        for mention in mentions:
+            mention_name = str(getattr(mention, "name", "") or "").strip()
+            if mention_name:
+                mentioned_names.append(mention_name)
+            mention_id = getattr(mention, "id", None)
+            for value in (
+                getattr(mention_id, "open_id", None),
+                getattr(mention_id, "user_id", None),
+                getattr(mention_id, "union_id", None),
+            ):
+                text = str(value or "").strip()
+                if text and not _is_all_mention_id(text):
+                    mentioned_ids.append(text)
+
+        metadata: Dict[str, Any] = {}
+        if mentioned_names:
+            metadata["mentioned_names"] = _unique_strings(mentioned_names)
+        if mentioned_ids:
+            metadata["mentioned_ids"] = _unique_strings(mentioned_ids)
+        if self._message_mentions_bot(mentions) or self._post_mentions_bot(metadata.get("mentioned_ids", [])):
+            metadata["feishu_bot_mentioned"] = True
+        elif any(self._matches_bot_name_alias(name) for name in metadata.get("mentioned_names", [])):
+            metadata["feishu_bot_mentioned"] = True
+        return metadata
 
     async def _download_feishu_message_resources(
         self,
@@ -2997,14 +3710,17 @@ class FeishuAdapter(BasePlatformAdapter):
         if "@_all" in raw_content:
             return True
         mentions = getattr(message, "mentions", None) or []
-        if mentions:
-            return self._message_mentions_bot(mentions)
+        if mentions and self._message_mentions_bot(mentions):
+            return True
         normalized = normalize_feishu_message(
             message_type=getattr(message, "message_type", "") or "",
             raw_content=raw_content,
         )
-        if normalized.mentioned_ids:
-            return self._post_mentions_bot(normalized.mentioned_ids)
+        if normalized.mentioned_ids and self._post_mentions_bot(normalized.mentioned_ids):
+            return True
+        mentioned_names = normalized.metadata.get("mentioned_names", []) if isinstance(normalized.metadata, dict) else []
+        if any(self._matches_bot_name_alias(name) for name in mentioned_names):
+            return True
         return False
 
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:
@@ -3015,11 +3731,15 @@ class FeishuAdapter(BasePlatformAdapter):
             mention_user_id = getattr(mention_id, "user_id", None)
             mention_name = (getattr(mention, "name", None) or "").strip()
 
-            if self._bot_open_id and mention_open_id == self._bot_open_id:
+            if self._identity_matches(self._bot_open_id, mention_open_id):
                 return True
-            if self._bot_user_id and mention_user_id == self._bot_user_id:
+            if self._identity_matches(self._bot_open_id, mention_user_id):
                 return True
-            if self._bot_name and mention_name == self._bot_name:
+            if self._identity_matches(self._bot_user_id, mention_user_id):
+                return True
+            if self._identity_matches(self._bot_user_id, mention_open_id):
+                return True
+            if self._matches_bot_name_alias(mention_name):
                 return True
 
         return False
@@ -3027,17 +3747,47 @@ class FeishuAdapter(BasePlatformAdapter):
     def _post_mentions_bot(self, mentioned_ids: List[str]) -> bool:
         if not mentioned_ids:
             return False
-        if self._bot_open_id and self._bot_open_id in mentioned_ids:
-            return True
-        if self._bot_user_id and self._bot_user_id in mentioned_ids:
-            return True
+        for mentioned_id in mentioned_ids:
+            if self._identity_matches(self._bot_open_id, mentioned_id):
+                return True
+            if self._identity_matches(self._bot_user_id, mentioned_id):
+                return True
         return False
+
+    def _matches_bot_name_alias(self, mention_name: str) -> bool:
+        normalized = _normalize_bot_name_alias(mention_name)
+        if not normalized:
+            return False
+        if self._bot_name and normalized == _normalize_bot_name_alias(self._bot_name):
+            return True
+        return normalized in getattr(self, "_bot_name_aliases", set())
+
+    @staticmethod
+    def _identity_matches(configured_id: Any, candidate_id: Any) -> bool:
+        return bool(
+            configured_id
+            and candidate_id
+            and (FeishuAdapter._identity_id_variants(configured_id) & FeishuAdapter._identity_id_variants(candidate_id))
+        )
+
+    @staticmethod
+    def _identity_id_variants(value: Any) -> set[str]:
+        raw = str(value or "").strip()
+        if not raw:
+            return set()
+        variants = {raw}
+        if raw.startswith("u_"):
+            variants.add(raw[2:])
+        else:
+            variants.add(f"u_{raw}")
+        return variants
 
     async def _hydrate_bot_identity(self) -> None:
         """Best-effort discovery of bot identity for precise group mention gating."""
         if not self._client:
             return
-        if any((self._bot_open_id, self._bot_user_id, self._bot_name)):
+        await self._hydrate_bot_identity_from_bot_info()
+        if all((self._bot_open_id, self._bot_name)):
             return
         try:
             request = self._build_get_application_request(app_id=self._app_id, lang="en_us")
@@ -3055,8 +3805,74 @@ class FeishuAdapter(BasePlatformAdapter):
             app_name = (getattr(app, "app_name", None) or "").strip()
             if app_name:
                 self._bot_name = app_name
+                self._add_bot_name_alias(app_name)
         except Exception:
             logger.debug("[Feishu] Failed to hydrate bot identity", exc_info=True)
+
+    async def _hydrate_bot_identity_from_bot_info(self) -> None:
+        if self._bot_open_id and self._bot_name:
+            return
+        try:
+            import httpx
+        except ImportError:
+            return
+
+        base_url = "https://open.larksuite.com" if self._domain_name == "lark" else "https://open.feishu.cn"
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                token_response = await client.post(
+                    f"{base_url}/open-apis/auth/v3/tenant_access_token/internal",
+                    json={"app_id": self._app_id, "app_secret": self._app_secret},
+                )
+                token_payload = token_response.json()
+                if token_response.status_code >= 400 or not _feishu_payload_succeeded(token_payload):
+                    logger.debug(
+                        "[Feishu] Bot identity token request failed: status=%s code=%s msg=%s",
+                        token_response.status_code,
+                        token_payload.get("code"),
+                        token_payload.get("msg"),
+                    )
+                    return
+                token = str(token_payload.get("tenant_access_token", "") or "").strip()
+                if not token:
+                    return
+                bot_response = await client.get(
+                    f"{base_url}/open-apis/bot/v3/info",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                bot_payload = bot_response.json()
+                if bot_response.status_code >= 400 or not _feishu_payload_succeeded(bot_payload):
+                    logger.debug(
+                        "[Feishu] Bot identity info request failed: status=%s code=%s msg=%s",
+                        bot_response.status_code,
+                        bot_payload.get("code"),
+                        bot_payload.get("msg"),
+                    )
+                    return
+                bot_info = bot_payload.get("bot")
+                if not isinstance(bot_info, dict):
+                    bot_info = bot_payload.get("data") if isinstance(bot_payload.get("data"), dict) else {}
+                bot_open_id = str(bot_info.get("open_id", "") or "").strip()
+                app_name = str(bot_info.get("app_name", "") or "").strip()
+                if bot_open_id and not self._bot_open_id:
+                    self._bot_open_id = bot_open_id
+                if app_name and not self._bot_name:
+                    self._bot_name = app_name
+                if app_name:
+                    self._add_bot_name_alias(app_name)
+                if bot_open_id or app_name:
+                    logger.info(
+                        "[Feishu] Hydrated bot identity via bot info: open_id=%s name=%s",
+                        "set" if bot_open_id else "missing",
+                        app_name or "missing",
+                    )
+        except Exception:
+            logger.debug("[Feishu] Failed to hydrate bot identity from bot info", exc_info=True)
+
+    def _add_bot_name_alias(self, alias: str) -> None:
+        normalized = _normalize_bot_name_alias(alias)
+        if normalized:
+            self._bot_name_aliases.add(normalized)
 
     # =========================================================================
     # Deduplication — seen message ID cache (persistent)
@@ -3122,6 +3938,9 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        if _TEXT_AT_TAG_RE.search(content or ""):
+            text_payload = {"text": content}
+            return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

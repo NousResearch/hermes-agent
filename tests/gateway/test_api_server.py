@@ -239,6 +239,48 @@ def auth_adapter():
 
 
 # ---------------------------------------------------------------------------
+# /v1/runs event callback formatting
+# ---------------------------------------------------------------------------
+
+
+class TestRunEventCallbackFormatting:
+    @pytest.mark.asyncio
+    async def test_tool_key_preserved_and_preview_localized(self, adapter):
+        import asyncio
+
+        run_id = f"run_{uuid.uuid4().hex}"
+        q: "asyncio.Queue[dict]" = asyncio.Queue()
+        adapter._run_streams[run_id] = q
+        adapter._run_streams_created[run_id] = time.time()
+        cb = adapter._make_run_event_callback(run_id, asyncio.get_running_loop())
+
+        cb("tool.started", "todo", "planning 5 task(s)", {"todos": [1, 2, 3, 4, 5]})
+        event = await asyncio.wait_for(q.get(), timeout=1.0)
+
+        # Internal key stays raw for debugging/replay.
+        assert event["tool"] == "todo"
+        # User-facing preview is localized.
+        assert "正在整理待办" in event["preview"]
+        assert "5" in event["preview"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_tool_does_not_crash(self, adapter):
+        import asyncio
+
+        run_id = f"run_{uuid.uuid4().hex}"
+        q: "asyncio.Queue[dict]" = asyncio.Queue()
+        adapter._run_streams[run_id] = q
+        adapter._run_streams_created[run_id] = time.time()
+        cb = adapter._make_run_event_callback(run_id, asyncio.get_running_loop())
+
+        cb("tool.started", "brand_new_tool", None, {"foo": "bar"})
+        event = await asyncio.wait_for(q.get(), timeout=1.0)
+
+        assert event["tool"] == "brand_new_tool"
+        assert "正在处理工具" in event["preview"]
+
+
+# ---------------------------------------------------------------------------
 # /health endpoint
 # ---------------------------------------------------------------------------
 
@@ -460,8 +502,9 @@ class TestChatCompletionsEndpoint:
                 assert resp.status == 200
                 body = await resp.text()
                 assert "[DONE]" in body
-                # Tool progress message must appear in the stream
-                assert "ls -la" in body
+                # Terminal progress is hidden from the stream so raw commands
+                # never leak into API-visible output.
+                assert "ls -la" not in body
                 # Final content must also be present
                 assert "Here are the files." in body
 

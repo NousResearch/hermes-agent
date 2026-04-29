@@ -90,7 +90,7 @@ class TestSlackExecApproval:
         assert len(blocks) == 2
         assert blocks[0]["type"] == "section"
         assert "rm -rf /important" in blocks[0]["text"]["text"]
-        assert "dangerous deletion" in blocks[0]["text"]["text"]
+        assert "这条命令会删除关键内容" in blocks[0]["text"]["text"]
         assert blocks[1]["type"] == "actions"
         elements = blocks[1]["elements"]
         assert len(elements) == 4
@@ -186,7 +186,8 @@ class TestSlackApprovalAction:
         # Message should be updated with decision
         mock_client.chat_update.assert_called_once()
         update_kwargs = mock_client.chat_update.call_args[1]
-        assert "Approved once by norbert" in update_kwargs["text"]
+        assert "已放行（仅这一次）" in update_kwargs["text"]
+        assert "norbert" in update_kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_prevents_double_click(self):
@@ -234,7 +235,8 @@ class TestSlackApprovalAction:
 
         mock_resolve.assert_called_once_with("session-key", "deny")
         update_kwargs = mock_client.chat_update.call_args[1]
-        assert "Denied by alice" in update_kwargs["text"]
+        assert "已拒绝执行" in update_kwargs["text"]
+        assert "alice" in update_kwargs["text"]
 
 
 # ===========================================================================

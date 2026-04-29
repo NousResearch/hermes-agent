@@ -108,10 +108,10 @@ class TestFeishuExecApproval:
         assert kwargs["chat_id"] == "oc_12345"
         assert kwargs["msg_type"] == "interactive"
 
-        # Verify card payload contains the command and buttons
+        # Verify card payload contains safe approval text and buttons.
         card = json.loads(kwargs["payload"])
         assert card["header"]["template"] == "orange"
-        assert "rm -rf /important" in card["elements"][0]["content"]
+        assert "rm -rf /important" not in card["elements"][0]["content"]
         assert "dangerous deletion" in card["elements"][0]["content"]
 
         # Check buttons
@@ -157,7 +157,7 @@ class TestFeishuExecApproval:
         assert result.success is False
 
     @pytest.mark.asyncio
-    async def test_truncates_long_command(self):
+    async def test_hides_long_command(self):
         adapter = _make_adapter()
 
         mock_response = SimpleNamespace(
@@ -175,7 +175,7 @@ class TestFeishuExecApproval:
 
         card = json.loads(mock_send.call_args[1]["payload"])
         content = card["elements"][0]["content"]
-        assert "..." in content
+        assert long_cmd not in content
         assert len(content) < 5000
 
     @pytest.mark.asyncio
@@ -233,7 +233,7 @@ class TestFeishuApprovalCallback:
             await adapter._handle_card_action_event(data)
 
         mock_resolve.assert_called_once_with("agent:main:feishu:group:oc_12345", "once")
-        mock_update.assert_called_once_with("msg_001", "Approved once", "Norbert", "once")
+        mock_update.assert_called_once_with("msg_001", "✅ 已放行（仅这一次）", "Norbert", "once")
 
         # State should be cleaned up
         assert 1 not in adapter._approval_state
@@ -263,7 +263,7 @@ class TestFeishuApprovalCallback:
             await adapter._handle_card_action_event(data)
 
         mock_resolve.assert_called_once_with("some-session", "deny")
-        mock_update.assert_called_once_with("msg_002", "Denied", "Alice", "deny")
+        mock_update.assert_called_once_with("msg_002", "❌ 已拒绝执行", "Alice", "deny")
 
     @pytest.mark.asyncio
     async def test_session_approval(self):
@@ -290,7 +290,7 @@ class TestFeishuApprovalCallback:
             await adapter._handle_card_action_event(data)
 
         mock_resolve.assert_called_once_with("sess-3", "session")
-        mock_update.assert_called_once_with("msg_003", "Approved for session", "Bob", "session")
+        mock_update.assert_called_once_with("msg_003", "✅ 已放行（本会话内有效）", "Bob", "session")
 
     @pytest.mark.asyncio
     async def test_always_approval(self):
@@ -379,7 +379,7 @@ class TestFeishuUpdateApprovalCard:
 
         with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
             await adapter._update_approval_card(
-                "msg_001", "Approved once", "Norbert", "once"
+                "msg_001", "✅ 已放行（仅这一次）", "Norbert", "once"
             )
 
         mock_thread.assert_called_once()
@@ -393,7 +393,7 @@ class TestFeishuUpdateApprovalCard:
 
         with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
             await adapter._update_approval_card(
-                "msg_002", "Denied", "Alice", "deny"
+                "msg_002", "❌ 已拒绝执行", "Alice", "deny"
             )
 
         mock_thread.assert_called_once()
@@ -405,7 +405,7 @@ class TestFeishuUpdateApprovalCard:
 
         with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
             await adapter._update_approval_card(
-                "msg_001", "Approved", "Bob", "once"
+                "msg_001", "✅ 已放行（仅这一次）", "Bob", "once"
             )
 
         mock_thread.assert_not_called()
@@ -416,7 +416,7 @@ class TestFeishuUpdateApprovalCard:
 
         with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
             await adapter._update_approval_card(
-                "", "Approved", "Bob", "once"
+                "", "✅ 已放行（仅这一次）", "Bob", "once"
             )
 
         mock_thread.assert_not_called()
@@ -428,5 +428,5 @@ class TestFeishuUpdateApprovalCard:
         with patch("asyncio.to_thread", new_callable=AsyncMock, side_effect=Exception("API error")):
             # Should not raise
             await adapter._update_approval_card(
-                "msg_001", "Approved", "Bob", "once"
+                "msg_001", "✅ 已放行（仅这一次）", "Bob", "once"
             )

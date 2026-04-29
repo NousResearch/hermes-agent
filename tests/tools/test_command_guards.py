@@ -221,7 +221,7 @@ class TestCombinedWarnings:
         assert result["approved"] is False
         assert result.get("status") == "approval_required"
         # Combined description includes both
-        assert "Security scan" in result["description"]
+        assert "安全检查" in result["description"]
         assert "pipe" in result["description"].lower() or "shell" in result["description"].lower()
 
     @patch(_TIRITH_PATCH,
@@ -304,7 +304,7 @@ class TestWarnEmptyFindings:
         assert result["approved"] is True
         cb.assert_called_once()
         desc = cb.call_args[0][1]
-        assert "Security scan" in desc
+        assert "安全检查" in desc
 
     @patch(_TIRITH_PATCH,
            return_value=_tirith_result("warn", [], "generic warning"))

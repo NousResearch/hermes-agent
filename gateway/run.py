@@ -288,6 +288,56 @@ logger = logging.getLogger(__name__)
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
 
+_TRANSCRIPT_DATA_IMAGE_URI_RE = re.compile(
+    r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]{1024,}",
+    re.IGNORECASE,
+)
+_TRANSCRIPT_BASE64_BLOB_RE = re.compile(r"[A-Za-z0-9+/]{4096,}={0,2}")
+_TRANSCRIPT_IMAGE_PLACEHOLDER = "[Image payload omitted from transcript]"
+
+
+def _sanitize_transcript_content(content: Any) -> Any:
+    """Drop huge inline image payloads from persisted transcript history.
+
+    This keeps long-running sessions healthy when image-capable models return
+    raw base64 blobs in assistant text.
+    """
+    if not isinstance(content, str):
+        return content
+
+    text = content.strip()
+    if not text:
+        return content
+
+    # Remove legacy placeholder strings from old transcript entries.
+    if _TRANSCRIPT_IMAGE_PLACEHOLDER in text:
+        text = text.replace(_TRANSCRIPT_IMAGE_PLACEHOLDER, "").strip()
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        if not text:
+            return ""
+
+    likely_blob = (
+        _TRANSCRIPT_DATA_IMAGE_URI_RE.search(text) is not None
+        or ("base64" in text.lower() and len(text) >= 8192)
+        or len(text) >= 300000
+    )
+    if not likely_blob:
+        return text
+
+    cleaned = _TRANSCRIPT_DATA_IMAGE_URI_RE.sub(" ", text)
+    cleaned = _TRANSCRIPT_BASE64_BLOB_RE.sub(" ", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+    # Nothing meaningful left: keep it empty in transcript history.
+    if not cleaned:
+        return ""
+
+    if len(cleaned) > 4000:
+        cleaned = cleaned[:4000].rstrip() + "…"
+
+    return cleaned
+
 
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances."""
@@ -415,6 +465,69 @@ def _load_gateway_config() -> dict:
     except Exception:
         logger.debug("Could not load gateway config from %s", _hermes_home / 'config.yaml')
     return {}
+
+
+def _load_knowledge_os_gate() -> dict:
+    """Load profile-local Knowledge OS gating flags from config.yaml."""
+    cfg = _load_gateway_config()
+    kos = cfg.get("knowledge_os", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(kos, dict):
+        kos = {}
+    return kos
+
+
+def _should_enable_kos_natural_triggers() -> bool:
+    """Return True only when Knowledge OS natural triggers are explicitly enabled."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        profile_name = get_active_profile_name()
+    except Exception:
+        profile_name = "default"
+
+    kos = _load_knowledge_os_gate()
+    if kos.get("enabled") is not True:
+        return False
+    if kos.get("natural_language_triggers") is not True:
+        return False
+
+    scope = kos.get("profile_scope", [])
+    if not isinstance(scope, list) or not scope:
+        return False
+    return profile_name in {str(x).strip() for x in scope if str(x).strip()}
+
+
+def _knowledge_router_script_path() -> Path:
+    """Resolve the profile-local Knowledge Router script path."""
+    explicit = os.getenv("KNOWLEDGE_ROUTER_SCRIPT", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return _hermes_home / "skills" / "productivity" / "knowledge-router" / "scripts" / "knowledge_router.py"
+
+
+async def _run_knowledge_router_nl(action: str, payload: str) -> str:
+    """Execute knowledge_router.py for natural-language triggers."""
+    script = _knowledge_router_script_path()
+    if not script.exists():
+        return f"Knowledge Router script not found: {script}"
+
+    args = [sys.executable, str(script), action, payload]
+    if action == "remember":
+        args.extend(["--source", "hermes:nl"])
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        output = (stdout or stderr).decode().strip()
+        return output if output else "Command returned no output."
+    except asyncio.TimeoutError:
+        return "Knowledge Router timed out (30s)."
+    except Exception as e:
+        return f"Knowledge Router error: {e}"
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -779,6 +892,539 @@ class GatewayRunner:
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
+
+    def _workflow_binding_keys_for_source(self, source: SessionSource) -> set[str]:
+        keys = {str(source.chat_id or "").strip()}
+        if source.thread_id:
+            keys.add(f"{source.chat_id}:{source.thread_id}")
+        try:
+            keys.add(self._session_key_for_source(source))
+        except Exception:
+            pass
+        platform = getattr(source.platform, "value", str(source.platform))
+        if source.chat_id:
+            keys.add(f"{platform}:{source.chat_id}")
+        if source.chat_id and source.thread_id:
+            keys.add(f"{platform}:{source.chat_id}:{source.thread_id}")
+        return {key for key in keys if key}
+
+    @staticmethod
+    def _workflow_profile_id_from_value(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, dict):
+            if value.get("enabled") is False:
+                return ""
+            return str(value.get("profile_id") or value.get("profile") or "").strip()
+        return ""
+
+    def _workflow_binding_matches_source(
+        self,
+        binding: Dict[str, Any],
+        source: SessionSource,
+        binding_keys: set[str],
+    ) -> bool:
+        if binding.get("enabled") is False:
+            return False
+        platform = binding.get("platform")
+        if platform and str(platform).strip() != getattr(source.platform, "value", str(source.platform)):
+            return False
+        chat_type = binding.get("chat_type")
+        if chat_type and str(chat_type).strip() != str(source.chat_type or ""):
+            return False
+        thread_id = binding.get("thread_id")
+        if thread_id and str(thread_id).strip() != str(source.thread_id or ""):
+            return False
+
+        raw_chat_ids = binding.get("chat_ids", binding.get("chat_id"))
+        raw_session_keys = binding.get("session_keys", binding.get("session_key"))
+        candidates: set[str] = set()
+        for raw in (raw_chat_ids, raw_session_keys):
+            if raw is None:
+                continue
+            values = raw if isinstance(raw, list) else [raw]
+            candidates.update(str(value or "").strip() for value in values if str(value or "").strip())
+        return bool(candidates and (candidates & binding_keys))
+
+    def _workflow_profile_id_from_bindings(
+        self,
+        bindings: Any,
+        source: SessionSource,
+        binding_keys: set[str],
+    ) -> str:
+        if isinstance(bindings, dict):
+            for key in binding_keys:
+                if key in bindings:
+                    return self._workflow_profile_id_from_value(bindings[key])
+            profile_id = self._workflow_profile_id_from_value(bindings)
+            if profile_id and self._workflow_binding_matches_source(bindings, source, binding_keys):
+                return profile_id
+            return ""
+        if isinstance(bindings, list):
+            for binding in bindings:
+                if not isinstance(binding, dict):
+                    continue
+                profile_id = self._workflow_profile_id_from_value(binding)
+                if profile_id and self._workflow_binding_matches_source(binding, source, binding_keys):
+                    return profile_id
+        return ""
+
+    def _resolve_workflow_profile_for_source(self, source: SessionSource):
+        """Load a workflow profile only when this chat/session is explicitly bound."""
+        platform_config = getattr(getattr(self, "config", None), "platforms", {}).get(source.platform)
+        extra = getattr(platform_config, "extra", {}) if platform_config else {}
+        if not isinstance(extra, dict):
+            return None
+
+        binding_keys = self._workflow_binding_keys_for_source(source)
+        profile_id = self._workflow_profile_id_from_bindings(
+            extra.get("workflow_profiles") or extra.get("workflow_profile_bindings"),
+            source,
+            binding_keys,
+        )
+        if not profile_id:
+            profile_id = self._workflow_profile_id_from_bindings(
+                extra.get("workflow_profile"),
+                source,
+                binding_keys,
+            )
+        if not profile_id:
+            return None
+
+        try:
+            from gateway.workflow_profile import load_workflow_profile
+
+            return load_workflow_profile(profile_id)
+        except Exception:
+            logger.warning("Workflow profile binding could not be loaded: %s", profile_id, exc_info=True)
+            return None
+
+    @staticmethod
+    def _workflow_normalize_role_alias(value: Any) -> str:
+        return str(value or "").strip().lstrip("@").casefold()
+
+    def _workflow_dispatcher_aliases(self, profile: Any) -> set[str]:
+        aliases = {self._workflow_normalize_role_alias(getattr(profile, "dispatcher_role", ""))}
+        dispatcher_role = None
+        try:
+            dispatcher_role = profile.get_role(profile.dispatcher_role)
+        except Exception:
+            dispatcher_role = None
+        if dispatcher_role is not None:
+            role_values = [
+                getattr(dispatcher_role, "role_id", ""),
+                getattr(dispatcher_role, "name", ""),
+                *list(getattr(dispatcher_role, "aliases", ()) or ()),
+            ]
+            aliases.update(self._workflow_normalize_role_alias(value) for value in role_values)
+        return {alias for alias in aliases if alias}
+
+    def _workflow_event_mentions_dispatcher(self, event: Any, profile: Any) -> bool:
+        """Return True when a Feishu event explicitly mentioned this profile's dispatcher role."""
+        source = getattr(event, "source", None)
+        if getattr(source, "platform", None) != Platform.FEISHU:
+            return False
+        metadata = getattr(event, "metadata", None)
+        if not isinstance(metadata, dict):
+            return False
+        if not metadata.get("feishu_bot_mentioned"):
+            return False
+        mentioned_names = metadata.get("mentioned_names") or []
+        if isinstance(mentioned_names, str):
+            mentioned_names = [mentioned_names]
+        if not isinstance(mentioned_names, list):
+            return False
+        dispatcher_aliases = self._workflow_dispatcher_aliases(profile)
+        return any(
+            self._workflow_normalize_role_alias(name) in dispatcher_aliases
+            for name in mentioned_names
+        )
+
+    @staticmethod
+    def _workflow_new_task_command_body(event: Any) -> Optional[str]:
+        try:
+            command = event.get_command()
+        except Exception:
+            return None
+        if command != "n":
+            return None
+        try:
+            return event.get_command_args().strip()
+        except Exception:
+            return ""
+
+    def _workflow_dispatch_text_for_event(self, event: Any, profile: Any) -> str:
+        """Restore dispatcher intent when Feishu stripped the visible @PM mention."""
+        text = str(getattr(event, "text", "") or "")
+        try:
+            from gateway.dispatcher import is_pm_dispatch_message
+        except Exception:
+            return text
+        new_task_body = self._workflow_new_task_command_body(event)
+        if new_task_body is not None:
+            dispatcher_role = str(getattr(profile, "dispatcher_role", "") or "").strip()
+            if dispatcher_role and new_task_body:
+                return f"{dispatcher_role} {new_task_body}".strip()
+            return text
+        if is_pm_dispatch_message(text):
+            return text
+        if self._workflow_event_mentions_dispatcher(event, profile):
+            dispatcher_role = str(getattr(profile, "dispatcher_role", "") or "").strip()
+            if dispatcher_role:
+                return f"{dispatcher_role} {text}".strip()
+        return text
+
+    def _resolve_workflow_profile_for_event_or_source(self, event: Any, source: SessionSource):
+        profile = self._resolve_workflow_profile_for_source(source)
+        if profile is not None:
+            return profile
+        raw = getattr(event, "raw_message", None)
+        if not isinstance(raw, dict):
+            return None
+        workflow_id = str(raw.get("workflow_id") or "").strip()
+        if not workflow_id:
+            return None
+        try:
+            from gateway.task_state import get_workflow
+            from gateway.workflow_profile import load_workflow_profile
+
+            workflow = get_workflow(workflow_id)
+            profile_id = str((workflow or {}).get("profile_id") or "").strip()
+            return load_workflow_profile(profile_id) if profile_id else None
+        except Exception:
+            logger.debug("Workflow profile could not be resolved from relay event", exc_info=True)
+            return None
+
+    def _workflow_role_id_for_current_profile(self, profile: Any) -> str:
+        current_profile = self._get_current_profile_name().strip().lower()
+        for role in getattr(profile, "roles", ()) or ():
+            role_profile = str(getattr(role, "profile", "") or "").strip().lower()
+            role_id = str(getattr(role, "role_id", "") or "").strip().lower()
+            if current_profile and current_profile in {role_profile, role_id}:
+                return role_id
+        return current_profile
+
+    @staticmethod
+    def _workflow_role_profile(profile: Any, role_id: str) -> str:
+        try:
+            role = profile.get_role(role_id)
+        except Exception:
+            role = None
+        return str(getattr(role, "profile", "") or role_id or "").strip().lower()
+
+    @staticmethod
+    def _workflow_summary_text(text: str, *, max_chars: int = 500) -> str:
+        summary = " ".join(str(text or "").strip().split())
+        if len(summary) > max_chars:
+            return summary[: max_chars - 1].rstrip() + "…"
+        return summary
+
+    async def _workflow_enqueue_delivery_relay(
+        self,
+        *,
+        profile: Any,
+        source: SessionSource,
+        relay_type: str,
+        from_role: str,
+        to_role: str,
+        text: str,
+        workflow_id: str,
+        task_id: str,
+        upstream_summary: str,
+        event_message_id: str = "",
+    ) -> bool:
+        target_profile = self._workflow_role_profile(profile, to_role)
+        if not target_profile:
+            return False
+        sender_profile = self._workflow_role_profile(profile, from_role) or self._get_current_profile_name()
+        try:
+            import uuid as _uuid
+            from gateway.cross_bot_relay import enqueue_relay
+            from gateway.outbound_log import record_outbound
+
+            outbound_id = f"out_{_uuid.uuid4().hex}"
+            metadata = {
+                "from_role": from_role,
+                "to_role": to_role,
+                "upstream_task_id": task_id,
+                "upstream_summary": upstream_summary,
+            }
+            ok = await asyncio.to_thread(
+                enqueue_relay,
+                target_profile=target_profile,
+                chat_id=source.chat_id,
+                text=text,
+                sender_profile=sender_profile,
+                sender_display_name=from_role.upper(),
+                message_id=event_message_id or "",
+                workflow_id=workflow_id,
+                task_id=task_id,
+                outbound_id=outbound_id,
+                relay_type=relay_type,
+                metadata=metadata,
+            )
+            try:
+                record_outbound(
+                    outbound_id=outbound_id,
+                    platform=getattr(source.platform, "value", str(source.platform)),
+                    chat_id=source.chat_id,
+                    chat_type=source.chat_type,
+                    source_message_id=event_message_id or "",
+                    send_type="local_relay",
+                    workflow_id=workflow_id,
+                    task_id=task_id,
+                    to_role=to_role,
+                    target_role=to_role,
+                    target_profile=target_profile,
+                    content=text,
+                    send_success=ok,
+                    feishu_message_id=None,
+                    real_sent=False,
+                    error=None if ok else f"failed to enqueue workflow delivery to {target_profile}",
+                )
+            except Exception:
+                logger.debug("Failed to record workflow delivery relay", exc_info=True)
+            return bool(ok)
+        except Exception:
+            logger.warning("Failed to enqueue workflow delivery relay", exc_info=True)
+            return False
+
+    def _workflow_delivery_metadata(
+        self,
+        *,
+        profile: Any,
+        relay_type: str,
+        from_role: str,
+        to_role: str,
+        workflow_id: str,
+        task_id: str,
+        upstream_summary: str,
+        task: Dict[str, Any],
+        event_message_id: str = "",
+    ) -> Dict[str, Any]:
+        return {
+            "profile_id": str(getattr(profile, "profile_id", "") or ""),
+            "workflow_id": workflow_id,
+            "task_id": task_id,
+            "to_role": to_role,
+            "target_role": to_role,
+            "target_profile": self._workflow_role_profile(profile, to_role),
+            "task_type": str(task.get("task_type") or "workflow_task_delivery"),
+            "deliverable": str(task.get("deliverable") or "任务结果"),
+            "return_to": to_role,
+            "send_mode": "real_send",
+            "workflow_delivery": "true",
+            "relay_type": relay_type,
+            "from_role": from_role,
+            "upstream_task_id": task_id,
+            "upstream_summary": upstream_summary,
+            "source_message_id": event_message_id or "",
+        }
+
+    async def _workflow_send_delivery_message(
+        self,
+        *,
+        profile: Any,
+        source: SessionSource,
+        relay_type: str,
+        from_role: str,
+        to_role: str,
+        text: str,
+        workflow_id: str,
+        task_id: str,
+        upstream_summary: str,
+        task: Dict[str, Any],
+        event_message_id: str = "",
+    ) -> bool:
+        dispatcher_role = str(getattr(profile, "dispatcher_role", "") or "").strip().lower()
+        if relay_type == "workflow_task_return" and str(to_role or "").strip().lower() == dispatcher_role:
+            return await self._workflow_enqueue_delivery_relay(
+                profile=profile,
+                source=source,
+                relay_type=relay_type,
+                from_role=from_role,
+                to_role=to_role,
+                text=text,
+                workflow_id=workflow_id,
+                task_id=task_id,
+                upstream_summary=upstream_summary,
+                event_message_id=event_message_id,
+            )
+
+        adapter = getattr(self, "adapters", {}).get(source.platform) if getattr(self, "adapters", None) else None
+        if adapter is not None:
+            metadata = self._workflow_delivery_metadata(
+                profile=profile,
+                relay_type=relay_type,
+                from_role=from_role,
+                to_role=to_role,
+                workflow_id=workflow_id,
+                task_id=task_id,
+                upstream_summary=upstream_summary,
+                task=task,
+                event_message_id=event_message_id,
+            )
+            result = await adapter.send(source.chat_id, text, metadata=metadata)
+            if getattr(result, "success", False):
+                return True
+            logger.warning(
+                "Workflow delivery message send failed: workflow=%s task=%s to=%s error=%s",
+                workflow_id,
+                task_id,
+                to_role,
+                getattr(result, "error", "unknown"),
+            )
+            return False
+
+        return await self._workflow_enqueue_delivery_relay(
+            profile=profile,
+            source=source,
+            relay_type=relay_type,
+            from_role=from_role,
+            to_role=to_role,
+            text=text,
+            workflow_id=workflow_id,
+            task_id=task_id,
+            upstream_summary=upstream_summary,
+            event_message_id=event_message_id,
+        )
+
+    async def _workflow_complete_role_turn(
+        self,
+        *,
+        event: Any,
+        source: SessionSource,
+        profile: Any,
+        response: str,
+    ) -> None:
+        if not str(response or "").strip():
+            return
+        current_role = self._workflow_role_id_for_current_profile(profile)
+        if not current_role or current_role == getattr(profile, "dispatcher_role", ""):
+            return
+        raw = getattr(event, "raw_message", None)
+        raw = raw if isinstance(raw, dict) else {}
+        workflow_id = str(raw.get("workflow_id") or "").strip()
+        task_id = str(raw.get("task_id") or "").strip()
+        profile_id = str(getattr(profile, "profile_id", "") or "").strip()
+        result_summary = self._workflow_summary_text(response)
+
+        try:
+            from gateway import task_state
+            from gateway.message_renderer import (
+                render_review_request_message,
+                render_task_completion_delivery,
+            )
+        except Exception:
+            logger.debug("Workflow task result helpers unavailable", exc_info=True)
+            return
+
+        review_match = task_state.find_waiting_review_for_role(
+            role_id=current_role,
+            profile_id=profile_id,
+            workflow_id=workflow_id,
+            task_id=task_id,
+        )
+        if review_match:
+            workflow, task = review_match
+            approved = not re.search(r"(不通过|退回|返工|不成立|需要修改)", response)
+            updated = task_state.record_review_result(
+                workflow_id=workflow["workflow_id"],
+                task_id=task["task_id"],
+                result_text=response,
+                result_summary=result_summary,
+                reviewed_by_role=current_role,
+                approved=approved,
+            )
+            if not updated or not approved:
+                return
+            to_role = str(updated.get("returned_to_role") or updated.get("deliver_after_review_to_role") or "pm").strip().lower()
+            delivery_text = render_task_completion_delivery(
+                profile,
+                updated,
+                from_role=str(updated.get("to_role") or ""),
+                to_role=to_role,
+                result_summary=str(updated.get("result_summary") or result_summary),
+            )
+            ok = await self._workflow_send_delivery_message(
+                profile=profile,
+                source=source,
+                relay_type="workflow_task_return",
+                from_role=current_role,
+                to_role=to_role,
+                text=delivery_text,
+                workflow_id=workflow["workflow_id"],
+                task_id=task["task_id"],
+                upstream_summary=str(updated.get("result_summary") or result_summary),
+                task=updated,
+                event_message_id=getattr(event, "message_id", None) or "",
+            )
+            if not ok:
+                task_state.mark_task_failed(
+                    workflow_id=workflow["workflow_id"],
+                    task_id=task["task_id"],
+                    error=f"failed to deliver reviewed task result to {to_role}",
+                )
+            return
+
+        task_match = task_state.find_waiting_task_for_role(
+            role_id=current_role,
+            profile_id=profile_id,
+            workflow_id=workflow_id,
+            task_id=task_id,
+        )
+        if not task_match:
+            return
+        workflow, task = task_match
+        updated = task_state.record_task_result(
+            workflow_id=workflow["workflow_id"],
+            task_id=task["task_id"],
+            result_text=response,
+            result_summary=result_summary,
+            completed_by_role=current_role,
+        )
+        if not updated:
+            return
+        reviewer_role = str(updated.get("reviewer_role") or "").strip().lower()
+        if reviewer_role:
+            relay_type = "workflow_review_request"
+            to_role = reviewer_role
+            delivery_text = render_review_request_message(
+                profile,
+                updated,
+                from_role=current_role,
+                reviewer_role=reviewer_role,
+                result_summary=result_summary,
+            )
+        else:
+            relay_type = "workflow_task_return"
+            to_role = str(updated.get("returned_to_role") or updated.get("deliver_to_role") or "pm").strip().lower()
+            delivery_text = render_task_completion_delivery(
+                profile,
+                updated,
+                from_role=current_role,
+                to_role=to_role,
+                result_summary=result_summary,
+            )
+        ok = await self._workflow_send_delivery_message(
+            profile=profile,
+            source=source,
+            relay_type=relay_type,
+            from_role=current_role,
+            to_role=to_role,
+            text=delivery_text,
+            workflow_id=workflow["workflow_id"],
+            task_id=task["task_id"],
+            upstream_summary=result_summary,
+            task=updated,
+            event_message_id=getattr(event, "message_id", None) or "",
+        )
+        if not ok:
+            task_state.mark_task_failed(
+                workflow_id=workflow["workflow_id"],
+                task_id=task["task_id"],
+                error=f"failed to deliver task result to {to_role}",
+            )
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         from agent.smart_model_routing import resolve_turn_route
@@ -1997,6 +2643,11 @@ class GatewayRunner:
                     return await self._handle_approve_command(event)
                 return await self._handle_deny_command(event)
 
+            # /all is an operator-level fleet command. It must execute even if
+            # the addressed role is currently busy, especially for /all start c.
+            if _cmd_def_inner and _cmd_def_inner.name == "all":
+                return await self._handle_all_command(event)
+
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
                 adapter = self.adapters.get(source.platform)
@@ -2040,6 +2691,35 @@ class GatewayRunner:
 
         # Check for commands
         command = event.get_command()
+
+        # Knowledge OS natural-language shortcuts (MVP, gated):
+        # - Enabled only when config gate passes
+        # - Avoid intercepting chatter/question forms
+        # - Execute Knowledge Router directly (do not rewrite to slash commands)
+        #   so messaging platforms that don't support /记, /查 still work.
+        if not command and isinstance(event.text, str) and _should_enable_kos_natural_triggers():
+            _raw = event.text.strip()
+            _blocked_prefixes = ("我记一下", "等我记一下", "我查一下", "等我查一下")
+            if _raw.startswith("记一下"):
+                _args = _raw[len("记一下"):].strip()
+                if not _args:
+                    return "用法：/记 <要保存的内容>，例如：/记 今天确认 Obsidian 是主知识库"
+                if _raw.endswith(("？", "?")):
+                    pass
+                elif any(_raw.startswith(p) for p in _blocked_prefixes):
+                    pass
+                else:
+                    return await _run_knowledge_router_nl("remember", _args)
+            elif _raw.startswith("查一下"):
+                _args = _raw[len("查一下"):].strip()
+                if not _args:
+                    return "用法：/查 <关键词>，例如：/查 Knowledge OS"
+                if _raw.endswith(("？", "?")):
+                    pass
+                elif any(_raw.startswith(p) for p in _blocked_prefixes):
+                    pass
+                else:
+                    return await _run_knowledge_router_nl("search", _args)
         
         # Emit command:* hook for any recognized slash command.
         # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
@@ -2166,6 +2846,21 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "jm":
+            return await self._handle_jm_command(event)
+
+        if canonical == "all":
+            return await self._handle_all_command(event)
+
+        if canonical == "n":
+            profile = self._resolve_workflow_profile_for_source(source)
+            if profile is None:
+                return "当前会话没有绑定 workflow profile，不能使用 /n 启动协作任务。"
+            if not self._workflow_new_task_command_body(event):
+                return "用法：/n <需求>"
+            command = None
+            canonical = None
+
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
             if isinstance(self.config, dict):
@@ -2177,9 +2872,13 @@ class GatewayRunner:
             if command in quick_commands:
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":
+                    import shlex
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            user_args = event.get_command_args().strip()
+                            if "{args}" in exec_cmd:
+                                exec_cmd = exec_cmd.replace("{args}", shlex.quote(user_args))
                             proc = await asyncio.create_subprocess_shell(
                                 exec_cmd,
                                 stdout=asyncio.subprocess.PIPE,
@@ -2420,6 +3119,87 @@ class GatewayRunner:
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
 
+        try:
+            from gateway.dispatcher import dispatch_pm_message, dispatch_workflow_delivery
+            from gateway.message_renderer import render_dispatch_result, render_validation_errors
+            from gateway.message_validator import validate_message_events
+
+            profile = self._resolve_workflow_profile_for_event_or_source(event, source)
+            if profile is not None:
+                dispatch_result = dispatch_workflow_delivery(
+                    getattr(event, "raw_message", None) or {},
+                    profile=profile,
+                )
+                if not dispatch_result.get("handled"):
+                    dispatch_text = self._workflow_dispatch_text_for_event(event, profile)
+                    dispatch_result = dispatch_pm_message(dispatch_text, profile=profile)
+            else:
+                dispatch_result = {"handled": False}
+            if dispatch_result.get("handled"):
+                message_events = dispatch_result.get("message_events") or []
+                validation = validate_message_events(message_events, profile) if message_events else {"ok": True, "errors": []}
+                if not validation["ok"]:
+                    try:
+                        from gateway.task_state import mark_task_failed
+
+                        error_text = json.dumps(validation, ensure_ascii=False)
+                        for task in dispatch_result.get("tasks") or []:
+                            mark_task_failed(
+                                workflow_id=str(task.get("workflow_id") or ""),
+                                task_id=str(task.get("task_id") or ""),
+                                error=error_text,
+                            )
+                    except Exception:
+                        logger.debug("Failed to mark workflow validation task failed", exc_info=True)
+                    return render_validation_errors(validation["errors"])
+
+                adapter = self.adapters.get(source.platform)
+                for message_event in message_events:
+                    metadata = dict(message_event.get("metadata") or {})
+                    metadata.setdefault("chat_type", source.chat_type)
+                    metadata.setdefault("source_message_id", event.message_id or "")
+                    task_id = str(metadata.get("task_id") or "")
+                    workflow_id = str(metadata.get("workflow_id") or "")
+                    try:
+                        from gateway.task_state import mark_task_send_pending
+
+                        mark_task_send_pending(workflow_id=workflow_id, task_id=task_id)
+                    except Exception:
+                        logger.debug("Failed to mark workflow dispatch task send_pending", exc_info=True)
+                    send_result = None
+                    if adapter:
+                        send_result = await adapter.send(
+                            source.chat_id,
+                            message_event["content"],
+                            metadata=metadata,
+                        )
+                    if send_result is None or not getattr(send_result, "success", False):
+                        try:
+                            from gateway.task_state import mark_task_failed
+
+                            mark_task_failed(
+                                workflow_id=workflow_id,
+                                task_id=task_id,
+                                error=getattr(send_result, "error", "adapter unavailable") if send_result else "adapter unavailable",
+                            )
+                        except Exception:
+                            logger.debug("Failed to mark workflow dispatch task failed", exc_info=True)
+                    elif getattr(send_result, "message_id", None):
+                        try:
+                            from gateway.task_state import mark_task_sent
+
+                            mark_task_sent(
+                                workflow_id=workflow_id,
+                                task_id=task_id,
+                                message_id=send_result.message_id,
+                            )
+                        except Exception:
+                            logger.debug("Failed to mark workflow dispatch task sent", exc_info=True)
+
+                return render_dispatch_result(dispatch_result)
+        except Exception as exc:
+            logger.debug("Workflow dispatcher skipped: %s", exc, exc_info=True)
+
         # Auto-load skill for DM topic bindings (e.g., Telegram Private Chat Topics)
         # Only inject on NEW sessions — for ongoing conversations the skill content
         # is already in the conversation history from the first message.
@@ -2454,6 +3234,35 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
+
+        # Strip oversized inline image/base64 payloads from loaded history so
+        # prior bad turns don't permanently poison context windows.
+        if history:
+            _history_sanitized = False
+            _sanitized_count = 0
+            for _msg in history:
+                if "content" not in _msg:
+                    continue
+                _raw = _msg.get("content")
+                _clean = _sanitize_transcript_content(_raw)
+                if _clean != _raw:
+                    _msg["content"] = _clean
+                    _history_sanitized = True
+                    _sanitized_count += 1
+            if _history_sanitized:
+                try:
+                    self.session_store.rewrite_transcript(session_entry.session_id, history)
+                    logger.info(
+                        "Session hygiene: sanitized %d oversized payload message(s) in session %s",
+                        _sanitized_count,
+                        session_entry.session_id,
+                    )
+                except Exception as _sanitize_err:
+                    logger.warning(
+                        "Session hygiene: failed to persist sanitized transcript for %s: %s",
+                        session_entry.session_id,
+                        _sanitize_err,
+                    )
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -2698,20 +3507,21 @@ class GatewayRunner:
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
-            platform_name = source.platform.value
-            env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-            if not os.getenv(env_key):
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    await adapter.send(
-                        source.chat_id,
-                        f"📬 No home channel is set for {platform_name.title()}. "
-                        f"A home channel is where Hermes delivers cron job results "
-                        f"and cross-platform messages.\n\n"
-                        f"Type /sethome to make this chat your home channel, "
-                        f"or ignore to skip."
-                    )
+        # DISABLED: Too noisy — users can run /sethome when needed.
+        # if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        #     platform_name = source.platform.value
+        #     env_key = f"{platform_name.upper()}_HOME_CHANNEL"
+        #     if not os.getenv(env_key):
+        #         adapter = self.adapters.get(source.platform)
+        #         if adapter:
+        #             await adapter.send(
+        #                 source.chat_id,
+        #                 f"📬 No home channel is set for {platform_name.title()}. "
+        #                 f"A home channel is where Hermes delivers cron job results "
+        #                 f"and cross-platform messages.\n\n"
+        #                 f"Type /sethome to make this chat your home channel, "
+        #                 f"or ignore to skip."
+        #             )
         
         # -----------------------------------------------------------------
         # Voice channel awareness — inject current voice channel state
@@ -3066,12 +3876,17 @@ class GatewayRunner:
                 if not new_messages:
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
-                        {"role": "user", "content": message_text, "timestamp": ts}
+                        {
+                            "role": "user",
+                            "content": _sanitize_transcript_content(message_text),
+                            "timestamp": ts,
+                        }
                     )
                     if response:
+                        _safe_response = _sanitize_transcript_content(response)
                         self.session_store.append_to_transcript(
                             session_entry.session_id,
-                            {"role": "assistant", "content": response, "timestamp": ts}
+                            {"role": "assistant", "content": _safe_response, "timestamp": ts}
                         )
                 else:
                     # The agent already persisted these messages to SQLite via
@@ -3085,6 +3900,8 @@ class GatewayRunner:
                             continue
                         # Add timestamp to each message for debugging
                         entry = {**msg, "timestamp": ts}
+                        if "content" in entry:
+                            entry["content"] = _sanitize_transcript_content(entry.get("content"))
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
@@ -3097,6 +3914,18 @@ class GatewayRunner:
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
+
+            try:
+                workflow_profile = self._resolve_workflow_profile_for_event_or_source(event, source)
+                if workflow_profile is not None:
+                    await self._workflow_complete_role_turn(
+                        event=event,
+                        source=source,
+                        profile=workflow_profile,
+                        response=response,
+                    )
+            except Exception:
+                logger.debug("Workflow role turn completion skipped", exc_info=True)
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
@@ -4060,6 +4889,93 @@ class GatewayRunner:
         if hasattr(raw, "guild") and raw.guild:
             return raw.guild.id
         return None
+
+    # ------------------------------------------------------------------
+    # /jm command — 即梦任务队列
+    # ------------------------------------------------------------------
+
+    async def _handle_jm_command(self, event: MessageEvent) -> str:
+        """Handle /jm <subcommand> [args]."""
+        from gateway.jm_queue import handle_jm_command
+        args_text = event.get_command_args()
+        return await handle_jm_command(args_text)
+
+    async def _handle_all_command(self, event: MessageEvent) -> str:
+        """Handle /all <stop|start|start c> — fleet-wide gateway control."""
+        import asyncio
+        from functools import partial
+        args = event.get_command_args().strip().lower()
+
+        # Detect current profile so we can exclude ourselves from stop
+        my_profile = self._get_current_profile_name()
+
+        if args == "stop":
+            loop = asyncio.get_event_loop()
+            stopped, skipped, errors = await loop.run_in_executor(
+                None, partial(self._fleet_stop, exclude={my_profile}))
+            lines = [f"⏹ 已停止 {len(stopped)} 个角色（保留 {my_profile} 接收指令）"]
+            if stopped:
+                lines.append("停止: " + ", ".join(stopped))
+            if errors:
+                lines.append("失败: " + "; ".join(errors))
+            return "\n".join(lines)
+
+        if args == "start":
+            loop = asyncio.get_event_loop()
+            started, errors = await loop.run_in_executor(None, self._fleet_start_all)
+            lines = [f"▶️ 已启动 {len(started)} 个角色"]
+            if started:
+                lines.append("启动: " + ", ".join(started))
+            if errors:
+                lines.append("失败: " + "; ".join(errors))
+            return "\n".join(lines)
+
+        if args in ("start c", "startc", "start clean"):
+            loop = asyncio.get_event_loop()
+            log_path = await loop.run_in_executor(None, self._fleet_start_clean_detached)
+            return (
+                "已接收 /all start c。\n"
+                "后台将执行：停止全部角色 -> 清空当前任务和会话 -> 重启全部角色 -> 每个角色进入新会话。\n"
+                f"执行日志: {log_path}"
+            )
+
+        return "用法: /all stop | /all start | /all start c"
+
+    def _get_current_profile_name(self) -> str:
+        """Return the profile name of the currently running gateway."""
+        try:
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home().resolve()
+            default = (Path.home() / ".hermes").resolve()
+            if home == default:
+                return "default"
+            profiles_root = (default / "profiles").resolve()
+            rel = home.relative_to(profiles_root)
+            if len(rel.parts) == 1:
+                return rel.parts[0]
+        except Exception:
+            pass
+        return "default"
+
+    @staticmethod
+    def _fleet_stop(exclude: set[str] | None = None):
+        from hermes_cli.fleet_ctl import fleet_stop
+        return fleet_stop(exclude_profiles=exclude)
+
+    @staticmethod
+    def _fleet_start_all():
+        from hermes_cli.fleet_ctl import fleet_start
+        return fleet_start()
+
+    @staticmethod
+    def _fleet_clean():
+        from hermes_cli.fleet_ctl import fleet_clean
+        return fleet_clean()
+
+    @staticmethod
+    def _fleet_start_clean_detached():
+        from hermes_cli.fleet_ctl import fleet_start_clean_detached
+        return fleet_start_clean_detached()
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
@@ -6376,39 +7292,37 @@ class GatewayRunner:
             last_tool[0] = tool_name
             
             # Build progress message with primary argument preview
-            from agent.display import get_tool_emoji
+            from agent.display import (
+                get_tool_emoji,
+                format_tool_activity_text,
+                get_tool_preview_max_len,
+            )
             emoji = get_tool_emoji(tool_name, default="⚙️")
-            
+
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
-                if args:
-                    from agent.display import get_tool_preview_max_len
-                    _pl = get_tool_preview_max_len()
-                    import json as _json
-                    args_str = _json.dumps(args, ensure_ascii=False, default=str)
-                    _cap = _pl if _pl > 0 else 200
-                    if len(args_str) > _cap:
-                        args_str = args_str[:_cap - 3] + "..."
-                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
-                elif preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
-                else:
-                    msg = f"{emoji} {tool_name}..."
+                _pl = get_tool_preview_max_len()
+                _cap = _pl if _pl > 0 else 200
+                zh_line = format_tool_activity_text(
+                    tool_name=tool_name or "",
+                    args=args if isinstance(args, dict) else {},
+                    preview=preview,
+                    max_len=_cap,
+                )
+                msg = f"{emoji} {zh_line}"
+                msg = _safe_chat_status(msg)
+                if not msg:
+                    return
                 progress_queue.put(msg)
                 return
-            
-            # "all" / "new" modes: short preview, respects tool_preview_length
-            # config (defaults to 40 chars when unset to keep gateway messages
-            # compact — unlike CLI spinners, these persist as permanent messages).
-            if preview:
-                from agent.display import get_tool_preview_max_len
-                _pl = get_tool_preview_max_len()
-                _cap = _pl if _pl > 0 else 40
-                if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
-            else:
-                msg = f"{emoji} {tool_name}..."
+
+            # "all" / "new" modes: short Chinese display text.
+            _pl = get_tool_preview_max_len()
+            _cap = _pl if _pl > 0 else 40
+            msg = f"{emoji} {format_tool_activity_text(tool_name=tool_name or '', args=args, preview=preview, max_len=_cap)}"
+            msg = _safe_chat_status(msg)
+            if not msg:
+                return
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
@@ -6437,6 +7351,16 @@ class GatewayRunner:
         else:
             _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+
+        def _safe_chat_status(text: str, *, fallback: str | None = None) -> str | None:
+            """Sanitize status/progress text before it reaches chat platforms."""
+            try:
+                from gateway.message_renderer import sanitize_user_visible_message
+
+                return sanitize_user_visible_message(str(text or ""), fallback=fallback)
+            except Exception as _e:
+                logger.debug("message_renderer sanitize failed: %s", _e)
+                return fallback if fallback else (str(text or "").strip() or None)
 
         async def send_progress_messages():
             if not progress_queue:
@@ -6471,11 +7395,16 @@ class GatewayRunner:
                     # Handle dedup messages: update last line with repeat counter
                     if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw
+                        base_msg = _safe_chat_status(base_msg)
+                        if not base_msg:
+                            continue
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
                     else:
-                        msg = raw
+                        msg = _safe_chat_status(raw)
+                        if not msg:
+                            continue
                         progress_lines.append(msg)
 
                     # Throttle edits: batch rapid tool updates into fewer
@@ -6493,7 +7422,9 @@ class GatewayRunner:
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _safe_chat_status("\n".join(progress_lines))
+                        if not full_text:
+                            continue
                         result = await adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=progress_msg_id,
@@ -6514,10 +7445,15 @@ class GatewayRunner:
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
+                            full_text = _safe_chat_status("\n".join(progress_lines))
+                            if not full_text:
+                                continue
                             result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
                         else:
                             # Editing unsupported: send just this line
+                            msg = _safe_chat_status(msg)
+                            if not msg:
+                                continue
                             result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
@@ -6537,15 +7473,22 @@ class GatewayRunner:
                             raw = progress_queue.get_nowait()
                             if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                                 _, base_msg, count = raw
+                                base_msg = _safe_chat_status(base_msg)
+                                if not base_msg:
+                                    continue
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
                             else:
-                                progress_lines.append(raw)
+                                msg = _safe_chat_status(raw)
+                                if msg:
+                                    progress_lines.append(msg)
                         except Exception:
                             break
                     # Final edit with all remaining tools (only if editing works)
                     if can_edit and progress_lines and progress_msg_id:
-                        full_text = "\n".join(progress_lines)
+                        full_text = _safe_chat_status("\n".join(progress_lines))
+                        if not full_text:
+                            return
                         try:
                             await adapter.edit_message(
                                 chat_id=source.chat_id,
@@ -6603,10 +7546,13 @@ class GatewayRunner:
             if not _status_adapter:
                 return
             try:
+                safe_message = _safe_chat_status(message)
+                if not safe_message:
+                    return
                 asyncio.run_coroutine_threadsafe(
                     _status_adapter.send(
                         _status_chat_id,
-                        message,
+                        safe_message,
                         metadata=_status_thread_metadata,
                     ),
                     _loop_for_step,
@@ -6755,10 +7701,13 @@ class GatewayRunner:
                 if not _status_adapter:
                     return
                 try:
+                    safe_message = _safe_chat_status(message)
+                    if not safe_message:
+                        return
                     asyncio.run_coroutine_threadsafe(
                         _status_adapter.send(
                             _status_chat_id,
-                            message,
+                            safe_message,
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
@@ -6844,6 +7793,9 @@ class GatewayRunner:
             # The callback bridges sync→async to send the approval request
             # to the user immediately.
             from tools.approval import (
+                approval_reason_label_text,
+                approval_title_text,
+                localize_approval_reason,
                 register_gateway_notify,
                 reset_current_session_key,
                 set_current_session_key,
@@ -6891,20 +7843,24 @@ class GatewayRunner:
                             "Button-based approval failed, falling back to text: %s", _e
                         )
 
-                # Fallback: plain text approval prompt
-                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                # Fallback: plain text approval prompt. Keep the command in
+                # approval internals/logs, not in chat display.
                 msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
-                    f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
-                    f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                    f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
+                    f"⚠️ **{approval_title_text()}**\n"
+                    f"{approval_reason_label_text()}：{localize_approval_reason(desc)}\n\n"
+                    "回复 `/approve` 立即执行；"
+                    "回复 `/approve session` 本会话放行同类命令；"
+                    "回复 `/approve always` 永久放行；"
+                    "回复 `/deny` 取消执行。"
                 )
                 try:
+                    safe_msg = _safe_chat_status(msg, fallback="⚠️ 需要确认一项高风险操作。回复 `/approve` 继续，或回复 `/deny` 取消。")
+                    if not safe_msg:
+                        return
                     asyncio.run_coroutine_threadsafe(
                         _status_adapter.send(
                             _status_chat_id,
-                            msg,
+                            safe_msg,
                             metadata=_status_thread_metadata,
                         ),
                         _loop_for_step,
@@ -7115,24 +8071,24 @@ class GatewayRunner:
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
-                # Include agent activity context if available.
+                # Keep tool/iteration details in logs only; chat gets a safe,
+                # human-readable heartbeat.
                 _agent_ref = agent_holder[0]
-                _status_detail = ""
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
-                        _a = _agent_ref.get_activity_summary()
-                        _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
-                        if _a.get("current_tool"):
-                            _parts.append(f"running: {_a['current_tool']}")
-                        else:
-                            _parts.append(_a.get("last_activity_desc", ""))
-                        _status_detail = " — " + ", ".join(_parts)
+                        logger.debug("Long-running activity summary: %s", _agent_ref.get_activity_summary())
                     except Exception:
                         pass
                 try:
+                    _notice = _safe_chat_status(
+                        f"⏳ 正在处理，请稍候。已运行约 {_elapsed_mins} 分钟。",
+                        fallback="⏳ 正在处理，请稍候。",
+                    )
+                    if not _notice:
+                        continue
                     await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        _notice,
                         metadata=_status_thread_metadata,
                     )
                 except Exception as _ne:
@@ -7196,12 +8152,17 @@ class GatewayRunner:
                             _elapsed_warn = int(_agent_warning // 60) or 1
                             _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
                             try:
+                                _warning_message = _safe_chat_status(
+                                    f"⚠️ 已经 {_elapsed_warn} 分钟没有新的进展。"
+                                    f"如果继续没有响应，约 {_remaining_mins} 分钟后会超时。"
+                                    "你可以继续等待，或使用 /reset 重新开始。",
+                                    fallback="⚠️ 当前处理暂时没有新的进展。你可以继续等待，或使用 /reset 重新开始。",
+                                )
+                                if not _warning_message:
+                                    continue
                                 await _warn_adapter.send(
                                     source.chat_id,
-                                    f"⚠️ No activity for {_elapsed_warn} min. "
-                                    f"If the agent does not respond soon, it will "
-                                    f"be timed out in {_remaining_mins} min. "
-                                    f"You can continue waiting or use /reset.",
+                                    _warning_message,
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
@@ -7241,28 +8202,12 @@ class GatewayRunner:
 
                 _timeout_mins = int(_agent_timeout // 60) or 1
 
-                # Construct a user-facing message with diagnostic context.
+                # Construct a user-facing message without backend diagnostics.
                 _diag_lines = [
-                    f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls "
-                    f"or API responses."
+                    f"⏱️ 当前流程卡在后台处理超时。",
+                    f"已连续约 {_timeout_mins} 分钟没有新的进展。",
+                    "请稍后重试，或使用 /reset 重新开始。",
                 ]
-                if _cur_tool:
-                    _diag_lines.append(
-                        f"The agent appears stuck on tool `{_cur_tool}` "
-                        f"({_secs_ago:.0f}s since last activity, "
-                        f"iteration {_iter_n}/{_iter_max})."
-                    )
-                else:
-                    _diag_lines.append(
-                        f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                        f"iteration {_iter_n}/{_iter_max}). "
-                        "The agent may have been waiting on an API response."
-                    )
-                _diag_lines.append(
-                    "To increase the limit, set agent.gateway_timeout in config.yaml "
-                    "(value in seconds, 0 = no limit) and restart the gateway.\n"
-                    "Try again, or use /reset to start fresh."
-                )
 
                 response = {
                     "final_response": "\n".join(_diag_lines),

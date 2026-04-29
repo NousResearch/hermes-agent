@@ -570,9 +570,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     return  # Only show tool start events in chat stream
                 if name.startswith("_"):
                     return  # Skip internal events (_thinking)
-                from agent.display import get_tool_emoji
+                from agent.display import get_tool_emoji, format_tool_activity_text
                 emoji = get_tool_emoji(name)
-                label = preview or name
+                label = format_tool_activity_text(
+                    tool_name=name,
+                    args=args if isinstance(args, dict) else {},
+                    preview=preview,
+                    max_len=60,
+                )
                 _stream_q.put(f"\n`{emoji} {label}`\n")
 
             # Start agent in background.  agent_ref is a mutable container
@@ -1349,12 +1354,22 @@ class APIServerAdapter(BasePlatformAdapter):
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
             if event_type == "tool.started":
+                try:
+                    from agent.display import format_tool_activity_text
+                    preview_text = format_tool_activity_text(
+                        tool_name=tool_name or "",
+                        args=args if isinstance(args, dict) else {},
+                        preview=preview,
+                        max_len=60,
+                    )
+                except Exception:
+                    preview_text = preview
                 _push({
                     "event": "tool.started",
                     "run_id": run_id,
                     "timestamp": ts,
                     "tool": tool_name,
-                    "preview": preview,
+                    "preview": preview_text,
                 })
             elif event_type == "tool.completed":
                 _push({

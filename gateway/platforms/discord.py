@@ -55,6 +55,15 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
 )
+from tools.approval import (
+    approval_already_resolved_text,
+    approval_button_label,
+    approval_decision_label,
+    approval_not_authorized_text,
+    approval_reason_label_text,
+    approval_title_text,
+    localize_approval_reason,
+)
 from tools.url_safety import is_safe_url
 
 
@@ -2008,11 +2017,15 @@ class DiscordAdapter(BasePlatformAdapter):
             max_desc = 4088
             cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
             embed = discord.Embed(
-                title="⚠️ Command Approval Required",
+                title=approval_title_text(),
                 description=f"```\n{cmd_display}\n```",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Reason", value=description, inline=False)
+            embed.add_field(
+                name=approval_reason_label_text(),
+                value=localize_approval_reason(description),
+                inline=False,
+            )
 
             view = ExecApprovalView(
                 session_key=session_key,
@@ -2490,13 +2503,13 @@ if DISCORD_AVAILABLE:
             """Resolve the approval via the gateway approval queue and update the embed."""
             if self.resolved:
                 await interaction.response.send_message(
-                    "This approval has already been resolved~", ephemeral=True
+                    approval_already_resolved_text(), ephemeral=True
                 )
                 return
 
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
-                    "You're not authorized to approve commands~", ephemeral=True
+                    approval_not_authorized_text(), ephemeral=True
                 )
                 return
 
@@ -2506,7 +2519,7 @@ if DISCORD_AVAILABLE:
             embed = interaction.message.embeds[0] if interaction.message.embeds else None
             if embed:
                 embed.color = color
-                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+                embed.set_footer(text=f"{label}（处理人：{interaction.user.display_name}）")
 
             # Disable all buttons
             for child in self.children:
@@ -2525,29 +2538,29 @@ if DISCORD_AVAILABLE:
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc)
 
-        @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
+        @discord.ui.button(label=approval_button_label("approve_once"), style=discord.ButtonStyle.green)
         async def allow_once(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
+            await self._resolve(interaction, "once", discord.Color.green(), approval_decision_label("once"))
 
-        @discord.ui.button(label="Allow Session", style=discord.ButtonStyle.grey)
+        @discord.ui.button(label=approval_button_label("approve_session"), style=discord.ButtonStyle.grey)
         async def allow_session(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "session", discord.Color.blue(), "Approved for session")
+            await self._resolve(interaction, "session", discord.Color.blue(), approval_decision_label("session"))
 
-        @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
+        @discord.ui.button(label=approval_button_label("approve_always"), style=discord.ButtonStyle.blurple)
         async def allow_always(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "always", discord.Color.purple(), "Approved permanently")
+            await self._resolve(interaction, "always", discord.Color.purple(), approval_decision_label("always"))
 
-        @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
+        @discord.ui.button(label=approval_button_label("deny"), style=discord.ButtonStyle.red)
         async def deny(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):
-            await self._resolve(interaction, "deny", discord.Color.red(), "Denied")
+            await self._resolve(interaction, "deny", discord.Color.red(), approval_decision_label("deny"))
 
         async def on_timeout(self):
             """Handle view timeout -- disable buttons and mark as expired."""

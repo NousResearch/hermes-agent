@@ -84,19 +84,21 @@ class TestMakeToolCallId:
 
 
 class TestBuildToolTitle:
-    def test_terminal_title_includes_command(self):
+    def test_terminal_title_hides_command(self):
         title = build_tool_title("terminal", {"command": "ls -la /tmp"})
-        assert "ls -la /tmp" in title
+        assert title == "正在处理后台任务"
+        assert "ls -la /tmp" not in title
 
-    def test_terminal_title_truncates_long_command(self):
+    def test_terminal_title_hides_long_command(self):
         long_cmd = "x" * 200
         title = build_tool_title("terminal", {"command": long_cmd})
-        assert len(title) < 120
-        assert "..." in title
+        assert title == "正在处理后台任务"
+        assert long_cmd not in title
 
     def test_read_file_title(self):
         title = build_tool_title("read_file", {"path": "/etc/hosts"})
-        assert "/etc/hosts" in title
+        assert "正在读取文件" in title
+        assert "etc/hosts" in title
 
     def test_patch_title(self):
         title = build_tool_title("patch", {"path": "main.py", "mode": "replace"})
@@ -104,15 +106,18 @@ class TestBuildToolTitle:
 
     def test_search_title(self):
         title = build_tool_title("search_files", {"pattern": "TODO"})
+        assert "正在搜索文件" in title
         assert "TODO" in title
 
     def test_web_search_title(self):
         title = build_tool_title("web_search", {"query": "python asyncio"})
+        assert "正在搜索网页" in title
         assert "python asyncio" in title
 
     def test_unknown_tool_uses_name(self):
         title = build_tool_title("some_new_tool", {"foo": "bar"})
-        assert title == "some_new_tool"
+        assert "正在处理工具" in title
+        assert "some_new_tool" in title
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +186,13 @@ class TestBuildToolStart:
         assert isinstance(result, ToolCallStart)
         assert result.kind == "search"
         assert "TODO" in result.content[0].content.text
+        assert "正在搜索文件" in result.content[0].content.text
+
+    def test_build_tool_start_preserves_raw_input(self):
+        """Display text can change, but raw_input must preserve internal keys."""
+        args = {"command": "ls -la", "workdir": "/tmp"}
+        result = build_tool_start("tc-raw", "terminal", args)
+        assert result.raw_input == args
 
     def test_build_tool_start_generic_fallback(self):
         """Unknown tools should get a generic text representation."""

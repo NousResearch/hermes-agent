@@ -1,5 +1,6 @@
 """Tests for user-defined quick commands that bypass the agent loop."""
 import subprocess
+import asyncio
 from unittest.mock import MagicMock, patch, AsyncMock
 from rich.text import Text
 import pytest
@@ -46,6 +47,13 @@ class TestCLIQuickCommands:
         cli.console.print.assert_called_once()
         args = cli.console.print.call_args[0][0]
         assert "no output" in args.lower()
+
+    def test_exec_command_expands_args_placeholder(self):
+        cli = self._make_cli({"memo": {"type": "exec", "command": "echo {args}"}})
+        cli.process_command("/memo hello world")
+        cli.console.print.assert_called_once()
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert printed == "hello world"
 
     def test_alias_command_routes_to_target(self):
         """Alias quick commands rewrite to the target command."""
@@ -186,3 +194,26 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_gateway_exec_command_expands_args_placeholder(self):
+        from gateway.run import GatewayRunner
+
+        async def _fake_proc(*args, **kwargs):
+            proc = MagicMock()
+            proc.communicate = AsyncMock(return_value=(b"hello world\n", b""))
+            return proc
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"memo": {"type": "exec", "command": "echo {args}"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner.hooks = MagicMock()
+        runner.hooks.emit = AsyncMock()
+
+        event = self._make_event("memo", "hello world")
+        with patch("asyncio.create_subprocess_shell", new=AsyncMock(side_effect=_fake_proc)):
+            result = await runner._handle_message(event)
+
+        assert result == "hello world"

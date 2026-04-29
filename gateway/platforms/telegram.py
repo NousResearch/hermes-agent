@@ -71,6 +71,14 @@ from gateway.platforms.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
+from tools.approval import (
+    approval_already_resolved_text,
+    approval_button_label,
+    approval_decision_label,
+    approval_reason_label_text,
+    approval_title_text,
+    localize_approval_reason,
+)
 
 
 def check_telegram_requirements() -> bool:
@@ -1028,9 +1036,9 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
             text = (
-                f"⚠️ *Command Approval Required*\n\n"
+                f"⚠️ *{approval_title_text()}*\n\n"
                 f"`{cmd_preview}`\n\n"
-                f"Reason: {description}"
+                f"{approval_reason_label_text()}：{localize_approval_reason(description)}"
             )
 
             # Resolve thread context for thread replies
@@ -1048,12 +1056,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
-                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
+                    InlineKeyboardButton(approval_button_label("approve_once"), callback_data=f"ea:once:{approval_id}"),
+                    InlineKeyboardButton(approval_button_label("approve_session"), callback_data=f"ea:session:{approval_id}"),
                 ],
                 [
-                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
-                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
+                    InlineKeyboardButton(approval_button_label("approve_always"), callback_data=f"ea:always:{approval_id}"),
+                    InlineKeyboardButton(approval_button_label("deny"), callback_data=f"ea:deny:{approval_id}"),
                 ],
             ])
 
@@ -1395,30 +1403,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     approval_id = int(parts[2])
                 except (ValueError, IndexError):
-                    await query.answer(text="Invalid approval data.")
+                    await query.answer(text="审批数据无效，请重试。")
                     return
 
                 session_key = self._approval_state.pop(approval_id, None)
                 if not session_key:
-                    await query.answer(text="This approval has already been resolved.")
+                    await query.answer(text=approval_already_resolved_text())
                     return
 
-                # Map choice to human-readable label
-                label_map = {
-                    "once": "✅ Approved once",
-                    "session": "✅ Approved for session",
-                    "always": "✅ Approved permanently",
-                    "deny": "❌ Denied",
-                }
                 user_display = getattr(query.from_user, "first_name", "User")
-                label = label_map.get(choice, "Resolved")
+                label = approval_decision_label(choice)
 
                 await query.answer(text=label)
 
                 # Edit message to show decision, remove buttons
                 try:
                     await query.edit_message_text(
-                        text=f"{label} by {user_display}",
+                        text=f"{label}（处理人：{user_display}）",
                         parse_mode=ParseMode.MARKDOWN,
                         reply_markup=None,
                     )

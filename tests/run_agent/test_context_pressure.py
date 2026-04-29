@@ -32,12 +32,12 @@ class TestFormatContextPressure:
     def test_80_percent_uses_warning_icon(self):
         line = format_context_pressure(0.80, 100_000, 0.50)
         assert "⚠" in line
-        assert "80% to compaction" in line
+        assert "80%" in line
 
     def test_90_percent_uses_warning_icon(self):
         line = format_context_pressure(0.90, 100_000, 0.50)
         assert "⚠" in line
-        assert "90% to compaction" in line
+        assert "90%" in line
 
     def test_bar_length_scales_with_progress(self):
         line_80 = format_context_pressure(0.80, 100_000, 0.50)
@@ -58,11 +58,11 @@ class TestFormatContextPressure:
 
     def test_approaching_hint(self):
         line = format_context_pressure(0.80, 100_000, 0.50)
-        assert "compaction approaching" in line
+        assert "接近整理阈值" in line
 
     def test_no_compaction_when_disabled(self):
         line = format_context_pressure(0.85, 100_000, 0.50, compression_enabled=False)
-        assert "no auto-compaction" in line
+        assert "已关闭自动整理" in line
 
     def test_returns_string(self):
         result = format_context_pressure(0.65, 128_000, 0.50)
@@ -82,17 +82,17 @@ class TestFormatContextPressureGateway:
 
     def test_80_percent_warning(self):
         msg = format_context_pressure_gateway(0.80, 0.50)
-        assert "80% to compaction" in msg
+        assert "80%" in msg
         assert "50%" in msg
 
     def test_90_percent_warning(self):
         msg = format_context_pressure_gateway(0.90, 0.50)
-        assert "90% to compaction" in msg
-        assert "approaching" in msg
+        assert "90%" in msg
+        assert "接近整理阈值" in msg
 
     def test_no_compaction_warning(self):
         msg = format_context_pressure_gateway(0.85, 0.50, compression_enabled=False)
-        assert "disabled" in msg
+        assert "已关闭自动整理" in msg
 
     def test_no_ansi_codes(self):
         msg = format_context_pressure_gateway(0.80, 0.50)
@@ -105,7 +105,7 @@ class TestFormatContextPressureGateway:
     def test_over_100_percent_capped(self):
         """Progress > 1.0 should cap percentage text at 100%."""
         msg = format_context_pressure_gateway(1.09, 0.50)
-        assert "100% to compaction" in msg
+        assert "100%" in msg
         assert "109%" not in msg
         assert msg.count("▰") == 20
 
@@ -167,7 +167,7 @@ class TestContextPressureFlags:
         cb.assert_called_once()
         args = cb.call_args[0]
         assert args[0] == "context_pressure"
-        assert "85% to compaction" in args[1]
+        assert "85%" in args[1]
 
     def test_emit_no_callback_no_crash(self, agent):
         """No status_callback set — should not crash."""
@@ -193,7 +193,7 @@ class TestContextPressureFlags:
         agent._emit_context_pressure(0.85, compressor)
         captured = capsys.readouterr()
         assert "▰" in captured.out
-        assert "to compaction" in captured.out
+        assert "当前占用" in captured.out
 
     def test_emit_skips_print_for_gateway_platform(self, agent, capsys):
         """Gateway platforms get the callback, not CLI print."""

@@ -124,6 +124,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
+    CommandDef("jm", "即梦任务队列管理 (add/list/status)", "Tools & Skills",
+               gateway_only=True, args_hint="<add|list|status> [--worker <id>] [--prompt <text>]",
+               subcommands=("add", "list", "status", "help")),
+    CommandDef("all", "全部角色批量控制 (stop/start/start c)", "Tools & Skills",
+               gateway_only=True, args_hint="<stop|start|start c>",
+               subcommands=("stop", "start")),
+    CommandDef("n", "启动一个新的 workflow 协作任务", "Tools & Skills",
+               gateway_only=True, args_hint="<需求>"),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

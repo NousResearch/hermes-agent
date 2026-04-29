@@ -711,6 +711,7 @@ export function useMainApp(gw: GatewayClient) {
   const anyPanelVisible = SECTION_NAMES.some(
     s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
   )
+  const thinkingPanelVisible = sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
 
   const showProgressArea = useTurnSelector(state =>
     anyPanelVisible
@@ -723,7 +724,7 @@ export function useMainApp(gw: GatewayClient) {
           state.tools.length ||
           state.todos.length ||
           state.turnTrail.length ||
-          hasReasoning ||
+          (thinkingPanelVisible && hasReasoning) ||
           state.activity.length
         )
       : state.activity.some(item => item.tone !== 'info')

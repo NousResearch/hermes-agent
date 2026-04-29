@@ -219,6 +219,7 @@ function backgroundLuminance(raw: string): null | number {
   }
 
   const hex = v.startsWith('#') ? v.slice(1) : v
+
   const rgb = HEX_6_RE.test(hex)
     ? [parseInt(hex.slice(0, 2), 16), parseInt(hex.slice(2, 4), 16), parseInt(hex.slice(4, 6), 16)]
     : HEX_3_RE.test(hex)
@@ -254,7 +255,7 @@ export function detectLightMode(
   env: NodeJS.ProcessEnv = process.env,
   // Injectable so tests can prove the COLORFGBG-over-TERM_PROGRAM
   // precedence rule even though the production allow-list is empty.
-  lightDefaultTermPrograms: ReadonlySet<string> = LIGHT_DEFAULT_TERM_PROGRAMS,
+  lightDefaultTermPrograms: ReadonlySet<string> = LIGHT_DEFAULT_TERM_PROGRAMS
 ): boolean {
   const lightFlag = (env.HERMES_TUI_LIGHT ?? '').trim().toLowerCase()
 

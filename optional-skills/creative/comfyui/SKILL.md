@@ -179,17 +179,37 @@ Show images to the user via `vision_analyze` or return the file path directly.
 
 ## Setup & Onboarding
 
-When a user asks to set up ComfyUI, walk them through the path that fits their situation.
-**Do not assume they can run ComfyUI locally** — run the hardware check first, then use
-its verdict to pick the right install path.
+When a user asks to set up ComfyUI, the FIRST thing to do is ask them whether
+they want **Comfy Cloud** (hosted, zero install, API key) or **Local** (install
+ComfyUI on their machine). Do NOT start running install commands or hardware
+checks until they've answered.
 
 **Official docs:** https://docs.comfy.org/installation
 **CLI docs:** https://docs.comfy.org/comfy-cli/getting-started
 **Cloud docs:** https://docs.comfy.org/get_started/cloud
 
-### Step 0: Check If This Machine Can Run ComfyUI Locally (MANDATORY)
+### Step 0: Ask Local vs Cloud (ALWAYS FIRST)
 
-Before recommending an install path, run:
+Present the tradeoff clearly and wait for the user to choose. Suggested script:
+
+> "Do you want to run ComfyUI locally on your machine, or use Comfy Cloud?
+>
+> - **Comfy Cloud** — hosted on RTX 6000 Pro GPUs, all models pre-installed, zero setup. Requires an API key (paid subscription). Best if you don't have a capable GPU or want to skip installation.
+> - **Local** — free, but your machine MUST meet the hardware requirements:
+>   - NVIDIA GPU with **≥6 GB VRAM** (≥8 GB recommended for SDXL, ≥12 GB for Flux/video), OR
+>   - AMD GPU with ROCm support (Linux), OR
+>   - Apple Silicon Mac (M1 or newer) with **≥16 GB unified memory** (≥32 GB recommended).
+>   - Intel Macs and machines with no GPU will NOT work — use Cloud instead.
+>
+> Which would you like?"
+
+Route based on their answer:
+
+- **User picks Cloud** → skip to **Path A** (no hardware check needed).
+- **User picks Local** → go to **Step 1: Hardware Check** to verify their machine actually meets the requirements, then pick an install path from Paths B-E based on the verdict.
+- **User is unsure / asks for a recommendation** → run the hardware check anyway and let the verdict decide.
+
+### Step 1: Verify Hardware (ONLY if user chose local)
 
 ```bash
 python3 scripts/hardware_check.py --json
@@ -202,7 +222,7 @@ and unified/system RAM, then returns a verdict plus a suggested `comfy-cli` flag
 |------------|-----------------------------------------------------------|-------------------------------------------------|
 | `ok`       | ≥8 GB VRAM (discrete) OR ≥32 GB unified (Apple Silicon)   | Local install — use `comfy_cli_flag` from report |
 | `marginal` | SD1.5 works; SDXL tight; Flux/video unlikely              | Local OK for light workflows, else **Path A (Cloud)** |
-| `cloud`    | No usable GPU, <6 GB VRAM, <16 GB Apple unified, Intel Mac | **Go straight to Path A (Comfy Cloud)** — do NOT install locally |
+| `cloud`    | No usable GPU, <6 GB VRAM, <16 GB Apple unified, Intel Mac | **User chose local but their machine doesn't meet requirements** — surface the `notes` and ask if they want to switch to Cloud |
 
 Hardware thresholds the skill enforces:
 
@@ -212,9 +232,14 @@ Hardware thresholds the skill enforces:
 - **No accelerator at all:** CPU-only is listed as a comfy-cli option but a single SDXL
   image takes 10+ minutes — treat it as unusable and route to Cloud.
 
-The report's `comfy_cli_flag` field gives you the exact flag for Step 1 below:
+If verdict is `cloud` but the user explicitly wanted local, DO NOT proceed
+silently. Show the `notes` array verbatim, explain which requirement they
+don't meet, and ask whether they want to (a) switch to Cloud or (b) force
+a local install anyway (marginal/cloud-verdict local installs will OOM or
+be unusably slow on modern models).
+
+The report's `comfy_cli_flag` field gives you the exact flag for Step 2 below:
 `--nvidia`, `--amd`, or `--m-series`. For Intel Arc, use Path E (manual install).
-For `verdict: cloud`, skip to Path A.
 
 Surface the `notes` array verbatim to the user so they understand why a
 particular path was recommended.

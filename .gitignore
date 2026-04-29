@@ -70,3 +70,24 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
+
+# Methodology overlay - per-machine config
+.claude/settings.local.json
+.claude/agents.local/
+config/models.yml
+config/pricing.yml
+config/cost-baseline.yml
+overlay-pin.txt
+
+# Audits - folder structure committed, individual reports gitignored
+audits/escalations/*/
+audits/handoffs/*.md
+audits/chen/*.md
+audits/code-review/*.md
+audits/adversarial/*/
+!audits/README.md
+!audits/escalations/.gitkeep
+!audits/handoffs/.gitkeep
+!audits/chen/.gitkeep
+!audits/code-review/.gitkeep
+!audits/adversarial/.gitkeep

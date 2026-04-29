@@ -1,0 +1,7 @@
+# Estimated monthly token volume per role (operator-set, refined over time)
+primary_reasoning: 5000000
+fast_iteration: 15000000
+adversarial_review: 1000000
+legal_tech_review: 2000000
+cheap_routine: 8000000
+escalate_head: 500000

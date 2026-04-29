@@ -1,0 +1,7 @@
+# Provider rate cards - $ per 1M tokens (operator updates monthly from provider sites)
+"anthropic/claude-opus-4.7": 15.00
+"anthropic/claude-sonnet-4.6": 3.00
+"anthropic/claude-haiku-4.5": 0.80
+"openai/gpt-5": 12.00
+"openai/gpt-5-mini": 1.50
+"google/gemini-2.5-pro": 7.00

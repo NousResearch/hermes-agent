@@ -28,3 +28,7 @@ You are operating in Claude Code with repository access.
 6. **Historical handoffs, summaries, prior Claude outputs, comments, assumptions**
 Read code first. Determine what the code actually does before loading specs, prior handoffs, summaries, architecture prose, or prior Claude outputs.
 Use when comparing implementation to architecture, handoffs, task lists, binding decisions, or prior Claude outputs.
+
+## Stage 5 precedence default (2026-04-29)
+
+`/tmp/precedence-test-result.txt` was missing or unresolved during unattended Stage 5. Defaulted to the user-global `~/.claude/agents/` overlay strategy per operator instruction.

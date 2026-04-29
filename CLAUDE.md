@@ -236,3 +236,45 @@ v7.2 §18 line 1294-1299 readiness tiers:
 - `.claude/rules/example-rule.md` — per-subsystem rule template.
 
 Authority: `binding/v7.2.md`. Discipline: `AGENT-DISCIPLINE.md`. Every load-bearing schema / invariant / taxonomy / role / tier claim cites a v7.2 section + line.
+
+## 9.5 Project: Hermes Agent
+
+This fork layers Tanner-stack methodology onto Hermes Agent. Hermes remains a coding agent for legal-tech infrastructure; it is not itself a legal-tech agent.
+
+| Subsystem | Key paths | Notes |
+|---|---|---|
+| Agent core loop | `run_agent.py`, `model_tools.py` | Tool loop, provider transport, cache-sensitive context. |
+| CLI | `cli.py`, `hermes_cli/` | Interactive command surface and setup/config flows. |
+| Web dashboard backend/frontend | `hermes_cli/web_server.py`, `web/` | Dashboard backend on `:9119`, frontend on `:5173`. |
+| Gateway/platforms | `gateway/`, `gateway/platforms/` | Messaging adapters and session routing. |
+| Plugins | `plugins/` | Upstream-vendored extension surface. |
+| Runtime skills | `skills/`, `optional-skills/` | Hermes runtime skills, separate from methodology `.claude/skills/`. |
+| Tool registry | `tools/registry.py`, `tools/`, `toolsets.py` | Auto-discovered tool schema and dispatch. |
+| TUI | `ui-tui/`, `tui_gateway/` | Ink frontend plus Python JSON-RPC backend. |
+| MCP server | `mcp_serve.py`, `acp_adapter/` | Editor/MCP integration surfaces. |
+| Cron | `cron/` | Scheduler and job persistence. |
+| RL/training | `environments/`, `batch_runner.py`, `rl_cli.py` | Optional training/eval surfaces. |
+| Tests | `tests/` | Baseline accepted with documented upstream failures in `BACKLOG.md`. |
+
+Inviolable rules:
+1. Always run `scripts/run_tests.sh` before declaring change complete.
+2. Always run `ruff check .` before commit.
+3. Never break a `gateway/platforms/<name>.py` adapter without smoke-testing every enabled platform.
+4. Plugin and skill schema is contract; no upstream-uncoordinated changes.
+5. WSL2-only on Windows; never test native Windows.
+6. Never edit `~/.hermes/` from a session.
+7. Bundled-skill edits require `hermes setup` to re-seed `~/.hermes/skills/`.
+8. Source of truth: CDB is canonical for methodology. Edit in CDB and re-sync; do not edit methodology files in this fork directly.
+9. Success metric: within two weeks of Stage 9 merge, `/escalate` runs once on a real bug overnight, produces a fix the operator approves, and saves at least three hours debugging time. If not hit, schedule operator review.
+
+Do not edit zones: `web/dist/`, `__pycache__/`, `node_modules/`, `.venv/`, `venv/`, `*.pyc`, `~/.hermes/`, `*.bak`, `*.old`, `*_backup.*`, `vendor/`, `third_party/`, `.plans/`.
+
+## 9.6 Role registry (model-agnostic methodology)
+
+Methodology references roles, not model names. Per-machine mappings live in `config/models.yml` and are gitignored. Apply them with `scripts/apply-models-yml.sh`.
+
+Roles: `primary_reasoning`, `fast_iteration`, `adversarial_review`, `legal_tech_review`, `escalate_head`, `escalate_subagent_<n>`, `cheap_routine`.
+
+Family taxonomy: `anthropic | openai | google | meta | xai | deepseek | local | other`.
+
+Provider migration target: swap providers in under two hours by editing `config/models.yml`, running `scripts/apply-models-yml.sh`, smoke-testing Hermes, and leaving committed methodology untouched. See `docs/provider-migration.md`.

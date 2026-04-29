@@ -42,6 +42,18 @@ import { Md } from './markdown.js'
 // snippets like ` ```\n$$x$$\n``` ` (math example inside a code block)
 // don't double-count. A `$$x$$` line that opens AND closes on its own
 // produces zero net toggles; that's `len >= 4` plus `endsDollar`.
+//
+// NB: this is INTENTIONALLY more conservative than `markdown.tsx`'s
+// parser, which falls back to paragraph rendering when an `$$` opener
+// has no matching closer. The renderer can do that safely because it
+// always sees the full text on every call. The streaming chunker
+// cannot — once a chunk is committed to the monotonic stable prefix it
+// is frozen, so prematurely deciding "this `$$` is just prose" would
+// permanently commit a paragraph rendering that becomes wrong the
+// instant the closer streams in. Treating any unmatched `$$` opener
+// as still-open keeps the boundary parked behind it until the closer
+// arrives (or the stream ends and the non-streaming `<Md>` takes over,
+// at which point the renderer's fallback kicks in correctly).
 const fenceOpenAt = (s: string, end: number) => {
   let codeOpen = false
   let mathOpen = false

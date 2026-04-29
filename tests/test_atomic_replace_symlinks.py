@@ -265,3 +265,81 @@ def test_atomic_replace_exdev_cleans_sibling_on_replace_failure(
     assert excinfo.value.errno == errno.EACCES
     leftovers = sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(".atomic_xdev_"))
     assert leftovers == [], f"sibling temp not cleaned up: {leftovers}"
+
+
+def test_atomic_replace_exdev_fsyncs_sibling_temp(tmp_path: Path, monkeypatch) -> None:
+    """The cross-device fallback must ``fsync`` the sibling temp before
+    swapping it in, otherwise the durability promise that callers like
+    ``atomic_json_write`` paid for on the original temp is silently lost
+    when EXDEV fires (the sibling is a fresh ``shutil.copyfile`` whose
+    pages are not yet flushed).
+    """
+    target = tmp_path / "real.yaml"
+    target.write_text("old\n", encoding="utf-8")
+
+    tmp = _write_tmp(tmp_path, "fresh-after-xdev\n")
+    monkeypatch.setattr("utils.os.replace", _exdev_once(os.replace))
+
+    real_fsync = os.fsync
+    fsynced_paths: list[str] = []
+
+    def _spy_fsync(fd):
+        try:
+            # /proc/self/fd is Linux-only — we use os.fstat to get the
+            # device/inode and resolve back via tmp_path scan rather than
+            # /proc, which is portable to macOS test runners.
+            st = os.fstat(fd)
+        except OSError:
+            return real_fsync(fd)
+        for p in tmp_path.iterdir():
+            try:
+                if p.stat().st_ino == st.st_ino:
+                    fsynced_paths.append(p.name)
+                    break
+            except OSError:
+                continue
+        return real_fsync(fd)
+
+    monkeypatch.setattr("utils.os.fsync", _spy_fsync)
+    atomic_replace(tmp, target)
+
+    assert any(name.startswith(".atomic_xdev_") for name in fsynced_paths), (
+        f"sibling temp must be fsynced before the swap; saw fsync on: {fsynced_paths}"
+    )
+    assert target.read_text(encoding="utf-8") == "fresh-after-xdev\n"
+
+
+def test_atomic_replace_exdev_dir_fsync_failure_is_swallowed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Directory ``fsync`` is a best-effort durability barrier — not all
+    platforms / filesystems support it (Windows raises, some FUSE mounts
+    raise EINVAL).  The fallback must still complete the swap even when
+    the directory fsync raises ``OSError``."""
+    target = tmp_path / "real.yaml"
+    target.write_text("old\n", encoding="utf-8")
+
+    tmp = _write_tmp(tmp_path, "fresh-with-dir-fsync-fail\n")
+    monkeypatch.setattr("utils.os.replace", _exdev_once(os.replace))
+
+    real_fsync = os.fsync
+    real_dir_str = os.path.realpath(str(tmp_path))
+
+    def _fsync_fail_on_dir(fd):
+        try:
+            st = os.fstat(fd)
+        except OSError:
+            return real_fsync(fd)
+        # Directory fd: raise to simulate Windows / FUSE.
+        try:
+            dir_st = os.stat(real_dir_str)
+        except OSError:
+            return real_fsync(fd)
+        if st.st_ino == dir_st.st_ino:
+            raise OSError(errno.EINVAL, "directory fsync unsupported")
+        return real_fsync(fd)
+
+    monkeypatch.setattr("utils.os.fsync", _fsync_fail_on_dir)
+    # Must not raise — the swap is the contract, dir fsync is a bonus.
+    atomic_replace(tmp, target)
+    assert target.read_text(encoding="utf-8") == "fresh-with-dir-fsync-fail\n"

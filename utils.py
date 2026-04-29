@@ -85,6 +85,16 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     target side even though the original move crossed devices
     (GitHub #17313).
 
+    The fallback path also ``fsync``s the sibling temp file before the
+    swap and ``fsync``s the destination directory after, matching the
+    durability guarantees that ``atomic_json_write`` / ``atomic_yaml_write``
+    / ``MemoryStore._write_file`` already provide on the non-EXDEV path
+    (those callers ``fsync`` their original temp file before calling
+    here, but ``shutil.copyfile`` to the sibling skips that — without
+    re-syncing, a crash in the cross-device window could leave the
+    destination with a copied-but-unflushed file even though the
+    pre-fallback durability promise was satisfied).
+
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
     """
@@ -103,6 +113,14 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
         try:
             os.close(sibling_fd)
             shutil.copyfile(tmp_str, sibling_tmp)
+            # fsync the copied temp before swap so the cross-device
+            # fallback preserves the durability the caller already paid
+            # for on the original temp.
+            sync_fd = os.open(sibling_tmp, os.O_RDONLY)
+            try:
+                os.fsync(sync_fd)
+            finally:
+                os.close(sync_fd)
             os.replace(sibling_tmp, real_path)
         except BaseException:
             try:
@@ -110,6 +128,20 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
             except OSError:
                 pass
             raise
+        # fsync the destination directory so the rename itself is
+        # durable — best-effort: not all platforms / filesystems
+        # support directory fsync (Windows raises, some FUSE mounts
+        # raise EINVAL); silently ignore those.
+        try:
+            dir_fd = os.open(real_dir, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            except OSError:
+                pass
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
         try:
             os.unlink(tmp_str)
         except OSError:

@@ -38,11 +38,16 @@ async function _ensureEvictInkCaches(): Promise<(level: 'all' | 'half') => unkno
     return _evictInkCaches
   }
 
-  _evictInkCachesPromise ??= import('@hermes/ink').then(mod => {
-    _evictInkCaches = mod.evictInkCaches as (level: 'all' | 'half') => unknown
+  _evictInkCachesPromise ??= import('@hermes/ink')
+    .then(mod => {
+      _evictInkCaches = mod.evictInkCaches as (level: 'all' | 'half') => unknown
 
-    return _evictInkCaches
-  })
+      return _evictInkCaches
+    })
+    .catch(err => {
+      _evictInkCachesPromise = null
+      throw err
+    })
 
   return _evictInkCachesPromise
 }
@@ -80,21 +85,22 @@ export function startMemoryMonitor({
     // by the time a tick fires 10s after launch the app has already loaded
     // the same module, so this resolves instantly from the ESM cache.
     try {
-      const evictInkCaches = await _ensureEvictInkCaches()
-      evictInkCaches(level === 'critical' ? 'all' : 'half')
-    } catch {
-      // Best-effort: if the dynamic import fails for any reason we still
-      // continue to the heap dump below so the user gets diagnostics.
+      try {
+        const evictInkCaches = await _ensureEvictInkCaches()
+        evictInkCaches(level === 'critical' ? 'all' : 'half')
+      } catch {
+        // Best-effort: if the dynamic import fails for any reason we still
+        // continue to the heap dump below so the user gets diagnostics.
+      }
+
+      dumped.add(level)
+      const dump = await performHeapDump(level === 'critical' ? 'auto-critical' : 'auto-high').catch(() => null)
+      const snap: MemorySnapshot = { heapUsed, level, rss }
+
+      ;(level === 'critical' ? onCritical : onHigh)?.(snap, dump)
+    } finally {
+      inFlight.delete(level)
     }
-
-    dumped.add(level)
-    const dump = await performHeapDump(level === 'critical' ? 'auto-critical' : 'auto-high').catch(() => null)
-
-    inFlight.delete(level)
-
-    const snap: MemorySnapshot = { heapUsed, level, rss }
-
-    ;(level === 'critical' ? onCritical : onHigh)?.(snap, dump)
   }
 
   const handle = setInterval(() => void tick(), intervalMs)

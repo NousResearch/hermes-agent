@@ -206,6 +206,27 @@ _LEGACY_TOOLSET_MAP = {
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
 
+# Module-level memoization for get_tool_definitions(). Keyed on
+# (frozenset(enabled_toolsets), frozenset(disabled_toolsets), registry._generation).
+# Hot callers (gateway runner, AIAgent.__init__) invoke this on every turn
+# with quiet_mode=True; caching avoids ~7 ms of registry walking + schema
+# filtering + check_fn probing per call. Only active when quiet_mode=True
+# because quiet_mode=False has stdout side effects (tool-selection prints).
+#
+# Invalidation happens transparently via the registry's _generation counter,
+# which bumps on register() / deregister() / register_toolset_alias(). The
+# inner check_fn TTL cache in registry.py handles environment drift (Docker
+# daemon start/stop, env var changes, etc.) on a 30 s horizon.
+_tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+
+
+def _clear_tool_defs_cache() -> None:
+    """Drop memoized get_tool_definitions() results. Called when dynamic
+    schema dependencies change (e.g. discord capability cache reset,
+    execute_code sandbox reconfigured)."""
+    _tool_defs_cache.clear()
+
+
 def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
@@ -224,6 +245,50 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    # Fast path: memoized result when the caller doesn't need stdout prints.
+    # The cache key captures every argument-level input; the registry
+    # generation captures registry mutations (MCP refresh, plugin load).
+    # check_fn results are TTL-cached one level down, inside
+    # registry.get_definitions. The config-mtime fingerprint below captures
+    # user-visible config edits that affect dynamic schemas (execute_code
+    # mode, discord action allowlist, etc.) without needing an explicit
+    # invalidate hook on every config-writer.
+    if quiet_mode:
+        try:
+            from hermes_cli.config import get_config_path
+            cfg_path = get_config_path()
+            cfg_stat = cfg_path.stat()
+            cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
+        except (FileNotFoundError, OSError, ImportError):
+            cfg_fp = None
+        cache_key = (
+            frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
+            frozenset(disabled_toolsets) if disabled_toolsets else None,
+            registry._generation,
+            cfg_fp,
+        )
+        cached = _tool_defs_cache.get(cache_key)
+        if cached is not None:
+            # Update _last_resolved_tool_names so downstream callers see
+            # consistent state even on a cache hit.
+            global _last_resolved_tool_names
+            _last_resolved_tool_names = [t["function"]["name"] for t in cached]
+            # Return a shallow copy of the list but share the dict references —
+            # schemas are treated as read-only by all known callers.
+            return list(cached)
+
+    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)
+    if quiet_mode:
+        _tool_defs_cache[cache_key] = result
+    return result
+
+
+def _compute_tool_definitions(
+    enabled_toolsets: List[str] = None,
+    disabled_toolsets: List[str] = None,
+    quiet_mode: bool = False,
+) -> List[Dict[str, Any]]:
+    """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
     tools_to_include: set = set()
 

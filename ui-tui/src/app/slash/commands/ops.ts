@@ -98,13 +98,16 @@ export const opsCommands: SlashCommand[] = [
       const action = (rawAction || 'status').toLowerCase()
 
       if (!['connect', 'disconnect', 'status'].includes(action)) {
-        return ctx.transcript.sys('usage: /browser [connect|disconnect|status] [url]')
+        return ctx.transcript.sys(
+          'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
+        )
       }
 
       const payload: Record<string, unknown> = { action }
+      const requested = rest.join(' ').trim()
 
       if (action === 'connect') {
-        payload.url = rest.join(' ').trim() || 'http://localhost:9222'
+        payload.url = requested || 'http://localhost:9222'
       }
 
       ctx.gateway
@@ -113,14 +116,21 @@ export const opsCommands: SlashCommand[] = [
           ctx.guarded<BrowserManageResponse>(r => {
             if (action === 'status') {
               return ctx.transcript.sys(
-                r.connected ? `browser connected: ${r.url || '(url unavailable)'}` : 'browser not connected'
+                r.connected
+                  ? `browser connected: ${r.url || '(url unavailable)'}`
+                  : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
               )
             }
 
             if (action === 'connect') {
-              return ctx.transcript.sys(
-                r.connected ? `browser connected: ${r.url || '(url unavailable)'}` : 'browser connect failed'
-              )
+              if (r.connected) {
+                ctx.transcript.sys(`browser connected: ${r.url || '(url unavailable)'}`)
+                ctx.transcript.sys('next browser tool call will use this CDP endpoint')
+
+                return
+              }
+
+              return ctx.transcript.sys('browser connect failed')
             }
 
             ctx.transcript.sys('browser disconnected')

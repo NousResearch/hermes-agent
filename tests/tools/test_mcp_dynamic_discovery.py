@@ -94,7 +94,35 @@ class TestMessageHandler:
                 root=ToolListChangedNotification(method="notifications/tools/list_changed")
             )
             await handler(notification)
+            await asyncio.sleep(0)
             mock_refresh.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_tool_list_changed_handler_does_not_block_on_refresh(self):
+        from tools.mcp_tool import _MCP_NOTIFICATION_TYPES
+        if not _MCP_NOTIFICATION_TYPES:
+            pytest.skip("MCP SDK ToolListChangedNotification not available")
+
+        from mcp.types import ServerNotification, ToolListChangedNotification
+
+        refresh_started = asyncio.Event()
+        refresh_can_finish = asyncio.Event()
+
+        async def blocking_refresh(_self):
+            refresh_started.set()
+            await refresh_can_finish.wait()
+
+        server = MCPServerTask("notif_srv")
+        with patch.object(MCPServerTask, "_refresh_tools", blocking_refresh):
+            handler = server._make_message_handler()
+            notification = ServerNotification(
+                root=ToolListChangedNotification(method="notifications/tools/list_changed")
+            )
+
+            await asyncio.wait_for(handler(notification), timeout=0.1)
+            await asyncio.wait_for(refresh_started.wait(), timeout=0.1)
+            refresh_can_finish.set()
+            await asyncio.sleep(0)
 
     @pytest.mark.asyncio
     async def test_ignores_exceptions_and_other_messages(self):

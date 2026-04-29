@@ -2438,6 +2438,136 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    async def _handle_cron_execute(self, request: "web.Request") -> "web.Response":
+        """POST /v1/cron/execute — loop-agent-center triggers a scheduled task.
+
+        Request:  { "name": "...", "prompt": "...", "skills": ["..."] }
+        Response: { "status": 0, "messages": "...", "content": "..." }
+
+        The endpoint runs the prompt through the agent synchronously and
+        returns the final result.  Clarify / approval are disabled so the
+        agent never blocks waiting for human input.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"status": -1, "messages": "Invalid JSON body", "content": ""}, status=400
+            )
+
+        name = str(body.get("name") or "unnamed").strip()
+        prompt = str(body.get("prompt") or "").strip()
+        raw_skills = body.get("skills", [])
+
+        if not prompt:
+            return web.json_response(
+                {"status": -1, "messages": "prompt is required", "content": ""}, status=400
+            )
+
+        # Resolve skill names from request
+        skill_names: List[str] = []
+        if isinstance(raw_skills, list):
+            for s in raw_skills:
+                if isinstance(s, str) and s.strip():
+                    skill_names.append(s.strip())
+
+        # Load skill content and build the effective prompt.
+        # Mirrors cron/scheduler.py:_build_job_prompt() — skill_view()
+        # actually fetches the skill body so the agent has its instructions.
+        from tools.skills_tool import skill_view
+
+        parts: List[str] = []
+        skipped: List[str] = []
+        for skill_name in skill_names:
+            try:
+                loaded = json.loads(skill_view(skill_name))
+            except Exception:
+                loaded = {"success": False, "error": f"Failed to load skill '{skill_name}'"}
+
+            if not loaded.get("success"):
+                error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
+                logger.warning("Cron execute '%s': skill not found, skipping — %s", name, error)
+                skipped.append(skill_name)
+                continue
+
+            content = str(loaded.get("content") or "").strip()
+            if parts:
+                parts.append("")
+            parts.extend([
+                f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+                "",
+                content,
+            ])
+
+        if skipped:
+            parts.insert(0, (
+                f"[IMPORTANT: The following skill(s) were listed for this task but could not be found "
+                f"and were skipped: {', '.join(skipped)}. "
+                f"Start your response with a brief notice so the user is aware, e.g.: "
+                f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
+            ))
+
+        if prompt:
+            parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
+
+        effective_prompt = "\n".join(parts)
+
+        # Build ephemeral system prompt with cron execution guidance
+        ephemeral = (
+            "[CRON TASK] You are executing a scheduled background task. "
+            "Do NOT ask clarifying questions — this is automated and no human is present."
+        )
+
+        session_id = f"cron-ext-{name}-{int(time.time())}"
+
+        try:
+            agent = self._create_agent(
+                ephemeral_system_prompt=ephemeral,
+                session_id=session_id,
+            )
+            # Disable tools that require human interaction or would recurse.
+            # Mirrors cron/scheduler.py:run_job().
+            agent.disabled_toolsets = ["cronjob", "messaging", "clarify"]
+        except Exception as exc:
+            logger.error("Cron execute: failed to create agent: %s", exc)
+            return web.json_response(
+                {"status": -1, "messages": f"Agent creation failed: {exc}", "content": ""},
+                status=500,
+            )
+
+        loop = asyncio.get_running_loop()
+
+        def _run():
+            return agent.run_conversation(
+                user_message=effective_prompt,
+                conversation_history=[],
+                task_id="default",
+            )
+
+        try:
+            result = await loop.run_in_executor(None, _run)
+        except Exception as exc:
+            logger.error("Cron execute '%s': agent run failed: %s", name, exc)
+            return web.json_response(
+                {"status": -1, "messages": f"Task execution failed: {exc}", "content": ""},
+                status=500,
+            )
+
+        content = ""
+        if isinstance(result, dict):
+            content = str(result.get("final_response", ""))
+        elif result is not None:
+            content = str(result)
+
+        logger.info("Cron execute '%s': completed, output length=%d", name, len(content))
+        return web.json_response(
+            {"status": 0, "messages": f"Task '{name}' completed", "content": content},
+        )
+
     # ------------------------------------------------------------------
     # Output extraction helper
     # ------------------------------------------------------------------
@@ -2968,11 +3098,95 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=500,
             )
 
+    async def _handle_get_session(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions/{session_id} — Session detail with full message history.
+
+        Returns session metadata plus all messages in chronological order.
+        Frontend uses this to render a complete conversation when a user
+        clicks on a past chat.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.match_info.get("session_id", "").strip()
+        if not session_id:
+            return web.json_response(
+                {"error": {"message": "Missing session_id", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(
+                {"error": {"message": "Session DB unavailable", "type": "server_error"}},
+                status=500,
+            )
+
+        try:
+            # 1. Fetch session metadata
+            session_row = db._conn.execute(
+                "SELECT id, title, model, source, started_at, ended_at, "
+                "message_count, tool_call_count, input_tokens, output_tokens "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+
+            if session_row is None:
+                return web.json_response(
+                    {"error": {"message": f"Session '{session_id}' not found", "type": "not_found"}},
+                    status=404,
+                )
+
+            session = {
+                "id": session_row[0],
+                "title": session_row[1],
+                "model": session_row[2],
+                "source": session_row[3],
+                "started_at": session_row[4],
+                "ended_at": session_row[5],
+                "message_count": session_row[6],
+                "tool_call_count": session_row[7],
+                "input_tokens": session_row[8],
+                "output_tokens": session_row[9],
+            }
+
+            # 2. Fetch all messages in chronological order
+            msg_cursor = db._conn.execute(
+                "SELECT role, content, tool_calls, tool_name, reasoning, timestamp "
+                "FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
+                (session_id,),
+            )
+            messages = [
+                {
+                    "role": row[0],
+                    "content": row[1],
+                    "tool_calls": row[2],
+                    "tool_name": row[3],
+                    "reasoning": row[4],
+                    "timestamp": row[5],
+                }
+                for row in msg_cursor.fetchall()
+            ]
+
+            return web.json_response({
+                "session": session,
+                "messages": messages,
+            })
+        except Exception as e:
+            logger.error(
+                "[api_server] Failed to get session '%s': %s", session_id, e, exc_info=True,
+            )
+            return web.json_response(
+                {"error": {"message": "Failed to get session", "type": "server_error"}},
+                status=500,
+            )
+
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
-        """GET /v1/sessions — List all sessions from state.db.
-        
-        Returns a list of session IDs, titles, and timestamps.
-        Useful for frontend synchronization and debugging.
+        """GET /v1/sessions — List sessions from state.db with pagination.
+
+        Query params: page (default 1), page_size (default 20, max 100).
+        Returns paginated list of session IDs, titles, and timestamps.
         """
         auth_err = self._check_auth(request)
         if auth_err:
@@ -2980,23 +3194,48 @@ class APIServerAdapter(BasePlatformAdapter):
 
         db = self._ensure_session_db()
         if db is None:
-            return web.json_response({"sessions": [], "message": "Session DB unavailable"})
+            return web.json_response({"sessions": [], "total": 0, "page": 1, "page_size": 20})
+
+        # Parse pagination params
+        try:
+            page = max(1, int(request.query.get("page", "1")))
+        except (ValueError, TypeError):
+            page = 1
+        try:
+            page_size = max(1, min(100, int(request.query.get("page_size", "20"))))
+        except (ValueError, TypeError):
+            page_size = 20
+
+        offset = (page - 1) * page_size
 
         try:
+            # Total count
+            total_row = db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+            total = total_row[0] if total_row else 0
+
+            # Paginated query
             cursor = db._conn.execute(
-                "SELECT id, title, started_at, message_count FROM sessions ORDER BY started_at DESC"
+                "SELECT id, title, model, started_at, message_count "
+                "FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                (page_size, offset),
             )
             rows = cursor.fetchall()
             sessions = [
                 {
                     "id": row[0],
                     "title": row[1],
-                    "started_at": row[2],
-                    "message_count": row[3],
+                    "model": row[2],
+                    "started_at": row[3],
+                    "message_count": row[4],
                 }
                 for row in rows
             ]
-            return web.json_response({"sessions": sessions, "total": len(sessions)})
+            return web.json_response({
+                "sessions": sessions,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+            })
         except Exception as e:
             logger.error("[api_server] Failed to list sessions: %s", e, exc_info=True)
             return web.json_response(
@@ -3052,6 +3291,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # Cron task execution callback from loop-agent-center
+            self._app.router.add_post("/v1/cron/execute", self._handle_cron_execute)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
@@ -3062,6 +3303,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Session management endpoints
             self._app.router.add_get("/v1/sessions", self._handle_list_sessions)
             self._app.router.add_delete("/v1/sessions", self._handle_delete_sessions)
+            self._app.router.add_get("/v1/sessions/{session_id}", self._handle_get_session)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

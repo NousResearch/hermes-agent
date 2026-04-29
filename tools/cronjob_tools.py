@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
+    _normalize_skill_list,
     create_job,
     get_job,
     list_jobs,
@@ -98,20 +99,172 @@ def _repeat_display(job: Dict[str, Any]) -> str:
     return f"{completed}/{times}" if completed else f"{times} times"
 
 
-def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
-    if skills is None:
-        raw_items = [skill] if skill else []
-    elif isinstance(skills, str):
-        raw_items = [skills]
-    else:
-        raw_items = list(skills)
+# ---------------------------------------------------------------------------
+# Cron backend switching (internal vs external loop-agent-center)
+# ---------------------------------------------------------------------------
 
-    normalized: List[str] = []
-    for item in raw_items:
-        text = str(item or "").strip()
-        if text and text not in normalized:
-            normalized.append(text)
-    return normalized
+
+def _get_cron_backend() -> str:
+    """Read cron backend: CRON_BACKEND env var > config > default 'internal'."""
+    env = os.getenv("CRON_BACKEND", "").strip().lower()
+    if env in ("internal", "external"):
+        logger.info("定时任务后端模式（来自环境变量 CRON_BACKEND）：%s", env)
+        return env
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        backend = str(cfg.get("cron", {}).get("backend", "internal")).strip().lower()
+        logger.debug("定时任务后端模式（来自配置文件）：%s", backend)
+        return backend
+    except Exception:
+        logger.debug("定时任务后端模式：internal（默认）")
+        return "internal"
+
+
+def _get_loop_center_url() -> str:
+    """Get loop-agent-center URL: LOOP_AGENT_CENTER_URL env var > config > empty."""
+    env = os.getenv("LOOP_AGENT_CENTER_URL", "").strip()
+    if env:
+        logger.debug("调度中心地址（来自环境变量）：%s", env)
+        return env.rstrip("/")
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        url = str(cfg.get("cron", {}).get("external", {}).get("url", "")).strip()
+        if url:
+            logger.debug("调度中心地址（来自配置文件）：%s", url)
+            return url.rstrip("/")
+    except Exception:
+        pass
+    logger.warning("调度中心地址未配置（LOOP_AGENT_CENTER_URL 或 cron.external.url）")
+    return ""
+
+
+def _post_to_loop_center(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """POST a JSON payload to loop-agent-center. Returns decoded response dict."""
+    import urllib.request
+
+    base = _get_loop_center_url()
+    agent_id = os.getenv("AGENT_ID", "unknown")
+    user_id = os.getenv("USER_ID", "unknown")
+    url = f"{base}/api/v1/internal/agents/{agent_id}/{user_id}{path}"
+
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            logger.info("定时任务已提交到调度中心：%s，响应状态：%s", payload.get("name", "?"), result.get("status"))
+            return result
+    except Exception as exc:
+        logger.warning("向调度中心提交定时任务失败（%s）：%s", url, exc)
+        return {"status": -1, "message": str(exc)}
+
+
+def _cronjob_external(
+    action: str,
+    job_id: Optional[str] = None,
+    prompt: Optional[str] = None,
+    schedule: Optional[str] = None,
+    name: Optional[str] = None,
+    repeat: Optional[int] = None,
+    skills: Optional[List[str]] = None,
+) -> str:
+    """Handle cron actions when backend=external (loop-agent-center).
+
+    Only action='create' is forwarded; all other actions return a friendly
+    redirect message telling the user to manage jobs via the scheduling center.
+    """
+    logger.info("外部定时任务后端处理请求，操作类型：%s", action)
+
+    if action == "create":
+        logger.info("创建定时任务请求：name=%s, schedule=%s", name or (prompt[:50] if prompt else "?"), schedule)
+        if not schedule:
+            return tool_error("schedule is required for create", success=False)
+        if prompt:
+            scan_error = _scan_cron_prompt(prompt)
+            if scan_error:
+                logger.warning("定时任务安全扫描拦截：%s", scan_error)
+                return tool_error(scan_error, success=False)
+
+        # Validate scripts just like internal path
+        # (script param is received via lambda, but _cronjob_external doesn't
+        #  surface it yet — we keep the same signature and skip for now)
+
+        parsed = parse_schedule(schedule)
+        canonical_skills = _canonical_skills(None, skills)
+
+        # Build schedule object matching external API shape:
+        #   kind=cron   → expr
+        #   kind=interval → minutes
+        #   kind=once   → run_at
+        schedule_obj: Dict[str, Any] = {
+            "kind": parsed.get("kind", "cron"),
+            "display": parsed.get("display", schedule),
+        }
+        kind = schedule_obj["kind"]
+        if kind == "cron":
+            schedule_obj["expr"] = parsed.get("expr", schedule)
+        elif kind == "interval":
+            schedule_obj["minutes"] = parsed.get("minutes")
+        elif kind == "once":
+            schedule_obj["run_at"] = parsed.get("run_at")
+
+        payload: Dict[str, Any] = {
+            "name": name or (prompt[:50] if prompt else "Unnamed job"),
+            "prompt": prompt or "",
+            "skills": canonical_skills,
+            "schedule": schedule_obj,
+            "schedule_display": parsed.get("display", schedule),
+            "repeat": {
+                "times": repeat if repeat and repeat > 0 else None,
+            },
+        }
+
+        result = _post_to_loop_center("/cronjobs", payload)
+        if result.get("status") == 0:
+            logger.info("定时任务「%s」提交成功", payload["name"])
+            return json.dumps(
+                {
+                    "success": True,
+                    "message": (
+                        f"定时任务「{payload['name']}」已提交到调度中心，"
+                        "后续由调度中心统一管理和触发执行。"
+                    ),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        else:
+            logger.error("定时任务「%s」提交失败：%s", payload["name"], result.get("message", "未知错误"))
+            return tool_error(
+                f"提交到调度中心失败: {result.get('message', '未知错误')}", success=False
+            )
+
+    # ── Non-create actions: friendly redirect ──
+    logger.info("外部定时任务后端不支持操作「%s」，返回友好提示", action)
+    _FRIENDLY_MESSAGES: Dict[str, str] = {
+        "list": "当前定时任务由调度中心统一管理，暂不支持通过对话查询任务列表。请前往调度中心查看。",
+        "update": "当前定时任务由调度中心统一管理，暂不支持通过对话修改任务。请前往调度中心操作。",
+        "remove": "当前定时任务由调度中心统一管理，暂不支持通过对话删除任务。请前往调度中心操作。",
+        "pause": "当前定时任务由调度中心统一管理，暂不支持通过对话暂停任务。请前往调度中心操作。",
+        "resume": "当前定时任务由调度中心统一管理，暂不支持通过对话恢复任务。请前往调度中心操作。",
+        "run": "当前定时任务由调度中心统一管理，暂不支持手动触发。请在调度中心执行。",
+    }
+    msg = _FRIENDLY_MESSAGES.get(action, "当前定时任务由调度中心统一管理，该操作暂不支持。")
+
+    return json.dumps({"success": True, "message": msg}, indent=2, ensure_ascii=False)
+
+
+_canonical_skills = _normalize_skill_list
 
 
 
@@ -248,6 +401,19 @@ def cronjob(
 
     try:
         normalized = (action or "").strip().lower()
+
+        # ── External backend routing ──
+        if _get_cron_backend() == "external":
+            logger.info("路由到外部定时任务后端，操作：%s", normalized)
+            return _cronjob_external(
+                action=normalized,
+                job_id=job_id,
+                prompt=prompt,
+                schedule=schedule,
+                name=name,
+                repeat=repeat,
+                skills=skills,
+            )
 
         if normalized == "create":
             if not schedule:

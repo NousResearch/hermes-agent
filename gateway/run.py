@@ -11429,15 +11429,23 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
-    cron_stop = threading.Event()
-    cron_thread = threading.Thread(
-        target=_start_cron_ticker,
-        args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
-        daemon=True,
-        name="cron-ticker",
-    )
-    cron_thread.start()
+    # Skip when cron backend is external (managed by loop-agent-center).
+    from hermes_cli.config import load_config as _cfg_loader
+
+    _cfg = _cfg_loader()
+    _cron_backend = str(_cfg.get("cron", {}).get("backend", "internal")).strip().lower()
+    if _cron_backend == "external":
+        logger.info("Cron backend is external (loop-agent-center), skipping internal ticker")
+    else:
+        cron_stop = threading.Event()
+        cron_thread = threading.Thread(
+            target=_start_cron_ticker,
+            args=(cron_stop,),
+            kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+            daemon=True,
+            name="cron-ticker",
+        )
+        cron_thread.start()
     
     # Wait for shutdown
     await runner.wait_for_shutdown()
@@ -11447,9 +11455,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
     
-    # Stop cron ticker cleanly
-    cron_stop.set()
-    cron_thread.join(timeout=5)
+    # Stop cron ticker cleanly (only when running internal backend)
+    if _cron_backend != "external":
+        cron_stop.set()
+        cron_thread.join(timeout=5)
 
     # Close MCP server connections
     try:

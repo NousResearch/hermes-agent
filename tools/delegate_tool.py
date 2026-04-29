@@ -1815,6 +1815,8 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
@@ -1881,13 +1883,17 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
+    # Resolve delegation credentials (provider:model pair) with top-level
+    # model/provider overrides applied before task-level overrides.
+    # Delegation config still acts as the default fallback if no top-level
+    # override is supplied.
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
+        top_level_cfg = dict(cfg)
+        if model is not None:
+            top_level_cfg["model"] = model
+        if provider is not None:
+            top_level_cfg["provider"] = provider
+        creds_default = _resolve_delegation_credentials(top_level_cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
 
@@ -1942,26 +1948,42 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            task_cfg = None
+            if (
+                "model" in t
+                or "provider" in t
+            ):
+                task_cfg = dict(top_level_cfg)
+                if "model" in t:
+                    task_cfg["model"] = t.get("model")
+                if "provider" in t:
+                    task_cfg["provider"] = t.get("provider")
+                try:
+                    task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+                except ValueError as exc:
+                    return tool_error(str(exc))
+            else:
+                task_creds = creds_default
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
                 role=effective_role,
             )
@@ -2446,6 +2468,22 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override. "
+                                "Priority: task.model > top-level model > "
+                                "delegation.model > parent model."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Per-task provider override. "
+                                "Priority: task.provider > top-level provider > "
+                                "delegation.provider > parent provider."
+                            ),
+                        },
                         "acp_command": {
                             "type": "string",
                             "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
@@ -2502,6 +2540,20 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional top-level model override for all tasks. "
+                    "Priority: top-level model > delegation.model > parent model."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional top-level provider override for all tasks. "
+                    "Priority: top-level provider > delegation.provider > parent provider."
+                ),
+            },
         },
         "required": [],
     },
@@ -2521,6 +2573,8 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        model=args.get("model"),
+        provider=args.get("provider"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),

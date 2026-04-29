@@ -68,6 +68,8 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", props)
         self.assertIn("tasks", props)
         self.assertIn("context", props)
+        self.assertIn("model", props)
+        self.assertIn("provider", props)
         self.assertIn("toolsets", props)
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
@@ -1146,6 +1148,114 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             # But provider/base_url/api_key should inherit from parent
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_top_level_model_provider_overrides(self, mock_resolve, mock_cfg):
+        """Top-level model/provider args should be applied before fallback to config."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "delegation-model",
+            "provider": "openrouter",
+        }
+
+        def _resolve(cfg, parent_agent):
+            return {
+                "model": cfg.get("model"),
+                "provider": cfg.get("provider"),
+                "base_url": f"https://{cfg.get('provider')}.example.com/v1"
+                if cfg.get("provider")
+                else parent_agent.base_url,
+                "api_key": "resolved-key",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+            }
+
+        mock_resolve.side_effect = _resolve
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 1.0,
+            }
+
+            delegate_task(
+                goal="Top-level override test",
+                model="top-model",
+                provider="custom-provider",
+                parent_agent=parent,
+            )
+
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs["model"], "top-model")
+            self.assertEqual(kwargs["override_provider"], "custom-provider")
+            self.assertEqual(kwargs["override_base_url"], "https://custom-provider.example.com/v1")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_model_provider_override(self, mock_resolve, mock_cfg):
+        """Per-task model/provider overrides should outrank top-level overrides."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "delegation-model",
+            "provider": "openrouter",
+        }
+
+        def _resolve(cfg, parent_agent):
+            return {
+                "model": cfg.get("model"),
+                "provider": cfg.get("provider"),
+                "base_url": f"https://{cfg.get('provider')}.example.com/v1"
+                if cfg.get("provider")
+                else parent_agent.base_url,
+                "api_key": "resolved-key",
+                "api_mode": "chat_completions",
+                "command": None,
+                "args": [],
+            }
+
+        mock_resolve.side_effect = _resolve
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 1.0,
+            }
+
+            delegate_task(
+                tasks=[
+                    {"goal": "Task A", "model": "task-model-a", "provider": "openrouter"},
+                    {"goal": "Task B", "model": "task-model-b", "provider": "copilot-acp"},
+                ],
+                model="top-model",
+                provider="top-provider",
+                parent_agent=parent,
+            )
+
+            self.assertEqual(mock_build.call_count, 2)
+            first = mock_build.call_args_list[0].kwargs
+            second = mock_build.call_args_list[1].kwargs
+            self.assertEqual(first["model"], "task-model-a")
+            self.assertEqual(first["override_provider"], "openrouter")
+            self.assertEqual(second["model"], "task-model-b")
+            self.assertEqual(second["override_provider"], "copilot-acp")
+            self.assertEqual(first["override_base_url"], "https://openrouter.example.com/v1")
+            self.assertEqual(second["override_base_url"], "https://copilot-acp.example.com/v1")
 
 
 class TestChildCredentialPoolResolution(unittest.TestCase):

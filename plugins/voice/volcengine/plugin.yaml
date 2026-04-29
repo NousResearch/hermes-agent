@@ -1,0 +1,8 @@
+name: voice-volcengine
+version: 1.0.0
+description: "Volcengine (Doubao / 火山引擎) seed-tts-2.0 bidirectional-streaming TTS plugin — Chinese-native voices"
+author: Hypnus-Yuan
+kind: backend
+requires_env:
+  - VOLCENGINE_APP_ID
+  - VOLCENGINE_ACCESS_TOKEN

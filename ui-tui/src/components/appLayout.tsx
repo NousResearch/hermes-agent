@@ -9,7 +9,7 @@ import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
 import { FULL_RENDER_TAIL_ITEMS } from '../config/limits.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
-import { inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
+import { composerPromptWidth, inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
@@ -21,6 +21,33 @@ import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
+
+const PROMPT_GAP_WIDTH = 1
+
+const PromptPrefix = memo(function PromptPrefix({
+  bold = false,
+  color,
+  promptText,
+  width
+}: {
+  bold?: boolean
+  color: string
+  promptText: string
+  width: number
+}) {
+  const glyphWidth = Math.max(1, stringWidth(promptText))
+
+  return (
+    <Box width={width}>
+      <Box width={glyphWidth}>
+        <Text bold={bold} color={color}>
+          {promptText}
+        </Text>
+      </Box>
+      <Box width={PROMPT_GAP_WIDTH} />
+    </Box>
+  )
+})
 
 const TranscriptPane = memo(function TranscriptPane({
   actions,
@@ -125,8 +152,8 @@ const ComposerPane = memo(function ComposerPane({
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
   const promptText = sh ? '$' : ui.theme.brand.prompt
-  const promptLabel = `${promptText} `
-  const promptWidth = Math.max(1, stringWidth(promptLabel))
+  const promptWidth = composerPromptWidth(promptText)
+  const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
@@ -217,7 +244,11 @@ const ComposerPane = memo(function ComposerPane({
             {composer.inputBuf.map((line, i) => (
               <Box key={i}>
                 <Box width={promptWidth}>
-                  <Text color={ui.theme.color.muted}>{i === 0 ? promptLabel : ' '.repeat(promptWidth)}</Text>
+                  {i === 0 ? (
+                    <PromptPrefix color={ui.theme.color.muted} promptText={promptText} width={promptWidth} />
+                  ) : (
+                    <Text color={ui.theme.color.muted}>{promptBlank}</Text>
+                  )}
                 </Box>
 
                 <Text color={ui.theme.color.text}>{line || ' '}</Text>
@@ -232,11 +263,11 @@ const ComposerPane = memo(function ComposerPane({
             >
               <Box width={promptWidth}>
                 {sh ? (
-                  <Text color={ui.theme.color.shellDollar}>{promptLabel}</Text>
+                  <PromptPrefix color={ui.theme.color.shellDollar} promptText={promptText} width={promptWidth} />
+                ) : composer.inputBuf.length ? (
+                  <Text color={ui.theme.color.prompt}>{promptBlank}</Text>
                 ) : (
-                  <Text bold color={ui.theme.color.prompt}>
-                    {composer.inputBuf.length ? ' '.repeat(promptWidth) : promptLabel}
-                  </Text>
+                  <PromptPrefix bold color={ui.theme.color.prompt} promptText={promptText} width={promptWidth} />
                 )}
               </Box>
 

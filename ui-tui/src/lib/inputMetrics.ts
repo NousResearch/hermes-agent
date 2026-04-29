@@ -53,6 +53,10 @@ export function inputVisualHeight(value: string, columns: number) {
   return cursorLayout(value, value.length, columns).line + 1
 }
 
+export function composerPromptWidth(promptText: string) {
+  return Math.max(1, stringWidth(promptText)) + 1
+}
+
 export function stableComposerColumns(totalCols: number, promptWidth: number) {
   // Physical render/wrap width. Always reserve outer composer padding and
   // prompt prefix. Only reserve the transcript scrollbar gutter when the

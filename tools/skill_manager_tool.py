@@ -43,6 +43,7 @@ from hermes_constants import get_hermes_home, display_hermes_home
 from typing import Dict, Any, Optional, Tuple
 
 from utils import atomic_replace
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ def _guard_agent_created_enabled() -> bool:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        return bool(cfg.get("skills", {}).get("guard_agent_created", False))
+        return bool(cfg_get(cfg, "skills", "guard_agent_created", default=False))
     except Exception:
         return False
 

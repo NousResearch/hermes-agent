@@ -1516,7 +1516,7 @@ def setup_terminal_backend(config: dict):
 def _apply_default_agent_settings(config: dict):
     """Apply recommended defaults for all agent settings without prompting."""
     config.setdefault("agent", {})["max_turns"] = 90
-    save_env_value("HERMES_MAX_ITERATIONS", "90")
+    # Don't write to HERMES_MAX_ITERATIONS - config.yaml is the source of truth
 
     config.setdefault("display", {})["tool_progress"] = "all"
 
@@ -1559,9 +1559,15 @@ def setup_agent_settings(config: dict):
     try:
         max_iter = int(max_iter_str)
         if max_iter > 0:
-            save_env_value("HERMES_MAX_ITERATIONS", str(max_iter))
+            # Only write to config.yaml - HERMES_MAX_ITERATIONS in .env is legacy
+            # and should not be written by the wizard to avoid state drift.
+            # The config.yaml value takes precedence per CLI priority chain.
             config.setdefault("agent", {})["max_turns"] = max_iter
             config.pop("max_turns", None)
+            
+            # Clear any legacy env var to prevent drift
+            save_env_value("HERMES_MAX_ITERATIONS", "")
+            
             print_success(f"Max iterations set to {max_iter}")
     except ValueError:
         print_warning("Invalid number, keeping current value")

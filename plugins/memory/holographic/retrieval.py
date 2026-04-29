@@ -6,9 +6,12 @@ Jaccard similarity reranking and trust-weighted scoring.
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .store import MemoryStore
@@ -37,6 +40,11 @@ class FactRetriever:
 
         # Auto-redistribute weights if numpy unavailable
         if hrr_weight > 0 and not hrr._HAS_NUMPY:
+            logger.warning(
+                "numpy unavailable — HRR weight (%.1f) redistributed to "
+                "FTS5 (0.6) + Jaccard (0.4). Search quality will be reduced.",
+                hrr_weight,
+            )
             fts_weight = 0.6
             jaccard_weight = 0.4
             hrr_weight = 0.0

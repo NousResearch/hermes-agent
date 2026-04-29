@@ -30,6 +30,13 @@ try:
 except ImportError:
     _HAS_NUMPY = False
 
+if not _HAS_NUMPY:
+    logging.getLogger(__name__).warning(
+        "numpy is not installed — holographic memory (HRR) is disabled. "
+        "Retrieval will degrade to FTS5 keyword-only search. "
+        "Install numpy to enable vector-symbolic retrieval: pip install numpy"
+    )
+
 logger = logging.getLogger(__name__)
 
 _TWO_PI = 2.0 * math.pi

@@ -1043,6 +1043,62 @@ class CredentialPool:
             self._current_id = None
         return removed
 
+    def activate_index(self, index: int) -> Optional[PooledCredential]:
+        """Make the credential at 1-based *index* the preferred pool entry.
+
+        Selection is priority-ordered for the default fill_first strategy and
+        priority is also the tie-breaker for least_used leases.  Persisting the
+        target at priority 0 gives `hermes auth switch` a stable "active"
+        meaning without deleting or rewriting the other credentials.
+        """
+        if index < 1 or index > len(self._entries):
+            return None
+        selected = self._entries[index - 1]
+        reordered = [selected] + [entry for entry in self._entries if entry.id != selected.id]
+        self._entries = [
+            replace(entry, priority=new_priority)
+            for new_priority, entry in enumerate(reordered)
+        ]
+        self._current_id = selected.id
+        self._persist()
+        active = self.current() or self._entries[0]
+        if self.provider == "openai-codex":
+            self._sync_codex_active_entry_to_auth_store(active)
+        return active
+
+    def _sync_codex_active_entry_to_auth_store(self, entry: PooledCredential) -> None:
+        """Mirror the selected Codex pool credential into providers.openai-codex.
+
+        Runtime normally resolves OpenAI Codex from the credential pool, but
+        several fallback/status paths still read the singleton auth store.  Keep
+        that singleton aligned with the explicit active choice.
+        """
+        if self.provider != "openai-codex" or entry.auth_type != AUTH_TYPE_OAUTH:
+            return
+        if not entry.access_token:
+            return
+        try:
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                state = _load_provider_state(auth_store, "openai-codex")
+                if not isinstance(state, dict):
+                    state = {}
+                tokens = state.get("tokens")
+                if not isinstance(tokens, dict):
+                    tokens = {}
+                tokens["access_token"] = entry.access_token
+                if entry.refresh_token:
+                    tokens["refresh_token"] = entry.refresh_token
+                state["tokens"] = tokens
+                if entry.base_url:
+                    state["base_url"] = entry.base_url
+                if entry.last_refresh:
+                    state["last_refresh"] = entry.last_refresh
+                _save_provider_state(auth_store, "openai-codex", state)
+                _save_auth_store(auth_store)
+        except Exception as exc:
+            logger.debug("Failed to sync active Codex credential to auth store: %s", exc)
+
     def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
         raw = str(target or "").strip()
         if not raw:
@@ -1316,21 +1372,68 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # existing Codex CLI credentials get a one-time, explicit prompt
         # via `hermes auth openai-codex`.
         if isinstance(tokens, dict) and tokens.get("access_token"):
-            active_sources.add("device_code")
-            changed |= _upsert_entry(
-                entries,
-                provider,
-                "device_code",
-                {
-                    "source": "device_code",
-                    "auth_type": AUTH_TYPE_OAUTH,
-                    "access_token": tokens.get("access_token", ""),
-                    "refresh_token": tokens.get("refresh_token"),
-                    "base_url": "https://chatgpt.com/backend-api/codex",
-                    "last_refresh": state.get("last_refresh"),
-                    "label": label_from_token(tokens.get("access_token", ""), "device_code"),
-                },
+            token_access = tokens.get("access_token", "")
+            token_refresh = tokens.get("refresh_token")
+            # If the singleton state points at an already-pooled credential
+            # (for example after an explicit switch), update that entry in
+            # place instead of creating a second synthetic device_code row.
+            matching_entry = next(
+                (
+                    entry
+                    for entry in entries
+                    if entry.access_token == token_access
+                    or (token_refresh and entry.refresh_token == token_refresh)
+                ),
+                None,
             )
+            if matching_entry is not None:
+                active_sources.add(matching_entry.source)
+                # Drop any older synthetic singleton row for the same Codex
+                # account. This keeps an explicit manual pool entry from
+                # being duplicated as a generic `device_code` entry on the
+                # next load_pool() after switching.
+                before_count = len(entries)
+                entries[:] = [
+                    entry
+                    for entry in entries
+                    if not (
+                        entry.source == "device_code"
+                        and entry.id != matching_entry.id
+                        and (
+                            entry.access_token == token_access
+                            or (token_refresh and entry.refresh_token == token_refresh)
+                        )
+                    )
+                ]
+                if len(entries) != before_count:
+                    changed = True
+                field_updates: Dict[str, Any] = {}
+                if matching_entry.base_url != "https://chatgpt.com/backend-api/codex":
+                    field_updates["base_url"] = "https://chatgpt.com/backend-api/codex"
+                if state.get("last_refresh") and matching_entry.last_refresh != state.get("last_refresh"):
+                    field_updates["last_refresh"] = state.get("last_refresh")
+                if field_updates:
+                    for idx, entry in enumerate(entries):
+                        if entry.id == matching_entry.id:
+                            entries[idx] = replace(entry, **field_updates)
+                            changed = True
+                            break
+            else:
+                active_sources.add("device_code")
+                changed |= _upsert_entry(
+                    entries,
+                    provider,
+                    "device_code",
+                    {
+                        "source": "device_code",
+                        "auth_type": AUTH_TYPE_OAUTH,
+                        "access_token": token_access,
+                        "refresh_token": token_refresh,
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "last_refresh": state.get("last_refresh"),
+                        "label": label_from_token(token_access, "device_code"),
+                    },
+                )
 
     return changed, active_sources
 

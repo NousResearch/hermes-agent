@@ -8489,6 +8489,13 @@ For more help on a command:
     auth_remove.add_argument(
         "target", help="Credential index, entry id, or exact label"
     )
+    auth_switch = auth_subparsers.add_parser(
+        "switch", help="Make a pooled credential the active/default entry"
+    )
+    auth_switch.add_argument("provider", help="Provider id")
+    auth_switch.add_argument(
+        "target", help="Credential index, entry id, or exact label"
+    )
     auth_reset = auth_subparsers.add_parser(
         "reset", help="Clear exhaustion status for all credentials for a provider"
     )

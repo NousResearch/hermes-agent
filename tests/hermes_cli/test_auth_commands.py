@@ -363,6 +363,133 @@ def test_auth_remove_accepts_label_target(tmp_path, monkeypatch):
     assert entries[0]["label"] == "work-account"
 
 
+def test_auth_switch_reorders_provider_pool(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_env",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "work-key",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-work",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "personal-key",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-personal",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_switch_command
+
+    class _Args:
+        provider = "openrouter"
+        target = "personal-key"
+
+    auth_switch_command(_Args())
+    out = capsys.readouterr().out
+    assert "Switched openrouter active credential" in out
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openrouter"]
+    assert [entry["label"] for entry in entries] == ["personal-key", "work-key"]
+    assert [entry["priority"] for entry in entries] == [0, 1]
+
+
+def test_auth_switch_syncs_codex_singleton(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "token-work",
+                        "refresh_token": "refresh-work",
+                    },
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                    "last_refresh": "2026-03-23T09:00:00Z",
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "work-account",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "token-work",
+                        "refresh_token": "refresh-work",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "last_refresh": "2026-03-23T09:00:00Z",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "personal-account",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "token-personal",
+                        "refresh_token": "refresh-personal",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "last_refresh": "2026-03-23T10:00:00Z",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_switch_command
+    from agent.credential_pool import load_pool
+
+    class _Args:
+        provider = "openai-codex"
+        target = "personal-account"
+
+    auth_switch_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    singleton = payload["providers"]["openai-codex"]
+    assert singleton["tokens"]["access_token"] == "token-personal"
+    assert singleton["tokens"]["refresh_token"] == "refresh-personal"
+    assert singleton["last_refresh"] == "2026-03-23T10:00:00Z"
+
+    # Reloading the pool after switching should keep the selected pooled entry
+    # aligned with providers.openai-codex without creating an extra synthetic
+    # singleton-derived device_code entry.
+    pool = load_pool("openai-codex")
+    entries = pool.entries()
+    assert [entry.label for entry in entries] == ["personal-account", "work-account"]
+    assert [entry.source for entry in entries] == ["manual:device_code", "manual:device_code"]
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = payload["credential_pool"]["openai-codex"]
+    assert len(persisted) == 2
+    assert all(entry["source"] != "device_code" for entry in persisted)
+
+
 def test_auth_remove_prefers_exact_numeric_label_over_index(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setattr(

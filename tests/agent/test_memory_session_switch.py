@@ -235,11 +235,21 @@ def _make_hindsight_provider():
     provider._prefetch_thread = None
     provider._prefetch_lock = threading.Lock()
     provider._prefetch_result = ""
-    # Sync thread tracking — flush spawn target.
+    # Sync thread tracking (legacy alias at the writer).
     provider._sync_thread = None
-    # Stub the network-touching helper so the spawned flush thread is a
-    # no-op in unit tests. Real plugin behavior is covered by the
-    # mock-client tests in tests/plugins/memory/test_hindsight_provider.py.
+    # Writer queue infra the flush-on-switch path enqueues onto. We stub
+    # _ensure_writer / _register_atexit so no real thread is spawned;
+    # tests exercising flush delivery live in
+    # tests/plugins/memory/test_hindsight_provider.py where the full
+    # writer-queue wiring is in place.
+    import queue as _queue
+    provider._retain_queue = _queue.Queue()
+    provider._shutting_down = threading.Event()
+    provider._atexit_registered = True
+    provider._ensure_writer = lambda: None
+    provider._register_atexit = lambda: None
+    # Stub the network-touching helper so any enqueued flush closure is
+    # a no-op if ever drained in a unit test.
     provider._run_hindsight_operation = lambda _op: None
     return provider
 

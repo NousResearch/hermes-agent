@@ -208,8 +208,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if raw is None:
             return set()
         if isinstance(raw, list):
-            return {self._normalize_jid(str(part)) for part in raw if str(part).strip()}
-        return {self._normalize_jid(part) for part in str(raw).split(",") if part.strip()}
+            return {WhatsAppAdapter._normalize_jid(str(part)) for part in raw if str(part).strip()}
+        return {WhatsAppAdapter._normalize_jid(part) for part in str(raw).split(",") if part.strip()}
 
     @staticmethod
     def _normalize_jid(jid: str) -> str:

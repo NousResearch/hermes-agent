@@ -666,11 +666,14 @@ def _prompt_vercel_sandbox_settings(config: dict):
     print_info("  Filesystem persistence uses Vercel snapshots.")
     print_info("  Snapshots restore files only; live processes do not continue after sandbox recreation.")
 
+    from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
+
     current_runtime = terminal.get("vercel_runtime") or "node24"
-    runtime = prompt("  Runtime (node24, node22, python3.13)", current_runtime).strip() or current_runtime
-    if runtime not in {"node24", "node22", "python3.13"}:
+    supported_label = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
+    runtime = prompt(f"  Runtime ({supported_label})", current_runtime).strip() or current_runtime
+    if runtime not in _SUPPORTED_VERCEL_RUNTIMES:
         print_warning(f"Unsupported Vercel runtime '{runtime}', keeping {current_runtime}.")
-        runtime = current_runtime if current_runtime in {"node24", "node22", "python3.13"} else "node24"
+        runtime = current_runtime if current_runtime in _SUPPORTED_VERCEL_RUNTIMES else "node24"
     terminal["vercel_runtime"] = runtime
     save_env_value("TERMINAL_VERCEL_RUNTIME", runtime)
 

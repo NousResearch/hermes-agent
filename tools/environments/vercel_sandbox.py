@@ -578,6 +578,17 @@ class VercelSandboxEnvironment(BaseEnvironment):
         timeout: int = 120,
         stdin_data: str | None = None,
     ):
+        """Run a bash command in the Vercel sandbox.
+
+        ``timeout`` is not forwarded to the Vercel SDK (which does not expose
+        a per-exec timeout parameter); the base class ``_wait_for_process``
+        enforces timeout by killing the sandbox via ``cancel_fn``.
+
+        ``stdin_data`` is intentionally discarded here because
+        ``_stdin_mode = "heredoc"`` causes the base class ``execute()`` to
+        embed any stdin payload into the command string before calling this
+        method.
+        """
         del timeout
         del stdin_data
 

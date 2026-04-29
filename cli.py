@@ -10899,9 +10899,41 @@ class HermesCLI:
         except Exception:
             pass  # Non-fatal — fail-open at scan time if unavailable
         
+        # ── Terminal focus-in/out reporting (DEC mode 1004) ───────────
+        # Map \x1b[I / \x1b[O (focus-in / focus-out) into prompt_toolkit's
+        # ANSI parser so we can react when the terminal regains focus —
+        # e.g. after monitor wake (DPMS), kitty/Ghostty/tmux compositor
+        # repaints, screen unlocks. These events fire WITHOUT SIGWINCH,
+        # so prompt_toolkit's tracked _cursor_pos drifts and the next
+        # idle status-bar repaint stacks below the previous one (ghost
+        # staircase). On focus-in we trigger a full redraw to re-anchor.
+        # We hijack F23/F24 (unused codes) so we don't have to extend
+        # the Keys enum.
+        try:
+            from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES as _ANSI
+            from prompt_toolkit.keys import Keys as _PTKeys
+            _ANSI.setdefault('\x1b[I', _PTKeys.F24)  # focus-in
+            _ANSI.setdefault('\x1b[O', _PTKeys.F23)  # focus-out
+        except Exception:
+            pass
+
         # Key bindings for the input area
         kb = KeyBindings()
-        
+
+        @kb.add('f24')
+        def _on_focus_in(event):
+            """Terminal regained focus — force full redraw to clear ghost rows."""
+            try:
+                self._force_full_redraw()
+            except Exception:
+                pass
+
+        @kb.add('f23')
+        def _on_focus_out(event):
+            """Terminal lost focus — no-op (just consume the key)."""
+            pass
+
+        @kb.add('enter')
         def handle_enter(event):
             """Handle Enter key - submit input.
             
@@ -12436,6 +12468,30 @@ class HermesCLI:
         )
         _disable_prompt_toolkit_cpr_warning(app)
         self._app = app  # Store reference for clarify_callback
+
+        # ── Enable terminal focus reporting (DEC private mode 1004) ──
+        # Tells the terminal emulator to send \x1b[I on focus-in and
+        # \x1b[O on focus-out. Paired with the ANSI_SEQUENCES patch
+        # and key bindings above, this lets us recover from the
+        # "monitor wake / kitty repaint with no SIGWINCH" drift that
+        # produces ghost status-bar rows. Disabled on shutdown via the
+        # _disable_focus_reporting cleanup below.
+        try:
+            import sys as _sys
+            _sys.stdout.write('\x1b[?1004h')
+            _sys.stdout.flush()
+            self._focus_reporting_enabled = True
+            import atexit as _atexit
+            def _disable_focus_reporting():
+                try:
+                    import sys as _s
+                    _s.stdout.write('\x1b[?1004l')
+                    _s.stdout.flush()
+                except Exception:
+                    pass
+            _atexit.register(_disable_focus_reporting)
+        except Exception:
+            self._focus_reporting_enabled = False
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────
         # When the terminal shrinks (e.g. un-maximize), the emulator reflows

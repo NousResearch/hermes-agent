@@ -646,12 +646,15 @@ class WeComAdapter(BasePlatformAdapter):
                     content = str(text_block.get("content") or "").strip()
                     if content:
                         text_parts.append(content)
-                # Also extract appmsg title (filename) from mixed items
+                # Extract appmsg title (filename) from mixed items
+                # Skip if appmsg contains an image — we don't want the filename
+                # in the text when the user sent a pure image (fixes display issue)
                 if str(item.get("msgtype") or "").lower() == "appmsg":
                     appmsg = item.get("appmsg") if isinstance(item.get("appmsg"), dict) else {}
-                    title = str(appmsg.get("title") or "").strip()
-                    if title:
-                        text_parts.append(title)
+                    if not isinstance(appmsg.get("image"), dict):
+                        title = str(appmsg.get("title") or "").strip()
+                        if title:
+                            text_parts.append(title)
         else:
             text_block = body.get("text") if isinstance(body.get("text"), dict) else {}
             content = str(text_block.get("content") or "").strip()
@@ -665,11 +668,14 @@ class WeComAdapter(BasePlatformAdapter):
                     text_parts.append(voice_text)
 
             # Extract appmsg title (filename) for WeCom AI Bot attachments
+            # Skip if appmsg contains an image — we don't want the filename
+            # in the text when the user sent a pure image (fixes display issue)
             if msgtype == "appmsg":
                 appmsg = body.get("appmsg") if isinstance(body.get("appmsg"), dict) else {}
-                title = str(appmsg.get("title") or "").strip()
-                if title:
-                    text_parts.append(title)
+                if not isinstance(appmsg.get("image"), dict):
+                    title = str(appmsg.get("title") or "").strip()
+                    if title:
+                        text_parts.append(title)
 
         quote = body.get("quote") if isinstance(body.get("quote"), dict) else {}
         quote_type = str(quote.get("msgtype") or "").lower()
@@ -681,8 +687,13 @@ class WeComAdapter(BasePlatformAdapter):
             reply_text = str(quote_voice.get("content") or "").strip() or None
         elif quote_type == "appmsg":
             # Extract appmsg title from quote as reply text
+            # Skip if appmsg contains an image — we don't want the filename
+            # in the reply text when the user quoted an image
             quote_appmsg = quote.get("appmsg") if isinstance(quote.get("appmsg"), dict) else {}
-            reply_text = str(quote_appmsg.get("title") or "").strip() or None
+            if isinstance(quote_appmsg.get("image"), dict):
+                reply_text = None  # Image quote — no text
+            else:
+                reply_text = str(quote_appmsg.get("title") or "").strip() or None
 
         return "\n".join(part for part in text_parts if part).strip(), reply_text
 

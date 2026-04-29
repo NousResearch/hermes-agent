@@ -68,7 +68,6 @@ export function startMemoryMonitor({
 
     if (level === 'normal') {
       dumped.clear()
-
       return
     }
 

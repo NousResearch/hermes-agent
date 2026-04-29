@@ -1,6 +1,13 @@
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
-import type { CommandsCatalogResponse, DelegationStatusResponse, GatewayEvent, GatewaySkin } from '../gatewayTypes.js'
+import type {
+  CommandsCatalogResponse,
+  ConfigFullResponse,
+  DelegationStatusResponse,
+  GatewayEvent,
+  GatewaySkin,
+  SessionMostRecentResponse
+} from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
@@ -171,15 +178,46 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
       .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
 
-    if (!STARTUP_RESUME_ID) {
-      patchUiState({ status: 'forging session…' })
-      newSession()
+    if (STARTUP_RESUME_ID) {
+      patchUiState({ status: 'resuming…' })
+      resumeById(STARTUP_RESUME_ID)
 
       return
     }
 
-    patchUiState({ status: 'resuming…' })
-    resumeById(STARTUP_RESUME_ID)
+    // Opt-in: when `display.tui_auto_resume_recent` is true, look up
+    // the most recent human-facing session and resume it instead of
+    // forging a brand-new one.  Mirrors classic CLI's `hermes -c` /
+    // `hermes --tui` muscle memory and addresses the audit's "session
+    // unrecoverable after disconnection" gap.  Default off so existing
+    // users aren't surprised.
+    rpc<ConfigFullResponse>('config.get', { key: 'full' })
+      .then(cfg => {
+        if (!cfg?.config?.display?.tui_auto_resume_recent) {
+          patchUiState({ status: 'forging session…' })
+          newSession()
+
+          return
+        }
+
+        return rpc<SessionMostRecentResponse>('session.most_recent', {}).then(r => {
+          const target = r?.session_id
+
+          if (target) {
+            patchUiState({ status: 'resuming most recent…' })
+            resumeById(target)
+
+            return
+          }
+
+          patchUiState({ status: 'forging session…' })
+          newSession()
+        })
+      })
+      .catch(() => {
+        patchUiState({ status: 'forging session…' })
+        newSession()
+      })
   }
 
   return (ev: GatewayEvent) => {
@@ -321,11 +359,30 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.start_timeout': {
-        const { cwd, python } = ev.payload ?? {}
+        const { cwd, python, stderr_tail: stderrTail } = ev.payload ?? {}
         const trace = python || cwd ? ` · ${String(python || '')} ${String(cwd || '')}`.trim() : ''
 
         setStatus('gateway startup timeout')
         turnController.pushActivity(`gateway startup timed out${trace} · /logs to inspect`, 'error')
+
+        // Surface the most useful stderr lines inline so users can tell
+        // "wrong python", "missing dep", and "config parse failure"
+        // apart without leaving the TUI.  Filter blank rows BEFORE
+        // taking the last N so trailing empty lines in the buffer
+        // don't crowd out actual content; truncate to match the
+        // 120-char clip used for `gateway.stderr` activity entries.
+        const STDERR_LINE_CAP = 120
+        const STDERR_LINES_MAX = 8
+
+        const tailLines = (stderrTail ?? '')
+          .split('\n')
+          .map(l => l.trim())
+          .filter(Boolean)
+          .slice(-STDERR_LINES_MAX)
+
+        for (const line of tailLines) {
+          turnController.pushActivity(line.slice(0, STDERR_LINE_CAP), 'error')
+        }
 
         return
       }

@@ -697,6 +697,78 @@ def run_quick_backup(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Shared full-zip backup helper
+# ---------------------------------------------------------------------------
+
+def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
+    """Write a full zip snapshot of ``hermes_root`` to ``out_path``.
+
+    Uses the same exclusion rules and SQLite safe-copy as :func:`run_backup`.
+    Returns the output path on success, None on failure (nothing to back up,
+    or write error — caller should surface the outcome but not raise).
+    """
+    files_to_add: list[tuple[Path, Path]] = []
+    try:
+        for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
+            dp = Path(dirpath)
+            # Prune excluded directories in-place so os.walk doesn't descend
+            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+
+            for fname in filenames:
+                fpath = dp / fname
+                try:
+                    rel = fpath.relative_to(hermes_root)
+                except ValueError:
+                    continue
+
+                if _should_exclude(rel):
+                    continue
+
+                # Skip the output zip itself if it already exists inside root.
+                try:
+                    if fpath.resolve() == out_path.resolve():
+                        continue
+                except (OSError, ValueError):
+                    pass
+
+                files_to_add.append((fpath, rel))
+    except OSError as exc:
+        logger.warning("Full-zip backup: walk failed: %s", exc)
+        return None
+
+    if not files_to_add:
+        return None
+
+    try:
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            for abs_path, rel_path in files_to_add:
+                try:
+                    if abs_path.suffix == ".db":
+                        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                            tmp_db = Path(tmp.name)
+                        try:
+                            if _safe_copy_db(abs_path, tmp_db):
+                                zf.write(tmp_db, arcname=str(rel_path))
+                        finally:
+                            tmp_db.unlink(missing_ok=True)
+                    else:
+                        zf.write(abs_path, arcname=str(rel_path))
+                except (PermissionError, OSError, ValueError) as exc:
+                    logger.debug("Skipping %s in zip backup: %s", rel_path, exc)
+                    continue
+    except OSError as exc:
+        logger.warning("Full-zip backup: zip write failed: %s", exc)
+        # Best-effort cleanup of partial file
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # Pre-update auto-backup
 # ---------------------------------------------------------------------------
 
@@ -768,64 +840,87 @@ def create_pre_update_backup(
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     out_path = backup_dir / f"{_PRE_UPDATE_PREFIX}{stamp}.zip"
 
-    # Collect files (same logic as run_backup, minus the chatty progress prints)
-    files_to_add: list[tuple[Path, Path]] = []
-    try:
-        for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
-            dp = Path(dirpath)
-            # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
-
-            for fname in filenames:
-                fpath = dp / fname
-                try:
-                    rel = fpath.relative_to(hermes_root)
-                except ValueError:
-                    continue
-
-                if _should_exclude(rel):
-                    continue
-
-                # Skip the output zip itself if it already exists
-                try:
-                    if fpath.resolve() == out_path.resolve():
-                        continue
-                except (OSError, ValueError):
-                    pass
-
-                files_to_add.append((fpath, rel))
-    except OSError as exc:
-        logger.warning("Pre-update backup: walk failed: %s", exc)
-        return None
-
-    if not files_to_add:
-        return None
-
-    try:
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-            for abs_path, rel_path in files_to_add:
-                try:
-                    if abs_path.suffix == ".db":
-                        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
-                            tmp_db = Path(tmp.name)
-                        try:
-                            if _safe_copy_db(abs_path, tmp_db):
-                                zf.write(tmp_db, arcname=str(rel_path))
-                        finally:
-                            tmp_db.unlink(missing_ok=True)
-                    else:
-                        zf.write(abs_path, arcname=str(rel_path))
-                except (PermissionError, OSError, ValueError) as exc:
-                    logger.debug("Skipping %s in pre-update backup: %s", rel_path, exc)
-                    continue
-    except OSError as exc:
-        logger.warning("Pre-update backup: zip write failed: %s", exc)
-        # Best-effort cleanup of partial file
-        try:
-            out_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    result = _write_full_zip_backup(out_path, hermes_root)
+    if result is None:
         return None
 
     _prune_pre_update_backups(backup_dir, keep=keep)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# Pre-migration auto-backup (used by `hermes claw migrate`)
+# ---------------------------------------------------------------------------
+
+_PRE_MIGRATION_PREFIX = "pre-migration-"
+_PRE_MIGRATION_DEFAULT_KEEP = 5
+
+
+def _prune_pre_migration_backups(backup_dir: Path, keep: int) -> int:
+    """Remove oldest pre-migration backups beyond the keep limit.
+
+    Only touches files matching ``pre-migration-*.zip`` so other backups in
+    the same directory are never touched.
+    """
+    if keep < 0:
+        keep = 0
+    if not backup_dir.exists():
+        return 0
+
+    backups = sorted(
+        (p for p in backup_dir.iterdir()
+         if p.is_file() and p.name.startswith(_PRE_MIGRATION_PREFIX) and p.suffix.lower() == ".zip"),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+
+    deleted = 0
+    for p in backups[keep:]:
+        try:
+            p.unlink()
+            deleted += 1
+        except OSError as exc:
+            logger.warning("Failed to prune pre-migration backup %s: %s", p.name, exc)
+
+    return deleted
+
+
+def create_pre_migration_backup(
+    hermes_home: Optional[Path] = None,
+    keep: int = _PRE_MIGRATION_DEFAULT_KEEP,
+) -> Optional[Path]:
+    """Create a full zip backup of HERMES_HOME under ``backups/`` before a
+    ``hermes claw migrate`` apply.
+
+    Shares implementation with :func:`create_pre_update_backup` via
+    ``_write_full_zip_backup`` — same exclusions, same SQLite safe-copy,
+    restorable with ``hermes import <archive>``.  Writes to
+    ``<HERMES_HOME>/backups/pre-migration-<timestamp>.zip`` and auto-prunes
+    old pre-migration backups.
+
+    Returns the path to the created zip, or ``None`` if nothing was found
+    to back up (fresh install) or the write failed.  Never raises — the
+    caller decides whether to abort or proceed.
+    """
+    hermes_root = hermes_home or get_default_hermes_root()
+    if not hermes_root.is_dir():
+        return None
+
+    # Reuses the shared backups/ directory so `hermes import` and the
+    # update-backup listing pick up pre-migration archives too.
+    backup_dir = _pre_update_backup_dir(hermes_root)
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("Could not create pre-migration backup dir %s: %s", backup_dir, exc)
+        return None
+
+    stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+    out_path = backup_dir / f"{_PRE_MIGRATION_PREFIX}{stamp}.zip"
+
+    result = _write_full_zip_backup(out_path, hermes_root)
+    if result is None:
+        return None
+
+    _prune_pre_migration_backups(backup_dir, keep=keep)
     return out_path

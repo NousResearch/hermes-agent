@@ -77,7 +77,7 @@ function TreeRow({
   return (
     <Box>
       <NoSelect flexShrink={0} fromLeftEdge width={lead.length}>
-        <Text color={stemColor ?? t.color.dim} dim={stemDim}>
+        <Text color={stemColor ?? t.color.muted} dim={stemDim}>
           {lead}
         </Text>
       </NoSelect>
@@ -246,12 +246,12 @@ function Chevron({
   title: string
   tone?: 'dim' | 'error' | 'warn'
 }) {
-  const color = tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.dim
+  const color = tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.muted
 
   return (
     <Box onClick={(e: any) => onClick(!!e?.shiftKey || !!e?.ctrlKey)}>
       <Text color={color} dim={tone === 'dim'}>
-        <Text color={t.color.amber}>{open ? '▾ ' : '▸ '}</Text>
+        <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
         {title}
         {typeof count === 'number' ? ` (${count})` : ''}
         {suffix ? (
@@ -266,7 +266,7 @@ function Chevron({
 }
 
 function heatColor(node: SubagentNode, peak: number, theme: Theme): string | undefined {
-  const palette = [theme.color.bronze, theme.color.amber, theme.color.gold, theme.color.warn, theme.color.error]
+  const palette = [theme.color.border, theme.color.accent, theme.color.primary, theme.color.warn, theme.color.error]
   const idx = hotnessBucket(node.aggregate.hotness, peak, palette.length)
 
   // Below the median bucket we keep the default dim stem so cool branches
@@ -394,7 +394,7 @@ function SubagentAccordion({
   const hasTools = item.tools.length > 0
   const noteRows = [...(summary ? [summary] : []), ...item.notes]
   const hasNotes = noteRows.length > 0
-  const noteColor = statusTone === 'error' ? t.color.error : statusTone === 'warn' ? t.color.warn : t.color.dim
+  const noteColor = statusTone === 'error' ? t.color.error : statusTone === 'warn' ? t.color.warn : t.color.muted
 
   const sections: {
     header: ReactNode
@@ -460,10 +460,10 @@ function SubagentAccordion({
           {item.tools.map((line, index) => (
             <TreeTextRow
               branch={index === item.tools.length - 1 ? 'last' : 'mid'}
-              color={t.color.cornsilk}
+              color={t.color.text}
               content={
                 <>
-                  <Text color={t.color.amber}>● </Text>
+                  <Text color={t.color.accent}>● </Text>
                   {line}
                 </>
               }
@@ -649,22 +649,22 @@ export const Thinking = memo(function Thinking({
         {preview ? (
           mode === 'full' ? (
             lines.map((line, index) => (
-              <Text color={t.color.dim} key={index} wrap="wrap-trim">
+              <Text color={t.color.muted} key={index} wrap="wrap-trim">
                 {line || ' '}
                 {index === lines.length - 1 ? (
-                  <StreamCursor color={t.color.dim} streaming={streaming} visible={active} />
+                  <StreamCursor color={t.color.muted} streaming={streaming} visible={active} />
                 ) : null}
               </Text>
             ))
           ) : (
-            <Text color={t.color.dim} wrap="truncate-end">
+            <Text color={t.color.muted} wrap="truncate-end">
               {preview}
-              <StreamCursor color={t.color.dim} streaming={streaming} visible={active} />
+              <StreamCursor color={t.color.muted} streaming={streaming} visible={active} />
             </Text>
           )
         ) : (
-          <Text color={t.color.dim}>
-            <StreamCursor color={t.color.dim} streaming={streaming} visible={active} />
+          <Text color={t.color.muted}>
+            <StreamCursor color={t.color.muted} streaming={streaming} visible={active} />
           </Text>
         )}
       </Box>
@@ -792,7 +792,7 @@ export const ToolTrail = memo(function ToolTrail({
 
     if (parsed) {
       groups.push({
-        color: parsed.mark === '✗' ? t.color.error : t.color.cornsilk,
+        color: parsed.mark === '✗' ? t.color.error : t.color.text,
         content: parsed.call,
         details: [],
         key: `tr-${i}`,
@@ -801,7 +801,7 @@ export const ToolTrail = memo(function ToolTrail({
 
       if (parsed.detail) {
         pushDetail({
-          color: parsed.mark === '✗' ? t.color.error : t.color.dim,
+          color: parsed.mark === '✗' ? t.color.error : t.color.muted,
           content: parsed.detail,
           dimColor: parsed.mark !== '✗',
           key: `tr-${i}-d`
@@ -815,9 +815,9 @@ export const ToolTrail = memo(function ToolTrail({
       const label = toolTrailLabel(line.slice(9).replace(/…$/, '').trim())
 
       groups.push({
-        color: t.color.cornsilk,
+        color: t.color.text,
         content: label,
-        details: [{ color: t.color.dim, content: 'drafting...', dimColor: true, key: `tr-${i}-d` }],
+        details: [{ color: t.color.muted, content: 'drafting...', dimColor: true, key: `tr-${i}-d` }],
         key: `tr-${i}`,
         label
       })
@@ -827,12 +827,12 @@ export const ToolTrail = memo(function ToolTrail({
 
     if (line === 'analyzing tool output…') {
       pushDetail({
-        color: t.color.dim,
+        color: t.color.muted,
         dimColor: true,
         key: `tr-${i}`,
         content: groups.length ? (
           <>
-            <Spinner color={t.color.amber} variant="think" /> {line}
+            <Spinner color={t.color.accent} variant="think" /> {line}
           </>
         ) : (
           line
@@ -842,20 +842,20 @@ export const ToolTrail = memo(function ToolTrail({
       continue
     }
 
-    meta.push({ color: t.color.dim, content: line, dimColor: true, key: `tr-${i}` })
+    meta.push({ color: t.color.muted, content: line, dimColor: true, key: `tr-${i}` })
   }
 
   for (const tool of tools) {
     const label = formatToolCall(tool.name, tool.context || '')
 
     groups.push({
-      color: t.color.cornsilk,
+      color: t.color.text,
       key: tool.id,
       label,
       details: [],
       content: (
         <>
-          <Spinner color={t.color.amber} variant="tool" /> {label}
+          <Spinner color={t.color.accent} variant="tool" /> {label}
           {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
         </>
       )
@@ -864,7 +864,7 @@ export const ToolTrail = memo(function ToolTrail({
 
   for (const item of activity.slice(-4)) {
     const glyph = item.tone === 'error' ? '✗' : item.tone === 'warn' ? '!' : '·'
-    const color = item.tone === 'error' ? t.color.error : item.tone === 'warn' ? t.color.warn : t.color.dim
+    const color = item.tone === 'error' ? t.color.error : item.tone === 'warn' ? t.color.warn : t.color.muted
     meta.push({ color, content: `${glyph} ${item.text}`, dimColor: item.tone === 'info', key: `a-${item.id}` })
   }
 
@@ -873,7 +873,7 @@ export const ToolTrail = memo(function ToolTrail({
   const hasTools = groups.length > 0
   const hasSubagents = subagents.length > 0
   const hasMeta = meta.length > 0
-  const hasThinking = !!cot || reasoningActive || busy
+  const hasThinking = !!cot || reasoningActive || reasoningStreaming
   const thinkingLive = reasoningActive || reasoningStreaming
 
   const tokenCount =
@@ -998,14 +998,14 @@ export const ToolTrail = memo(function ToolTrail({
             }
           }}
         >
-          <Text color={t.color.dim} dim={!thinkingLive}>
-            <Text color={t.color.amber}>{openThinking ? '▾ ' : '▸ '}</Text>
+          <Text color={t.color.muted} dim={!thinkingLive}>
+            <Text color={t.color.accent}>{openThinking ? '▾ ' : '▸ '}</Text>
             {thinkingLive ? (
-              <Text bold color={t.color.cornsilk}>
+              <Text bold color={t.color.text}>
                 Thinking
               </Text>
             ) : (
-              <Text color={t.color.dim} dim>
+              <Text color={t.color.muted} dim>
                 Thinking
               </Text>
             )}
@@ -1068,7 +1068,7 @@ export const ToolTrail = memo(function ToolTrail({
                   color={group.color}
                   content={
                     <>
-                      <Text color={t.color.amber}>● </Text>
+                      <Text color={t.color.accent}>● </Text>
                       {toolLabel(group)}
                     </>
                   }
@@ -1182,7 +1182,7 @@ export const ToolTrail = memo(function ToolTrail({
           color={t.color.statusFg}
           content={
             <>
-              <Text color={t.color.amber}>Σ </Text>
+              <Text color={t.color.accent}>Σ </Text>
               {totalTokensLabel}
             </>
           }
@@ -1192,7 +1192,7 @@ export const ToolTrail = memo(function ToolTrail({
       ) : null}
       {outcome ? (
         <Box marginTop={1}>
-          <Text color={t.color.dim} dim>
+          <Text color={t.color.muted} dim>
             · {outcome}
           </Text>
         </Box>

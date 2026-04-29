@@ -526,7 +526,6 @@ def _url_is_private(url: str) -> bool:
     backend is configured, which will surface the DNS error naturally).
     """
     try:
-        from tools.url_safety import is_safe_url
         # is_safe_url returns False for private/loopback/link-local/CGNAT AND
         # for DNS failures.  We only want the private-network case here, so
         # we parse + check the host shape as a DNS-failure sieve first.
@@ -1400,6 +1399,24 @@ def _run_browser_command(
         error = _termux_browser_install_error()
         logger.warning("browser command blocked on Termux: %s", error)
         return {"success": False, "error": error}
+
+    # Local mode with no Chromium on disk: fail fast with an actionable
+    # message instead of hanging for _command_timeout seconds per call.
+    if _is_local_mode() and not _chromium_installed():
+        if _running_in_docker():
+            hint = (
+                "Chromium browser is missing. You're running in Docker — pull "
+                "the latest image to get the bundled Chromium: "
+                "docker pull ghcr.io/nousresearch/hermes-agent:latest"
+            )
+        else:
+            hint = (
+                "Chromium browser is missing. Install it with: "
+                "npx agent-browser install --with-deps "
+                "(or: npx playwright install --with-deps chromium)"
+            )
+        logger.warning("browser command blocked: %s", hint)
+        return {"success": False, "error": hint}
     
     from tools.interrupt import is_interrupted
     if is_interrupted():
@@ -2691,26 +2708,106 @@ def cleanup_all_browsers() -> None:
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
+    global _cached_chromium_installed
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
     _cached_command_timeout = None
     _command_timeout_resolved = False
-
+    _cached_chromium_installed = None
 
 # ============================================================================
 # Requirements Check
 # ============================================================================
 
+
+# Cache for Chromium discovery. Invalidated by _reset_browser_caches.
+_cached_chromium_installed: Optional[bool] = None
+
+
+def _chromium_search_roots() -> List[str]:
+    """Directories to scan for a Chromium / headless-shell build.
+
+    Order mirrors what agent-browser and Playwright actually probe:
+
+    1. ``PLAYWRIGHT_BROWSERS_PATH`` when set (Docker image sets this to
+       ``/opt/hermes/.playwright``).
+    2. ``~/.cache/ms-playwright`` — Playwright's default on Linux/macOS.
+    3. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
+    4. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
+       on Windows.
+    """
+    roots: List[str] = []
+    env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+    if env_path and env_path != "0":
+        roots.append(env_path)
+    home = os.path.expanduser("~")
+    roots.append(os.path.join(home, ".cache", "ms-playwright"))
+    if sys.platform == "darwin":
+        roots.append(os.path.join(home, "Library", "Caches", "ms-playwright"))
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA") or os.path.join(
+            home, "AppData", "Local"
+        )
+        roots.append(os.path.join(local, "ms-playwright"))
+    return roots
+
+
+def _chromium_installed() -> bool:
+    """Return True when a usable Chromium (or headless-shell) build is on disk.
+
+    agent-browser (0.26+) downloads Playwright's chromium / headless-shell
+    builds into ``PLAYWRIGHT_BROWSERS_PATH`` and won't start without them.
+    When the CLI is present but no browser build is, the first browser tool
+    call hangs for the full command timeout (often ~30s each) before
+    surfacing a useless error. Guarding the tool behind this check prevents
+    advertising a capability that will fail at runtime.
+    """
+    global _cached_chromium_installed
+    if _cached_chromium_installed is not None:
+        return _cached_chromium_installed
+
+    for root in _chromium_search_roots():
+        if not root or not os.path.isdir(root):
+            continue
+        try:
+            entries = os.listdir(root)
+        except OSError:
+            continue
+        # Playwright names them ``chromium-<build>`` and
+        # ``chromium_headless_shell-<build>``; agent-browser accepts either.
+        for entry in entries:
+            if entry.startswith("chromium-") or entry.startswith(
+                "chromium_headless_shell-"
+            ):
+                _cached_chromium_installed = True
+                return True
+
+    _cached_chromium_installed = False
+    return False
+
+
+def _running_in_docker() -> bool:
+    """Best-effort detection of whether we're inside a Docker container."""
+    if os.path.exists("/.dockerenv"):
+        return True
+    try:
+        with open("/proc/1/cgroup", "rt") as fp:
+            return "docker" in fp.read()
+    except OSError:
+        return False
+
+
 def check_browser_requirements() -> bool:
     """
     Check if browser tool requirements are met.
 
-    In **local mode** (no cloud provider configured): only the
-    ``agent-browser`` CLI must be findable.
+    In **local mode** (no cloud provider configured): the ``agent-browser``
+    CLI must be findable *and* a Chromium build must be installed on disk.
 
     In **cloud mode** (Browserbase, Browser Use, or Firecrawl): the CLI
-    *and* the provider's required credentials must be present.
+    and the provider's required credentials must be present. The cloud
+    provider hosts its own Chromium, so no local browser binary is needed.
 
     Returns:
         True if all requirements are met, False otherwise
@@ -2732,9 +2829,15 @@ def check_browser_requirements() -> bool:
     if _requires_real_termux_browser_install(browser_cmd):
         return False
 
-    # In cloud mode, also require provider credentials
+    # In cloud mode, also require provider credentials. Cloud browsers
+    # don't need a local Chromium binary.
     provider = _get_cloud_provider()
-    if provider is not None and not provider.is_configured():
+    if provider is not None:
+        return provider.is_configured()
+
+    # Local mode: agent-browser needs a Chromium build on disk. Without it
+    # the CLI hangs on first use until the command timeout fires.
+    if not _chromium_installed():
         return False
 
     return True
@@ -2765,6 +2868,20 @@ if __name__ == "__main__":
             if _requires_real_termux_browser_install(browser_cmd):
                 print("   - bare npx fallback found (insufficient on Termux local mode)")
                 print(f"     Install: {_browser_install_hint()}")
+            elif _cp is None and not _chromium_installed():
+                print("   - Chromium browser binary not found")
+                searched = ", ".join(_chromium_search_roots()) or "(no candidate paths)"
+                print(f"     Searched: {searched}")
+                if _running_in_docker():
+                    print(
+                        "     Docker: pull the latest image — the current one "
+                        "predates the bundled Chromium install"
+                    )
+                    print("       docker pull ghcr.io/nousresearch/hermes-agent:latest")
+                else:
+                    print("     Install it with:")
+                    print("       npx agent-browser install --with-deps")
+                    print("     Or:  npx playwright install --with-deps chromium")
         except FileNotFoundError:
             print("   - agent-browser CLI not found")
             print(f"     Install: {_browser_install_hint()}")

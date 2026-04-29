@@ -117,8 +117,18 @@ export class GatewayClient extends EventEmitter {
         return
       }
 
+      // Append the most recent gateway stderr/log lines to the timeout
+      // event so users can tell apart "wrong python", "missing dep",
+      // and "config parse failure" from one glance instead of having
+      // to dig through `/logs`.  Capped to keep the activity feed
+      // readable on slow boots.
+      const stderrTail = this.getLogTail(20)
+
       this.pushLog(`[startup] timed out waiting for gateway.ready (python=${python}, cwd=${cwd})`)
-      this.publish({ type: 'gateway.start_timeout', payload: { cwd, python } })
+      this.publish({
+        type: 'gateway.start_timeout',
+        payload: { cwd, python, stderr_tail: stderrTail }
+      })
     }, STARTUP_TIMEOUT_MS)
 
     this.proc = spawn(python, ['-m', 'tui_gateway.entry'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })

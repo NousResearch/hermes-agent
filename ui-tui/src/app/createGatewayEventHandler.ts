@@ -307,6 +307,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'browser.progress': {
+        const message = String(ev.payload?.message ?? '').trim()
+
+        if (message) {
+          sys(message)
+        }
+
+        return
+      }
+
       case 'voice.status': {
         // Continuous VAD loop reports its internal state so the status bar
         // can show listening / transcribing / idle without polling.

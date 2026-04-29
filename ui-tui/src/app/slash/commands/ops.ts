@@ -103,7 +103,8 @@ export const opsCommands: SlashCommand[] = [
         )
       }
 
-      const payload: Record<string, unknown> = { action }
+      const sid = ctx.sid ?? null
+      const payload: Record<string, unknown> = { action, session_id: sid }
       const requested = rest.join(' ').trim()
 
       if (action === 'connect') {
@@ -115,7 +116,9 @@ export const opsCommands: SlashCommand[] = [
         .rpc<BrowserManageResponse>('browser.manage', payload)
         .then(
           ctx.guarded<BrowserManageResponse>(r => {
-            r.messages?.forEach(message => ctx.transcript.sys(message))
+            if (!sid) {
+              r.messages?.forEach(message => ctx.transcript.sys(message))
+            }
 
             if (action === 'status') {
               return ctx.transcript.sys(

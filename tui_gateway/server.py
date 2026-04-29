@@ -3210,7 +3210,8 @@ def _(rid, params: dict) -> dict:
         raw = ("" if value is None else str(value)).strip().lower()
         if raw not in _INDICATOR_STYLES:
             return _err(
-                rid, 4002,
+                rid,
+                4002,
                 f"unknown indicator: {raw!r}; pick one of {'|'.join(_INDICATOR_STYLES)}",
             )
         _write_config_key("display.tui_status_indicator", raw)
@@ -4786,6 +4787,10 @@ def _browser_connect_failure_messages(url: str, port: int) -> list[str]:
     ]
 
 
+def _browser_progress(sid: str, message: str, *, level: str = "info") -> None:
+    _emit("browser.progress", sid, {"message": message, "level": level})
+
+
 @method("browser.manage")
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
@@ -4802,7 +4807,13 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
 
         url = params.get("url", DEFAULT_BROWSER_CDP_URL)
+        sid = params.get("session_id") or ""
         messages: list[str] = []
+
+        def announce(message: str, *, level: str = "info") -> None:
+            messages.append(message)
+            _browser_progress(sid, message, level=level)
+
         try:
             import urllib.request
             from urllib.parse import urlparse
@@ -4822,9 +4833,8 @@ def _(rid, params: dict) -> dict:
             # path.  Probing it would just reject valid endpoints.  Skip
             # the HTTP probe and do a TCP-level reachability check instead;
             # the actual CDP handshake happens on the next ``browser_navigate``.
-            is_concrete_ws = (
-                parsed.scheme in {"ws", "wss"}
-                and parsed.path.startswith("/devtools/browser/")
+            is_concrete_ws = parsed.scheme in {"ws", "wss"} and parsed.path.startswith(
+                "/devtools/browser/"
             )
             if is_concrete_ws:
                 import socket
@@ -4859,15 +4869,23 @@ def _(rid, params: dict) -> dict:
                         from hermes_cli.browser_connect import try_launch_chrome_debug
 
                         port = parsed.port or 9222
-                        messages.append("Chrome isn't running with remote debugging — attempting to launch...")
+                        announce(
+                            "Chrome isn't running with remote debugging — attempting to launch..."
+                        )
                         launched = try_launch_chrome_debug(port, platform.system())
                         if launched:
                             for _ in range(20):
                                 time.sleep(0.5)
                                 for probe in probe_urls:
                                     try:
-                                        with urllib.request.urlopen(probe, timeout=1.0) as resp:
-                                            if 200 <= getattr(resp, "status", 200) < 300:
+                                        with urllib.request.urlopen(
+                                            probe, timeout=1.0
+                                        ) as resp:
+                                            if (
+                                                200
+                                                <= getattr(resp, "status", 200)
+                                                < 300
+                                            ):
                                                 ok = True
                                                 break
                                     except Exception:
@@ -4875,14 +4893,22 @@ def _(rid, params: dict) -> dict:
                                 if ok:
                                     break
                             if ok:
-                                messages.append(f"Chrome launched and listening on port {port}")
+                                announce(
+                                    f"Chrome launched and listening on port {port}"
+                                )
                         if not ok:
-                            messages.extend(_browser_connect_failure_messages(url, port)[1:])
-                            return _ok(rid, {"connected": False, "url": url, "messages": messages})
+                            for line in _browser_connect_failure_messages(url, port)[1:]:
+                                announce(line, level="error")
+                            return _ok(
+                                rid,
+                                {"connected": False, "url": url, "messages": messages},
+                            )
                     else:
                         return _err(rid, 5031, f"could not reach browser CDP at {url}")
                 elif _is_default_local_cdp(parsed):
-                    messages.append(f"Chrome is already listening on port {parsed.port or 9222}")
+                    announce(
+                        f"Chrome is already listening on port {parsed.port or 9222}"
+                    )
 
             # Persist a normalized URL for downstream CDP resolution.
             # Discovery-style inputs (`http://host:port` or

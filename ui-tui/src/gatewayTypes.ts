@@ -434,6 +434,11 @@ export type GatewayEvent =
   | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
   | {
+      payload?: { level?: 'info' | 'warn' | 'error'; message?: string }
+      session_id?: string
+      type: 'browser.progress'
+    }
+  | {
       payload?: { cwd?: string; python?: string; stderr_tail?: string }
       session_id?: string
       type: 'gateway.start_timeout'

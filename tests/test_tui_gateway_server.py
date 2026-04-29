@@ -2754,6 +2754,8 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
     )
 
     assert resp["result"]["session_id"] is None
+
+
 # ── browser.manage ───────────────────────────────────────────────────
 
 
@@ -2903,14 +2905,27 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
 
 def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda evt, sid, payload=None: emitted.append((evt, payload or {})),
+    )
     fake = types.SimpleNamespace(
         cleanup_all_browsers=lambda: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=False)
-        with patch("hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False), \
-             patch("hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[]):
+        with (
+            patch(
+                "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
+            ),
+            patch(
+                "hermes_cli.browser_connect.get_chrome_debug_candidates",
+                return_value=[],
+            ),
+        ):
             resp = server.handle_request(
                 {
                     "id": "1",
@@ -2921,10 +2936,20 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
 
     assert resp["result"]["connected"] is False
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert resp["result"]["messages"][0] == "Chrome isn't running with remote debugging — attempting to launch..."
-    assert any("No Chrome/Chromium executable was found" in line for line in resp["result"]["messages"])
-    assert any("--remote-debugging-port=9222" in line for line in resp["result"]["messages"])
+    assert (
+        resp["result"]["messages"][0]
+        == "Chrome isn't running with remote debugging — attempting to launch..."
+    )
+    assert any(
+        "No Chrome/Chromium executable was found" in line
+        for line in resp["result"]["messages"]
+    )
+    assert any(
+        "--remote-debugging-port=9222" in line for line in resp["result"]["messages"]
+    )
     assert "BROWSER_CDP_URL" not in os.environ
+    progress = [p["message"] for evt, p in emitted if evt == "browser.progress"]
+    assert progress == resp["result"]["messages"]
 
 
 def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
@@ -2956,7 +2981,9 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
-        with patch("hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True):
+        with patch(
+            "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True
+        ):
             resp = server.handle_request(
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
             )
@@ -2975,7 +3002,9 @@ def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
     monkeypatch.setenv("BROWSER_CDP_URL", "http://existing:9222")
     cleanup_calls: list[str] = []
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: cleanup_calls.append(os.environ.get("BROWSER_CDP_URL", "")),
+        cleanup_all_browsers=lambda: cleanup_calls.append(
+            os.environ.get("BROWSER_CDP_URL", "")
+        ),
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
@@ -3055,14 +3084,19 @@ def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch)
     concrete = "ws://browserbase.example/devtools/browser/abc123"
 
     class _OkSocket:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
 
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         # If urlopen is reached for a concrete ws endpoint, the test
         # would still pass because _stub_urlopen returned ok=True before;
         # patch it to assert-fail so we prove the HTTP probe is skipped.
-        with patch("urllib.request.urlopen", side_effect=AssertionError("urlopen called")):
+        with patch(
+            "urllib.request.urlopen", side_effect=AssertionError("urlopen called")
+        ):
             with patch("socket.create_connection", return_value=_OkSocket()):
                 resp = server.handle_request(
                     {
@@ -3091,8 +3125,11 @@ def test_browser_manage_connect_concrete_ws_skips_http_probe(monkeypatch):
     seen_targets: list[tuple[str, int]] = []
 
     class _OkSocket:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
 
     def _fake_create_connection(addr, timeout=None):
         seen_targets.append(addr)
@@ -3101,7 +3138,9 @@ def test_browser_manage_connect_concrete_ws_skips_http_probe(monkeypatch):
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         # urlopen would 404/ECONNREFUSED on a real hosted CDP endpoint;
         # asserting it's never called proves the probe was skipped.
-        with patch("urllib.request.urlopen", side_effect=AssertionError("urlopen called")):
+        with patch(
+            "urllib.request.urlopen", side_effect=AssertionError("urlopen called")
+        ):
             with patch("socket.create_connection", side_effect=_fake_create_connection):
                 resp = server.handle_request(
                     {
@@ -3145,7 +3184,9 @@ def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
     monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
     cleanup_count = {"n": 0}
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: cleanup_count.__setitem__("n", cleanup_count["n"] + 1),
+        cleanup_all_browsers=lambda: cleanup_count.__setitem__(
+            "n", cleanup_count["n"] + 1
+        ),
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
@@ -3213,11 +3254,16 @@ def test_config_get_indicator_falls_back_when_unset(monkeypatch):
 def test_config_set_indicator_accepts_known_value(monkeypatch):
     written: dict = {}
     monkeypatch.setattr(
-        server, "_write_config_key",
+        server,
+        "_write_config_key",
         lambda k, v: written.update({k: v}),
     )
     resp = server.handle_request(
-        {"id": "1", "method": "config.set", "params": {"key": "indicator", "value": "EMOJI"}}
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "indicator", "value": "EMOJI"},
+        }
     )
     assert resp["result"] == {"key": "indicator", "value": "emoji"}
     assert written == {"display.tui_status_indicator": "emoji"}
@@ -3231,7 +3277,11 @@ def test_config_set_indicator_falsy_non_string_surfaces_in_error(monkeypatch):
 
     for bad in (0, False, []):
         resp = server.handle_request(
-            {"id": "1", "method": "config.set", "params": {"key": "indicator", "value": bad}}
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"key": "indicator", "value": bad},
+            }
         )
         assert "error" in resp
         msg = resp["error"]["message"]
@@ -3246,7 +3296,11 @@ def test_config_set_indicator_none_keeps_blank_repr(monkeypatch):
     """`None` is the genuine 'no value' case — empty raw is acceptable."""
     monkeypatch.setattr(server, "_write_config_key", lambda *a, **k: None)
     resp = server.handle_request(
-        {"id": "1", "method": "config.set", "params": {"key": "indicator", "value": None}}
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "indicator", "value": None},
+        }
     )
     assert "error" in resp
     assert "unknown indicator: ''" in resp["error"]["message"]

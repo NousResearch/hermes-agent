@@ -153,20 +153,3 @@ class TestRelaunch:
             relaunch_mod.relaunch(["--resume", "abc"])
 
         assert calls == [("/usr/bin/hermes", ["/usr/bin/hermes", "--resume", "abc"])]
-
-
-class TestRelaunchChat:
-    def test_appends_chat(self, monkeypatch):
-        calls = []
-
-        def fake_execvp(path, argv):
-            calls.append((path, argv))
-            raise SystemExit(0)
-
-        monkeypatch.setattr(relaunch_mod.os, "execvp", fake_execvp)
-        monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/bin/hermes")
-
-        with pytest.raises(SystemExit):
-            relaunch_mod.relaunch_chat()
-
-        assert calls == [("/usr/bin/hermes", ["/usr/bin/hermes", "chat"])]

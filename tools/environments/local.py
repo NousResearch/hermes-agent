@@ -6,6 +6,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
@@ -390,7 +391,7 @@ class LocalEnvironment(BaseEnvironment):
     def _update_cwd(self, result: dict):
         """Read CWD from temp file (local-only, no round-trip needed)."""
         try:
-            cwd_path = open(self._cwd_file).read().strip()
+            cwd_path = Path(self._cwd_file).read_text().strip()
             if cwd_path:
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):

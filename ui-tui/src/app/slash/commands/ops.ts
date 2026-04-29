@@ -107,7 +107,7 @@ export const opsCommands: SlashCommand[] = [
       const requested = rest.join(' ').trim()
 
       if (action === 'connect') {
-        payload.url = requested || 'http://localhost:9222'
+        payload.url = requested || 'http://127.0.0.1:9222'
       }
 
       ctx.gateway

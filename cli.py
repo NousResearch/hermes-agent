@@ -80,6 +80,11 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_cli.browser_connect import (
+    DEFAULT_BROWSER_CDP_URL,
+    manual_chrome_debug_command,
+    try_launch_chrome_debug,
+)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import base_url_host_matches
 
@@ -239,65 +244,6 @@ def _parse_service_tier_config(raw: str) -> str | None:
         return "priority"
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
-
-
-
-def _get_chrome_debug_candidates(system: str) -> list[str]:
-    """Return likely browser executables for local CDP auto-launch."""
-    candidates: list[str] = []
-    seen: set[str] = set()
-
-    def _add_candidate(path: str | None) -> None:
-        if not path:
-            return
-        normalized = os.path.normcase(os.path.normpath(path))
-        if normalized in seen:
-            return
-        if os.path.isfile(path):
-            candidates.append(path)
-            seen.add(normalized)
-
-    def _add_from_path(*names: str) -> None:
-        for name in names:
-            _add_candidate(shutil.which(name))
-
-    if system == "Darwin":
-        for app in (
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        ):
-            _add_candidate(app)
-    elif system == "Windows":
-        _add_from_path(
-            "chrome.exe", "msedge.exe", "brave.exe", "chromium.exe",
-            "chrome", "msedge", "brave", "chromium",
-        )
-
-        for base in (
-            os.environ.get("ProgramFiles"),
-            os.environ.get("ProgramFiles(x86)"),
-            os.environ.get("LOCALAPPDATA"),
-        ):
-            if not base:
-                continue
-            for parts in (
-                ("Google", "Chrome", "Application", "chrome.exe"),
-                ("Chromium", "Application", "chrome.exe"),
-                ("Chromium", "Application", "chromium.exe"),
-                ("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-                ("Microsoft", "Edge", "Application", "msedge.exe"),
-            ):
-                _add_candidate(os.path.join(base, *parts))
-    else:
-        _add_from_path(
-            "google-chrome", "google-chrome-stable", "chromium-browser",
-            "chromium", "brave-browser", "microsoft-edge",
-        )
-
-    return candidates
-
 
 def load_cli_config() -> Dict[str, Any]:
     """
@@ -6606,34 +6552,7 @@ class HermesCLI:
 
         Returns True if a launch command was executed (doesn't guarantee success).
         """
-        import subprocess as _sp
-
-        candidates = _get_chrome_debug_candidates(system)
-
-        if not candidates:
-            return False
-
-        # Dedicated profile dir so debug Chrome won't collide with normal Chrome
-        data_dir = str(_hermes_home / "chrome-debug")
-        os.makedirs(data_dir, exist_ok=True)
-
-        chrome = candidates[0]
-        try:
-            _sp.Popen(
-                [
-                    chrome,
-                    f"--remote-debugging-port={port}",
-                    f"--user-data-dir={data_dir}",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                ],
-                stdout=_sp.DEVNULL,
-                stderr=_sp.DEVNULL,
-                start_new_session=True,  # detach from terminal
-            )
-            return True
-        except Exception:
-            return False
+        return try_launch_chrome_debug(port, system)
 
     def _handle_browser_command(self, cmd: str):
         """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
@@ -6642,13 +6561,23 @@ class HermesCLI:
         parts = cmd.strip().split(None, 1)
         sub = parts[1].lower().strip() if len(parts) > 1 else "status"
 
-        _DEFAULT_CDP = "http://127.0.0.1:9222"
+        _DEFAULT_CDP = DEFAULT_BROWSER_CDP_URL
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
         if sub.startswith("connect"):
             # Optionally accept a custom CDP URL: /browser connect ws://host:port
             connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
             cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
+            parsed_cdp = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
+            if parsed_cdp.path.startswith("/devtools/browser/"):
+                cdp_url = parsed_cdp.geturl()
+            else:
+                cdp_url = parsed_cdp._replace(
+                    path="",
+                    params="",
+                    query="",
+                    fragment="",
+                ).geturl()
 
             # Clear any existing browser sessions so the next tool call uses the new backend
             try:
@@ -6660,11 +6589,8 @@ class HermesCLI:
             print()
 
             # Extract port for connectivity checks
-            _port = 9222
-            try:
-                _port = int(cdp_url.rsplit(":", 1)[-1].split("/")[0])
-            except (ValueError, IndexError):
-                pass
+            _host = parsed_cdp.hostname or "127.0.0.1"
+            _port = parsed_cdp.port or (443 if parsed_cdp.scheme in {"https", "wss"} else 80)
 
             # Check if Chrome is already listening on the debug port
             import socket
@@ -6672,7 +6598,7 @@ class HermesCLI:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.settimeout(1)
-                s.connect(("127.0.0.1", _port))
+                s.connect((_host, _port))
                 s.close()
                 _already_open = True
             except (OSError, socket.timeout):
@@ -6690,7 +6616,7 @@ class HermesCLI:
                         try:
                             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                             s.settimeout(1)
-                            s.connect(("127.0.0.1", _port))
+                            s.connect((_host, _port))
                             s.close()
                             _already_open = True
                             break
@@ -6703,32 +6629,17 @@ class HermesCLI:
                         print("     Try again in a few seconds — the debug instance may still be starting")
                 else:
                     print("   ⚠ Could not auto-launch Chrome")
-                    # Show manual instructions as fallback
-                    _data_dir = str(_hermes_home / "chrome-debug")
                     sys_name = _plat.system()
-                    if sys_name == "Darwin":
-                        chrome_cmd = (
-                            'open -a "Google Chrome" --args'
-                            f" --remote-debugging-port=9222"
-                            f' --user-data-dir="{_data_dir}"'
-                            " --no-first-run --no-default-browser-check"
-                        )
-                    elif sys_name == "Windows":
-                        chrome_cmd = (
-                            f'chrome.exe --remote-debugging-port=9222'
-                            f' --user-data-dir="{_data_dir}"'
-                            f" --no-first-run --no-default-browser-check"
-                        )
-                    else:
-                        chrome_cmd = (
-                            f"google-chrome --remote-debugging-port=9222"
-                            f' --user-data-dir="{_data_dir}"'
-                            f" --no-first-run --no-default-browser-check"
-                        )
                     print(f"     Launch Chrome manually:")
-                    print(f"     {chrome_cmd}")
+                    print(f"     {manual_chrome_debug_command(_port, sys_name)}")
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
+
+            if not _already_open:
+                print()
+                print("Browser not connected — start Chrome with remote debugging and retry /browser connect")
+                print()
+                return
 
             os.environ["BROWSER_CDP_URL"] = cdp_url
             # Eagerly start the CDP supervisor so pending_dialogs + frame_tree

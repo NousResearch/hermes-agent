@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import shutil
+import importlib.util
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -30,6 +31,7 @@ load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
+from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
@@ -862,6 +864,48 @@ def run_doctor(args):
         except ImportError:
             check_fail("daytona SDK not installed", "(pip install daytona)")
             issues.append("Install daytona SDK: pip install daytona")
+
+    # Vercel Sandbox (if using vercel_sandbox backend)
+    if terminal_env == "vercel_sandbox":
+        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
+        if runtime in {"node24", "node22", "python3.13"}:
+            check_ok("Vercel runtime", f"({runtime})")
+        else:
+            check_fail("Vercel runtime unsupported", f"({runtime}; use node24, node22, or python3.13)")
+            issues.append("Set TERMINAL_VERCEL_RUNTIME to node24, node22, or python3.13")
+
+        disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
+        if disk in ("", "0", "51200"):
+            check_ok("Vercel disk setting", "(uses platform default)")
+        else:
+            check_fail("Vercel custom disk unsupported", "(reset terminal.container_disk to 51200)")
+            issues.append("Vercel Sandbox does not support custom container_disk; use the shared default 51200")
+
+        if importlib.util.find_spec("vercel") is not None:
+            check_ok("vercel SDK", "(installed)")
+        else:
+            check_fail("vercel SDK not installed", "(pip install 'hermes-agent[vercel]')")
+            issues.append("Install the Vercel optional dependency: pip install 'hermes-agent[vercel]'")
+
+        auth_status = describe_vercel_auth()
+        if auth_status.ok:
+            check_ok("Vercel auth", f"({auth_status.label})")
+        elif auth_status.label.startswith("partial"):
+            check_fail("Vercel auth incomplete", f"({auth_status.label})")
+            issues.append("Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together")
+        else:
+            check_fail("Vercel auth not configured", f"({auth_status.label})")
+            issues.append(
+                "Configure Vercel Sandbox auth with VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID"
+            )
+        for line in auth_status.detail_lines:
+            check_info(f"Vercel auth {line}")
+
+        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("1", "true", "yes", "on")
+        if persistent:
+            check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
+        else:
+            check_info("Vercel persistence: ephemeral filesystem")
 
     # Node.js + agent-browser (for browser automation tools)
     if shutil.which("node"):

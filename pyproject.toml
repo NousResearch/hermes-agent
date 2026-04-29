@@ -39,6 +39,7 @@ dependencies = [
 [project.optional-dependencies]
 modal = ["modal>=1.0.0,<2"]
 daytona = ["daytona>=0.148.0,<1"]
+vercel = ["vercel>=0.5.7,<0.6.0"]
 dev = ["debugpy>=1.8.0,<2", "pytest>=9.0.2,<10", "pytest-asyncio>=1.3.0,<2", "pytest-xdist>=3.0,<4", "mcp>=1.2.0,<2", "ty>=0.0.1a29,<0.0.22", "ruff"]
 messaging = ["python-telegram-bot[webhooks]>=22.6,<23", "discord.py[voice]>=2.7.1,<3", "aiohttp>=3.13.3,<4", "slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4", "qrcode>=7.0,<8"]
 cron = ["croniter>=6.0.0,<7"]
@@ -100,6 +101,7 @@ yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git@bfb0c88
 all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",
+  "hermes-agent[vercel]",
   "hermes-agent[messaging]",
   # matrix: python-olm (required by matrix-nio[e2e]) is upstream-broken on
   # modern macOS (archived libolm, C++ errors with Clang 21+).  On Linux the

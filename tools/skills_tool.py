@@ -101,7 +101,9 @@ _PLATFORM_MAP = {
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub"))
-_REMOTE_ENV_BACKENDS = frozenset({"docker", "singularity", "modal", "ssh", "daytona"})
+_REMOTE_ENV_BACKENDS = frozenset(
+    {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
+)
 _secret_capture_callback = None
 
 

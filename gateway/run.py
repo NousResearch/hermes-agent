@@ -6953,7 +6953,7 @@ class GatewayRunner:
 
             _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
 
-            _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
+            _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'}
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 

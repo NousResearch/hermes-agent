@@ -523,6 +523,27 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Slack: native files_upload_v2 when media attachments are present ---
+    # Without this branch, cross-channel/DM Slack sends (which never enter the
+    # in-thread BasePlatformAdapter media pipeline) would drop attachments and
+    # surface the "MEDIA attachments were omitted for slack" warning, even
+    # though SlackAdapter exposes full media support via files_upload_v2.
+    if platform == Platform.SLACK and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_slack(
+                pconfig.token,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+                thread_id=thread_id,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Matrix: use the native adapter helper when media is present ---
     if platform == Platform.MATRIX and media_files:
         last_result = None
@@ -560,7 +581,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, slack and yuanbao; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -568,7 +589,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, slack and yuanbao"
         )
 
     last_result = None
@@ -963,12 +984,86 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         return _error(f"Discord send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
-    """Send via Slack Web API."""
+async def _send_slack(token, chat_id, message, media_files=None, thread_id=None):
+    """Send via Slack Web API.
+
+    Text-only sends use chat.postMessage. When ``media_files`` is non-empty,
+    each file is uploaded with ``files_upload_v2`` via the slack_sdk async
+    client (matching SlackAdapter.send_image_file/send_voice/send_video/
+    send_document) so that cross-channel and DM sends through the
+    ``send_message`` tool deliver attachments natively instead of dropping
+    them with the "MEDIA attachments were omitted" warning.
+    """
+    media_files = media_files or []
     try:
         import aiohttp
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    if media_files:
+        try:
+            from slack_sdk.web.async_client import AsyncWebClient
+            from slack_sdk.errors import SlackApiError
+        except ImportError:
+            return {"error": "slack_sdk not installed. Run: pip install 'hermes-agent[slack]'"}
+
+        client = AsyncWebClient(token=token)
+        last_result = None
+        text_consumed = False
+        try:
+            for media_path, _is_voice in media_files:
+                if not os.path.exists(media_path):
+                    return _error(f"Media file not found: {media_path}")
+
+                # Attach the text as initial_comment on the first upload only;
+                # subsequent uploads in the same call should not duplicate it.
+                initial_comment = "" if text_consumed else (message or "")
+                upload_kwargs = {
+                    "channel": chat_id,
+                    "file": media_path,
+                    "filename": os.path.basename(media_path),
+                    "initial_comment": initial_comment,
+                }
+                if thread_id:
+                    upload_kwargs["thread_ts"] = thread_id
+                try:
+                    result = await client.files_upload_v2(**upload_kwargs)
+                except SlackApiError as exc:
+                    resp = getattr(exc, "response", None)
+                    err = None
+                    if resp is not None:
+                        try:
+                            err = resp.get("error")
+                        except Exception:
+                            err = None
+                    return _error(f"Slack files_upload_v2 error: {err or exc}")
+
+                text_consumed = True
+                # files_upload_v2's response wraps a "files" list; surface the
+                # first file id as the message_id, mirroring the chat.postMessage
+                # path's "ts" — gives callers something stable to log/correlate.
+                msg_id = None
+                try:
+                    files_list = result.get("files") or []
+                except Exception:
+                    files_list = []
+                if files_list:
+                    first = files_list[0]
+                    if isinstance(first, dict):
+                        msg_id = first.get("id")
+                last_result = {
+                    "success": True,
+                    "platform": "slack",
+                    "chat_id": chat_id,
+                    "message_id": msg_id,
+                }
+
+            # If only media was sent and no text consumed (shouldn't happen),
+            # last_result is the final upload's result.
+            return last_result or {"success": True, "platform": "slack", "chat_id": chat_id}
+        except Exception as e:
+            return _error(f"Slack send failed: {e}")
+
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url()
@@ -977,6 +1072,8 @@ async def _send_slack(token, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if thread_id:
+                payload["thread_ts"] = thread_id
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):

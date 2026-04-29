@@ -1621,3 +1621,314 @@ class TestForumProbeCache:
         assert result2["success"] is True
         # Only one session opened (thread creation) — no probe session this time
         # (verified by not raising from our side_effect exhaustion)
+
+
+# ---------------------------------------------------------------------------
+# Slack native media delivery via send_message tool
+# ---------------------------------------------------------------------------
+
+
+class TestSendSlackMedia:
+    """`_send_slack` uploads files via slack_sdk's files_upload_v2 when given media."""
+
+    def _install_slack_sdk_mock(self, monkeypatch, upload_mock):
+        """Inject a MagicMock slack_sdk.web.async_client + slack_sdk.errors."""
+        slack_sdk = MagicMock()
+
+        class FakeAsyncWebClient:
+            def __init__(self, token=None):
+                self.token = token
+                self.files_upload_v2 = upload_mock
+
+        slack_sdk.web.async_client.AsyncWebClient = FakeAsyncWebClient
+
+        class FakeSlackApiError(Exception):
+            def __init__(self, message="", response=None):
+                super().__init__(message)
+                self.response = response
+
+        slack_sdk.errors.SlackApiError = FakeSlackApiError
+
+        monkeypatch.setitem(sys.modules, "slack_sdk", slack_sdk)
+        monkeypatch.setitem(sys.modules, "slack_sdk.web", slack_sdk.web)
+        monkeypatch.setitem(sys.modules, "slack_sdk.web.async_client", slack_sdk.web.async_client)
+        monkeypatch.setitem(sys.modules, "slack_sdk.errors", slack_sdk.errors)
+        return FakeAsyncWebClient, FakeSlackApiError
+
+    def test_single_image_upload_uses_files_upload_v2(self, monkeypatch, tmp_path):
+        from tools.send_message_tool import _send_slack
+
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"fake png content")
+
+        upload = AsyncMock(return_value={
+            "ok": True,
+            "files": [{"id": "F12345", "name": "photo.png"}],
+        })
+        self._install_slack_sdk_mock(monkeypatch, upload)
+
+        result = asyncio.run(
+            _send_slack("xoxb-tok", "C123", "here you go", media_files=[(str(img), False)])
+        )
+
+        assert result["success"] is True
+        assert result["platform"] == "slack"
+        assert result["chat_id"] == "C123"
+        assert result["message_id"] == "F12345"
+        upload.assert_awaited_once()
+        kwargs = upload.await_args.kwargs
+        assert kwargs["channel"] == "C123"
+        assert kwargs["file"] == str(img)
+        assert kwargs["filename"] == "photo.png"
+        # Caption must be carried into the upload as initial_comment, otherwise
+        # the user's text is dropped.
+        assert kwargs["initial_comment"] == "here you go"
+        # No thread_id was passed → no thread_ts kwarg should appear.
+        assert "thread_ts" not in kwargs
+
+    def test_thread_id_is_forwarded_as_thread_ts(self, monkeypatch, tmp_path):
+        from tools.send_message_tool import _send_slack
+
+        doc = tmp_path / "report.pdf"
+        doc.write_bytes(b"%PDF-1.4 fake")
+
+        upload = AsyncMock(return_value={"ok": True, "files": [{"id": "F1"}]})
+        self._install_slack_sdk_mock(monkeypatch, upload)
+
+        result = asyncio.run(
+            _send_slack(
+                "xoxb-tok", "C99", "see attached",
+                media_files=[(str(doc), False)],
+                thread_id="1700000000.000123",
+            )
+        )
+
+        assert result["success"] is True
+        kwargs = upload.await_args.kwargs
+        assert kwargs["thread_ts"] == "1700000000.000123"
+
+    def test_multiple_files_only_first_carries_caption(self, monkeypatch, tmp_path):
+        """Caption is attached to the first upload only — subsequent uploads
+        in the same call must not duplicate it as their initial_comment."""
+        from tools.send_message_tool import _send_slack
+
+        a = tmp_path / "a.png"
+        a.write_bytes(b"a")
+        b = tmp_path / "b.pdf"
+        b.write_bytes(b"%PDF b")
+
+        upload = AsyncMock(return_value={"ok": True, "files": [{"id": "F"}]})
+        self._install_slack_sdk_mock(monkeypatch, upload)
+
+        result = asyncio.run(
+            _send_slack(
+                "tok", "C1", "summary",
+                media_files=[(str(a), False), (str(b), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert upload.await_count == 2
+        first_kwargs = upload.await_args_list[0].kwargs
+        second_kwargs = upload.await_args_list[1].kwargs
+        assert first_kwargs["initial_comment"] == "summary"
+        assert second_kwargs["initial_comment"] == ""
+
+    def test_missing_media_file_returns_error(self, monkeypatch, tmp_path):
+        from tools.send_message_tool import _send_slack
+
+        upload = AsyncMock()
+        self._install_slack_sdk_mock(monkeypatch, upload)
+
+        result = asyncio.run(
+            _send_slack("tok", "C1", "msg", media_files=[(str(tmp_path / "missing.png"), False)])
+        )
+        assert "error" in result
+        assert "Media file not found" in result["error"]
+        upload.assert_not_awaited()
+
+    def test_slack_api_error_is_surfaced(self, monkeypatch, tmp_path):
+        """SlackApiError from the SDK must surface as a structured error, not an exception."""
+        from tools.send_message_tool import _send_slack
+
+        img = tmp_path / "x.png"
+        img.write_bytes(b"x")
+
+        # Configure the mock to raise SlackApiError on the first call.
+        # The error class is also returned from _install so we can construct it.
+        upload = AsyncMock()
+        _, FakeSlackApiError = self._install_slack_sdk_mock(monkeypatch, upload)
+
+        class FakeResp(dict):
+            pass
+
+        upload.side_effect = FakeSlackApiError(
+            "channel_not_found", response=FakeResp(error="channel_not_found")
+        )
+
+        result = asyncio.run(
+            _send_slack("tok", "Cbad", "hi", media_files=[(str(img), False)])
+        )
+
+        assert "error" in result
+        assert "channel_not_found" in result["error"]
+
+    def test_text_only_path_does_not_import_slack_sdk(self, monkeypatch):
+        """Regression: text-only sends must continue to use aiohttp + chat.postMessage,
+        NOT touch slack_sdk. This guards against the new media branch leaking into
+        the text-only path."""
+        from tools.send_message_tool import _send_slack
+
+        # Purposely DO NOT install slack_sdk — if the text-only path tries to
+        # import it the test should still pass (proving the import is gated
+        # on media_files being truthy).
+        monkeypatch.delitem(sys.modules, "slack_sdk", raising=False)
+        monkeypatch.delitem(sys.modules, "slack_sdk.web", raising=False)
+        monkeypatch.delitem(sys.modules, "slack_sdk.web.async_client", raising=False)
+        monkeypatch.delitem(sys.modules, "slack_sdk.errors", raising=False)
+
+        # Stub the aiohttp.ClientSession so we don't actually hit Slack.
+        resp = MagicMock()
+        resp.json = AsyncMock(return_value={"ok": True, "ts": "111.222"})
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=None)
+        session = MagicMock()
+        session.post = MagicMock(return_value=resp)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("tok", "C1", "just text"))
+
+        assert result["success"] is True
+        assert result["message_id"] == "111.222"
+        # slack_sdk must NOT have been imported by the text-only path.
+        assert "slack_sdk.web.async_client" not in sys.modules
+
+
+class TestSendToPlatformSlackMedia:
+    """`_send_to_platform` routes Slack media through the new media branch (#17261)."""
+
+    def test_media_present_uses_send_slack_with_media(self, monkeypatch, tmp_path):
+        """When media_files is non-empty for SLACK, _send_to_platform calls _send_slack
+        with media_files attached on the last chunk — not the warning-and-drop path."""
+        _ensure_slack_mock(monkeypatch)
+        import gateway.platforms.slack as slack_mod
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"img")
+
+        send_mock = AsyncMock(return_value={
+            "success": True, "platform": "slack", "chat_id": "C42", "message_id": "F1",
+        })
+
+        with patch("tools.send_message_tool._send_slack", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="xoxb", extra={}),
+                    "C42",
+                    "look",
+                    media_files=[(str(img), False)],
+                )
+            )
+
+        assert result["success"] is True
+        # The new media branch returns last_result directly — so the success
+        # path does NOT inject a "MEDIA attachments were omitted" warning.
+        assert "warnings" not in result
+        send_mock.assert_awaited_once()
+        kwargs = send_mock.await_args.kwargs
+        assert kwargs["media_files"] == [(str(img), False)]
+
+    def test_media_attaches_only_to_last_chunk(self, monkeypatch, tmp_path):
+        """Long Slack messages chunk to MAX_MESSAGE_LENGTH; media_files must
+        attach to the FINAL chunk only so we don't upload duplicates per-chunk."""
+        _ensure_slack_mock(monkeypatch)
+        import gateway.platforms.slack as slack_mod
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"img")
+
+        # Slack MAX_MESSAGE_LENGTH is 39000 — build something well over that
+        # to force chunking through BasePlatformAdapter.truncate_message.
+        long_msg = ("word " * 9000).strip()
+        assert len(long_msg) > 39000
+
+        call_log = []
+
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None):
+            call_log.append(media_files or [])
+            return {
+                "success": True, "platform": "slack", "chat_id": chat_id,
+                "message_id": str(len(call_log)),
+            }
+
+        with patch("tools.send_message_tool._send_slack", fake_send):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="xoxb", extra={}),
+                    "C7",
+                    long_msg,
+                    media_files=[(str(img), False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert len(call_log) >= 2  # message was chunked
+        assert all(c == [] for c in call_log[:-1])
+        assert call_log[-1] == [(str(img), False)]
+
+    def test_text_only_slack_still_uses_text_branch(self, monkeypatch):
+        """Regression: a text-only Slack send (media_files empty) must NOT enter
+        the new media branch — it should hit the existing chat.postMessage path."""
+        _ensure_slack_mock(monkeypatch)
+        import gateway.platforms.slack as slack_mod
+        monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
+
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_slack", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.SLACK,
+                    SimpleNamespace(enabled=True, token="xoxb", extra={}),
+                    "C1",
+                    "plain text",
+                    media_files=[],
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once()
+        # Old text-only branch passes positional args only — no media_files kwarg.
+        assert send_mock.await_args.kwargs == {}
+
+    def test_warning_message_lists_slack_as_supported(self, monkeypatch):
+        """When media is dropped on a non-supporting platform, the warning text
+        must list slack as one of the supported platforms (regression for
+        https://github.com/NousResearch/hermes-agent/issues/17261)."""
+        # Pick a platform without media support, e.g. WHATSAPP.
+        _ensure_slack_mock(monkeypatch)
+
+        send_whatsapp = AsyncMock(return_value={"success": True, "message_id": "w1"})
+
+        with patch("tools.send_message_tool._send_whatsapp", send_whatsapp):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.WHATSAPP,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "1234567890",
+                    "with file please",
+                    media_files=[("/fake/x.png", False)],
+                )
+            )
+
+        assert result["success"] is True
+        warnings = result.get("warnings") or []
+        assert warnings, "expected a 'MEDIA attachments were omitted' warning"
+        # The warning text must mention slack now that we support it.
+        assert "slack" in warnings[0]

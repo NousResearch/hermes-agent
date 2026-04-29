@@ -640,6 +640,7 @@ class GatewayStreamConsumer:
         safe_limit = max(500, raw_limit - 100)
         chunks = self._split_text_chunks(continuation, safe_limit)
 
+        stale_message_id = self._message_id  # partial message to clean up
         last_message_id: Optional[str] = None
         last_successful_chunk = ""
         sent_any_chunk = False
@@ -686,6 +687,16 @@ class GatewayStreamConsumer:
             # Each fallback chunk is a fresh platform message — notify
             # so any stale tool-progress bubble gets closed off.
             self._notify_new_message()
+
+        # Remove the frozen partial message so the user only sees the
+        # complete fallback response.  Best-effort — if the delete fails
+        # (e.g. flood control still active, or bot lacks permission), the
+        # partial message remains but at least the full answer was delivered.
+        if stale_message_id and stale_message_id != last_message_id:
+            try:
+                await self.adapter.delete_message(self.chat_id, stale_message_id)
+            except Exception:
+                pass
 
         self._message_id = last_message_id
         self._already_sent = True

@@ -1,6 +1,6 @@
 ---
-name: korean-marketplace-link-to-complete-pdp
-description: "Use when the user provides a Korean marketplace/wholesale product link and wants Hermes to analyze product info/images, plan a SmartStore/Coupang B2C 상세페이지, generate Korean text-in-image section assets with GPT Image, QA them, save outputs to Obsidian, and produce exactly two final images: one thumbnail/main image and one stitched full detail-page image."
+name: ebrain-detail-page-builder
+description: "Use when the user provides a Korean marketplace/wholesale product link and wants Ebrain Detail Page Builder to analyze product info/images, plan a SmartStore/Coupang B2C 상세페이지, generate Korean text-in-image section assets, QA them, and produce exactly two final images: one thumbnail/main image and one stitched full detail-page image."
 version: 1.0.0
 author: Hermes Agent
 license: MIT
@@ -10,13 +10,13 @@ metadata:
     related_skills: [ocr-and-documents]
 ---
 
-# Korean Marketplace Link to Complete PDP
+# Ebrain Detail Page Builder
 
 ## Overview
 
-Use this workflow when the user gives a product URL such as 도매꾹, 네이버 스마트스토어, 쿠팡, 11번가, G마켓, ESM/옥션, or another Korean marketplace/wholesale page and asks to create a complete 상세페이지/PDP.
+Ebrain Detail Page Builder is a Korean ecommerce 상세페이지 production workflow for external students, sellers, and operators. Use this workflow when the user gives a product URL such as 도매꾹, 네이버 스마트스토어, 쿠팡, 11번가, G마켓, ESM/옥션, or another Korean marketplace/wholesale page and asks to create a complete 상세페이지/PDP.
 
-The goal is not just to summarize the link. The end-to-end deliverable is:
+The goal is not just to summarize the link. The Ebrain Detail Page Builder end-to-end deliverable is:
 
 1. product fact extraction
 2. product image/source-image recovery

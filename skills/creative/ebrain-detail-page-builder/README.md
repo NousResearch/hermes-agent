@@ -1,4 +1,4 @@
-# Ebrain PDP Builder
+# Ebrain Detail Page Builder
 
 한국 마켓 상품 링크를 입력하면 제품 정보와 이미지를 분석해 스마트스토어·쿠팡용 상세페이지 제작 흐름으로 연결하는 Hermes Agent 스킬입니다.
 

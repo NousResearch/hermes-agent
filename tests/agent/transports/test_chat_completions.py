@@ -454,6 +454,49 @@ class TestChatCompletionsKimi:
         assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
 
 
+class TestChatCompletionsDeepSeekDirect:
+    """DeepSeek direct API (api.deepseek.com) thinking control via extra_body."""
+
+    def test_deepseek_thinking_enabled_by_default(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-chat", messages=[{"role": "user", "content": "Hi"}],
+            is_deepseek_direct=True,
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+
+    def test_deepseek_thinking_disabled_when_enabled_false(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-chat", messages=[{"role": "user", "content": "Hi"}],
+            is_deepseek_direct=True,
+            reasoning_config={"enabled": False},
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+
+    def test_deepseek_thinking_disabled_when_effort_none(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-chat", messages=[{"role": "user", "content": "Hi"}],
+            is_deepseek_direct=True,
+            reasoning_config={"effort": "none"},
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+
+    def test_openrouter_deepseek_no_thinking_param(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek/deepseek-chat",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_openrouter=True,
+        )
+        assert "thinking" not in kw.get("extra_body", {})
+
+    def test_kimi_thinking_unchanged_with_deepseek_present(self, transport):
+        kw = transport.build_kwargs(
+            model="kimi-k2", messages=[{"role": "user", "content": "Hi"}],
+            is_kimi=True,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+
+
 class TestChatCompletionsLmStudioReasoning:
     """LM Studio publishes per-model reasoning ``allowed_options``. When the
     user requests an effort the model can't honor (e.g. ``high`` on a

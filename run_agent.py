@@ -8410,6 +8410,10 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
+        _is_deepseek_direct = (
+            (self.provider or "").strip().lower() == "deepseek"
+            or base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
         _is_tokenhub = base_url_host_matches(self._base_url_lower, "tokenhub.tencentmaas.com")
         _is_lmstudio = (self.provider or "").strip().lower() == "lmstudio"
 
@@ -8484,6 +8488,7 @@ class AIAgent:
             is_github_models=_is_gh,
             is_nvidia_nim=_is_nvidia,
             is_kimi=_is_kimi,
+            is_deepseek_direct=_is_deepseek_direct,
             is_tokenhub=_is_tokenhub,
             is_lmstudio=_is_lmstudio,
             is_custom_provider=self.provider == "custom",

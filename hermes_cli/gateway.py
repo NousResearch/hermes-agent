@@ -830,6 +830,17 @@ def _user_dbus_socket_path() -> Path:
     return Path(xdg) / "bus"
 
 
+def _user_systemd_private_socket_path() -> Path:
+    """Return the per-user systemd private socket path (Debian 13+)."""
+    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(xdg) / "systemd" / "private"
+
+
+def _user_systemd_socket_exists() -> bool:
+    """True if either the D-Bus socket or the systemd private socket exists."""
+    return _user_dbus_socket_path().exists() or _user_systemd_private_socket_path().exists()
+
+
 def _ensure_user_systemd_env() -> None:
     """Ensure DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR are set for systemctl --user.
 
@@ -862,11 +873,11 @@ def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if _user_dbus_socket_path().exists():
+        if _user_systemd_socket_exists():
             _ensure_user_systemd_env()
             return True
         time.sleep(0.2)
-    return _user_dbus_socket_path().exists()
+    return _user_systemd_socket_exists()
 
 
 def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
@@ -888,8 +899,7 @@ def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
     systemd operations and surface the message to the user.
     """
     _ensure_user_systemd_env()
-    bus_path = _user_dbus_socket_path()
-    if bus_path.exists():
+    if _user_systemd_socket_exists():
         return
 
     import getpass

@@ -308,12 +308,17 @@ export interface ReloadMcpResponse {
   status?: string
 }
 
+export interface ReloadEnvResponse {
+  updated?: number
+}
+
 export interface ProcessStopResponse {
   killed?: number
 }
 
 export interface BrowserManageResponse {
   connected?: boolean
+  messages?: string[]
   url?: string
 }
 
@@ -432,6 +437,11 @@ export type GatewayEvent =
   | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
   | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
+  | {
+      payload?: { level?: 'info' | 'warn' | 'error'; message?: string }
+      session_id?: string
+      type: 'browser.progress'
+    }
   | {
       payload?: { cwd?: string; python?: string; stderr_tail?: string }
       session_id?: string

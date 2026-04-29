@@ -43,6 +43,7 @@ from hermes_constants import get_hermes_home, display_hermes_home
 from typing import Dict, Any, Optional, Tuple
 
 from utils import atomic_replace
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ def _guard_agent_created_enabled() -> bool:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        return bool(cfg.get("skills", {}).get("guard_agent_created", False))
+        return bool(cfg_get(cfg, "skills", "guard_agent_created", default=False))
     except Exception:
         return False
 
@@ -698,6 +699,17 @@ def skill_manage(
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
+        # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
+        # that mutate an existing skill's guidance), drop the record on delete.
+        # Best-effort; telemetry failures never break the tool.
+        try:
+            from tools.skill_usage import bump_patch, forget
+            if action in ("patch", "edit", "write_file", "remove_file"):
+                bump_patch(name)
+            elif action == "delete":
+                forget(name)
         except Exception:
             pass
 

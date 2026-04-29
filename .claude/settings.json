@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Read", "Grep", "Glob",
+      "Bash(git status*)", "Bash(git branch*)", "Bash(git log*)", "Bash(git diff*)",
+      "Bash(git add*)", "Bash(git commit*)", "Bash(git stash*)", "Bash(git push*)",
+      "Bash(grep *)", "Bash(find *)", "Bash(ls *)", "Bash(cat *)", "Bash(head *)",
+      "Bash(tail *)", "Bash(wc *)", "Bash(file *)", "Bash(dos2unix *)",
+      "Bash(scripts/run_tests.sh*)", "Bash(scripts/apply-models-yml.sh*)", "Bash(scripts/cost-snapshot.sh*)",
+      "Bash(ruff *)", "Bash(./hermes*)", "Bash(python -m hermes_cli.main*)",
+      "Bash(npm run*)", "Bash(npx *)", "Bash(pytest *)", "Bash(yq *)", "Bash(codex *)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)", "Bash(git push --force*)",
+      "Bash(git checkout main*)", "Bash(git checkout master*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Edit|Write",
+      "hooks": [{
+        "type": "command",
+        "command": "INPUT=$(cat); FILE_PATH=$(echo \"$INPUT\" | jq -r '.tool_input.file_path // .tool_input.path // \"\"'); if echo \"$FILE_PATH\" | grep -qiE '(\\.bak$|\\.old$|_backup\\.|web/dist/|node_modules/|\\.venv/|__pycache__/|/\\.hermes/|\\.pyc$)'; then echo \"BLOCKED: $FILE_PATH matches protected/dead-code pattern.\" >&2; exit 2; fi; if echo \"$FILE_PATH\" | grep -qiE '(/SESSION-[^/]*\\.md$|-SUMMARY\\.md$|/WHAT-I-DID-|/STATUS-[^/]*\\.md$|/DRIFT-[^/]*\\.md$|/OPERATOR-QUEUE\\.md$|/CLAY-QUEUE\\.md$|/findings-summary\\.md$|/audits-summary\\.md$)'; then echo \"BLOCKED: forbidden output pattern (see .claude/rules/output-routing.md).\" >&2; exit 2; fi"
+      }]
+    }],
+    "PostToolUse": [{
+      "matcher": "Edit|Write",
+      "hooks": [{
+        "type": "command",
+        "async": true,
+        "timeout": 30,
+        "command": "INPUT=$(cat); FILE_PATH=$(echo \"$INPUT\" | jq -r '.tool_input.file_path // .tool_input.path // \"\"'); if [[ \"$FILE_PATH\" == *.py ]]; then ruff check \"$FILE_PATH\" --quiet 2>&1 || echo \"ruff: $FILE_PATH has issues\"; fi"
+      }]
+    }]
+  }
+}

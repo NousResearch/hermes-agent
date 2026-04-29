@@ -816,21 +816,24 @@ def _resolve_explicit_runtime(
             if not base_url:
                 base_url = creds.get("base_url", "").rstrip("/")
 
-        api_mode = "chat_completions"
-        if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
-        elif provider == "xai":
-            api_mode = "codex_responses"
+    api_mode = "chat_completions"
+    if provider == "copilot":
+        api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
+    elif provider == "xai":
+        api_mode = "codex_responses"
+    elif provider in ("kimi-coding", "kimi-coding-cn"):
+        # Kimi Coding endpoints speak anthropic_messages protocol
+        # Don't allow the fallback to "chat_completions" to take effect
+        configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+        if configured_mode:
+            api_mode = configured_mode
         else:
-            configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode:
-                api_mode = configured_mode
+            detected = _detect_api_mode_for_url(base_url)
+            if detected:
+                api_mode = detected
             else:
-                # Auto-detect from URL (Anthropic /anthropic suffix,
-                # api.openai.com → Responses, Kimi /coding, etc.).
-                detected = _detect_api_mode_for_url(base_url)
-                if detected:
-                    api_mode = detected
+                # Kimi endpoints need anthropic_messages by default
+                api_mode = "anthropic_messages"
 
         return {
             "provider": provider,

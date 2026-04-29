@@ -226,6 +226,13 @@ TOOL_CATEGORIES = {
                 "tts_provider": "kittentts",
                 "post_setup": "kittentts",
             },
+            {
+                "name": "Local Command",
+                "badge": "local · advanced",
+                "tag": "Run your own TTS command; set tts.local_command.command in config.yaml",
+                "env_vars": [],
+                "tts_provider": "local_command",
+            },
         ],
     },
     "web": {

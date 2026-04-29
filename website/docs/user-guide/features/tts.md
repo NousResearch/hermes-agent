@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with nine providers:
+Convert text to speech with ten providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -27,6 +27,7 @@ Convert text to speech with nine providers:
 | **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
+| **Local Command** | Depends on command | Free/local or external | None needed |
 
 ### Platform Delivery
 
@@ -42,7 +43,7 @@ Convert text to speech with nine providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "local_command"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -83,9 +84,26 @@ tts:
     voice: Jasper                               # Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo
     speed: 1.0                                  # 0.5 - 2.0
     clean_text: true                            # Expand numbers, currencies, units
+  local_command:
+    command: 'my-tts --input {input_path} --output {output_path} --format {format}'
+    timeout: 120                                # Seconds
+    output_format: mp3                          # mp3, wav, ogg, or flac; `format` is also accepted
+    model: ''
+    voice: ''
+    speed: 1.0
+    max_text_length: 5000
+    voice_compatible: false                     # Only true when the command writes Telegram-compatible Opus/OGG
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
+### Local Command
+
+Set `tts.provider: local_command` when you want Hermes to call your own TTS wrapper. Hermes writes the text to a temporary UTF-8 file and passes the desired audio output path to your command. Your command must create that output file.
+
+The command template supports these placeholders: `{input_path}`, `{output_path}`, `{format}`, `{voice}`, `{model}`, and `{speed}`. `{text_path}` is also accepted as an alias for `{input_path}`. Hermes does not depend on any specific engine; you can wrap tools such as Piper, VoxCPM, or any local or remote script that writes an audio file.
+
+`tts.local_command.command` is required. Optional settings are `timeout` (default `120` seconds), `output_format` or `format` (default `mp3`; supported `mp3`, `wav`, `ogg`, `flac`), `model`, `voice`, `speed`, `max_text_length`, and `voice_compatible`.
 
 ### Telegram Voice Bubbles & ffmpeg
 
@@ -98,6 +116,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **Local Command** output is treated as a regular audio file by default. Set `voice_compatible: true` only when your command already writes Telegram-compatible Opus/OGG and you want voice bubble behavior.
 
 ```bash
 # Ubuntu/Debian
@@ -110,7 +129,7 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, and KittenTTS audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, xAI TTS, NeuTTS, and KittenTTS audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble). Local Command audio is also sent as a regular audio file unless `voice_compatible: true` is set and the command writes Telegram-compatible Opus/OGG.
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.

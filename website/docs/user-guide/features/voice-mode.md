@@ -92,7 +92,7 @@ Add to `~/.hermes/.env`:
 GROQ_API_KEY=your-key                 # Groq Whisper — fast, free tier (cloud)
 VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — paid (cloud)
 
-# Text-to-Speech (optional — Edge TTS and NeuTTS work without any key)
+# Text-to-Speech (optional — Edge TTS, NeuTTS, KittenTTS, and Local Command need no API key)
 ELEVENLABS_API_KEY=***           # ElevenLabs — premium quality
 # VOICE_TOOLS_OPENAI_KEY above also enables OpenAI TTS
 ```
@@ -312,7 +312,7 @@ DISCORD_ALLOWED_USERS=your-user-id
 # STT — local provider needs no key (pip install faster-whisper)
 # GROQ_API_KEY=your-key            # Alternative: cloud-based, fast, free tier
 
-# TTS — optional. Edge TTS and NeuTTS need no key.
+# TTS — optional. Edge TTS, NeuTTS, KittenTTS, and Local Command need no key.
 # ELEVENLABS_API_KEY=***      # Premium quality
 # VOICE_TOOLS_OPENAI_KEY=***  # OpenAI TTS / Whisper
 ```
@@ -396,7 +396,7 @@ stt:
 
 # Text-to-Speech
 tts:
-  provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts" | "minimax"
+  provider: "edge"                 # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "local_command"
   edge:
     voice: "en-US-AriaNeural"      # 322 voices, 74 languages
   elevenlabs:
@@ -411,6 +411,11 @@ tts:
     ref_text: ''
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
+  local_command:
+    command: 'my-tts --input {input_path} --output {output_path} --format {format}'
+    timeout: 120
+    output_format: mp3
+    voice_compatible: false
 ```
 
 ### Environment Variables
@@ -427,7 +432,7 @@ STT_OPENAI_MODEL=whisper-1               # Override default OpenAI STT model
 GROQ_BASE_URL=https://api.groq.com/openai/v1     # Custom Groq endpoint
 STT_OPENAI_BASE_URL=https://api.openai.com/v1    # Custom OpenAI STT endpoint
 
-# Text-to-Speech providers (Edge TTS and NeuTTS need no key)
+# Text-to-Speech providers (Edge TTS, NeuTTS, KittenTTS, and Local Command need no API key)
 ELEVENLABS_API_KEY=***             # ElevenLabs (premium quality)
 # VOICE_TOOLS_OPENAI_KEY above also enables OpenAI TTS
 
@@ -458,8 +463,9 @@ Provider priority (automatic fallback): **local** > **groq** > **openai**
 | **ElevenLabs** | Excellent | Paid | ~2s | Yes |
 | **OpenAI TTS** | Good | Paid | ~1.5s | Yes |
 | **NeuTTS** | Good | Free | Depends on CPU/GPU | No |
+| **Local Command** | Depends on command | Free/local or external | Depends on command | No |
 
-NeuTTS uses the `tts.neutts` config block above.
+NeuTTS uses the `tts.neutts` config block above. Local Command uses `tts.local_command.command`; Hermes writes the text to `{input_path}` and expects your command to create `{output_path}`.
 
 ---
 

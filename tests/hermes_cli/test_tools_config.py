@@ -459,6 +459,30 @@ def test_local_browser_provider_is_saved_explicitly(monkeypatch):
     assert config["browser"]["cloud_provider"] == "local"
 
 
+def test_local_command_tts_provider_is_visible_without_env_vars():
+    provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["tts"]["providers"]
+        if provider.get("tts_provider") == "local_command"
+    )
+
+    assert provider["env_vars"] == []
+    assert "command" in provider["tag"]
+
+
+def test_local_command_tts_provider_is_saved_explicitly():
+    config = {}
+    provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["tts"]["providers"]
+        if provider.get("tts_provider") == "local_command"
+    )
+
+    _configure_provider(provider, config)
+
+    assert config["tts"]["provider"] == "local_command"
+
+
 def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
     monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)

@@ -133,13 +133,14 @@ class TestAdapterSessionCancellation:
         adapter._message_handler = _handler
 
         await adapter.handle_message(_make_event("hello world"))
-        await processing_started.wait()
+        await asyncio.wait_for(processing_started.wait(), timeout=5.0)
         await asyncio.sleep(0)
 
         assert sk in adapter._active_sessions
         assert sk in adapter._session_tasks
 
         await adapter.handle_message(_make_event(command_text))
+        await asyncio.wait_for(processing_cancelled.wait(), timeout=5.0)
 
         assert processing_cancelled.is_set(), (
             f"{command_text} did not cancel the active processing task"

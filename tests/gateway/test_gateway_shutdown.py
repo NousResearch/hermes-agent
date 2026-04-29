@@ -28,7 +28,7 @@ async def test_cancel_background_tasks_cancels_inflight_message_processing():
     assert session_key in adapter._active_sessions
     assert adapter._background_tasks
 
-    await adapter.cancel_background_tasks()
+    await asyncio.wait_for(adapter.cancel_background_tasks(), timeout=5.0)
 
     assert adapter._background_tasks == set()
     assert adapter._active_sessions == {}

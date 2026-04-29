@@ -45,6 +45,7 @@ AUTHOR_MAP = {
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
     "2093036+exiao@users.noreply.github.com": "exiao",
+    "rylen.anil@gmail.com": "rylena",
     "revar@users.noreply.github.com": "revaraver",
     # Matrix parity salvage batch (April 2026)
     "sr@samirusani": "samrusani",

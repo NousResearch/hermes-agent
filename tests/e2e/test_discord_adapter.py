@@ -104,3 +104,59 @@ class TestAutoThreadingPreservesCommand:
         response = get_response_text(discord_adapter)
         assert response is not None
         assert "/new" in response
+
+
+class TestDiscordThreadNaming:
+    async def test_ai_thread_naming_uses_generated_title(self, discord_adapter, bot_user, monkeypatch):
+        """When thread_naming=ai, Discord auto-thread titles come from title generator."""
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+        discord_adapter.config.extra["thread_naming"] = "ai"
+
+        fake_thread = make_fake_thread(thread_id=90002, name="ai-title")
+        msg = make_discord_message(
+            content=f"<@{BOT_USER_ID}> can you summarize this sprint?",
+            mentions=[bot_user],
+        )
+
+        captured = {}
+
+        async def create_thread(**kwargs):
+            captured["name"] = kwargs.get("name")
+            return fake_thread
+
+        msg.create_thread = AsyncMock(side_effect=create_thread)
+        monkeypatch.setattr("gateway.platforms.discord.generate_title", lambda *_a, **_kw: "Sprint Summary")
+
+        await dispatch(discord_adapter, msg)
+
+        msg.create_thread.assert_awaited_once()
+        assert captured.get("name") == "Sprint Summary"
+
+    async def test_ai_thread_naming_falls_back_to_message_name_on_failure(self, discord_adapter, bot_user, monkeypatch):
+        """AI title errors should fall back to the first-message naming strategy."""
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+        discord_adapter.config.extra["thread_naming"] = "ai"
+
+        fake_thread = make_fake_thread(thread_id=90003, name="fallback")
+        msg = make_discord_message(
+            content=f"<@{BOT_USER_ID}> investigate flaky CI failures please",
+            mentions=[bot_user],
+        )
+
+        captured = {}
+
+        async def create_thread(**kwargs):
+            captured["name"] = kwargs.get("name")
+            return fake_thread
+
+        msg.create_thread = AsyncMock(side_effect=create_thread)
+
+        def _raise(*_a, **_kw):
+            raise RuntimeError("aux unavailable")
+
+        monkeypatch.setattr("gateway.platforms.discord.generate_title", _raise)
+
+        await dispatch(discord_adapter, msg)
+
+        msg.create_thread.assert_awaited_once()
+        assert captured.get("name") == "investigate flaky CI failures please"

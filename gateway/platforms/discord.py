@@ -42,6 +42,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from agent.title_generator import generate_title
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
@@ -2825,18 +2826,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Returns the created thread object, or ``None`` on failure.
         """
-        # Build a short thread name from the message. Strip Discord mention
-        # syntax (users / roles / channels) so thread titles don't end up
-        # showing raw <@id>, <@&id>, or <#id> markers — the ID isn't
-        # meaningful to humans glancing at the thread list (#6336).
-        content = (message.content or "").strip()
-        # <@123>, <@!123>, <@&123>, <#123> — collapse to empty; normalize spaces.
-        content = re.sub(r"<@[!&]?\d+>", "", content)
-        content = re.sub(r"<#\d+>", "", content)
-        content = re.sub(r"\s+", " ", content).strip()
-        thread_name = content[:80] if content else "Hermes"
-        if len(content) > 80:
-            thread_name = thread_name[:77] + "..."
+        thread_name = await self._derive_auto_thread_name(message)
 
         try:
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
@@ -2860,6 +2850,60 @@ class DiscordAdapter(BasePlatformAdapter):
                     fallback_error,
                 )
                 return None
+
+    def _discord_thread_naming_mode(self) -> str:
+        """Return Discord auto-thread naming mode.
+
+        Supported values:
+        - ``first_message`` (default): derive from message content
+        - ``ai``: ask the auxiliary title generator for a short title
+        """
+        configured = self.config.extra.get("thread_naming")
+        if isinstance(configured, str):
+            normalized = configured.strip().lower()
+            if normalized in {"first_message", "ai"}:
+                return normalized
+
+        raw = os.getenv("DISCORD_THREAD_NAMING", "first_message")
+        normalized = str(raw).strip().lower()
+        if normalized in {"first_message", "ai"}:
+            return normalized
+        return "first_message"
+
+    def _derive_message_thread_name(self, content: str) -> str:
+        """Derive a short thread title directly from message content."""
+        # Strip Discord mention syntax so thread titles don't end up showing
+        # raw <@id>, <@&id>, or <#id> markers.
+        content = re.sub(r"<@[!&]?\d+>", "", content)
+        content = re.sub(r"<#\d+>", "", content)
+        content = re.sub(r"\s+", " ", content).strip()
+        thread_name = content[:80] if content else "Hermes"
+        if len(content) > 80:
+            thread_name = thread_name[:77] + "..."
+        return thread_name
+
+    async def _derive_auto_thread_name(self, message: 'DiscordMessage') -> str:
+        """Resolve a thread title according to configured naming strategy."""
+        content = (message.content or "").strip()
+        fallback_name = self._derive_message_thread_name(content)
+        if self._discord_thread_naming_mode() != "ai":
+            return fallback_name
+
+        try:
+            ai_name = await asyncio.to_thread(
+                generate_title,
+                content,
+                "",
+                5.0,
+            )
+        except Exception as e:
+            logger.debug("[%s] AI thread title generation failed: %s", self.name, e)
+            return fallback_name
+
+        ai_name = (ai_name or "").strip()
+        if not ai_name:
+            return fallback_name
+        return ai_name[:80]
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,

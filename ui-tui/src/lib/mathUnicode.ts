@@ -644,10 +644,13 @@ const replaceFracs = (input: string): string => {
 }
 
 // Wrap multi-token expressions in parens so `\frac{a+b}{c}` becomes
-// `(a+b)/c` rather than `a+b/c`. We only wrap when the expression has
-// loose precedence — additive operators or whitespace that would change
-// meaning under inline `/`. Atomic factors like `n!`, `x^2`, `\sin x`
-// don't need parens; wrapping them just clutters the output.
+// `(a+b)/c` rather than `a+b/c`. We wrap whenever inline `/` would
+// change the meaning — that's any binary operator (`+`, `-`, `*`, `/`)
+// or whitespace separating tokens. `*` and `/` matter because nested
+// fractions and products like `\frac{a*b}{c}` and `\frac{1/x}{y}` would
+// otherwise read as `a*b/c` (right-associative ambiguity) and `1/x/y`.
+// Atomic factors like `n!`, `x^2`, `\sin x` don't trigger any of these
+// and stay un-parenthesised — wrapping them just clutters the output.
 const wrapForFrac = (expr: string) => {
   const trimmed = expr.trim()
 

@@ -367,6 +367,24 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
 
 
+def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for DeepSeek's Anthropic-compatible thinking-mode endpoint.
+
+    DeepSeek V4 thinking models served via ``api.deepseek.com/anthropic``
+    require unsigned ``thinking`` content blocks to round-trip on
+    subsequent turns, identical in shape to Kimi's ``/coding`` endpoint
+    (#16748). The generic third-party strip path drops all thinking
+    blocks, so the next request fails with HTTP 400::
+
+        The ``content[].thinking`` in the thinking mode must be passed
+        back to the API.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    return normalized.rstrip("/").lower().startswith("https://api.deepseek.com/anthropic")
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
@@ -1541,6 +1559,13 @@ def convert_messages_to_anthropic(
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
     _is_kimi = _is_kimi_coding_endpoint(base_url)
+    _is_deepseek_anthropic = _is_deepseek_anthropic_endpoint(base_url)
+    # Both Kimi /coding and DeepSeek /anthropic enable model-native
+    # thinking server-side and require unsigned thinking blocks to
+    # round-trip on replayed assistant tool-call messages.  They share
+    # the same strip strategy: drop Anthropic-signed blocks they can't
+    # validate, keep unsigned ones we synthesised from reasoning_content.
+    _preserves_unsigned_thinking = _is_kimi or _is_deepseek_anthropic
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -1552,22 +1577,21 @@ def convert_messages_to_anthropic(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if _is_kimi:
-            # Kimi's /coding endpoint enables thinking server-side and
-            # requires unsigned thinking blocks on replayed assistant
-            # tool-call messages.  Strip signed Anthropic blocks (Kimi
-            # can't validate signatures) but preserve the unsigned ones
-            # we synthesised from reasoning_content above.
+        if _preserves_unsigned_thinking:
+            # Strip signed Anthropic blocks (the third party can't
+            # validate signatures) but preserve the unsigned ones we
+            # synthesised from reasoning_content — those are exactly
+            # what the third party needs for message-history validation
+            # in its own thinking mode.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
                     new_content.append(b)
                     continue
                 if b.get("signature") or b.get("data"):
-                    # Anthropic-signed block — Kimi can't validate, strip
+                    # Anthropic-signed block — third party can't validate, strip
                     continue
-                # Unsigned thinking (synthesised from reasoning_content) —
-                # keep it: Kimi needs it for message-history validation.
+                # Unsigned thinking (synthesised from reasoning_content) — keep it.
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
         elif _is_third_party or idx != last_assistant_idx:

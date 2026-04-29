@@ -153,4 +153,21 @@ def get_read_block_error(path: str) -> Optional[str]:
             "and cannot be read directly to prevent prompt injection. "
             "Use the skills_list or skill_view tools instead."
         )
+
+    # Credential stores under HERMES_HOME hold plaintext provider keys
+    # and OAuth tokens. The agent never needs to read these directly —
+    # auxiliary_client / credential_pool consume them through process
+    # env / OAuth flows that bypass read_file. Block read access so a
+    # prompt-injection reaching read_file can't exfiltrate them.
+    blocked_credential_files = {
+        hermes_home / "auth.json",
+        hermes_home / "auth.lock",
+        hermes_home / ".anthropic_oauth.json",
+    }
+    if resolved in blocked_credential_files:
+        return (
+            f"Access denied: {path} is a Hermes credential store "
+            "and cannot be read directly. Provider tools consume these "
+            "credentials through internal channels."
+        )
     return None

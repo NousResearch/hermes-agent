@@ -8276,6 +8276,7 @@ class AIAgent:
             model=self.model,
             messages=_msgs_for_chat,
             tools=self.tools,
+            base_url=self.base_url,
             timeout=self._resolved_api_call_timeout(),
             max_tokens=self.max_tokens,
             ephemeral_max_output_tokens=_ephemeral_out,

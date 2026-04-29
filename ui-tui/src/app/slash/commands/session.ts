@@ -133,6 +133,7 @@ export const sessionCommands: SlashCommand[] = [
     help: 'compress transcript',
     name: 'compress',
     run: (arg, ctx) => {
+      ctx.transcript.sys('compressing context...')
       ctx.gateway
         .rpc<SessionCompressResponse>('session.compress', {
           session_id: ctx.sid,
@@ -163,6 +164,7 @@ export const sessionCommands: SlashCommand[] = [
             )
           })
         )
+        .catch(ctx.guardedErr)
     }
   },
 

@@ -2388,7 +2388,7 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if client_host and client_host not in _LOOPBACK_HOSTS and not getattr(app.state, "allow_public", False):
         await ws.close(code=4403)
         return
 
@@ -2496,7 +2496,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if client_host and client_host not in _LOOPBACK_HOSTS and not getattr(app.state, "allow_public", False):
         await ws.close(code=4403)
         return
 
@@ -2529,7 +2529,7 @@ async def pub_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if client_host and client_host not in _LOOPBACK_HOSTS and not getattr(app.state, "allow_public", False):
         await ws.close(code=4403)
         return
 
@@ -2559,7 +2559,7 @@ async def events_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if client_host and client_host not in _LOOPBACK_HOSTS and not getattr(app.state, "allow_public", False):
         await ws.close(code=4403)
         return
 
@@ -3157,6 +3157,7 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.allow_public = allow_public
 
     if open_browser:
         import webbrowser

@@ -2619,6 +2619,29 @@ class TestSlashCommandInterception:
             assert data["usage"]["total_tokens"] == 0
 
     @pytest.mark.asyncio
+    async def test_title_duplicate_returns_warning_not_500(self, adapter):
+        """/title returns a ⚠️ warning (not 500) when set_session_title raises ValueError."""
+        app = _create_app(adapter)
+
+        mock_db = MagicMock()
+        mock_db.sanitize_title = lambda t: t.strip() if t else None
+        mock_db.set_session_title = MagicMock(side_effect=ValueError("A session with this title already exists"))
+        mock_db.get_session_title = MagicMock(return_value=None)
+        adapter._session_db = mock_db
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={"model": "hermes-agent", "messages": [{"role": "user", "content": "/title My Duped Title"}]},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            content = data["choices"][0]["message"]["content"]
+            assert "⚠️" in content
+            assert "already exists" in content
+            assert data["usage"]["total_tokens"] == 0
+
+    @pytest.mark.asyncio
     async def test_retry_triggers_agent_rerun(self, auth_adapter):
         """/retry rewrites the message and reruns the agent."""
         mock_result = {"final_response": "Fresh answer!", "messages": [], "api_calls": 1}

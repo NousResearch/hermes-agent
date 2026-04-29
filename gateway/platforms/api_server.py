@@ -965,7 +965,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 return str(e)
             if not sanitized:
                 return "Title must have printable characters."
-            db.set_session_title(session_id, sanitized)
+            try:
+                db.set_session_title(session_id, sanitized)
+            except ValueError as e:
+                return f"⚠️  {e}"
             return f"Title set: {sanitized}"
 
         title = db.get_session_title(session_id)

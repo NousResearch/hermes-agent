@@ -56,6 +56,19 @@ except ImportError:
         },
     )  # type: ignore[assignment]
 
+# Capture pristine ``websockets.connect`` at our import time so dingtalk-stream
+# always uses the original even if another module (e.g. the Feishu adapter)
+# later monkey-patches the global ``websockets.connect`` with an ``async def``
+# wrapper — that turns the return value into a coroutine and breaks the SDK's
+# ``async with websockets.connect(uri)`` at dingtalk_stream/stream.py:74.
+try:
+    import websockets as _pristine_ws_module
+
+    _PRISTINE_WEBSOCKETS_CONNECT = _pristine_ws_module.connect
+except ImportError:
+    _pristine_ws_module = None  # type: ignore[assignment]
+    _PRISTINE_WEBSOCKETS_CONNECT = None  # type: ignore[assignment]
+
 try:
     import httpx
 
@@ -63,6 +76,37 @@ try:
 except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None  # type: ignore[assignment]
+
+
+_WS_PROXY_INSTALLED = False
+
+
+def _install_dingtalk_websockets_proxy() -> None:
+    """Point dingtalk_stream.stream.websockets at a namespace holding the
+    pristine ``connect`` captured at our import time.
+
+    Idempotent. Safe no-op when dingtalk-stream or websockets is unavailable.
+    """
+    global _WS_PROXY_INSTALLED
+    if _WS_PROXY_INSTALLED:
+        return
+    if _PRISTINE_WEBSOCKETS_CONNECT is None or dingtalk_stream is None:
+        return
+    try:
+        import types
+
+        from dingtalk_stream import stream as _dts_stream
+
+        _dts_stream.websockets = types.SimpleNamespace(
+            connect=_PRISTINE_WEBSOCKETS_CONNECT,
+            exceptions=_pristine_ws_module.exceptions,
+        )
+        _WS_PROXY_INSTALLED = True
+    except Exception:  # pragma: no cover - defensive
+        logger.debug(
+            "[DingTalk] failed to install websockets proxy on dingtalk_stream.stream",
+            exc_info=True,
+        )
 
 # Card SDK for AI Cards (following QwenPaw pattern)
 try:
@@ -229,6 +273,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         try:
             self._http_client = httpx.AsyncClient(timeout=30.0)
+
+            _install_dingtalk_websockets_proxy()
 
             credential = dingtalk_stream.Credential(
                 self._client_id, self._client_secret

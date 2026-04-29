@@ -201,3 +201,173 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+# ── Permission-denied / reasoning-only response tests (PR fix) ─────────────
+
+import threading
+import queue
+
+
+def _make_acp_server(messages: list[dict]) -> io.StringIO:
+    """Build a fake ACP server stdin buffer that yields `messages` as JSON lines."""
+    buf = io.StringIO("\n".join(json.dumps(m) for m in messages) + "\n")
+    return buf
+
+
+class ReasoningOnlyResponseTests(unittest.TestCase):
+    """Tests for the fix: return reasoning content when no text is produced."""
+
+    def setUp(self) -> None:
+        self.client = CopilotACPClient(acp_cwd="/tmp")
+
+    def _make_fake_proc(self, stdout_lines: list[str]) -> "_FakeProc":
+        class _FakeProc:
+            def __init__(self, lines):
+                self.stdin = io.StringIO()
+                self._lines = iter(lines)
+                self.stdout = self
+                self.stderr = io.StringIO()
+                self._rc = None
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self._lines)
+
+            def poll(self):
+                return self._rc
+
+            def terminate(self):
+                self._rc = -15
+
+            def wait(self, timeout=None):
+                return self._rc
+
+            def kill(self):
+                self._rc = -9
+
+        return _FakeProc(stdout_lines)
+
+    def test_end_turn_sets_prompt_completed(self) -> None:
+        """_handle_server_message should set prompt_completed on end_turn."""
+        completed = threading.Event()
+        msg = {
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "end_turn",
+                    "content": {},
+                }
+            },
+        }
+        process = _FakeProcess()
+        handled = self.client._handle_server_message(
+            msg,
+            process=process,
+            cwd="/tmp",
+            text_parts=[],
+            reasoning_parts=[],
+            prompt_completed=completed,
+        )
+        self.assertTrue(handled)
+        self.assertTrue(completed.is_set(), "prompt_completed should be set after end_turn")
+
+    def test_end_turn_without_completed_event_is_safe(self) -> None:
+        """_handle_server_message should not raise if prompt_completed is None."""
+        msg = {
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "end_turn",
+                    "content": {},
+                }
+            },
+        }
+        process = _FakeProcess()
+        handled = self.client._handle_server_message(
+            msg,
+            process=process,
+            cwd="/tmp",
+            text_parts=[],
+            reasoning_parts=[],
+            prompt_completed=None,
+        )
+        self.assertTrue(handled)
+
+    def test_thought_chunks_collected(self) -> None:
+        """agent_thought_chunk messages should be collected into reasoning_parts."""
+        reasoning_parts: list[str] = []
+        msg = {
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"text": "I am thinking..."},
+                }
+            },
+        }
+        process = _FakeProcess()
+        self.client._handle_server_message(
+            msg,
+            process=process,
+            cwd="/tmp",
+            text_parts=[],
+            reasoning_parts=reasoning_parts,
+        )
+        self.assertEqual(reasoning_parts, ["I am thinking..."])
+
+    def test_reasoning_fallback_when_no_text(self) -> None:
+        """If text_result is empty but reasoning_result has content, reasoning is returned as text."""
+        import subprocess
+        from unittest.mock import patch as _patch2, MagicMock
+
+        # Simulate a sequence: initialize response, session/new response, thought chunks, end_turn
+        server_messages = [
+            # initialize response
+            json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}}),
+            # session/new response
+            json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "sess-001"}}),
+            # session/request_permission (triggers cancellation)
+            json.dumps({
+                "jsonrpc": "2.0",
+                "id": None,
+                "method": "session/request_permission",
+                "params": {"permission": "fs"},
+            }),
+            # reasoning-only response (no agent_message_chunk)
+            json.dumps({
+                "method": "session/update",
+                "params": {"update": {"sessionUpdate": "agent_thought_chunk", "content": {"text": "I cannot access that file."}}},
+            }),
+            json.dumps({
+                "method": "session/update",
+                "params": {"update": {"sessionUpdate": "end_turn", "content": {}}},
+            }),
+            # session/prompt response
+            json.dumps({"jsonrpc": "2.0", "id": 3, "result": {}}),
+        ]
+
+        fake_stdout = io.StringIO("\n".join(server_messages) + "\n")
+        fake_stdin = io.StringIO()
+
+        mock_proc = MagicMock()
+        mock_proc.stdin = fake_stdin
+        mock_proc.stdout = fake_stdout
+        mock_proc.stderr = io.StringIO()
+        mock_proc.poll.return_value = None
+
+        def fake_popen(cmd, **kwargs):
+            return mock_proc
+
+        with _patch2("agent.copilot_acp_client.subprocess.Popen", side_effect=fake_popen):
+            text, reasoning = self.client._run_prompt("test prompt", timeout_seconds=5)
+
+        # With the fix: text should be the reasoning content (fallback)
+        self.assertIn("I cannot access that file.", text)
+        self.assertNotEqual(text, "", "text should not be empty when reasoning content exists")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -259,36 +259,98 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
 # ---------------------------------------------------------------------------
 
 CURATOR_REVIEW_PROMPT = (
-    "You are running as Hermes' background skill CURATOR.\n\n"
-    "Your job is to maintain the collection of AGENT-CREATED skills. Review "
-    "each candidate below and decide what to do.\n\n"
-    "Rules — all load-bearing, do not violate:\n"
-    "1. You MUST NOT touch bundled or hub-installed skills. The candidate list "
+    "You are running as Hermes' background skill CURATOR. This is an "
+    "UMBRELLA-BUILDING consolidation pass, not a passive audit and not a "
+    "duplicate-finder.\n\n"
+    "The goal of the skill collection is a LIBRARY OF CLASS-LEVEL "
+    "INSTRUCTIONS AND EXPERIENTIAL KNOWLEDGE. A collection of hundreds of "
+    "narrow skills where each one captures one session's specific bug is "
+    "a FAILURE of the library — not a feature. An agent searching skills "
+    "matches on descriptions, not on exact names; one broad umbrella "
+    "skill with labeled subsections beats five narrow siblings for "
+    "discoverability, not the other way around.\n\n"
+    "The right target shape is CLASS-LEVEL skills with rich SKILL.md "
+    "bodies + `references/`, `templates/`, and `scripts/` subfiles for "
+    "session-specific detail — not one-session-one-skill micro-entries.\n\n"
+    "Hard rules — do not violate:\n"
+    "1. DO NOT touch bundled or hub-installed skills. The candidate list "
     "below is already filtered to agent-created skills only.\n"
-    "2. You MUST NOT delete any skill. Archiving (moving the skill's directory "
-    "into ~/.hermes/skills/.archive/) is the maximum action. Archives are "
-    "recoverable; deletion is not.\n"
-    "3. You MUST NOT touch skills shown as pinned=yes. Skip them.\n"
-    "4. Prefer GENERALIZING overlapping skills by patching the stronger one "
-    "and archiving the weaker, rather than leaving two narrow skills in the "
-    "collection.\n\n"
+    "2. DO NOT delete any skill. Archiving (moving the skill's directory "
+    "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
+    "Archives are recoverable; deletion is not.\n"
+    "3. DO NOT touch skills shown as pinned=yes. Skip them entirely.\n"
+    "4. DO NOT use usage counters as a reason to skip consolidation. The "
+    "counters are new and often mostly zero. Judge overlap on CONTENT, "
+    "not on use_count. 'use=0' is not evidence a skill is valuable; it's "
+    "absence of evidence either way.\n"
+    "5. DO NOT reject consolidation on the grounds that 'each skill has "
+    "a distinct trigger'. Pairwise distinctness is the wrong bar. The "
+    "right bar is: 'would a human maintainer write this as N separate "
+    "skills, or as one skill with N labeled subsections?' When the "
+    "answer is the latter, merge.\n\n"
+    "How to work — not optional:\n"
+    "1. Scan the full candidate list. Identify PREFIX CLUSTERS (skills "
+    "sharing a first word or domain keyword). Examples you are likely "
+    "to find: hermes-config-*, hermes-dashboard-*, gateway-*, codex-*, "
+    "ollama-*, anthropic-*, gemini-*, mcp-*, salvage-*, pr-*, "
+    "competitor-*, python-*, security-*, etc. Expect 10-25 clusters.\n"
+    "2. For each cluster with 2+ members, do NOT ask 'are these pairs "
+    "overlapping?' — ask 'what is the UMBRELLA CLASS these skills all "
+    "serve? Would a maintainer name that class and write one skill for "
+    "it?' If yes, pick (or create) the umbrella and absorb the siblings "
+    "into it.\n"
+    "3. Three ways to consolidate — use the right one per cluster:\n"
+    "   a. MERGE INTO EXISTING UMBRELLA — one skill in the cluster is "
+    "already broad enough to be the umbrella (example: `pr-triage-"
+    "salvage` for the PR review cluster). Patch it to add a labeled "
+    "section for each sibling's unique insight, then archive the "
+    "siblings.\n"
+    "   b. CREATE A NEW UMBRELLA SKILL.md — no existing member is broad "
+    "enough. Use skill_manage action=create to write a new class-level "
+    "skill whose SKILL.md covers the shared workflow and has short "
+    "labeled subsections. Archive the now-absorbed narrow siblings.\n"
+    "   c. DEMOTE TO REFERENCES/TEMPLATES/SCRIPTS — a sibling has "
+    "narrow-but-valuable session-specific content. Move it into the "
+    "umbrella's appropriate support directory:\n"
+    "      • `references/<topic>.md` for session-specific detail OR "
+    "condensed knowledge banks (quoted research, API docs excerpts, "
+    "domain notes, provider quirks, reproduction recipes)\n"
+    "      • `templates/<name>.<ext>` for starter files meant to be "
+    "copied and modified\n"
+    "      • `scripts/<name>.<ext>` for statically re-runnable actions "
+    "(verification scripts, fixture generators, probes)\n"
+    "      Then archive the old sibling. Use `terminal` with `mkdir -p "
+    "~/.hermes/skills/<umbrella>/references/ && mv ... <umbrella>/"
+    "references/<topic>.md` (or templates/ / scripts/).\n"
+    "4. Also flag skills whose NAME is too narrow (contains a PR number, "
+    "a feature codename, a specific error string, an 'audit' / "
+    "'diagnosis' / 'salvage' session artifact). These almost always "
+    "belong as a subsection or support file under a class-level umbrella.\n"
+    "5. Iterate. After one consolidation round, scan the remaining set "
+    "and look for the NEXT umbrella opportunity. Don't stop after 3 "
+    "merges.\n\n"
     "Your toolset:\n"
-    "  - skills_list, skill_view    — read the current landscape\n"
-    "  - skill_manage action=patch  — fix stale commands, wrong paths, or "
-    "merge two overlapping skills by broadening the stronger one\n"
-    "  - terminal                   — move a skill directory into the archive, "
-    "e.g.  mv ~/.hermes/skills/<skill-dir> ~/.hermes/skills/.archive/\n\n"
-    "For each candidate, decide one of:\n"
-    "  keep        — leave as-is (most common default; don't over-curate)\n"
-    "  patch       — skill_manage action=patch to fix stale commands, wrong "
-    "paths, or env-specific claims that are no longer true\n"
-    "  consolidate — two skills overlap: patch the stronger one to absorb "
-    "the weaker (skill_manage), then mv the weaker directory to .archive/\n"
-    "  archive     — the skill is genuinely obsolete and has not been used "
-    "recently: mv its directory to ~/.hermes/skills/.archive/\n\n"
-    "Start by calling skills_list and skill_view on anything you consider "
-    "patching or consolidating. Be conservative — if in doubt, keep. "
-    "When you are done, write a one-sentence summary of what you changed."
+    "  - skills_list, skill_view        — read the current landscape\n"
+    "  - skill_manage action=patch      — add sections to the umbrella\n"
+    "  - skill_manage action=create     — create a new umbrella SKILL.md\n"
+    "  - skill_manage action=write_file — add a references/, templates/, "
+    "or scripts/ file under an existing skill (the skill must already "
+    "exist)\n"
+    "  - terminal                       — mv a sibling into the archive "
+    "OR move its content into a support subfile\n\n"
+    "'keep' is a legitimate decision ONLY when the skill is already a "
+    "class-level umbrella and none of the proposed merges would improve "
+    "discoverability. 'This is narrow but distinct from its siblings' "
+    "is NOT a reason to keep — it's a reason to move it under an "
+    "umbrella as a subsection or support file.\n\n"
+    "Expected output: real umbrella-ification. Process every obvious "
+    "cluster. If you end the pass with fewer than 10 archives, you "
+    "stopped too early — go back and look at the clusters you left "
+    "alone.\n\n"
+    "When done, write a summary with: clusters processed, skills "
+    "patched/absorbed, skills demoted to references/templates/scripts, "
+    "skills archived, new umbrellas created, and clusters you "
+    "deliberately left alone with one line each."
 )
 
 
@@ -399,22 +461,65 @@ def _run_llm_review(prompt: str) -> str:
     except Exception as e:
         return f"AIAgent import failed: {e}"
 
+    # Resolve provider + model the same way the CLI does, so the curator
+    # fork inherits the user's active main config rather than falling
+    # through to an empty provider/model pair (which sends HTTP 400
+    # "No models provided"). AIAgent() without explicit provider/model
+    # arguments hits an auto-resolution path that fails for OAuth-only
+    # providers and for pool-backed credentials.
+    _api_key = None
+    _base_url = None
+    _api_mode = None
+    _resolved_provider = None
+    _model_name = ""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        _cfg = load_config()
+        _m = _cfg.get("model", {}) if isinstance(_cfg.get("model"), dict) else {}
+        _provider = _m.get("provider") or "auto"
+        _model_name = _m.get("default") or _m.get("model") or ""
+        _rp = resolve_runtime_provider(
+            requested=_provider, target_model=_model_name
+        )
+        _api_key = _rp.get("api_key")
+        _base_url = _rp.get("base_url")
+        _api_mode = _rp.get("api_mode")
+        _resolved_provider = _rp.get("provider") or _provider
+    except Exception as e:
+        logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
+
     review_agent = None
     try:
+        review_agent = AIAgent(
+            model=_model_name,
+            provider=_resolved_provider,
+            api_key=_api_key,
+            base_url=_base_url,
+            api_mode=_api_mode,
+            # Umbrella-building over a large skill collection is worth a
+            # high iteration ceiling — the pass typically takes 50-100
+            # API calls against hundreds of candidate skills. The
+            # single-session review path caps itself at a much smaller
+            # number because it's not doing a curation sweep.
+            max_iterations=9999,
+            quiet_mode=True,
+            platform="curator",
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        # Disable recursive nudges — the curator must never spawn its own review.
+        review_agent._memory_nudge_interval = 0
+        review_agent._skill_nudge_interval = 0
+
+        # Redirect the forked agent's stdout/stderr to /dev/null while it
+        # runs so its tool-call chatter doesn't pollute the foreground
+        # terminal. The background-thread runner also hides it; this
+        # belt-and-suspenders path matters when a caller invokes
+        # run_curator_review(synchronous=True) from the CLI.
         with open(os.devnull, "w") as _devnull, \
              contextlib.redirect_stdout(_devnull), \
              contextlib.redirect_stderr(_devnull):
-            review_agent = AIAgent(
-                max_iterations=8,
-                quiet_mode=True,
-                platform="curator",
-                skip_context_files=True,
-                skip_memory=True,
-            )
-            # Disable recursive nudges — the curator must never spawn its own review.
-            review_agent._memory_nudge_interval = 0
-            review_agent._skill_nudge_interval = 0
-
             result = review_agent.run_conversation(user_message=prompt)
 
         final = ""

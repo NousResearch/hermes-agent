@@ -32,7 +32,7 @@ import uuid
 import copy
 import argparse
 from pathlib import Path
-from urllib.parse import urljoin, urlencode
+from urllib.parse import urljoin, urlencode, urlparse
 
 try:
     import requests
@@ -82,7 +82,8 @@ class ComfyRunner:
     def __init__(self, host: str = "http://127.0.0.1:8188", api_key: str = None):
         self.host = host.rstrip("/")
         self.api_key = api_key
-        self.is_cloud = "cloud.comfy.org" in self.host or api_key is not None
+        parsed_host = urlparse(self.host).hostname or ""
+        self.is_cloud = parsed_host.lower() == "cloud.comfy.org" or api_key is not None
         self.client_id = str(uuid.uuid4())
 
     @property

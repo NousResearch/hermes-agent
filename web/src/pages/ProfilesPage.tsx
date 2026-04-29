@@ -8,8 +8,8 @@ import { useToast } from "@/hooks/useToast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
@@ -276,10 +276,10 @@ export default function ProfilesPage() {
                       </span>
                     )}
                     {p.is_default && (
-                      <Badge variant="secondary">{t.profiles.defaultBadge}</Badge>
+                      <Badge tone="secondary">{t.profiles.defaultBadge}</Badge>
                     )}
                     {p.has_env && (
-                      <Badge variant="outline">{t.profiles.hasEnv}</Badge>
+                      <Badge tone="outline">{t.profiles.hasEnv}</Badge>
                     )}
                   </div>
                   {isRenaming &&
@@ -325,14 +325,13 @@ export default function ProfilesPage() {
                     <>
                       <Button
                         size="sm"
-                        variant="default"
                         onClick={handleRenameSubmit}
                       >
                         {t.common.save}
                       </Button>
                       <Button
                         size="sm"
-                        variant="ghost"
+                        ghost
                         onClick={() => setRenamingFrom(null)}
                       >
                         {t.common.cancel}
@@ -341,7 +340,7 @@ export default function ProfilesPage() {
                   ) : (
                     <>
                       <Button
-                        variant="ghost"
+                        ghost
                         size="icon"
                         title={t.profiles.editSoul}
                         aria-label={t.profiles.editSoul}
@@ -356,7 +355,7 @@ export default function ProfilesPage() {
                         )}
                       </Button>
                       <Button
-                        variant="ghost"
+                        ghost
                         size="icon"
                         title={t.profiles.openInTerminal}
                         aria-label={t.profiles.openInTerminal}
@@ -366,7 +365,7 @@ export default function ProfilesPage() {
                       </Button>
                       {!p.is_default && (
                         <Button
-                          variant="ghost"
+                          ghost
                           size="icon"
                           title={t.profiles.rename}
                           aria-label={t.profiles.rename}
@@ -380,7 +379,7 @@ export default function ProfilesPage() {
                       )}
                       {!p.is_default && (
                         <Button
-                          variant="ghost"
+                          ghost
                           size="icon"
                           title={t.common.delete}
                           aria-label={t.common.delete}

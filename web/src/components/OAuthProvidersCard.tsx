@@ -9,7 +9,9 @@ import {
   LogIn,
 } from "lucide-react";
 import { api, type OAuthProvider } from "@/lib/api";
-import { Button, CopyButton, Spinner } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { CopyButton } from "@nous-research/ui/ui/components/command-block";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import {
   Card,
   CardContent,
@@ -17,7 +19,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@nous-research/ui";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
 import { useI18n } from "@/i18n";
 

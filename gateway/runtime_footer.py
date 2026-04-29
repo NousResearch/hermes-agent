@@ -27,10 +27,60 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
+
+
+def _format_usage_int(value: Any) -> str:
+    """Format an integer with thousands separators; return '0' on failure."""
+    try:
+        return f"{max(0, int(value)):,}"
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _render_token_usage(token_usage: Optional[Dict[str, int]]) -> str:
+    """Build the compact token-usage string: ``usage:t=<N> i=<N> o=<N>``.
+
+    Cached read tokens are appended as ``(+ N c)``, reasoning tokens as
+    ``(r N)``.  Returns ``\"\"`` when *token_usage* is empty or missing.
+    """
+    usage = token_usage or {}
+    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0
+    output_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0
+
+    try:
+        display_total = int(input_tokens) + int(output_tokens)
+    except (TypeError, ValueError):
+        display_total = 0
+
+    if display_total <= 0:
+        return ""
+
+    parts = [
+        f"usage:t={_format_usage_int(display_total)}",
+        f"i={_format_usage_int(input_tokens)}",
+    ]
+
+    try:
+        cached = int(usage.get("cache_read_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        cached = 0
+    if cached > 0:
+        parts[-1] = f"{parts[-1]} (+ {_format_usage_int(cached)} c)"
+
+    output_part = f"o={_format_usage_int(output_tokens)}"
+    try:
+        reasoning = int(usage.get("reasoning_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        reasoning = 0
+    if reasoning > 0:
+        output_part = f"{output_part} (r {_format_usage_int(reasoning)})"
+    parts.append(output_part)
+
+    return " ".join(parts)
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -95,6 +145,7 @@ def format_runtime_footer(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    token_usage: Optional[Dict[str, int]] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -116,6 +167,10 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "tokens":
+            rendered = _render_token_usage(token_usage)
+            if rendered:
+                parts.append(rendered)
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -131,6 +186,7 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    token_usage: Optional[Dict[str, int]] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -146,5 +202,6 @@ def build_footer_line(
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
+        token_usage=token_usage,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

@@ -90,6 +90,7 @@ def auto_title_session(
     assistant_response: str,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
+    on_title=None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
@@ -119,6 +120,11 @@ def auto_title_session(
     try:
         session_db.set_session_title(session_id, title)
         logger.debug("Auto-generated session title: %s", title)
+        if on_title:
+            try:
+                on_title(title)
+            except Exception:
+                pass
     except Exception as e:
         logger.debug("Failed to set auto-generated title: %s", e)
 
@@ -131,6 +137,7 @@ def maybe_auto_title(
     conversation_history: list,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
+    on_title=None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
@@ -152,7 +159,7 @@ def maybe_auto_title(
     thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message, assistant_response),
-        kwargs={"failure_callback": failure_callback, "main_runtime": main_runtime},
+        kwargs={"failure_callback": failure_callback, "main_runtime": main_runtime, "on_title": on_title},
         daemon=True,
         name="auto-title",
     )

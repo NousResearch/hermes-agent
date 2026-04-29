@@ -3498,6 +3498,7 @@ class HermesCLI:
                 try:
                     self._session_db.set_session_title(self.session_id, self._pending_title)
                     _cprint(f"  Session title applied: {self._pending_title}")
+                    self._set_terminal_title(self._pending_title)
                     self._pending_title = None
                 except (ValueError, Exception) as e:
                     _cprint(f"  Could not apply pending title: {e}")
@@ -4117,6 +4118,11 @@ class HermesCLI:
             output.flush()
             return
         sys.stdout.write(seq)
+        sys.stdout.flush()
+
+    def _set_terminal_title(self, title: str) -> None:
+        """Set the terminal tab/window title via OSC 0 escape sequence."""
+        sys.stdout.write(f"\x1b]0;Hermes: {title}\x07")
         sys.stdout.flush()
 
     def _handle_copy_command(self, cmd_original: str) -> None:
@@ -4899,6 +4905,8 @@ class HermesCLI:
                 self.agent._invalidate_system_prompt()
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
+        if session_meta.get("title"):
+            self._set_terminal_title(session_meta["title"])
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
         if self.conversation_history:
             _cprint(
@@ -6137,6 +6145,7 @@ class HermesCLI:
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     _cprint(f"  Session title set: {new_title}")
+                                    self._set_terminal_title(new_title)
                                 else:
                                     _cprint("  Session not found in database.")
                             except ValueError as e:
@@ -8844,6 +8853,7 @@ class HermesCLI:
                             "api_key": self.api_key,
                             "api_mode": self.api_mode,
                         },
+                        on_title=self._set_terminal_title,
                     )
                 except Exception:
                     pass
@@ -9256,6 +9266,14 @@ class HermesCLI:
         if self._resumed:
             if self._preload_resumed_session():
                 self._display_resumed_history()
+                # Set terminal title from loaded session if it has one
+                if self._session_db:
+                    try:
+                        t = self._session_db.get_session_title(self.session_id)
+                        if t:
+                            self._set_terminal_title(t)
+                    except Exception:
+                        pass
 
         try:
             from hermes_cli.skin_engine import get_active_skin

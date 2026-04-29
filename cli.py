@@ -5321,6 +5321,7 @@ class HermesCLI:
         # Copilot, and Nous-enforced caps win over the raw models.dev entry
         # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
         mi = result.model_info
+        ctx = None
         try:
             from hermes_cli.model_switch import resolve_display_context_length
             ctx = resolve_display_context_length(
@@ -5353,6 +5354,8 @@ class HermesCLI:
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
+            if ctx:
+                save_config_value("model.context_length", ctx)
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")

@@ -1,0 +1,16 @@
+name: AI Security Review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: anthropics/claude-code-security-review@main
+        with:
+          api-key: ${{ secrets.ANTHROPIC_API_KEY }}

@@ -328,6 +328,9 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
+    # WeCom external chat IDs (group chats start with "wr", user IDs are numeric)
+    if platform_name == "wecom" and (target_ref.startswith("wr") or target_ref.startswith("wm") or target_ref.startswith("wk")):
+        return target_ref, None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit

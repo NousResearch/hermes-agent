@@ -537,6 +537,17 @@ class WebhookAdapter(BasePlatformAdapter):
             delivery_id,
         )
 
+        # Webhook-triggered sessions run autonomously with no user present
+        # to approve dangerous commands.  Auto-enable YOLO for the session.
+        try:
+            from gateway.session import build_session_key
+            _wh_session_key = build_session_key(source)
+            from tools.approval import enable_session_yolo
+            enable_session_yolo(_wh_session_key)
+            logger.info("[webhook] Auto-enabled YOLO for session %s", _wh_session_key)
+        except Exception as _yolo_err:
+            logger.warning("[webhook] Failed to enable YOLO: %s", _yolo_err)
+
         # Non-blocking — return 202 Accepted immediately
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)

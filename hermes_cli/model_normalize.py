@@ -143,6 +143,12 @@ _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
 # of ``deepseek-chat`` and must not be folded into it.
 _DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+([-.].+)?$")
 
+# Volcengine ARK endpoint IDs (``ep-20250428-xxxxx``) and other third-party
+# custom endpoint model names.  These must NOT be normalized when the user
+# has configured a custom DEEPSEEK_BASE_URL pointing to a non-DeepSeek
+# endpoint — the remote endpoint doesn't know about ``deepseek-chat``.
+_DEEPSEEK_CUSTOM_ENDPOINT_RE = re.compile(r"^ep-\w+", re.IGNORECASE)
+
 
 def _normalize_for_deepseek(model_name: str) -> str:
     """Map a model input to a DeepSeek-accepted identifier.
@@ -152,6 +158,8 @@ def _normalize_for_deepseek(model_name: str) -> str:
       ``deepseek-v4-pro``/``deepseek-v4-flash``) -> pass through.
     - Matches the V-series pattern ``deepseek-v<digit>...`` -> pass through
       (covers future ``deepseek-v5-*`` and dated variants without a release).
+    - Matches a custom endpoint ID (``ep-*``) and a non-default
+      ``DEEPSEEK_BASE_URL`` is configured -> pass through.
     - Contains a reasoner keyword (r1, think, reasoning, cot, reasoner)
       -> ``deepseek-reasoner``.
     - Everything else -> ``deepseek-chat``.
@@ -170,6 +178,15 @@ def _normalize_for_deepseek(model_name: str) -> str:
     # V-series first-class IDs (v4-pro, v4-flash, future v5-*, dated variants)
     if _DEEPSEEK_V_SERIES_RE.match(bare):
         return bare
+
+    # Custom endpoint IDs (e.g. Volcengine ARK ``ep-20250428-xxxxx``) must
+    # pass through when the user has configured a non-default base URL.
+    # The remote endpoint doesn't recognise ``deepseek-chat``.
+    if _DEEPSEEK_CUSTOM_ENDPOINT_RE.match(bare):
+        import os
+        custom_base = os.getenv("DEEPSEEK_BASE_URL", "").strip()
+        if custom_base and "api.deepseek.com" not in custom_base:
+            return bare
 
     # Check for reasoner-like keywords anywhere in the name
     for keyword in _DEEPSEEK_REASONER_KEYWORDS:

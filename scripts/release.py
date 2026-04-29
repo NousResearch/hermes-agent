@@ -66,6 +66,7 @@ AUTHOR_MAP = {
     "uzmpsk.dilekakbas@gmail.com": "dlkakbs",
     "beliefanx@gmail.com": "BeliefanX",
     "jefferson@heimdallstrategy.com": "Mind-Dragon",
+    "44753291+Nanako0129@users.noreply.github.com": "Nanako0129",
     "steve.westerhouse@origami-analytics.com": "westers",
     "yeyitech@users.noreply.github.com": "yeyitech",
     "260878550+beenherebefore@users.noreply.github.com": "beenherebefore",

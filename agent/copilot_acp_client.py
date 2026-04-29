@@ -608,6 +608,9 @@ class CopilotACPClient:
                     end = start + limit if isinstance(limit, int) and limit > 0 else None
                     content = "".join(lines[start:end])
                 if content:
+                    # ACP file reads cross a process/tool boundary; always
+                    # redact credential-shaped content here even when global
+                    # user-facing log redaction is disabled by default.
                     content = redact_sensitive_text(content, force=True)
                 response = {
                     "jsonrpc": "2.0",

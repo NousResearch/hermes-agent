@@ -741,6 +741,98 @@ class TestChatCompletionsEndpoint:
                 assert '"label": "Python docs"' in body
 
     @pytest.mark.asyncio
+    async def test_stream_includes_reasoning_delta(self, adapter):
+        """reasoning_callback fires → reasoning tokens appear as hermes.reasoning.delta SSE events,
+        separate from delta.content so standard chat chunks stay clean."""
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                r_cb = kwargs.get("reasoning_callback")
+                # Simulate: model emits reasoning tokens, then actual content
+                if r_cb:
+                    r_cb("Let me think step by step...")
+                    r_cb(" The answer must be 42.")
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("The answer is 42.")
+                return (
+                    {"final_response": "The answer is 42.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 15, "output_tokens": 8, "total_tokens": 23},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "What is 1+1?"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "[DONE]" in body
+                # Reasoning tokens must appear as a dedicated SSE event type
+                assert "event: hermes.reasoning.delta" in body
+                assert "Let me think step by step..." in body
+                assert " The answer must be 42." in body
+                # Final content must also be present
+                assert "The answer is 42." in body
+                # Reasoning tokens must NOT appear inside chat.completion.chunk delta.content
+                import json as _json
+                for line in body.splitlines():
+                    if line.startswith("data: ") and line.strip() != "data: [DONE]":
+                        try:
+                            chunk = _json.loads(line[len("data: "):])
+                        except _json.JSONDecodeError:
+                            continue
+                        if chunk.get("object") == "chat.completion.chunk":
+                            for choice in chunk.get("choices", []):
+                                content = choice.get("delta", {}).get("content", "") or ""
+                                assert "Let me think" not in content
+
+    @pytest.mark.asyncio
+    async def test_stream_reasoning_none_is_ignored(self, adapter):
+        """reasoning_callback(None) must not crash or emit a malformed SSE event."""
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                r_cb = kwargs.get("reasoning_callback")
+                if r_cb:
+                    r_cb(None)  # Should be silently ignored
+                    r_cb("Valid reasoning token.")
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("Done.")
+                return (
+                    {"final_response": "Done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "[DONE]" in body
+                # Valid reasoning must appear
+                assert "Valid reasoning token." in body
+                # No malformed events (null data)
+                assert "data: null" not in body
+
+    @pytest.mark.asyncio
     async def test_no_user_message_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:

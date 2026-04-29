@@ -9,7 +9,12 @@ import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
 import { FULL_RENDER_TAIL_ITEMS } from '../config/limits.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
-import { composerPromptWidth, inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
+import {
+  COMPOSER_PROMPT_GAP_WIDTH,
+  composerPromptWidth,
+  inputVisualHeight,
+  stableComposerColumns
+} from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
@@ -22,8 +27,6 @@ import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
 
-const PROMPT_GAP_WIDTH = 1
-
 const PromptPrefix = memo(function PromptPrefix({
   bold = false,
   color,
@@ -35,7 +38,7 @@ const PromptPrefix = memo(function PromptPrefix({
   promptText: string
   width: number
 }) {
-  const glyphWidth = Math.max(1, stringWidth(promptText))
+  const glyphWidth = Math.max(1, width - COMPOSER_PROMPT_GAP_WIDTH)
 
   return (
     <Box width={width}>
@@ -44,7 +47,7 @@ const PromptPrefix = memo(function PromptPrefix({
           {promptText}
         </Text>
       </Box>
-      <Box width={PROMPT_GAP_WIDTH} />
+      <Box width={COMPOSER_PROMPT_GAP_WIDTH} />
     </Box>
   )
 })

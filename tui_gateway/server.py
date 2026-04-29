@@ -478,9 +478,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
     ready = session.get("agent_ready")
     if ready is None:
         return
-    if ready.is_set() or session.get("agent_build_started"):
-        return
-    session["agent_build_started"] = True
+    lock = session.setdefault("agent_build_lock", threading.Lock())
+    with lock:
+        if ready.is_set() or session.get("agent_build_started"):
+            return
+        session["agent_build_started"] = True
     key = session["session_key"]
 
     def _build() -> None:

@@ -31,11 +31,20 @@ const GB = 1024 ** 3
 // spike somehow trips the threshold before the app registers its own Ink
 // import, we pay the load cost exactly once, inside the tick that needs it.
 let _evictInkCaches: ((level: 'all' | 'half') => unknown) | null = null
+let _evictInkCachesPromise: Promise<(level: 'all' | 'half') => unknown> | null = null
+
 async function _ensureEvictInkCaches(): Promise<(level: 'all' | 'half') => unknown> {
-  if (_evictInkCaches) return _evictInkCaches
-  const mod = await import('@hermes/ink')
-  _evictInkCaches = mod.evictInkCaches as (level: 'all' | 'half') => unknown
-  return _evictInkCaches
+  if (_evictInkCaches) {
+    return _evictInkCaches
+  }
+
+  _evictInkCachesPromise ??= import('@hermes/ink').then(mod => {
+    _evictInkCaches = mod.evictInkCaches as (level: 'all' | 'half') => unknown
+
+    return _evictInkCaches
+  })
+
+  return _evictInkCachesPromise
 }
 
 export function startMemoryMonitor({
@@ -46,18 +55,24 @@ export function startMemoryMonitor({
   onHigh
 }: MemoryMonitorOptions = {}): () => void {
   const dumped = new Set<Exclude<MemoryLevel, 'normal'>>()
+  const inFlight = new Set<Exclude<MemoryLevel, 'normal'>>()
 
   const tick = async () => {
     const { heapUsed, rss } = process.memoryUsage()
     const level: MemoryLevel = heapUsed >= criticalBytes ? 'critical' : heapUsed >= highBytes ? 'high' : 'normal'
 
     if (level === 'normal') {
-      return void dumped.clear()
-    }
+      dumped.clear()
+      inFlight.clear()
 
-    if (dumped.has(level)) {
       return
     }
+
+    if (dumped.has(level) || inFlight.has(level)) {
+      return
+    }
+
+    inFlight.add(level)
 
     // Prune Ink content caches before dump/exit — half on 'high' (recoverable),
     // full on 'critical' (post-dump RSS reduction, keeps user running).
@@ -74,6 +89,8 @@ export function startMemoryMonitor({
 
     dumped.add(level)
     const dump = await performHeapDump(level === 'critical' ? 'auto-critical' : 'auto-high').catch(() => null)
+
+    inFlight.delete(level)
 
     const snap: MemorySnapshot = { heapUsed, level, rss }
 

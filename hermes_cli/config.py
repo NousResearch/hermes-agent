@@ -3685,10 +3685,13 @@ def load_env() -> Dict[str, str]:
 def _sanitize_env_lines(lines: list) -> list:
     """Fix corrupted .env lines before reading or writing.
 
-    Handles two known corruption patterns:
+    Handles three known corruption patterns:
     1. Concatenated KEY=VALUE pairs on a single line (missing newline between
-       entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
+       entries, e.g. ``ANTHROPIC_API_KEY=sk-......``).
     2. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
+    3. Split key names (input method / editor corruption broke a key across
+       two lines, e.g. ``G`` + newline + ``LM_API_KEY=...`` instead of
+       ``GLM_API_KEY=...``).
 
     Uses a known-keys set (OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS) so we only
     split on real Hermes env var names, avoiding false positives from values
@@ -3698,8 +3701,42 @@ def _sanitize_env_lines(lines: list) -> list:
     # Done inside the function so OPTIONAL_ENV_VARS is guaranteed to be defined.
     known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
 
+    # ── Pass 0: merge split key names ──
+    # Some input methods (fcitx5, etc.) can insert a newline in the middle
+    # of an environment variable name, producing e.g. "G\nLM_API_KEY=val".
+    # Detect and merge such lines back into a single KEY=VALUE line.
+    _ENV_VAR_NAME_CHAR = re.compile(r'^[A-Z_][A-Z0-9_]*$')
+    merged: list[str] = []
+    i = 0
+    while i < len(lines):
+        raw = lines[i].rstrip("\r\n")
+        stripped = raw.strip()
+        # Check if this line is a bare uppercase fragment (no '=') that could
+        # be the leading part of a split key name.
+        did_merge = False
+        if stripped and "=" not in stripped and _ENV_VAR_NAME_CHAR.match(stripped):
+            # Peek at the next non-empty, non-comment line
+            j = i + 1
+            while j < len(lines):
+                nxt = lines[j].rstrip("\r\n").strip()
+                if not nxt or nxt.startswith("#"):
+                    j += 1
+                    continue
+                # If the next real line, when joined with the fragment,
+                # forms a known KEY=VALUE, merge them.
+                combined_key = (stripped + nxt).partition("=")[0]
+                if "=" in nxt and combined_key in known_keys:
+                    merged.append((stripped + nxt) + "\n")
+                    i = j + 1
+                    did_merge = True
+                break  # stop peeking regardless of merge result
+        if not did_merge:
+            merged.append(raw + "\n")
+            i += 1
+
+    # ── Pass 1: split concatenated KEY=VALUE pairs ──
     sanitized: list[str] = []
-    for line in lines:
+    for line in merged:
         raw = line.rstrip("\r\n")
         stripped = raw.strip()
 
@@ -3709,22 +3746,48 @@ def _sanitize_env_lines(lines: list) -> list:
             continue
 
         # Detect concatenated KEY=VALUE pairs on one line.
-        # Search for known KEY= patterns at any position in the line.
-        split_positions = []
-        for key_name in known_keys:
-            needle = key_name + "="
-            idx = stripped.find(needle)
-            while idx >= 0:
-                split_positions.append(idx)
-                idx = stripped.find(needle, idx + len(needle))
+        # Use a greedy left-to-right scan: find the longest known key that
+        # matches at position 0 (via startswith), then scan forward for the
+        # next position where a known KEY= starts. This avoids false positives
+        # from key names that are substrings of other key names (e.g. LM_API_KEY
+        # at position 1 inside GLM_API_KEY=...).
+        parts = []
+        remaining = stripped
+        while remaining:
+            # Find longest known KEY= that starts at position 0
+            best_key = None
+            for key_name in known_keys:
+                if remaining.startswith(key_name + "=") and (
+                    best_key is None or len(key_name) > len(best_key)
+                ):
+                    best_key = key_name
+            if best_key is None:
+                # No known key at position 0 — keep the rest as-is
+                parts.append(remaining)
+                break
+            # Scan forward to find where the value ends and the next
+            # concatenated key begins. Try every position looking for a
+            # known key via startswith (not find/substring).
+            prefix = best_key + "="
+            after_prefix = remaining[len(prefix):]
+            next_pos = None
+            for offset in range(len(after_prefix)):
+                for key_name in known_keys:
+                    if after_prefix[offset:].startswith(key_name + "="):
+                        candidate = len(prefix) + offset
+                        if next_pos is None or candidate < next_pos:
+                            next_pos = candidate
+                        break  # found a key at this offset, move to next
+            if next_pos is not None:
+                parts.append(remaining[:next_pos])
+                remaining = remaining[next_pos:]
+            else:
+                parts.append(remaining)
+                remaining = ""
 
-        if len(split_positions) > 1:
-            split_positions.sort()
-            # Deduplicate (shouldn't happen, but be safe)
-            split_positions = sorted(set(split_positions))
-            for i, pos in enumerate(split_positions):
-                end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
-                part = stripped[pos:end].strip()
+        if len(parts) > 1:
+            for part in parts:
+                part = part.strip()
                 if part:
                     sanitized.append(part + "\n")
         else:

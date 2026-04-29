@@ -1257,18 +1257,25 @@ def get_model_context_length(
     # This closes the gap where /model switch and display paths used to fall
     # back to 128K despite the user having a per-model context_length set.
     # See #15779.
-    if custom_providers and base_url and model:
-        try:
-            from hermes_cli.config import get_custom_provider_context_length
-            cp_ctx = get_custom_provider_context_length(
-                model=model,
-                base_url=base_url,
-                custom_providers=custom_providers,
-            )
-            if cp_ctx:
-                return cp_ctx
-        except Exception:
-            pass  # fall through to probing
+    if base_url and model:
+        if custom_providers is None:
+            try:
+                from hermes_cli.config import get_compatible_custom_providers
+                custom_providers = get_compatible_custom_providers()
+            except Exception:
+                custom_providers = []
+        if custom_providers:
+            try:
+                from hermes_cli.config import get_custom_provider_context_length
+                cp_ctx = get_custom_provider_context_length(
+                    model=model,
+                    base_url=base_url,
+                    custom_providers=custom_providers,
+                )
+                if cp_ctx:
+                    return cp_ctx
+            except Exception:
+                pass  # fall through to probing
 
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that

@@ -84,7 +84,8 @@ class TestXiaomiAutoDetection:
                      "DASHSCOPE_API_KEY", "XAI_API_KEY", "KIMI_API_KEY",
                      "MINIMAX_API_KEY", "AI_GATEWAY_API_KEY", "KILOCODE_API_KEY",
                      "HF_TOKEN", "GLM_API_KEY", "COPILOT_GITHUB_TOKEN",
-                     "GH_TOKEN", "GITHUB_TOKEN", "MINIMAX_CN_API_KEY"):
+                     "GH_TOKEN", "GITHUB_TOKEN", "MINIMAX_CN_API_KEY",
+                     "TOKENHUB_API_KEY", "ARCEEAI_API_KEY"):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setenv("XIAOMI_API_KEY", "sk-xiaomi-test-12345678")
         provider = resolve_provider("auto")

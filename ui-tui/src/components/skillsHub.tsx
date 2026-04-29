@@ -179,7 +179,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   })
 
   if (loading) {
-    return <Text color={t.color.dim}>loading skills…</Text>
+    return <Text color={t.color.muted}>loading skills…</Text>
   }
 
   if (err && stage === 'category') {
@@ -194,7 +194,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   if (!cats.length) {
     return (
       <Box flexDirection="column" width={width}>
-        <Text color={t.color.dim}>no skills available</Text>
+        <Text color={t.color.muted}>no skills available</Text>
         <OverlayHint t={t}>Esc/q cancel</OverlayHint>
       </Box>
     )
@@ -206,12 +206,12 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
 
     return (
       <Box flexDirection="column" width={width}>
-        <Text bold color={t.color.amber}>
+        <Text bold color={t.color.accent}>
           Skills Hub
         </Text>
 
-        <Text color={t.color.dim}>select a category</Text>
-        {offset > 0 && <Text color={t.color.dim}> ↑ {offset} more</Text>}
+        <Text color={t.color.muted}>select a category</Text>
+        {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
 
         {items.map((row, i) => {
           const idx = offset + i
@@ -219,7 +219,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
           return (
             <Text
               bold={catIdx === idx}
-              color={catIdx === idx ? t.color.amber : t.color.dim}
+              color={catIdx === idx ? t.color.accent : t.color.muted}
               inverse={catIdx === idx}
               key={row}
               wrap="truncate-end"
@@ -230,7 +230,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
           )
         })}
 
-        {offset + VISIBLE < rows.length && <Text color={t.color.dim}> ↓ {rows.length - offset - VISIBLE} more</Text>}
+        {offset + VISIBLE < rows.length && <Text color={t.color.muted}> ↓ {rows.length - offset - VISIBLE} more</Text>}
         <OverlayHint t={t}>↑/↓ select · Enter open · 1-9,0 quick · Esc/q cancel</OverlayHint>
       </Box>
     )
@@ -241,13 +241,13 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
 
     return (
       <Box flexDirection="column" width={width}>
-        <Text bold color={t.color.amber}>
+        <Text bold color={t.color.accent}>
           {selectedCat}
         </Text>
 
-        <Text color={t.color.dim}>{skills.length} skill(s)</Text>
-        {!skills.length ? <Text color={t.color.dim}>no skills in this category</Text> : null}
-        {offset > 0 && <Text color={t.color.dim}> ↑ {offset} more</Text>}
+        <Text color={t.color.muted}>{skills.length} skill(s)</Text>
+        {!skills.length ? <Text color={t.color.muted}>no skills in this category</Text> : null}
+        {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
 
         {items.map((row, i) => {
           const idx = offset + i
@@ -255,7 +255,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
           return (
             <Text
               bold={skillIdx === idx}
-              color={skillIdx === idx ? t.color.amber : t.color.dim}
+              color={skillIdx === idx ? t.color.accent : t.color.muted}
               inverse={skillIdx === idx}
               key={row}
               wrap="truncate-end"
@@ -267,7 +267,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
         })}
 
         {offset + VISIBLE < skills.length && (
-          <Text color={t.color.dim}> ↓ {skills.length - offset - VISIBLE} more</Text>
+          <Text color={t.color.muted}> ↓ {skills.length - offset - VISIBLE} more</Text>
         )}
         <OverlayHint t={t}>
           {skills.length ? '↑/↓ select · Enter open · 1-9,0 quick · Esc back · q close' : 'Esc back · q close'}
@@ -278,16 +278,16 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
 
   return (
     <Box flexDirection="column" width={width}>
-      <Text bold color={t.color.amber}>
+      <Text bold color={t.color.accent}>
         {info?.name ?? skillName}
       </Text>
 
-      <Text color={t.color.dim}>{info?.category ?? selectedCat}</Text>
-      {info?.description ? <Text color={t.color.cornsilk}>{info.description}</Text> : null}
-      {info?.path ? <Text color={t.color.dim}>path: {info.path}</Text> : null}
-      {!info && !err ? <Text color={t.color.dim}>loading…</Text> : null}
+      <Text color={t.color.muted}>{info?.category ?? selectedCat}</Text>
+      {info?.description ? <Text color={t.color.text}>{info.description}</Text> : null}
+      {info?.path ? <Text color={t.color.muted}>path: {info.path}</Text> : null}
+      {!info && !err ? <Text color={t.color.muted}>loading…</Text> : null}
       {err ? <Text color={t.color.label}>error: {err}</Text> : null}
-      {installing ? <Text color={t.color.amber}>installing…</Text> : null}
+      {installing ? <Text color={t.color.accent}>installing…</Text> : null}
 
       <OverlayHint t={t}>i reinspect · x reinstall · Enter/Esc back · q close</OverlayHint>
     </Box>

@@ -944,6 +944,39 @@ def test_config_set_section_rejects_unknown_section_or_mode(tmp_path, monkeypatc
     assert bad_mode["error"]["code"] == 4002
 
 
+def test_config_mouse_uses_documented_key_with_legacy_fallback(monkeypatch):
+    cfg = {"display": {"tui_mouse": False}}
+    writes = []
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+
+    get_legacy = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "mouse"}}
+    )
+    assert get_legacy["result"]["value"] == "off"
+
+    set_toggle = server.handle_request(
+        {"id": "2", "method": "config.set", "params": {"key": "mouse"}}
+    )
+    assert set_toggle["result"] == {"key": "mouse", "value": "on"}
+    assert writes == [("display.mouse_tracking", True)]
+
+    cfg["display"] = {"mouse_tracking": 0, "tui_mouse": True}
+    get_canonical = server.handle_request(
+        {"id": "3", "method": "config.get", "params": {"key": "mouse"}}
+    )
+    assert get_canonical["result"]["value"] == "off"
+
+    cfg["display"] = {"mouse_tracking": None, "tui_mouse": False}
+    get_null = server.handle_request(
+        {"id": "4", "method": "config.get", "params": {"key": "mouse"}}
+    )
+    assert get_null["result"]["value"] == "on"
+
+
 def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
@@ -978,6 +1011,14 @@ def test_complete_slash_includes_tui_details_command():
     )
 
     assert any(item["text"] == "/details" for item in resp["result"]["items"])
+
+
+def test_complete_slash_includes_tui_mouse_command():
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/mou"}}
+    )
+
+    assert any(item["text"] == "/mouse" for item in resp["result"]["items"])
 
 
 def test_complete_slash_details_args():
@@ -1169,6 +1210,61 @@ def test_config_set_model_syncs_inference_provider_env(monkeypatch):
     )
 
     assert os.environ["HERMES_INFERENCE_PROVIDER"] == "anthropic"
+
+
+def test_config_set_model_syncs_tui_provider_unconditionally(monkeypatch):
+    """Regression for #16857: /model must set HERMES_TUI_PROVIDER even when
+    it wasn't pre-set on launch, so a later /new (which re-runs
+    _resolve_startup_runtime) honours the user's explicit provider choice
+    instead of falling through to static-catalog detection and picking a
+    coincidentally-matching native provider.
+    """
+
+    class _Agent:
+        provider = "openrouter"
+        model = "old/model"
+        base_url = ""
+        api_key = "sk-or"
+
+        def switch_model(self, **_kwargs):
+            return None
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="deepseek-v4-pro",
+        target_provider="custom:xuanji",
+        api_key="sk-xuanji",
+        base_url="https://xuanji.example/v1",
+        api_mode="chat_completions",
+        warning_message="",
+    )
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "deepseek-v4-pro --provider custom:xuanji",
+            },
+        }
+    )
+
+    # Both env vars must reflect the user's choice. HERMES_TUI_PROVIDER is
+    # the canonical explicit-this-process carrier consumed by
+    # _resolve_startup_runtime() on /new.
+    assert os.environ["HERMES_TUI_PROVIDER"] == "custom:xuanji"
+    assert os.environ["HERMES_INFERENCE_PROVIDER"] == "custom:xuanji"
 
 
 def test_config_set_model_syncs_tui_provider_env(monkeypatch):
@@ -1490,6 +1586,19 @@ def test_commands_catalog_surfaces_quick_commands(monkeypatch):
 
     assert resp["result"]["canon"]["/build"] == "/build"
     assert resp["result"]["canon"]["/notes"] == "/notes"
+
+
+def test_commands_catalog_includes_tui_mouse_command():
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    pairs = dict(resp["result"]["pairs"])
+    tui_cat = next(c for c in resp["result"]["categories"] if c["name"] == "TUI")
+    tui_pairs = dict(tui_cat["pairs"])
+
+    assert "/mouse" in pairs
+    assert "/mouse" in tui_pairs
 
 
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
@@ -2578,3 +2687,452 @@ def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
         )
 
     mock_title.assert_not_called()
+
+
+# ── session.most_recent ──────────────────────────────────────────────
+
+
+def test_session_most_recent_returns_first_non_denied(monkeypatch):
+    """Drops `tool` rows like session.list does, returns the first hit."""
+
+    class _DB:
+        def list_sessions_rich(self, *, source=None, limit=200):
+            return [
+                {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 100},
+                {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99},
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] == "tui-1"
+    assert resp["result"]["title"] == "real"
+    assert resp["result"]["source"] == "tui"
+
+
+def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, *, source=None, limit=200):
+            return [{"id": "tool-1", "source": "tool", "started_at": 1}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] is None
+
+
+def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
+    """Per contract, errors are folded into the null-result shape so
+    callers don't have to special-case JSON-RPC error envelopes for
+    'no answer' (Copilot review on #17130)."""
+
+    class _BrokenDB:
+        def list_sessions_rich(self, *, source=None, limit=200):
+            raise RuntimeError("db locked")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["session_id"] is None
+
+
+def test_session_most_recent_handles_db_unavailable(monkeypatch):
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] is None
+# ── browser.manage ───────────────────────────────────────────────────
+
+
+def _stub_urlopen(monkeypatch, *, ok: bool):
+    """Patch urllib.request.urlopen used by browser.manage to short-circuit probes."""
+
+    class _Resp:
+        status = 200 if ok else 503
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def _opener(_url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+        if not ok:
+            raise OSError("probe failed")
+        return _Resp()
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+
+
+def test_browser_manage_status_reads_env_var(monkeypatch):
+    """Status returns the env var verbatim (no network I/O)."""
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
+
+    resp = server.handle_request(
+        {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
+    )
+
+    assert resp["result"] == {"connected": True, "url": "http://127.0.0.1:9222"}
+
+
+def test_browser_manage_status_falls_back_to_config_cdp_url(monkeypatch):
+    """When env is unset, status surfaces ``browser.cdp_url`` from
+    config.yaml so users see what the next tool call will read."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+
+    fake_cfg = types.SimpleNamespace(
+        read_raw_config=lambda: {"browser": {"cdp_url": "http://lan:9222"}}
+    )
+    with patch.dict(sys.modules, {"hermes_cli.config": fake_cfg}):
+        resp = server.handle_request(
+            {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
+        )
+
+    assert resp["result"] == {"connected": True, "url": "http://lan:9222"}
+
+
+def test_browser_manage_status_does_not_call_get_cdp_override(monkeypatch):
+    """Regression guard for Copilot's "status must not block" review:
+    status must NOT route through `_get_cdp_override`, which performs a
+    `/json/version` HTTP probe with a multi-second timeout."""
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
+
+    fake = types.SimpleNamespace(
+        _get_cdp_override=lambda: pytest.fail(  # noqa: PT015 — fail loudly if called
+            "_get_cdp_override must not run on /browser status (network I/O)"
+        )
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
+        )
+
+    assert resp["result"]["connected"] is True
+
+
+def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
+    """`/browser connect` must reach the live process: set env, reap browser
+    sessions before AND after publishing the new URL.  The double-cleanup
+    closes the supervisor swap window where ``_ensure_cdp_supervisor``
+    could re-attach to the *old* CDP endpoint between steps."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    cleanup_calls: list[str] = []
+
+    def _cleanup_all():
+        cleanup_calls.append(os.environ.get("BROWSER_CDP_URL", ""))
+
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=_cleanup_all,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=True)
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": "http://127.0.0.1:9222"},
+            }
+        )
+
+    assert resp["result"] == {"connected": True, "url": "http://127.0.0.1:9222"}
+    assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
+    # First cleanup runs against the OLD env (none here), second against the NEW.
+    assert cleanup_calls == ["", "http://127.0.0.1:9222"]
+
+
+def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
+    """An unreachable endpoint must NOT mutate the env or reap sessions."""
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://existing:9222")
+    cleanup_calls: list[str] = []
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: cleanup_calls.append(os.environ.get("BROWSER_CDP_URL", "")),
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=False)
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": "http://unreachable:9222"},
+            }
+        )
+
+    assert "error" in resp
+    # Env preserved; nothing reaped.
+    assert os.environ["BROWSER_CDP_URL"] == "http://existing:9222"
+    assert cleanup_calls == []
+
+
+def test_browser_manage_connect_normalizes_bare_host_port(monkeypatch):
+    """Persist a parsed `scheme://host:port` URL so `_get_cdp_override`
+    can normalize it; storing a bare host:port would break subsequent
+    tool calls (Copilot review on #17120)."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=True)
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": "127.0.0.1:9222"},
+            }
+        )
+
+    assert resp["result"]["connected"] is True
+    # Bare host:port got promoted to a full URL with explicit scheme.
+    assert resp["result"]["url"].startswith("http://")
+    assert os.environ["BROWSER_CDP_URL"].startswith("http://")
+
+
+def test_browser_manage_connect_strips_discovery_path(monkeypatch):
+    """User-supplied discovery paths like `/json` or `/json/version`
+    must collapse to bare `scheme://host:port`; otherwise
+    ``_resolve_cdp_override`` will append ``/json/version`` again and
+    produce a duplicate path (Copilot review round-2 on #17120)."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=True)
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": "http://127.0.0.1:9222/json"},
+            }
+        )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
+
+
+def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch):
+    """Concrete devtools websocket endpoints (e.g. Browserbase) must
+    survive verbatim — we only collapse discovery-style paths."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    concrete = "ws://browserbase.example/devtools/browser/abc123"
+
+    class _OkSocket:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        # If urlopen is reached for a concrete ws endpoint, the test
+        # would still pass because _stub_urlopen returned ok=True before;
+        # patch it to assert-fail so we prove the HTTP probe is skipped.
+        with patch("urllib.request.urlopen", side_effect=AssertionError("urlopen called")):
+            with patch("socket.create_connection", return_value=_OkSocket()):
+                resp = server.handle_request(
+                    {
+                        "id": "1",
+                        "method": "browser.manage",
+                        "params": {"action": "connect", "url": concrete},
+                    }
+                )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == concrete
+    assert os.environ["BROWSER_CDP_URL"] == concrete
+
+
+def test_browser_manage_connect_concrete_ws_skips_http_probe(monkeypatch):
+    """Regression for round-2 Copilot review: a hosted CDP endpoint
+    (no HTTP discovery) must connect via TCP-only reachability check.
+    The HTTP probe used to reject these even though they're valid."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    concrete = "wss://chrome.browserless.io/devtools/browser/sess-1"
+
+    seen_targets: list[tuple[str, int]] = []
+
+    class _OkSocket:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def _fake_create_connection(addr, timeout=None):
+        seen_targets.append(addr)
+        return _OkSocket()
+
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        # urlopen would 404/ECONNREFUSED on a real hosted CDP endpoint;
+        # asserting it's never called proves the probe was skipped.
+        with patch("urllib.request.urlopen", side_effect=AssertionError("urlopen called")):
+            with patch("socket.create_connection", side_effect=_fake_create_connection):
+                resp = server.handle_request(
+                    {
+                        "id": "1",
+                        "method": "browser.manage",
+                        "params": {"action": "connect", "url": concrete},
+                    }
+                )
+
+    assert resp["result"] == {"connected": True, "url": concrete}
+    # wss → port 443, host preserved verbatim.
+    assert seen_targets == [("chrome.browserless.io", 443)]
+
+
+def test_browser_manage_connect_concrete_ws_tcp_unreachable(monkeypatch):
+    """If the TCP reachability check fails for a concrete ws endpoint,
+    return a clear 5031 error — no fallback to the HTTP probe (which
+    can never succeed for these URLs anyway)."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    concrete = "ws://offline.example/devtools/browser/missing"
+
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        with patch("socket.create_connection", side_effect=OSError("ECONNREFUSED")):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "browser.manage",
+                    "params": {"action": "connect", "url": concrete},
+                }
+            )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 5031
+
+
+def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
+    cleanup_count = {"n": 0}
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: cleanup_count.__setitem__("n", cleanup_count["n"] + 1),
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "browser.manage", "params": {"action": "disconnect"}}
+        )
+
+    assert resp["result"] == {"connected": False}
+    assert "BROWSER_CDP_URL" not in os.environ
+    # Two cleanups: once before env removal, once after, matching connect.
+    assert cleanup_count["n"] == 2
+
+
+# ── config.get indicator normalization ───────────────────────────────
+
+
+def test_config_get_indicator_returns_known_value_verbatim(monkeypatch):
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"display": {"tui_status_indicator": "emoji"}}
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
+    )
+    assert resp["result"] == {"value": "emoji"}
+
+
+def test_config_get_indicator_normalizes_casing_and_whitespace(monkeypatch):
+    """Hand-edited config.yaml stays consistent with what the TUI shows.
+
+    Frontend's `normalizeIndicatorStyle` lowercases + trims, so config.get
+    must do the same — otherwise `/indicator` prints 'EMOJI ' while the
+    UI is actually rendering the kaomoji default."""
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"display": {"tui_status_indicator": " EMOJI "}}
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
+    )
+    assert resp["result"] == {"value": "emoji"}
+
+
+def test_config_get_indicator_falls_back_to_default_for_unknown(monkeypatch):
+    """An unknown value in config.yaml falls back to the same default
+    the frontend uses (`_INDICATOR_DEFAULT`)."""
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"display": {"tui_status_indicator": "rainbow"}}
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
+    )
+    assert resp["result"] == {"value": "kaomoji"}
+
+
+def test_config_get_indicator_falls_back_when_unset(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {}})
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "indicator"}}
+    )
+    assert resp["result"] == {"value": "kaomoji"}
+
+
+# ── config.set indicator validation ──────────────────────────────────
+
+
+def test_config_set_indicator_accepts_known_value(monkeypatch):
+    written: dict = {}
+    monkeypatch.setattr(
+        server, "_write_config_key",
+        lambda k, v: written.update({k: v}),
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "config.set", "params": {"key": "indicator", "value": "EMOJI"}}
+    )
+    assert resp["result"] == {"key": "indicator", "value": "emoji"}
+    assert written == {"display.tui_status_indicator": "emoji"}
+
+
+def test_config_set_indicator_falsy_non_string_surfaces_in_error(monkeypatch):
+    """`0` / `False` / `[]` are not valid styles, but the error message
+    must still tell the user what they sent — `value or ""` would have
+    erased them to a blank string."""
+    monkeypatch.setattr(server, "_write_config_key", lambda *a, **k: None)
+
+    for bad in (0, False, []):
+        resp = server.handle_request(
+            {"id": "1", "method": "config.set", "params": {"key": "indicator", "value": bad}}
+        )
+        assert "error" in resp
+        msg = resp["error"]["message"]
+        assert "unknown indicator" in msg
+        # The exact repr varies; `0`/`False` stringify with content,
+        # `[]` becomes an empty list — what matters is the diagnostic
+        # is no longer just `unknown indicator: ` with nothing after.
+        assert msg.split("; ")[0] != "unknown indicator: ''"
+
+
+def test_config_set_indicator_none_keeps_blank_repr(monkeypatch):
+    """`None` is the genuine 'no value' case — empty raw is acceptable."""
+    monkeypatch.setattr(server, "_write_config_key", lambda *a, **k: None)
+    resp = server.handle_request(
+        {"id": "1", "method": "config.set", "params": {"key": "indicator", "value": None}}
+    )
+    assert "error" in resp
+    assert "unknown indicator: ''" in resp["error"]["message"]

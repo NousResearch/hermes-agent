@@ -439,8 +439,14 @@ class TestCmdMigrate:
         captured = capsys.readouterr()
         assert "Could not load migration script" in captured.out
 
-    def test_full_preset_enables_secrets(self, tmp_path, capsys):
-        """The 'full' preset should set migrate_secrets=True automatically."""
+    def test_full_preset_does_not_enable_secrets_silently(self, tmp_path, capsys):
+        """The 'full' preset must NOT auto-enable migrate_secrets.
+
+        Users have to opt in to secret import explicitly via --migrate-secrets,
+        even under the 'full' preset.  This mirrors OpenClaw's migrate-hermes
+        posture (two-phase import) and prevents a 'full' run from silently
+        copying API keys.
+        """
         openclaw_dir = tmp_path / ".openclaw"
         openclaw_dir.mkdir()
 
@@ -459,6 +465,7 @@ class TestCmdMigrate:
             migrate_secrets=False,  # Not explicitly set by user
             workspace_target=None,
             skill_conflict="skip", yes=False,
+            no_backup=False,
         )
 
         with (
@@ -470,7 +477,43 @@ class TestCmdMigrate:
         ):
             claw_mod._cmd_migrate(args)
 
-        # Migrator should have been called with migrate_secrets=True
+        # Migrator should have been called with migrate_secrets=False — the
+        # 'full' preset on its own no longer opts the user into secret import.
+        call_kwargs = fake_mod.Migrator.call_args[1]
+        assert call_kwargs["migrate_secrets"] is False
+
+    def test_full_preset_with_explicit_migrate_secrets_passes_through(self, tmp_path, capsys):
+        """Explicit --migrate-secrets still works under --preset full."""
+        openclaw_dir = tmp_path / ".openclaw"
+        openclaw_dir.mkdir()
+
+        fake_mod = ModuleType("openclaw_to_hermes")
+        fake_mod.resolve_selected_options = MagicMock(return_value=set())
+        fake_migrator = MagicMock()
+        fake_migrator.migrate.return_value = {
+            "summary": {"migrated": 0, "skipped": 0, "conflict": 0, "error": 0},
+            "items": [],
+        }
+        fake_mod.Migrator = MagicMock(return_value=fake_migrator)
+
+        args = Namespace(
+            source=str(openclaw_dir),
+            dry_run=True, preset="full", overwrite=False,
+            migrate_secrets=True,  # Explicitly requested
+            workspace_target=None,
+            skill_conflict="skip", yes=False,
+            no_backup=False,
+        )
+
+        with (
+            patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
+            patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
+            patch.object(claw_mod, "get_config_path", return_value=tmp_path / "config.yaml"),
+            patch.object(claw_mod, "save_config"),
+            patch.object(claw_mod, "load_config", return_value={}),
+        ):
+            claw_mod._cmd_migrate(args)
+
         call_kwargs = fake_mod.Migrator.call_args[1]
         assert call_kwargs["migrate_secrets"] is True
 

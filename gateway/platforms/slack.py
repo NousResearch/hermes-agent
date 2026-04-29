@@ -60,6 +60,36 @@ class _ThreadContextCache:
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
 
 
+@dataclass
+class _ThinkingStreamState:
+    """Per-stream state for the Thinking Steps for AI Agents API.
+
+    The gateway progress task accumulates a "rolling" full text and asks the
+    adapter to edit_message it.  For the streaming API we send a delta with
+    chat.appendStream instead, so we track the last text we appended and
+    compute the diff on each edit.
+    """
+    chat_id: str
+    last_text: str = ""
+
+
+def _api_error_string(exc: Exception) -> str:
+    """Pull a Slack error code out of a SlackApiError when available.
+
+    Falls back to ``str(exc)`` for non-Slack exceptions so the disable
+    cache always records a non-empty reason.
+    """
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        try:
+            err = resp.get("error") if hasattr(resp, "get") else None
+            if err:
+                return str(err)
+        except Exception:
+            pass
+    return str(exc) or exc.__class__.__name__
+
+
 def check_slack_requirements() -> bool:
     """Check if Slack dependencies are available."""
     return SLACK_AVAILABLE
@@ -310,6 +340,17 @@ class SlackAdapter(BasePlatformAdapter):
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
+        # Thinking Steps for AI Agents API state.  Each open stream is keyed
+        # by its message ts (returned by chat.startStream); on each subsequent
+        # update the gateway calls edit_message(ts, full_text) and we send a
+        # delta via chat.appendStream until finalize_thinking_stream() closes
+        # the stream with chat.stopStream.
+        self._thinking_streams: Dict[str, "_ThinkingStreamState"] = {}
+        # Per-channel disable cache: when chat.startStream returns an
+        # unsupported-method / missing-scope error we record it here so
+        # subsequent turns to the same channel skip the API and fall back to
+        # the legacy chat.postMessage path immediately.
+        self._thinking_steps_disabled: Dict[str, str] = {}
 
     def _describe_slack_api_error(self, response: Any, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Convert Slack API auth/permission failures into actionable user-facing text."""
@@ -564,6 +605,20 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        # Thinking Steps API: when the gateway tags this send as a tool-progress
+        # update we open a streaming message via chat.startStream and append
+        # the first chunk via chat.appendStream.  Subsequent edits route through
+        # edit_message → chat.appendStream.  A failure here records the channel
+        # as unsupported and returns SendResult(success=False), which the
+        # caller treats as "fall back to legacy chat.postMessage".
+        if metadata and metadata.get("slack_thinking_progress"):
+            stream_result = await self._start_thinking_stream(
+                chat_id, content, reply_to, metadata,
+            )
+            if stream_result is not None:
+                return stream_result
+            # else: fell through; continue with legacy chat.postMessage path
+
         try:
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
@@ -626,6 +681,21 @@ class SlackAdapter(BasePlatformAdapter):
         """Edit a previously sent Slack message."""
         if not self._app:
             return SendResult(success=False, error="Not connected")
+
+        # Thinking Steps API: if message_id refers to a stream we opened in
+        # send(), route the update through chat.appendStream as a markdown
+        # delta instead of chat.update'ing the whole text.  finalize=True
+        # still goes through the streaming path — the caller closes the
+        # stream explicitly via finalize_thinking_stream().
+        stream = self._thinking_streams.get(message_id)
+        if stream is not None and stream.chat_id == chat_id:
+            ok = await self._append_thinking_delta(message_id, content)
+            if ok:
+                return SendResult(success=True, message_id=message_id)
+            # Append failed (stream broken).  Drop the stream entry and let
+            # the legacy chat.update path try as a best-effort fallback.
+            self._thinking_streams.pop(message_id, None)
+
         try:
             formatted = self.format_message(content)
             await self._get_client(chat_id).chat_update(
@@ -643,6 +713,232 @@ class SlackAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return SendResult(success=False, error=str(e))
+
+    # ------------------------------------------------------------------
+    # Slack Thinking Steps for AI Agents API
+    # https://slack.dev/slack-thinking-steps-ai-agents/
+    # ------------------------------------------------------------------
+
+    # Slack errors that mean "this workspace/app cannot use the streaming
+    # API right now".  We treat them as a permanent disable for the channel
+    # and fall back to the legacy chat.postMessage path on subsequent calls.
+    _THINKING_STEPS_UNSUPPORTED_ERRORS = frozenset({
+        "unknown_method",
+        "method_deprecated",
+        "feature_not_enabled",
+        "missing_scope",
+        "not_allowed_token_type",
+        "no_permission",
+        "channel_type_not_supported",
+        "messages_tab_disabled",
+        "team_access_not_granted",
+        "deprecated_endpoint",
+    })
+
+    def is_thinking_steps_disabled(self, chat_id: str) -> Optional[str]:
+        """Return the recorded disable reason, or ``None`` if still enabled."""
+        return self._thinking_steps_disabled.get(chat_id)
+
+    def _record_thinking_steps_failure(self, chat_id: str, reason: str) -> None:
+        """Cache a permanent fallback for channels where streaming isn't usable."""
+        if chat_id not in self._thinking_steps_disabled:
+            logger.info(
+                "[Slack] Thinking Steps API unavailable in %s (%s); "
+                "falling back to chat.postMessage progress updates.",
+                chat_id, reason,
+            )
+        self._thinking_steps_disabled[chat_id] = reason
+
+    async def _start_thinking_stream(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        """Open a chat.startStream + first chat.appendStream for a progress turn.
+
+        Returns ``None`` to signal "fall back to legacy chat.postMessage" —
+        either because the channel previously rejected the new API, or
+        because chat.startStream itself failed with an unsupported-method
+        / permission error this turn.  Returns a populated ``SendResult``
+        on success or on a non-fatal append failure (stream open, no
+        delta queued).
+        """
+        if self.is_thinking_steps_disabled(chat_id):
+            return None
+
+        thread_ts = self._resolve_thread_ts(reply_to, metadata)
+        if not thread_ts:
+            # The streaming API requires thread_ts; without one there's
+            # nothing meaningful to attach to, so skip the new path.
+            return None
+
+        client = self._get_client(chat_id)
+        start_payload: Dict[str, Any] = {
+            "channel": chat_id,
+            "thread_ts": thread_ts,
+        }
+        recipient_user_id = (metadata or {}).get("recipient_user_id")
+        recipient_team_id = (
+            (metadata or {}).get("recipient_team_id")
+            or self._channel_team.get(chat_id)
+        )
+        if recipient_user_id:
+            start_payload["recipient_user_id"] = recipient_user_id
+        if recipient_team_id:
+            start_payload["recipient_team_id"] = recipient_team_id
+
+        try:
+            resp = await client.api_call(
+                api_method="chat.startStream",
+                json=start_payload,
+            )
+        except Exception as exc:
+            err = _api_error_string(exc)
+            # Permanent disable only when the error is a known unsupported /
+            # permission case.  Transient failures (network, rate limit) just
+            # fall back this turn but stay enabled for the next one.
+            if err in self._THINKING_STEPS_UNSUPPORTED_ERRORS:
+                self._record_thinking_steps_failure(chat_id, err)
+            else:
+                logger.debug(
+                    "[Slack] chat.startStream raised %s; falling back this turn",
+                    err,
+                )
+            return None
+
+        if not (resp and resp.get("ok")):
+            err = str((resp or {}).get("error") or "start_failed")
+            if err in self._THINKING_STEPS_UNSUPPORTED_ERRORS:
+                self._record_thinking_steps_failure(chat_id, err)
+            else:
+                logger.debug(
+                    "[Slack] chat.startStream rejected (%s); falling back this turn",
+                    err,
+                )
+            return None
+
+        ts = resp.get("ts")
+        if not ts:
+            return None
+
+        formatted = self.format_message(content)
+        markdown = formatted[:12000]
+        try:
+            append_resp = await client.api_call(
+                api_method="chat.appendStream",
+                json={
+                    "channel": chat_id,
+                    "ts": ts,
+                    "markdown_text": markdown,
+                },
+            )
+        except Exception as exc:
+            logger.debug(
+                "[Slack] chat.appendStream (initial) failed for %s: %s",
+                chat_id, exc,
+            )
+            append_resp = None
+
+        # Track the stream regardless of whether the first append succeeded —
+        # the caller still needs to close it via chat.stopStream.  An append
+        # failure on the very first chunk is rare and surfaces as an empty
+        # streaming bubble until the next edit_message tries again.
+        self._thinking_streams[ts] = _ThinkingStreamState(
+            chat_id=chat_id,
+            last_text=markdown if append_resp and append_resp.get("ok") else "",
+        )
+        return SendResult(
+            success=True,
+            message_id=ts,
+            raw_response=resp,
+        )
+
+    async def _append_thinking_delta(self, ts: str, full_text: str) -> bool:
+        """Append the new portion of *full_text* to a streaming message.
+
+        The gateway progress task hands us a rolling concatenation of every
+        progress line; we send only the suffix that's new since the last
+        update.  If the rolling text was rebuilt (rare — e.g. after a dedup
+        rewrite), we send the whole thing on a separator.
+        """
+        stream = self._thinking_streams.get(ts)
+        if stream is None:
+            return False
+        formatted = self.format_message(full_text)
+
+        if formatted == stream.last_text:
+            return True  # nothing new to send
+
+        if formatted.startswith(stream.last_text) and stream.last_text:
+            delta = formatted[len(stream.last_text):]
+        else:
+            # The rolling buffer was rebuilt (e.g. dedup counter rewrite);
+            # send the whole new text as a fresh chunk.  Slack will render
+            # this as additional content rather than replacing the existing
+            # message — acceptable trade-off for an uncommon path.
+            delta = ("\n" if stream.last_text else "") + formatted
+
+        delta = delta[:12000]
+        try:
+            resp = await self._get_client(stream.chat_id).api_call(
+                api_method="chat.appendStream",
+                json={
+                    "channel": stream.chat_id,
+                    "ts": ts,
+                    "markdown_text": delta,
+                },
+            )
+        except Exception as exc:
+            logger.debug("[Slack] chat.appendStream failed for %s: %s", ts, exc)
+            return False
+        if not (resp and resp.get("ok")):
+            err = str((resp or {}).get("error") or "append_failed")
+            logger.debug(
+                "[Slack] chat.appendStream rejected for %s: %s", ts, err,
+            )
+            if err in {"message_not_in_streaming_state", "message_not_found",
+                       "message_not_owned_by_app"}:
+                # Stream is permanently broken — drop it so the next edit
+                # falls through to chat.update.
+                self._thinking_streams.pop(ts, None)
+            return False
+
+        stream.last_text = formatted
+        return True
+
+    async def finalize_thinking_stream(
+        self,
+        chat_id: str,
+        message_id: str,
+        *,
+        markdown_text: Optional[str] = None,
+    ) -> bool:
+        """Close a thinking-steps stream with chat.stopStream.
+
+        Safe to call when ``message_id`` was a legacy chat.postMessage —
+        it returns False without making an API call when no stream state
+        is tracked for the ts.
+        """
+        stream = self._thinking_streams.pop(message_id, None)
+        if stream is None or stream.chat_id != chat_id:
+            return False
+        payload: Dict[str, Any] = {
+            "channel": chat_id,
+            "ts": message_id,
+        }
+        if markdown_text:
+            payload["markdown_text"] = markdown_text[:12000]
+        try:
+            resp = await self._get_client(chat_id).api_call(
+                api_method="chat.stopStream",
+                json=payload,
+            )
+        except Exception as exc:
+            logger.debug("[Slack] chat.stopStream failed for %s: %s", message_id, exc)
+            return False
+        return bool(resp and resp.get("ok"))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show a typing/status indicator using assistant.threads.setStatus.

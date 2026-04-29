@@ -10170,6 +10170,24 @@ class GatewayRunner:
             _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
+        # Slack Thinking Steps for AI Agents API: when enabled, tag the
+        # progress sends so the Slack adapter routes them through
+        # chat.startStream / chat.appendStream / chat.stopStream instead of
+        # editing a plain chat.postMessage.  The adapter falls back per-channel
+        # if the workspace rejects the new endpoints.
+        # https://slack.dev/slack-thinking-steps-ai-agents/
+        _slack_thinking_steps_enabled = False
+        if source.platform == Platform.SLACK:
+            _slack_thinking_steps_enabled = bool(
+                resolve_display_setting(
+                    user_config, platform_key, "thinking_steps_api", True,
+                )
+            )
+            if _slack_thinking_steps_enabled and _progress_metadata is not None:
+                _progress_metadata["slack_thinking_progress"] = True
+                if source.user_id:
+                    _progress_metadata["recipient_user_id"] = source.user_id
+
         async def send_progress_messages():
             if not progress_queue:
                 return
@@ -10345,6 +10363,23 @@ class GatewayRunner:
                             )
                         except Exception:
                             pass
+                    # Close the Slack thinking-steps stream if one was opened.
+                    # No-op for the legacy chat.postMessage path or other
+                    # platforms — the adapter only acts on ts values it knows.
+                    if (
+                        _slack_thinking_steps_enabled
+                        and progress_msg_id
+                        and hasattr(adapter, "finalize_thinking_stream")
+                    ):
+                        try:
+                            await adapter.finalize_thinking_stream(
+                                source.chat_id, progress_msg_id,
+                            )
+                        except Exception as _close_err:
+                            logger.debug(
+                                "[Slack] finalize_thinking_stream: %s",
+                                _close_err,
+                            )
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)

@@ -35,6 +35,13 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    # Slack-only: render tool-progress updates via the Slack Thinking Steps
+    # for AI Agents API (chat.startStream / chat.appendStream / chat.stopStream)
+    # instead of editing a plain chat.postMessage.  Auto-falls back per-channel
+    # if the workspace rejects the new endpoints (unknown_method, missing_scope,
+    # etc.).  Ignored on every other platform.
+    # See https://slack.dev/slack-thinking-steps-ai-agents/
+    "thinking_steps_api": True,
 }
 
 # ---------------------------------------------------------------------------
@@ -184,7 +191,7 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in ("show_reasoning", "streaming"):
+    if setting in ("show_reasoning", "streaming", "thinking_steps_api"):
         if isinstance(value, str):
             return value.lower() in ("true", "1", "yes", "on")
         return bool(value)

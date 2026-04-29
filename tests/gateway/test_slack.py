@@ -2586,3 +2586,218 @@ class TestSlackReplyToText:
         assert msg_event.reply_to_text is None
         # Top-level message: reply_to_message_id must be falsy (None or empty).
         assert not msg_event.reply_to_message_id
+
+
+# ---------------------------------------------------------------------------
+# TestThinkingStepsStream
+# ---------------------------------------------------------------------------
+
+
+class TestThinkingStepsStream:
+    """Slack Thinking Steps for AI Agents API integration.
+
+    chat.startStream / chat.appendStream / chat.stopStream replace the legacy
+    chat.postMessage progress flow when the gateway tags a send with
+    ``slack_thinking_progress=True``.  Every workspace that doesn't support
+    the new endpoints must fall back to the legacy path on the first failure,
+    and stay on it for that channel for the rest of the process.
+    """
+
+    @staticmethod
+    def _progress_metadata(thread_ts: str = "1700000000.000100"):
+        return {
+            "thread_id": thread_ts,
+            "slack_thinking_progress": True,
+            "recipient_user_id": "U_USER",
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_opens_stream_when_flag_set(self, adapter):
+        """First progress send must call chat.startStream and chat.appendStream."""
+        api_call = AsyncMock(side_effect=[
+            {"ok": True, "ts": "1700000001.000200"},  # chat.startStream
+            {"ok": True},                              # chat.appendStream
+        ])
+        adapter._app.client.api_call = api_call
+
+        result = await adapter.send(
+            chat_id="C123",
+            content="🔍 web_search...",
+            metadata=self._progress_metadata(),
+        )
+
+        assert result.success is True
+        assert result.message_id == "1700000001.000200"
+        assert api_call.await_count == 2
+        first = api_call.await_args_list[0]
+        assert first.kwargs["api_method"] == "chat.startStream"
+        assert first.kwargs["json"]["channel"] == "C123"
+        assert first.kwargs["json"]["thread_ts"] == "1700000000.000100"
+        assert first.kwargs["json"]["recipient_user_id"] == "U_USER"
+        second = api_call.await_args_list[1]
+        assert second.kwargs["api_method"] == "chat.appendStream"
+        assert second.kwargs["json"]["ts"] == "1700000001.000200"
+        assert second.kwargs["json"]["markdown_text"].startswith("🔍 web_search")
+        # The adapter is now tracking this stream so subsequent edit_message
+        # calls will route through chat.appendStream.
+        assert "1700000001.000200" in adapter._thinking_streams
+
+    @pytest.mark.asyncio
+    async def test_edit_message_appends_delta(self, adapter):
+        """edit_message on a tracked stream sends only the new suffix."""
+        adapter._app.client.api_call = AsyncMock(side_effect=[
+            {"ok": True, "ts": "TS1"},  # startStream
+            {"ok": True},                # initial appendStream
+        ])
+        first = await adapter.send(
+            chat_id="C123",
+            content="🔍 web_search",
+            metadata=self._progress_metadata(),
+        )
+        assert first.success and first.message_id == "TS1"
+
+        adapter._app.client.api_call = AsyncMock(return_value={"ok": True})
+        result = await adapter.edit_message(
+            "C123", "TS1", "🔍 web_search\n📥 fetch_url",
+        )
+        assert result.success is True
+        adapter._app.client.api_call.assert_awaited_once()
+        call = adapter._app.client.api_call.await_args
+        assert call.kwargs["api_method"] == "chat.appendStream"
+        # The delta must be only the new line, not the whole accumulated text.
+        assert call.kwargs["json"]["markdown_text"] == "\n📥 fetch_url"
+        # chat_update must NOT be used while the stream is healthy.
+        adapter._app.client.chat_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unknown_method_falls_back_and_disables_channel(self, adapter):
+        """unknown_method => legacy chat.postMessage + permanent per-channel disable."""
+        adapter._app.client.api_call = AsyncMock(
+            return_value={"ok": False, "error": "unknown_method"},
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "POST_TS"},
+        )
+
+        result = await adapter.send(
+            chat_id="C123",
+            content="🔍 web_search...",
+            metadata=self._progress_metadata(),
+        )
+
+        assert result.success is True
+        assert result.message_id == "POST_TS"
+        adapter._app.client.chat_postMessage.assert_awaited()
+        assert adapter.is_thinking_steps_disabled("C123") == "unknown_method"
+
+        # Second turn: streaming API must not be retried — the disable cache
+        # short-circuits and we go straight to chat.postMessage.
+        adapter._app.client.api_call.reset_mock()
+        adapter._app.client.chat_postMessage.reset_mock()
+        adapter._app.client.chat_postMessage.return_value = {"ok": True, "ts": "POST_TS2"}
+        result2 = await adapter.send(
+            chat_id="C123",
+            content="next step",
+            metadata=self._progress_metadata(),
+        )
+        assert result2.success is True
+        adapter._app.client.api_call.assert_not_awaited()
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_missing_scope_records_disable(self, adapter):
+        """missing_scope is treated as a permanent disable for the channel."""
+        adapter._app.client.api_call = AsyncMock(
+            return_value={"ok": False, "error": "missing_scope"},
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "POST_TS"},
+        )
+
+        result = await adapter.send(
+            chat_id="C999",
+            content="🔍 search",
+            metadata=self._progress_metadata(),
+        )
+
+        assert result.success is True
+        assert adapter.is_thinking_steps_disabled("C999") == "missing_scope"
+
+    @pytest.mark.asyncio
+    async def test_finalize_closes_stream(self, adapter):
+        """finalize_thinking_stream must call chat.stopStream and clear state."""
+        adapter._app.client.api_call = AsyncMock(side_effect=[
+            {"ok": True, "ts": "TSF"},   # startStream
+            {"ok": True},                # initial appendStream
+        ])
+        await adapter.send(
+            chat_id="C42",
+            content="🔍 search",
+            metadata=self._progress_metadata(),
+        )
+        assert "TSF" in adapter._thinking_streams
+
+        adapter._app.client.api_call = AsyncMock(return_value={"ok": True})
+        ok = await adapter.finalize_thinking_stream("C42", "TSF")
+        assert ok is True
+        adapter._app.client.api_call.assert_awaited_once()
+        call = adapter._app.client.api_call.await_args
+        assert call.kwargs["api_method"] == "chat.stopStream"
+        assert call.kwargs["json"]["ts"] == "TSF"
+        # Stream state cleared so a stale edit can't keep streaming.
+        assert "TSF" not in adapter._thinking_streams
+
+    @pytest.mark.asyncio
+    async def test_finalize_unknown_message_id_is_noop(self, adapter):
+        """Calling finalize on a legacy chat.postMessage ts must not hit the API."""
+        adapter._app.client.api_call = AsyncMock()
+        ok = await adapter.finalize_thinking_stream("C42", "POST_TS")
+        assert ok is False
+        adapter._app.client.api_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_thread_ts_falls_back(self, adapter):
+        """The streaming API needs thread_ts; without it we fall back to legacy."""
+        adapter._app.client.api_call = AsyncMock()
+        adapter._app.client.chat_postMessage = AsyncMock(
+            return_value={"ok": True, "ts": "POST_TS"},
+        )
+        # No thread_id in metadata.
+        result = await adapter.send(
+            chat_id="C123",
+            content="🔍 search",
+            metadata={"slack_thinking_progress": True, "recipient_user_id": "U_USER"},
+        )
+        assert result.success is True
+        adapter._app.client.api_call.assert_not_awaited()
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+        # Channel is NOT permanently disabled — this is a per-call skip.
+        assert adapter.is_thinking_steps_disabled("C123") is None
+
+    @pytest.mark.asyncio
+    async def test_append_failure_clears_stream_and_falls_back_to_chat_update(self, adapter):
+        """A broken stream falls back to chat.update on the next edit."""
+        adapter._app.client.api_call = AsyncMock(side_effect=[
+            {"ok": True, "ts": "TSB"},   # startStream
+            {"ok": True},                # initial appendStream
+        ])
+        await adapter.send(
+            chat_id="C123",
+            content="🔍 search",
+            metadata=self._progress_metadata(),
+        )
+
+        # Stream is now broken — appendStream returns an error that means
+        # the message is no longer streamable.
+        adapter._app.client.api_call = AsyncMock(
+            return_value={"ok": False, "error": "message_not_in_streaming_state"},
+        )
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+
+        result = await adapter.edit_message(
+            "C123", "TSB", "🔍 search\n📥 fetch",
+        )
+        # The edit succeeded via chat.update fallback.
+        assert result.success is True
+        adapter._app.client.chat_update.assert_awaited_once()
+        assert "TSB" not in adapter._thinking_streams

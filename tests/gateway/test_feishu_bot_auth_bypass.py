@@ -1,18 +1,14 @@
-"""Regression guard for Feishu bot-sender authorization bypass.
-
-Mirrors tests/gateway/test_discord_bot_auth_bypass.py for Platform.FEISHU.
-Without the bypass in gateway/run.py, Feishu bot senders admitted by the
-adapter would be rejected at _is_user_authorized with "Unauthorized user"
-— same class of bug as Discord #4466.
-"""
+"""Regression guards for Feishu bot-sender authorization bypass."""
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
-from gateway.session import Platform, SessionSource
+from gateway.config import GatewayConfig, SessionResetPolicy
+from gateway.session import Platform, SessionSource, SessionStore
 
 
 @pytest.fixture(autouse=True)
@@ -111,3 +107,20 @@ def test_feishu_bot_bypass_does_not_leak_to_other_platforms(monkeypatch):
         is_bot=True,
     )
     assert runner._is_user_authorized(telegram_bot) is False
+
+
+def test_authorized_feishu_bot_source_can_idle_reset_group_session(tmp_path):
+    config = GatewayConfig(default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=1))
+    config.group_sessions_per_user = False
+    store = SessionStore(sessions_dir=tmp_path, config=config)
+    source = _make_feishu_bot_source("ou_peer_bot")
+
+    entry = store.get_or_create_session(source)
+    entry.updated_at = datetime.now() - timedelta(minutes=5)
+    store._save()
+
+    rebuilt = store.get_or_create_session(source)
+
+    assert rebuilt.was_auto_reset is True
+    assert rebuilt.auto_reset_reason == "idle"
+    assert rebuilt.session_id != entry.session_id

@@ -1820,6 +1820,44 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.source.chat_type, "group")
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_process_inbound_group_message_marks_other_bot_sender(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_group", "name": "Ops Group", "type": "group"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "u_peer_bot", "user_name": "Peer Bot", "user_id_alt": None}
+        )
+        message = SimpleNamespace(
+            chat_id="oc_group",
+            thread_id=None,
+            message_type="text",
+            content='{"text":"@Hermes continue"}',
+            message_id="om_group_bot_text",
+        )
+        sender_id = SimpleNamespace(open_id="ou_peer_bot", user_id="u_peer_bot", union_id=None)
+        data = SimpleNamespace(event=SimpleNamespace(message=message))
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=data,
+                message=message,
+                sender_id=sender_id,
+                chat_type="group",
+                message_id="om_group_bot_text",
+                is_bot=True,
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertTrue(event.source.is_bot)
+        self.assertEqual(event.source.user_id, "u_peer_bot")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_process_inbound_message_fetches_reply_to_text(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

@@ -93,6 +93,24 @@ def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
     assert server._load_enabled_toolsets() == ["plugin_demo"]
 
 
+def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}})
+
+    assert server._load_enabled_toolsets() == ["memory"]
+    err = capsys.readouterr().err
+    assert "mcp-off" in err
+    assert "using configured CLI toolsets" in err
+
+
 def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
 

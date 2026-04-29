@@ -254,6 +254,24 @@ def test_oneshot_accepts_plugin_toolset_after_discovery(monkeypatch):
     assert error is None
 
 
+def test_oneshot_rejects_disabled_mcp_toolset(monkeypatch, capsys):
+    import hermes_cli.config as config_mod
+
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    )
+
+    valid, error = _validate_explicit_toolsets("mcp-off")
+
+    assert valid is None
+    assert error == "hermes -z: --toolsets did not contain any valid toolsets.\n"
+    assert "mcp-off" in capsys.readouterr().err
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None

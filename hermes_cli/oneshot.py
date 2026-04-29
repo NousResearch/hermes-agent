@@ -86,10 +86,16 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     if unresolved:
         try:
             from hermes_cli.config import read_raw_config
+            from hermes_cli.tools_config import _parse_enabled_flag
 
             cfg = read_raw_config()
             mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
-            mcp_names = set(mcp_servers)
+            mcp_names = {
+                str(name)
+                for name, server_cfg in mcp_servers.items()
+                if isinstance(server_cfg, dict)
+                and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
+            }
         except Exception:
             mcp_names = set()
 

@@ -7920,7 +7920,7 @@ For more help on a command:
         "-t",
         "--toolsets",
         default=None,
-        help="Comma-separated toolsets to enable for the implicit chat session",
+        help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.",
     )
     parser.add_argument(
         "--resume",

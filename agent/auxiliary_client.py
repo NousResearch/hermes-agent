@@ -41,10 +41,57 @@ import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 
-from openai import OpenAI
+# NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
+# openai SDK pulls a large type tree (~240 ms cold, including responses/*,
+# graders/*). We expose `OpenAI` here as a thin proxy that imports the SDK on
+# first call and forwards, so:
+#   (a) the 15+ in-module `OpenAI(...)` construction sites work unchanged
+#       (Python's function-scope name lookup resolves `OpenAI` to the proxy
+#       object bound in module globals here, without triggering any import);
+#   (b) external code can still do `auxiliary_client.OpenAI` or
+#       `patch("agent.auxiliary_client.OpenAI", ...)` — tests see the proxy,
+#       and patch replaces the module attribute as usual;
+#   (c) `OpenAI` as a type annotation resolves at runtime to the proxy class
+#       (which is harmless — annotations aren't type-checked at runtime).
+# See tests/agent/test_auxiliary_client.py for patch patterns this supports.
+if TYPE_CHECKING:
+    from openai import OpenAI  # noqa: F401 — type hints only
+
+_OPENAI_CLS_CACHE: Optional[type] = None
+
+
+def _load_openai_cls() -> type:
+    """Import and cache ``openai.OpenAI``."""
+    global _OPENAI_CLS_CACHE
+    if _OPENAI_CLS_CACHE is None:
+        from openai import OpenAI as _cls
+        _OPENAI_CLS_CACHE = _cls
+    return _OPENAI_CLS_CACHE
+
+
+class _OpenAIProxy:
+    """Module-level proxy that looks like the ``openai.OpenAI`` class.
+
+    Forwards ``OpenAI(...)`` calls and ``isinstance(x, OpenAI)`` checks to the
+    real SDK class, importing the SDK lazily on first use.
+    """
+
+    __slots__ = ()
+
+    def __call__(self, *args, **kwargs):
+        return _load_openai_cls()(*args, **kwargs)
+
+    def __instancecheck__(self, obj):
+        return isinstance(obj, _load_openai_cls())
+
+    def __repr__(self):
+        return "<lazy openai.OpenAI proxy>"
+
+
+OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
@@ -181,6 +228,21 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
 }
+
+# Providers whose endpoint does not accept image input, even though the
+# provider's broader ecosystem has vision models available elsewhere.  When
+# `auxiliary.vision.provider: auto` sees one of these as the main provider,
+# it must skip straight to the aggregator chain instead of returning a client
+# that will 404 on every vision request.
+#
+# kimi-coding / kimi-coding-cn: the Kimi Coding Plan routes through
+# api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
+# describe as having no image_in capability. Vision lives on the separate
+# Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
+_PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
+    "kimi-coding",
+    "kimi-coding-cn",
+})
 
 # OpenRouter app attribution headers
 _OR_HEADERS = {
@@ -666,7 +728,9 @@ class _AnthropicCompletionsAdapter:
 
         response = self._client.messages.create(**anthropic_kwargs)
         _transport = get_transport("anthropic_messages")
-        _nr = _transport.normalize_response(response)
+        _nr = _transport.normalize_response(
+            response, strip_tool_prefix=self._is_oauth
+        )
 
         # ToolCall already duck-types as OpenAI shape (.type, .function.name,
         # .function.arguments) via properties, so no wrapping needed.
@@ -2485,6 +2549,19 @@ def resolve_vision_provider_client(
                         main_provider, default_model or resolved_model or main_model,
                     )
                     return _finalize(main_provider, sync_client, default_model)
+            elif main_provider in _PROVIDERS_WITHOUT_VISION:
+                # Kimi Coding Plan's /coding endpoint (Anthropic Messages wire)
+                # does not accept image input — Kimi's own docs say "Current
+                # model does not support image input, switch to a model with
+                # image_in capability" and vision lives on the separate Kimi
+                # Platform (api.moonshot.ai). Skip the main provider and fall
+                # through to the aggregator chain instead of returning a
+                # client that will 404 on every vision request (#17076).
+                logger.debug(
+                    "Vision auto-detect: skipping main provider %s (no "
+                    "vision support) — falling through to aggregator chain",
+                    main_provider,
+                )
             else:
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,

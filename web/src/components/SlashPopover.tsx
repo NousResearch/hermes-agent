@@ -1,4 +1,5 @@
 import type { GatewayClient } from "@/lib/gatewayClient";
+import { ListItem } from "@nous-research/ui";
 import { ChevronRight } from "lucide-react";
 import {
   forwardRef,
@@ -139,18 +140,14 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
           const active = i === selected;
 
           return (
-            <button
+            <ListItem
               key={`${it.text}-${i}`}
-              type="button"
+              active={active}
               role="option"
               aria-selected={active}
               onMouseEnter={() => setSelected(i)}
               onClick={() => apply(it)}
-              className={`w-full flex items-center gap-2 px-3 py-1.5 text-left cursor-pointer transition-colors ${
-                active
-                  ? "bg-primary/10 text-foreground"
-                  : "text-muted-foreground hover:bg-muted/60"
-              }`}
+              className="px-3 py-1.5"
             >
               <ChevronRight
                 className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
@@ -165,7 +162,7 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
                   {it.meta}
                 </span>
               )}
-            </button>
+            </ListItem>
           );
         })}
       </div>

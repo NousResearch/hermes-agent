@@ -1,6 +1,13 @@
 name: Nix Lockfile Fix
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'ui-tui/package-lock.json'
+      - 'ui-tui/package.json'
+      - 'web/package-lock.json'
+      - 'web/package.json'
   workflow_dispatch:
     inputs:
       pr_number:
@@ -19,9 +26,103 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ── Auto-fix on main ───────────────────────────────────────────────
+  # Fires when a push to main touches package.json or package-lock.json
+  # in ui-tui/ or web/. Runs fix-lockfiles --apply and pushes the hash
+  # update commit directly to main so Nix builds never stay broken.
+  #
+  # Safety invariants:
+  #   1. The fix commit only touches nix/*.nix files, which are NOT in
+  #      the paths filter above, so this cannot re-trigger itself.
+  #   2. An explicit file-whitelist check before commit aborts if
+  #      fix-lockfiles ever modifies unexpected files.
+  #   3. Job-level concurrency with cancel-in-progress: true ensures
+  #      back-to-back pushes collapse to the newest; ref: main checkout
+  #      always operates on the latest branch state.
+  #   4. Uses a GitHub App token (not GITHUB_TOKEN) so the fix commit
+  #      triggers downstream nix.yml verification.
+  auto-fix-main:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: auto-fix-main
+      cancel-in-progress: true
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@7bfa3a4717ef143a604ee0a99d859b8886a96d00  # v1.9.3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: ./.github/actions/nix-setup
+
+      - name: Apply lockfile hashes
+        id: apply
+        run: nix run .#fix-lockfiles -- --apply
+
+      - name: Commit & push
+        if: steps.apply.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Ensure only nix files were modified — prevents accidental
+          # self-triggering if fix-lockfiles ever touches package files.
+          unexpected="$(git diff --name-only | grep -Ev '^nix/(tui|web)\.nix$' || true)"
+          if [ -n "$unexpected" ]; then
+            echo "::error::Unexpected modified files: $unexpected"
+            exit 1
+          fi
+
+          # Record the base SHA before committing — used to detect package
+          # file changes if we need to rebase after a non-fast-forward push.
+          BASE_SHA="$(git rev-parse HEAD)"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add nix/tui.nix nix/web.nix
+          git commit -m "fix(nix): auto-refresh npm lockfile hashes" \
+            -m "Source: $GITHUB_SHA" \
+            -m "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+          # Retry push with rebase in case main advanced with an unrelated
+          # commit during the nix build. Without this, a non-fast-forward
+          # rejection silently loses the fix. If package files changed during
+          # the rebase, abort — a fresh auto-fix run will handle the new state.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "::warning::Push attempt $attempt failed (non-fast-forward?), rebasing…"
+            git fetch origin main
+
+            # If package files changed between our base and the new main,
+            # our computed hashes are stale. Abort and let the next triggered
+            # run recompute from the correct package-lock state.
+            pkg_changed="$(git diff --name-only "$BASE_SHA"..origin/main -- \
+              'ui-tui/package-lock.json' 'ui-tui/package.json' \
+              'web/package-lock.json' 'web/package.json' || true)"
+            if [ -n "$pkg_changed" ]; then
+              echo "::warning::Package files changed since hash computation — aborting; a fresh run will recompute"
+              exit 0
+            fi
+
+            git rebase origin/main
+          done
+          echo "::error::Failed to push after 3 rebase attempts"
+          exit 1
+
+  # ── PR fix (manual / checkbox) ─────────────────────────────────────
+  # Existing behavior: run on manual dispatch OR when a task-list
+  # checkbox in the sticky lockfile-check comment flips from [ ] to [x].
   fix:
-    # Run on manual dispatch OR when a task-list checkbox in the sticky
-    # lockfile-check comment flips from `[ ]` to `[x]`.
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'issue_comment'

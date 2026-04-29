@@ -1736,7 +1736,9 @@ def _(rid, params: dict) -> dict:
         if session is not None:
             _start_agent_build(sid, session)
 
-    threading.Timer(0.05, _deferred_build).start()
+    build_timer = threading.Timer(0.05, _deferred_build)
+    build_timer.daemon = True
+    build_timer.start()
 
     return _ok(
         rid,
@@ -1889,7 +1891,7 @@ def _(rid, params: dict) -> dict:
 
 @method("session.title")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    session, err = _sess_nowait(params, rid)
     if err:
         return err
     db = _get_db()
@@ -1952,13 +1954,16 @@ def _(rid, params: dict) -> dict:
 
 @method("session.usage")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
-    return err or _ok(rid, _get_usage(session["agent"]))
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    return _ok(rid, _get_usage(agent) if agent is not None else {"calls": 0, "input": 0, "output": 0, "total": 0})
 
 
 @method("session.history")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    session, err = _sess_nowait(params, rid)
     if err:
         return err
     history = list(session.get("history", []))

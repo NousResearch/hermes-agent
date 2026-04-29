@@ -908,7 +908,7 @@ class ProcessRegistry:
     # ----- Query Methods -----
 
     def is_completion_consumed(self, session_id: str) -> bool:
-        """Check if a completion notification was already consumed via wait/poll/log."""
+        """Check if a completion notification was already consumed via wait/log."""
         return session_id in self._completion_consumed
 
     def drain_notifications(self) -> "list[tuple[dict, str]]":
@@ -1038,7 +1038,11 @@ class ProcessRegistry:
             result["exit_code"] = session.exit_code
             result["completion_reason"] = session.completion_reason
             result["termination_source"] = session.termination_source
-            self._completion_consumed.add(session_id)
+            # NOTE: poll() is a read-only status query and deliberately does
+            # NOT mark the session _completion_consumed. wait()/read_log()
+            # represent actual output consumption and do mark it. Marking
+            # consumed here would let a status check silently suppress the
+            # notify_on_complete watcher's autonomous delivery turn (#10156).
         if session.detached:
             result["detached"] = True
             result["note"] = "Process recovered after restart -- output history unavailable"

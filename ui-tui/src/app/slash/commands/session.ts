@@ -133,7 +133,9 @@ export const sessionCommands: SlashCommand[] = [
     help: 'compress transcript',
     name: 'compress',
     run: (arg, ctx) => {
-      ctx.transcript.sys('compressing context...')
+      const focusSuffix = arg ? `, focus: "${arg}"` : ''
+
+      ctx.transcript.sys(`compressing context${focusSuffix}...`)
       ctx.gateway
         .rpc<SessionCompressResponse>('session.compress', {
           session_id: ctx.sid,
@@ -153,6 +155,22 @@ export const sessionCommands: SlashCommand[] = [
 
             if (r.usage) {
               patchUiState(state => ({ ...state, usage: { ...state.usage, ...r.usage } }))
+            }
+
+            if (r.summary?.headline) {
+              const icon = r.summary.noop ? '·' : '✓'
+
+              ctx.transcript.sys(`${icon} ${r.summary.headline}`)
+
+              if (r.summary.token_line) {
+                ctx.transcript.sys(`  ${r.summary.token_line}`)
+              }
+
+              if (r.summary.note) {
+                ctx.transcript.sys(`  ${r.summary.note}`)
+              }
+
+              return
             }
 
             if ((r.removed ?? 0) <= 0) {

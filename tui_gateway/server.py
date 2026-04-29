@@ -2040,19 +2040,50 @@ def _(rid, params: dict) -> dict:
         return _err(
             rid, 4009, "session busy — /interrupt the current turn before /compress"
         )
+    sid = params.get("session_id", "")
+    focus_topic = str(params.get("focus_topic", "") or "").strip()
     try:
+        from agent.manual_compression_feedback import summarize_manual_compression
+        from agent.model_metadata import estimate_messages_tokens_rough
+
         with session["history_lock"]:
-            removed, usage = _compress_session_history(
-                session, str(params.get("focus_topic", "") or "").strip()
+            before_messages = list(session.get("history", []))
+        before_count = len(before_messages)
+        before_tokens = (
+            estimate_messages_tokens_rough(before_messages) if before_count else 0
+        )
+
+        if before_count >= 4:
+            focus_suffix = f', focus: "{focus_topic}"' if focus_topic else ""
+            _status_update(
+                sid,
+                "compressing",
+                f"compressing {before_count} messages "
+                f"(~{before_tokens:,} tok){focus_suffix}…",
             )
+
+        with session["history_lock"]:
+            removed, usage = _compress_session_history(session, focus_topic)
             messages = list(session.get("history", []))
+        after_count = len(messages)
+        after_tokens = (
+            estimate_messages_tokens_rough(messages) if after_count else 0
+        )
+        summary = summarize_manual_compression(
+            before_messages, messages, before_tokens, after_tokens
+        )
         info = _session_info(session["agent"])
-        _emit("session.info", params.get("session_id", ""), info)
+        _emit("session.info", sid, info)
         return _ok(
             rid,
             {
                 "status": "compressed",
                 "removed": removed,
+                "before_messages": before_count,
+                "after_messages": after_count,
+                "before_tokens": before_tokens,
+                "after_tokens": after_tokens,
+                "summary": summary,
                 "usage": usage,
                 "info": info,
                 "messages": messages,

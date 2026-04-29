@@ -82,6 +82,110 @@ def test_curator_config_overrides(curator_env, monkeypatch):
     assert c.get_archive_after_days() == 60
 
 
+def test_run_llm_review_uses_curator_auxiliary_config(monkeypatch, curator_env):
+    c = curator_env["curator"]
+
+    calls = {}
+    resolved = {}
+    importlib.reload(c)
+
+    def fake_load_config():
+        return {
+            "model": {
+                "provider": "main-provider",
+                "default": "main-model",
+            },
+            "curator": {
+                "auxiliary": {
+                    "provider": "aux-provider",
+                    "model": "aux-model",
+                }
+            },
+        }
+
+    def fake_resolve_runtime_provider(requested, target_model=None, explicit_api_key=None, explicit_base_url=None):
+        calls.update({
+            "requested": requested,
+            "target_model": target_model,
+            "explicit_api_key": explicit_api_key,
+            "explicit_base_url": explicit_base_url,
+        })
+        return {
+            "provider": "resolved-provider",
+            "api_mode": "chat_completions",
+            "base_url": "https://example.test",
+            "api_key": "k",
+            "requested_provider": requested,
+        }
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            resolved.update(kwargs)
+
+        def run_conversation(self, user_message):
+            return {"final_response": "curator summary"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve_runtime_provider)
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+
+    result = c._run_llm_review("hello")
+
+    assert calls["requested"] == "aux-provider"
+    assert calls["target_model"] == "aux-model"
+    assert resolved["provider"] == "resolved-provider"
+    assert resolved["model"] == "aux-model"
+    assert result["model"] == "aux-model"
+    assert result["provider"] == "resolved-provider"
+
+
+def test_run_llm_review_uses_main_config_when_curator_auxiliary_missing(monkeypatch, curator_env):
+    c = curator_env["curator"]
+
+    calls = {}
+    importlib.reload(c)
+
+    def fake_load_config():
+        return {"model": {"provider": "main-provider", "default": "main-model"}}
+
+    def fake_resolve_runtime_provider(requested, target_model=None, explicit_api_key=None, explicit_base_url=None):
+        calls.update({
+            "requested": requested,
+            "target_model": target_model,
+            "explicit_api_key": explicit_api_key,
+            "explicit_base_url": explicit_base_url,
+        })
+        return {
+            "provider": "resolved-main",
+            "api_mode": "chat_completions",
+            "base_url": "https://example.test",
+            "api_key": "k",
+            "requested_provider": requested,
+        }
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            calls["agent_kwargs"] = kwargs
+
+        def run_conversation(self, user_message):
+            return {"final_response": "curator summary"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve_runtime_provider)
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+
+    c._run_llm_review("hello")
+
+    assert calls["requested"] == "main-provider"
+    assert calls["target_model"] == "main-model"
+    assert calls["agent_kwargs"]["provider"] == "resolved-main"
+    assert calls["agent_kwargs"]["model"] == "main-model"
 # ---------------------------------------------------------------------------
 # should_run_now
 # ---------------------------------------------------------------------------

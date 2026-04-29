@@ -759,8 +759,20 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         _cfg = load_config()
         _m = _cfg.get("model", {}) if isinstance(_cfg.get("model"), dict) else {}
+        _curator_cfg = (
+            _cfg.get("curator", {}) if isinstance(_cfg, dict) else {}
+        )
+        _curator_aux_cfg = (
+            _curator_cfg.get("auxiliary", {}) if isinstance(_curator_cfg, dict) else {}
+        )
         _provider = _m.get("provider") or "auto"
         _model_name = _m.get("default") or _m.get("model") or ""
+        _aux_provider = _curator_aux_cfg.get("provider")
+        _aux_model = _curator_aux_cfg.get("model")
+        if _aux_provider:
+            _provider = _aux_provider
+        if _aux_model:
+            _model_name = _aux_model
         _rp = resolve_runtime_provider(
             requested=_provider, target_model=_model_name
         )

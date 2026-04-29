@@ -1191,7 +1191,11 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
         # Non-Anthropic models (gpt-5.4, gemini-2.5, etc.) use dots
         # as part of their canonical names.  See issue #17171.
         _lower = model.lower()
-        if _lower.startswith("claude-") or _lower.startswith("anthropic/"):
+        if (
+            _lower.startswith("claude-")
+            or _lower.startswith("anthropic/")
+            or _lower.startswith("minimax-")
+        ):
             model = model.replace(".", "-")
     return model
 

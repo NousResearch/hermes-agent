@@ -1930,18 +1930,11 @@ def _(rid, params: dict) -> dict:
         "transport": current_transport() or _stdio_transport,
     }
 
-    # Return the lightweight session immediately so Ink can paint the composer
-    # + skeleton panel, then build the real AIAgent just after this response is
-    # flushed.  This keeps startup responsive while still hydrating tools/skills
-    # without requiring the user to submit a first prompt.
-    def _deferred_build() -> None:
-        session = _sessions.get(sid)
-        if session is not None:
-            _start_agent_build(sid, session)
-
-    build_timer = threading.Timer(0.05, _deferred_build)
-    build_timer.daemon = True
-    build_timer.start()
+    # Start the real AIAgent build immediately in its own worker. The worker
+    # is non-blocking, and scheduling it before returning closes the create →
+    # close race where a timer callback could observe the session already gone
+    # and skip the cleanup path entirely.
+    _start_agent_build(sid, _sessions[sid])
 
     return _ok(
         rid,

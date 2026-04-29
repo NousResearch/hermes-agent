@@ -48,6 +48,7 @@ from hermes_cli.config import cfg_get
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
+_RUNTIME_STATUS_HEARTBEAT_SECS = 60.0
 # Only auto-continue interrupted gateway turns while the interruption is fresh.
 # Stale tool-tail/resume markers can otherwise revive an unrelated old task
 # after a gateway restart when the user's next message starts new work.
@@ -962,6 +963,7 @@ class GatewayRunner:
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+        self._runtime_status_heartbeat_task: Optional[asyncio.Task] = None
 
 
     def _warn_if_docker_media_delivery_is_risky(self) -> None:
@@ -1526,6 +1528,34 @@ class GatewayRunner:
             )
         except Exception:
             pass
+
+    def _track_background_task(self, task: asyncio.Task) -> None:
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    def _start_runtime_status_heartbeat(self) -> None:
+        task = getattr(self, "_runtime_status_heartbeat_task", None)
+        if task is not None and not task.done():
+            return
+        task = asyncio.create_task(self._runtime_status_heartbeat())
+        self._runtime_status_heartbeat_task = task
+        self._track_background_task(task)
+
+    async def _runtime_status_heartbeat(
+        self,
+        interval: float = _RUNTIME_STATUS_HEARTBEAT_SECS,
+    ) -> None:
+        """Keep gateway_state.json fresh while the gateway is idle."""
+        while self._running:
+            await asyncio.sleep(interval)
+            if not self._running:
+                break
+            try:
+                self._update_runtime_status("running")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Runtime status heartbeat failed: %s", exc)
     
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
@@ -2314,8 +2344,7 @@ class GatewayRunner:
             await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
 
         task = asyncio.create_task(_run_restart())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        self._track_background_task(task)
         return True
 
     async def start(self) -> bool:
@@ -2600,6 +2629,7 @@ class GatewayRunner:
         
         self._running = True
         self._update_runtime_status("running")
+        self._start_runtime_status_heartbeat()
         
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
@@ -3114,6 +3144,7 @@ class GatewayRunner:
                     continue
                 _task.cancel()
             self._background_tasks.clear()
+            self._runtime_status_heartbeat_task = None
 
             self.adapters.clear()
             self._running_agents.clear()
@@ -7127,8 +7158,7 @@ class GatewayRunner:
         _task = asyncio.create_task(
             self._run_background_task(prompt, source, task_id)
         )
-        self._background_tasks.add(_task)
-        _task.add_done_callback(self._background_tasks.discard)
+        self._track_background_task(_task)
 
         preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
         return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'

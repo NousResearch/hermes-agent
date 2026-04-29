@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from unittest.mock import AsyncMock
 
@@ -61,6 +63,81 @@ class _SuccessfulAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id}
+
+
+@pytest.mark.asyncio
+async def test_runtime_status_heartbeat_refreshes_idle_gateway(monkeypatch, tmp_path):
+    """Regression: idle gateways must keep gateway_state.json freshness current."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(sessions_dir=tmp_path / "sessions")
+    runner = GatewayRunner(config)
+    calls = []
+    monkeypatch.setattr(runner, "_update_runtime_status", lambda state=None, reason=None: calls.append(state))
+
+    runner._running = True
+    task = asyncio.create_task(runner._runtime_status_heartbeat(interval=0.01))
+    await asyncio.sleep(0.035)
+    runner._running = False
+    await asyncio.wait_for(task, timeout=0.1)
+
+    assert calls
+    assert all(state == "running" for state in calls)
+
+
+@pytest.mark.asyncio
+async def test_runtime_status_heartbeat_survives_transient_status_update_error(monkeypatch, tmp_path):
+    """A transient write failure must not permanently kill the heartbeat."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(sessions_dir=tmp_path / "sessions")
+    runner = GatewayRunner(config)
+    attempts = 0
+    calls = []
+
+    def update(state=None, reason=None):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary status write failure")
+        calls.append(state)
+
+    monkeypatch.setattr(runner, "_update_runtime_status", update)
+
+    runner._running = True
+    task = asyncio.create_task(runner._runtime_status_heartbeat(interval=0.01))
+    await asyncio.sleep(0.04)
+    runner._running = False
+    await asyncio.wait_for(task, timeout=0.1)
+
+    assert attempts >= 2
+    assert calls
+    assert all(state == "running" for state in calls)
+
+
+@pytest.mark.asyncio
+async def test_runtime_status_heartbeat_start_is_idempotent_and_stop_clears_task(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=False, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    ok = await runner.start()
+    assert ok is True
+    first = runner._runtime_status_heartbeat_task
+    assert first is not None
+    assert first in runner._background_tasks
+
+    runner._start_runtime_status_heartbeat()
+    assert runner._runtime_status_heartbeat_task is first
+
+    await runner.stop()
+    await asyncio.sleep(0)
+
+    assert runner._runtime_status_heartbeat_task is None
+    assert first.cancelled() or first.done()
 
 
 @pytest.mark.asyncio

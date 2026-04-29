@@ -46,7 +46,10 @@ SUMMARY_PREFIX = (
     "summary — resume exactly from there. "
     "Respond ONLY to the latest user message "
     "that appears AFTER this summary. The current session state (files, "
-    "config, etc.) may reflect work described here — avoid repeating it:"
+    "config, etc.) may reflect work described here — avoid repeating it. "
+    "IMPORTANT: Your persistent memory block (if present) is authoritative "
+    "and supersedes this summary — check memory for facts about the user, "
+    "your identity, and prior context."
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 

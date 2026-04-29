@@ -8456,12 +8456,6 @@ class AIAgent:
             raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
             if raw_reasoning_content is not None:
                 msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
-            elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
-                # DeepSeek thinking mode requires reasoning_content on every
-                # assistant tool-call message. Without it, replaying the
-                # persisted message causes HTTP 400. Include empty string
-                # as a defensive compatibility fallback (refs #15250).
-                msg["reasoning_content"] = ""
 
         # Additive fallback (refs #16844, #16884). Streaming-only providers
         # (glm, MiniMax, gpt-5.x via aigw, Anthropic via openai-compat shims)
@@ -8567,7 +8561,31 @@ class AIAgent:
                 tool_calls.append(tc_dict)
             msg["tool_calls"] = tool_calls
 
+        # Strict echo-back providers (DeepSeek v4 thinking, Kimi/Moonshot
+        # thinking) reject any subsequent request whose history contains an
+        # assistant tool-call message without reasoning_content. The earlier
+        # SDK-attribute and streaming-text branches cover the common cases;
+        # this pad fills the gap when the SDK attribute is absent or null
+        # AND streaming captured no reasoning text. Refs #15250, #17400.
+        if (
+            assistant_message.tool_calls
+            and "reasoning_content" not in msg
+            and self._needs_thinking_reasoning_pad()
+        ):
+            msg["reasoning_content"] = ""
+
         return msg
+
+    def _needs_thinking_reasoning_pad(self) -> bool:
+        """Return True when the active provider enforces reasoning_content echo-back.
+
+        DeepSeek v4 thinking and Kimi/Moonshot thinking both reject replays of
+        assistant tool-call messages that omit ``reasoning_content``.
+        """
+        return (
+            self._needs_deepseek_tool_reasoning()
+            or self._needs_kimi_tool_reasoning()
+        )
 
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.
@@ -8611,10 +8629,7 @@ class AIAgent:
             api_msg["reasoning_content"] = existing
             return
 
-        needs_thinking_pad = (
-            self._needs_kimi_tool_reasoning()
-            or self._needs_deepseek_tool_reasoning()
-        )
+        needs_thinking_pad = self._needs_thinking_reasoning_pad()
 
         # 2. Cross-provider poisoned history (#15748): on DeepSeek/Kimi,
         # if the source turn has tool_calls AND a 'reasoning' field but no

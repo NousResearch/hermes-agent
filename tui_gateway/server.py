@@ -134,7 +134,7 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
 # to minutes (slash.exec, cli.exec, shell.exec, session.resume,
-# session.branch, skills.manage).  While they're running, inbound RPCs —
+# session.branch, session.compress, skills.manage).  While they're running, inbound RPCs —
 # notably approval.respond and session.interrupt — sit unread in the
 # stdin pipe.  We route only those slow handlers onto a small thread pool;
 # everything else stays on the main thread so ordering stays sane for the
@@ -145,6 +145,7 @@ _LONG_HANDLERS = frozenset(
         "browser.manage",
         "cli.exec",
         "session.branch",
+        "session.compress",
         "session.resume",
         "shell.exec",
         "skills.manage",

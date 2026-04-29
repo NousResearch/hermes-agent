@@ -1318,6 +1318,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "ILMU_API_KEY": {
+        "description": "Ilmu (YTL AI Labs) API key",
+        "prompt": "Ilmu API key",
+        "url": "https://ilmu.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ILMU_BASE_URL": {
+        "description": "Ilmu base URL override",
+        "prompt": "Ilmu base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "KIMI_API_KEY": {
         "description": "Kimi / Moonshot API key",
         "prompt": "Kimi API key",

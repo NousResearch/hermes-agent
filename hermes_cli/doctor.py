@@ -44,6 +44,7 @@ _PROVIDER_ENV_HINTS = (
     "GLM_API_KEY",
     "ZAI_API_KEY",
     "Z_AI_API_KEY",
+    "ILMU_API_KEY",
     "KIMI_API_KEY",
     "KIMI_CN_API_KEY",
     "GMI_API_KEY",
@@ -997,6 +998,7 @@ def run_doctor(args):
     # If supports_models_endpoint is False, we skip the health check and just show "configured"
     _apikey_providers = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
+        ("Ilmu (YTL AI Labs)", ("ILMU_API_KEY",),                          "https://api.ilmu.ai/v1/models",       "ILMU_BASE_URL", True),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
         ("StepFun Step Plan",   ("STEPFUN_API_KEY",),                           "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_BASE_URL", True),
         ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),

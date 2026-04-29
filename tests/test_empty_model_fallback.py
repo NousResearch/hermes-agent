@@ -118,3 +118,25 @@ class TestResolveGatewayModel:
     def test_string_model_config(self):
         from gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": "my-model"}) == "my-model"
+
+
+class TestIlmuProvider:
+    """Invariant checks for the ILMU built-in provider (YTL AI Labs)."""
+
+    def test_ilmu_is_registered(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        assert "ilmu" in _PROVIDER_MODELS
+        assert "ilmu" in PROVIDER_REGISTRY
+        assert len(_PROVIDER_MODELS["ilmu"]) >= 1
+
+    def test_ilmu_default_model_is_nemo_super(self):
+        from hermes_cli.models import get_default_model_for_provider
+        assert get_default_model_for_provider("ilmu") == "nemo-super"
+
+    def test_ilmu_provider_config_is_api_key_bearer(self):
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        cfg = PROVIDER_REGISTRY["ilmu"]
+        assert cfg.auth_type == "api_key"
+        assert cfg.inference_base_url.startswith("https://")
+        assert "ILMU_API_KEY" in cfg.api_key_env_vars

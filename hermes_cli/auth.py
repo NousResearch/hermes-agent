@@ -205,6 +205,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
+    "ilmu": ProviderConfig(
+        id="ilmu",
+        name="Ilmu (YTL AI Labs)",
+        auth_type="api_key",
+        inference_base_url="https://api.ilmu.ai/v1",
+        api_key_env_vars=("ILMU_API_KEY",),
+        base_url_env_var="ILMU_BASE_URL",
+    ),
     "kimi-coding": ProviderConfig(
         id="kimi-coding",
         name="Kimi / Moonshot",

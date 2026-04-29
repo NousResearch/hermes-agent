@@ -193,6 +193,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "minimax": 204800,
     # GLM
     "glm": 202752,
+    # Ilmu (YTL AI Labs) — OpenAI-compatible, 256K context for both models.
+    "nemo-super": 262144,
+    "ilmu-nemo-nano": 262144,
     # xAI Grok — xAI /v1/models does not return context_length metadata,
     # so these hardcoded fallbacks prevent Hermes from probing-down to
     # the default 128k when the user points at https://api.x.ai/v1

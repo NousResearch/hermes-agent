@@ -296,8 +296,13 @@ DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
 PLATFORM_HINTS = {
     "whatsapp": (
-        "You are on a text messaging communication platform, WhatsApp. "
-        "Please do not use markdown as it does not render. "
+        "You are on WhatsApp. Standard markdown is automatically converted "
+        "to WhatsApp-compatible formatting before delivery. Supported: '- ' "
+        "bullet lists, **bold** or __bold__, _italic_, ~~strikethrough~~, "
+        "`inline code`, ```code blocks```, and [links](url). Single "
+        "asterisks render as WhatsApp bold, so use _underscores_ when you "
+        "need italic. Markdown headers are converted to bold labels, but "
+        "prefer short labeled bullets for mobile reading. Avoid pipe tables. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. The file "
         "will be sent as a native WhatsApp attachment — images (.jpg, .png, "

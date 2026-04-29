@@ -807,6 +807,23 @@ class TestPromptBuilderConstants:
         # check that this test is calibrated correctly).
         assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
 
+    def test_whatsapp_hint_uses_supported_markdown_subset(self):
+        hint = PLATFORM_HINTS["whatsapp"]
+        lowered = hint.lower()
+        assert "do not use markdown" not in lowered
+        assert "standard markdown is automatically converted" in lowered
+        assert "'- '" in hint
+        assert "**bold**" in hint
+        assert "__bold__" in hint
+        assert "_italic_" in hint
+        assert "~~strikethrough~~" in hint
+        assert "[links](url)" in hint
+        assert "single asterisks render as whatsapp bold" in lowered
+        assert "markdown headers are converted to bold labels" in lowered
+        assert "do not use **double" not in lowered
+        assert "pipe tables" in lowered
+        assert "include MEDIA:" in hint
+
     def test_platform_hints_mattermost(self):
         hint = PLATFORM_HINTS["mattermost"]
         assert "Mattermost" in hint
@@ -1086,6 +1103,4 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-
 

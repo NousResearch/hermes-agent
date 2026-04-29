@@ -4982,8 +4982,8 @@ class AIAgent:
     def _get_tool_call_id_static(tc) -> str:
         """Extract call ID from a tool_call entry (dict or object)."""
         if isinstance(tc, dict):
-            return tc.get("id", "") or ""
-        return getattr(tc, "id", "") or ""
+            return tc.get("call_id", "") or tc.get("id", "") or ""
+        return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
 
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
 
@@ -10012,6 +10012,13 @@ class AIAgent:
                 sys_offset = 1 if effective_system else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
+
+            # Same safety net as the main loop: repair tool-call/result
+            # pairing before asking for a final summary.  Compression and
+            # session resume can leave a tool result whose parent assistant
+            # tool_call was summarized away; Responses API rejects that as
+            # "No tool call found for function call output".
+            api_messages = self._sanitize_api_messages(api_messages)
 
             # Same safety net as the main loop: drop thinking-only assistant
             # turns so Anthropic-family providers don't 400 the summary call.

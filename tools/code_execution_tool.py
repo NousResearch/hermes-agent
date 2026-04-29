@@ -488,6 +488,7 @@ def _get_or_create_env(task_id: str):
                 "container_disk": config.get("container_disk", 51200),
                 "container_persistent": config.get("container_persistent", True),
                 "docker_volumes": config.get("docker_volumes", []),
+                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
             }
 
         ssh_config = None
@@ -1309,10 +1310,20 @@ def _kill_process_group(proc, escalate: bool = False):
 
 
 def _load_config() -> dict:
-    """Load code_execution config from CLI_CONFIG if available."""
+    """Load code_execution config without importing the interactive CLI.
+
+    This helper is called while building the module-level execute_code schema
+    during tool discovery.  Importing ``cli`` here pulls prompt_toolkit/Rich and
+    a large chunk of the classic REPL onto every agent startup path, including
+    ``hermes --tui`` where it is never used.  Read the lightweight raw config
+    instead; the config layer already caches by (mtime, size), and an absent
+    key cleanly falls back to DEFAULT_EXECUTION_MODE.
+    """
     try:
-        from cli import CLI_CONFIG
-        return CLI_CONFIG.get("code_execution", {})
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config().get("code_execution", {})
+        return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}
 

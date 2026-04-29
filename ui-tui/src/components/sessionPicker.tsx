@@ -80,7 +80,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   })
 
   if (loading) {
-    return <Text color={t.color.dim}>loading sessions…</Text>
+    return <Text color={t.color.muted}>loading sessions…</Text>
   }
 
   if (err) {
@@ -95,7 +95,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   if (!items.length) {
     return (
       <Box flexDirection="column">
-        <Text color={t.color.dim}>no previous sessions</Text>
+        <Text color={t.color.muted}>no previous sessions</Text>
         <OverlayHint t={t}>Esc/q cancel</OverlayHint>
       </Box>
     )
@@ -105,11 +105,11 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
 
   return (
     <Box flexDirection="column" width={width}>
-      <Text bold color={t.color.amber}>
+      <Text bold color={t.color.accent}>
         Resume Session
       </Text>
 
-      {offset > 0 && <Text color={t.color.dim}> ↑ {offset} more</Text>}
+      {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
 
       {items.slice(offset, offset + VISIBLE).map((s, vi) => {
         const i = offset + vi
@@ -117,30 +117,35 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
 
         return (
           <Box key={s.id}>
-            <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected}>
+            <Text bold={selected} color={selected ? t.color.accent : t.color.muted} inverse={selected}>
               {selected ? '▸ ' : '  '}
             </Text>
 
             <Box width={30}>
-              <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected}>
+              <Text bold={selected} color={selected ? t.color.accent : t.color.muted} inverse={selected}>
                 {String(i + 1).padStart(2)}. [{s.id}]
               </Text>
             </Box>
 
             <Box width={30}>
-              <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected}>
+              <Text bold={selected} color={selected ? t.color.accent : t.color.muted} inverse={selected}>
                 ({s.message_count} msgs, {age(s.started_at)}, {s.source || 'tui'})
               </Text>
             </Box>
 
-            <Text bold={selected} color={selected ? t.color.amber : t.color.dim} inverse={selected} wrap="truncate-end">
+            <Text
+              bold={selected}
+              color={selected ? t.color.accent : t.color.muted}
+              inverse={selected}
+              wrap="truncate-end"
+            >
               {s.title || s.preview || '(untitled)'}
             </Text>
           </Box>
         )
       })}
 
-      {offset + VISIBLE < items.length && <Text color={t.color.dim}> ↓ {items.length - offset - VISIBLE} more</Text>}
+      {offset + VISIBLE < items.length && <Text color={t.color.muted}> ↓ {items.length - offset - VISIBLE} more</Text>}
       <OverlayHint t={t}>↑/↓ select · Enter resume · 1-9 quick · Esc/q cancel</OverlayHint>
     </Box>
   )

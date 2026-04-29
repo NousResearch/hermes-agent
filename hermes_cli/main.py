@@ -1821,6 +1821,7 @@ def select_provider_and_model(args=None):
         "nvidia",
         "ollama-cloud",
         "tencent-tokenhub",
+        "lmstudio",
     ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -2047,7 +2048,11 @@ def _aux_select_for_task(task: str) -> None:
 
     # Gather authenticated providers (has credentials + curated model list)
     try:
-        providers = list_authenticated_providers(current_provider=current_provider)
+        providers = list_authenticated_providers(
+            current_provider=current_provider,
+            current_model=current_model,
+            current_base_url=current_base_url,
+        )
     except Exception as exc:
         print(f"Could not detect authenticated providers: {exc}")
         providers = []
@@ -4377,6 +4382,7 @@ def _model_flow_bedrock(config, current_model=""):
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.auth import (
+        LMSTUDIO_NOAUTH_PLACEHOLDER,
         PROVIDER_REGISTRY,
         _prompt_model_selection,
         _save_model_choice,
@@ -4411,13 +4417,20 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             try:
                 import getpass
 
-                new_key = getpass.getpass(f"{key_env} (or Enter to cancel): ").strip()
+                if provider_id == "lmstudio":
+                    prompt = f"{key_env} (Enter for no-auth default {LMSTUDIO_NOAUTH_PLACEHOLDER!r}): "
+                else:
+                    prompt = f"{key_env} (or Enter to cancel): "
+                new_key = getpass.getpass(prompt).strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
             if not new_key:
-                print("Cancelled.")
-                return
+                if provider_id == "lmstudio":
+                    new_key = LMSTUDIO_NOAUTH_PLACEHOLDER
+                else:
+                    print("Cancelled.")
+                    return
             save_env_value(key_env, new_key)
             existing_key = new_key
             print("API key saved.")
@@ -4484,10 +4497,21 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                 print("  Tier check: could not verify (proceeding anyway).")
             print()
 
-    # Optional base URL override
+    # Optional base URL override.
+    # Precedence: env var → config.yaml model.base_url → registry default.
+    # Reading config.yaml prevents silently overwriting a saved remote URL
+    # (e.g. a remote LM Studio endpoint) with localhost when the user just
+    # presses Enter at the prompt below.
     current_base = ""
     if base_url_env:
         current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
+    if not current_base:
+        try:
+            _m = load_config().get("model") or {}
+            if str(_m.get("provider") or "").strip().lower() == provider_id:
+                current_base = str(_m.get("base_url") or "").strip()
+        except Exception:
+            pass
     effective_base = current_base or pconfig.inference_base_url
 
     try:
@@ -4509,8 +4533,22 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     #   2. Curated static fallback list (offline insurance)
     #   3. Live /models endpoint probe (small providers without models.dev data)
     #
-    # Ollama Cloud: dedicated merged discovery (live API + models.dev + disk cache)
-    if provider_id == "ollama-cloud":
+    # LM Studio: live /api/v1/models probe (no models.dev catalog).
+    # Ollama Cloud: merged discovery (live API + models.dev + disk cache).
+    if provider_id == "lmstudio":
+        from hermes_cli.auth import AuthError
+        from hermes_cli.models import fetch_lmstudio_models
+
+        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+        try:
+            model_list = fetch_lmstudio_models(api_key=api_key_for_probe, base_url=effective_base)
+        except AuthError as exc:
+            print(f"  LM Studio rejected the request: {exc}")
+            print("  Set LM_API_KEY (or update it) to match the server's bearer token.")
+            model_list = []
+        if model_list:
+            print(f"  Found {len(model_list)} model(s) from LM Studio")
+    elif provider_id == "ollama-cloud":
         from hermes_cli.models import fetch_ollama_cloud_models
 
         api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
@@ -4732,7 +4770,6 @@ def _model_flow_anthropic(config, current_model=""):
             read_claude_code_credentials,
             is_claude_code_token_valid,
             _is_oauth_token,
-            _resolve_claude_code_token_from_credentials,
         )
 
         cc_creds = read_claude_code_credentials()
@@ -7137,7 +7174,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     print(
                                         f"  ⚠ {svc_name} died after restart, retrying..."
                                     )
-                                    retry = subprocess.run(
+                                    subprocess.run(
                                         scope_cmd + ["restart", svc_name],
                                         capture_output=True,
                                         text=True,
@@ -9192,6 +9229,26 @@ Examples:
             cmd_info["setup_fn"](plugin_parser)
     except Exception as _exc:
         logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
+
+    # =========================================================================
+    # curator command — background skill maintenance
+    # =========================================================================
+    curator_parser = subparsers.add_parser(
+        "curator",
+        help="Background skill maintenance (curator) — status, run, pause, pin",
+        description=(
+            "The curator is an auxiliary-model background task that "
+            "periodically reviews agent-created skills, prunes stale ones, "
+            "consolidates overlaps, and archives obsolete skills. "
+            "Bundled and hub-installed skills are never touched. "
+            "Archives are recoverable; auto-deletion never happens."
+        ),
+    )
+    try:
+        from hermes_cli.curator import register_cli as _register_curator_cli
+        _register_curator_cli(curator_parser)
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("curator CLI wiring failed: %s", _exc)
 
     # =========================================================================
     # memory command

@@ -7,7 +7,6 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Optional
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
@@ -390,6 +389,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
+                    "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 }
 
             ssh_config = None

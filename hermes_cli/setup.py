@@ -131,6 +131,7 @@ def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
 
 # Import config helpers
 from hermes_cli.config import (
+    cfg_get,
     DEFAULT_CONFIG,
     get_hermes_home,
     get_config_path,
@@ -441,7 +442,7 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Image Generation", False, "FAL_KEY or OPENAI_API_KEY"))
 
     # TTS — show configured provider
-    tts_provider = config.get("tts", {}).get("provider", "edge")
+    tts_provider = cfg_get(config, "tts", "provider", default="edge")
     if subscription_features.tts.managed_by_nous:
         tool_status.append(("Text-to-Speech (OpenAI via Nous subscription)", True, None))
     elif tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
@@ -480,7 +481,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
     if subscription_features.modal.managed_by_nous:
         tool_status.append(("Modal Execution (Nous subscription)", True, None))
-    elif config.get("terminal", {}).get("backend") == "modal":
+    elif cfg_get(config, "terminal", "backend") == "modal":
         if subscription_features.modal.direct_override:
             tool_status.append(("Modal Execution (direct Modal)", True, None))
         else:
@@ -711,8 +712,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     _m = config.get("model")
     if isinstance(_m, dict):
         selected_provider = _m.get("provider")
-
-    nous_subscription_selected = selected_provider == "nous"
 
     # ── Same-provider fallback & rotation setup (full setup only) ──
     if not quick and _supports_same_provider_pool_setup(selected_provider):
@@ -1181,7 +1180,7 @@ def setup_terminal_backend(config: dict):
     print_info(f"   Guide: {_DOCS_BASE}/developer-guide/environments")
     print()
 
-    current_backend = config.get("terminal", {}).get("backend", "local")
+    current_backend = cfg_get(config, "terminal", "backend", default="local")
     is_linux = _platform.system() == "Linux"
 
     # Build backend choices with descriptions
@@ -1230,7 +1229,7 @@ def setup_terminal_backend(config: dict):
         print_info(
             "  the agent starts. CLI mode always starts in the current directory."
         )
-        current_cwd = config.get("terminal", {}).get("cwd", "")
+        current_cwd = cfg_get(config, "terminal", "cwd", default="")
         cwd = prompt("  Messaging working directory", current_cwd or str(Path.home()))
         if cwd:
             config["terminal"]["cwd"] = cwd
@@ -1261,9 +1260,7 @@ def setup_terminal_backend(config: dict):
             print_info(f"Docker found: {docker_bin}")
 
         # Docker image
-        current_image = config.get("terminal", {}).get(
-            "docker_image", "nikolaik/python-nodejs:python3.11-nodejs20"
-        )
+        current_image = cfg_get(config, "terminal", "docker_image", default="nikolaik/python-nodejs:python3.11-nodejs20")
         image = prompt("  Docker image", current_image)
         config["terminal"]["docker_image"] = image
         save_env_value("TERMINAL_DOCKER_IMAGE", image)
@@ -1283,9 +1280,7 @@ def setup_terminal_backend(config: dict):
         else:
             print_info(f"Found: {sing_bin}")
 
-        current_image = config.get("terminal", {}).get(
-            "singularity_image", "docker://nikolaik/python-nodejs:python3.11-nodejs20"
-        )
+        current_image = cfg_get(config, "terminal", "singularity_image", default="docker://nikolaik/python-nodejs:python3.11-nodejs20")
         image = prompt("  Container image", current_image)
         config["terminal"]["singularity_image"] = image
         save_env_value("TERMINAL_SINGULARITY_IMAGE", image)
@@ -1304,7 +1299,7 @@ def setup_terminal_backend(config: dict):
             get_nous_subscription_features(config).nous_auth_present
             and is_managed_tool_gateway_ready("modal")
         )
-        modal_mode = normalize_modal_mode(config.get("terminal", {}).get("modal_mode"))
+        modal_mode = normalize_modal_mode(cfg_get(config, "terminal", "modal_mode"))
         use_managed_modal = False
         if managed_modal_available:
             modal_choices = [
@@ -1441,9 +1436,7 @@ def setup_terminal_backend(config: dict):
                 print_success("    Configured")
 
         # Daytona image
-        current_image = config.get("terminal", {}).get(
-            "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
-        )
+        current_image = cfg_get(config, "terminal", "daytona_image", default="nikolaik/python-nodejs:python3.11-nodejs20")
         image = prompt("  Sandbox image", current_image)
         config["terminal"]["daytona_image"] = image
         save_env_value("TERMINAL_DAYTONA_IMAGE", image)
@@ -1547,7 +1540,7 @@ def setup_agent_settings(config: dict):
 
     # ── Max Iterations ──
     current_max = get_env_value("HERMES_MAX_ITERATIONS") or str(
-        config.get("agent", {}).get("max_turns", 90)
+        cfg_get(config, "agent", "max_turns", default=90)
     )
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
@@ -1575,7 +1568,7 @@ def setup_agent_settings(config: dict):
     print_info("  all     — Show every tool call with a short preview")
     print_info("  verbose — Full args, results, and debug logs")
 
-    current_mode = config.get("display", {}).get("tool_progress", "all")
+    current_mode = cfg_get(config, "display", "tool_progress", default="all")
     mode = prompt("Tool progress mode", current_mode)
     if mode.lower() in ("off", "new", "all", "verbose"):
         if "display" not in config:
@@ -1595,7 +1588,7 @@ def setup_agent_settings(config: dict):
 
     config.setdefault("compression", {})["enabled"] = True
 
-    current_threshold = config.get("compression", {}).get("threshold", 0.50)
+    current_threshold = cfg_get(config, "compression", "threshold", default=0.50)
     threshold_str = prompt("Compression threshold (0.5-0.95)", str(current_threshold))
     try:
         threshold = float(threshold_str)
@@ -2603,11 +2596,11 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return "configured"
 
     elif section_key == "terminal":
-        backend = config.get("terminal", {}).get("backend", "local")
+        backend = cfg_get(config, "terminal", "backend", default="local")
         return f"backend: {backend}"
 
     elif section_key == "agent":
-        max_turns = config.get("agent", {}).get("max_turns", 90)
+        max_turns = cfg_get(config, "agent", "max_turns", default=90)
         return f"max turns: {max_turns}"
 
     elif section_key == "gateway":

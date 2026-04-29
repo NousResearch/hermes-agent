@@ -41,6 +41,7 @@ from typing import Any, Dict, List
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -913,7 +914,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
         self._llm_base_url = self._config.get("llm_base_url", "")
 
-        banks = self._config.get("banks", {}).get("hermes", {})
+        banks = cfg_get(self._config, "banks", "hermes", default={})
         static_bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
         self._bank_id_template = self._config.get("bank_id_template", "") or ""
         self._bank_id = _resolve_bank_id_template(
@@ -1323,6 +1324,51 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error(f"Failed to reflect: {e}")
 
         return tool_error(f"Unknown tool: {tool_name}")
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Refresh cached per-session state when the agent rotates session_id.
+
+        Fires on /resume, /branch, /reset, /new, and context compression.
+        Without this hook, initialize()-cached state (``_session_id``,
+        ``_document_id``, ``_session_turns``, ``_turn_counter``) would keep
+        pointing at the previous session and writes would land in the wrong
+        document. See hermes-agent#6672.
+
+        Always update ``_session_id`` so metadata and tags on subsequent
+        retains reflect the active session. Always mint a fresh
+        ``_document_id`` so the new session's retain doesn't overwrite the
+        old session's document on vectorize-io/hindsight#1303. Always clear
+        the accumulated batch buffers (``_session_turns``, ``_turn_counter``,
+        ``_turn_index``) — even for /resume and /branch, the new session's
+        batching must start from zero so an in-flight retain doesn't flush
+        under the wrong ``_document_id``.
+
+        ``parent_session_id`` is recorded for lineage tags on future retains.
+        ``reset`` is accepted but not needed for Hindsight's state model —
+        buffer clearing is correct for every session switch, not only /reset.
+        """
+        new_id = str(new_session_id or "").strip()
+        if not new_id:
+            return
+        if parent_session_id:
+            self._parent_session_id = str(parent_session_id).strip()
+        self._session_id = new_id
+        start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self._document_id = f"{self._session_id}-{start_ts}"
+        self._session_turns = []
+        self._turn_counter = 0
+        self._turn_index = 0
+        logger.debug(
+            "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
+            self._session_id, self._parent_session_id, reset, self._document_id,
+        )
 
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: waiting for background threads")

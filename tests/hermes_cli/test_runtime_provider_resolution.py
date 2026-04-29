@@ -240,6 +240,117 @@ def test_resolve_runtime_provider_ai_gateway(monkeypatch):
     assert resolved["requested_provider"] == "ai-gateway"
 
 
+def test_resolve_runtime_provider_lmstudio_uses_token_when_present(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "lmstudio",
+            "base_url": "http://127.0.0.1:1234/v1",
+            "default": "publisher/model-a",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": "lmstudio",
+            "api_key": "lm-token",
+            "base_url": "http://127.0.0.1:1234/v1",
+            "source": "LM_API_KEY",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="lmstudio")
+
+    assert resolved["provider"] == "lmstudio"
+    assert resolved["api_key"] == "lm-token"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "http://127.0.0.1:1234/v1"
+
+
+def test_resolve_runtime_provider_lmstudio_honors_saved_base_url(monkeypatch):
+    """Pre-existing configs with `provider: lmstudio` + custom base_url must keep working.
+
+    Before this PR, `lmstudio` aliased to `custom`, so a user with a remote
+    LM Studio (e.g. lab box) could write `provider: "lmstudio"` plus
+    `base_url: "http://192.168.1.10:1234/v1"` and the custom path honored it.
+    Now that `lmstudio` is first-class with `inference_base_url=127.0.0.1`,
+    the saved `base_url` from `model_cfg` must still win — otherwise this
+    PR is a silent breaking change for those users.
+    """
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+    monkeypatch.delenv("LM_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "lmstudio",
+            "base_url": "http://192.168.1.10:1234/v1",
+            "default": "qwen/qwen3-coder-30b",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    # Don't mock resolve_api_key_provider_credentials — exercise the real
+    # function so we test the end-to-end precedence between model_cfg and
+    # the pconfig default.
+
+    resolved = rp.resolve_runtime_provider(requested="lmstudio")
+
+    assert resolved["provider"] == "lmstudio"
+    assert resolved["api_mode"] == "chat_completions"
+    # The saved base_url must NOT be shadowed by the 127.0.0.1 default.
+    assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
+    # No-auth LM Studio: missing LM_API_KEY substitutes the placeholder.
+    assert resolved["api_key"] == "dummy-lm-api-key"
+
+
+def test_resolve_runtime_provider_lmstudio_saved_base_url_wins_over_env(monkeypatch):
+    """Saved model.base_url takes precedence over LM_BASE_URL env var.
+
+    This matches the established contract for all api_key providers: the
+    explicit config value (model.base_url) wins over the env-derived
+    default.  Users who saved a remote LM Studio URL must not have it
+    silently overridden by a stale shell variable.
+    """
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+    monkeypatch.setenv("LM_BASE_URL", "http://override.local:9999/v1")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "lmstudio",
+            "base_url": "http://192.168.1.10:1234/v1",
+            "default": "qwen/qwen3-coder-30b",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="lmstudio")
+
+    assert resolved["provider"] == "lmstudio"
+    assert resolved["api_mode"] == "chat_completions"
+    # Saved config base_url wins over env var (standard contract).
+    assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
+    assert resolved["api_key"] == "dummy-lm-api-key"
+
+
 def test_resolve_runtime_provider_ai_gateway_explicit_override_skips_pool(monkeypatch):
     def _unexpected_pool(provider):
         raise AssertionError(f"load_pool should not be called for {provider}")
@@ -1235,6 +1346,21 @@ def test_resolve_provider_openrouter_unchanged():
     """resolve_provider('openrouter') must still return 'openrouter'."""
     from hermes_cli.auth import resolve_provider
     assert resolve_provider("openrouter") == "openrouter"
+
+
+def test_resolve_provider_lmstudio_returns_lmstudio(monkeypatch):
+    """resolve_provider('lmstudio') must return 'lmstudio', not 'custom'.
+
+    Regression for the alias-map bug where 'lmstudio' was rewritten to
+    'custom' before the PROVIDER_REGISTRY lookup, bypassing the first-class
+    LM Studio provider entirely at runtime.
+    """
+    from hermes_cli.auth import resolve_provider
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert resolve_provider("lmstudio") == "lmstudio"
+    assert resolve_provider("lm-studio") == "lmstudio"
+    assert resolve_provider("lm_studio") == "lmstudio"
 
 
 def test_custom_provider_runtime_preserves_provider_name(monkeypatch):

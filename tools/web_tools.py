@@ -45,9 +45,47 @@ import logging
 import os
 import re
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx
-from firecrawl import Firecrawl
+# NOTE: `from firecrawl import Firecrawl` is deliberately NOT at module top —
+# the SDK pulls ~200 ms of imports (httpcore, firecrawl.v1/v2 type trees) and
+# we only need it when the backend is actually "firecrawl". We expose
+# ``Firecrawl`` as a thin proxy that imports the SDK on first call/
+# isinstance check, so both (a) the in-module ``Firecrawl(...)`` construction
+# site in _get_firecrawl_client() works unchanged, and (b) tests using
+# ``patch("tools.web_tools.Firecrawl", ...)`` keep working.
+if TYPE_CHECKING:
+    from firecrawl import Firecrawl  # noqa: F401 — type hints only
+
+_FIRECRAWL_CLS_CACHE: Optional[type] = None
+
+
+def _load_firecrawl_cls() -> type:
+    """Import and cache ``firecrawl.Firecrawl``."""
+    global _FIRECRAWL_CLS_CACHE
+    if _FIRECRAWL_CLS_CACHE is None:
+        from firecrawl import Firecrawl as _cls
+        _FIRECRAWL_CLS_CACHE = _cls
+    return _FIRECRAWL_CLS_CACHE
+
+
+class _FirecrawlProxy:
+    """Module-level proxy that looks like ``firecrawl.Firecrawl`` but imports lazily."""
+
+    __slots__ = ()
+
+    def __call__(self, *args, **kwargs):
+        return _load_firecrawl_cls()(*args, **kwargs)
+
+    def __instancecheck__(self, obj):
+        return isinstance(obj, _load_firecrawl_cls())
+
+    def __repr__(self):
+        return "<lazy firecrawl.Firecrawl proxy>"
+
+
+Firecrawl = _FirecrawlProxy()
+
 from agent.auxiliary_client import (
     async_call_llm,
     extract_content_or_reasoning,
@@ -236,6 +274,7 @@ def _get_firecrawl_client():
     if _firecrawl_client is not None and _firecrawl_client_config == client_config:
         return _firecrawl_client
 
+    # Uses the module-level `Firecrawl` name (lazy proxy at module top).
     _firecrawl_client = Firecrawl(**kwargs)
     _firecrawl_client_config = client_config
     return _firecrawl_client

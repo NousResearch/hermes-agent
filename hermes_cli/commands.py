@@ -115,6 +115,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command"),
+    CommandDef("footer", "Toggle gateway runtime-metadata footer on final replies",
+               "Configuration", args_hint="[on|off|status]",
+               subcommands=("on", "off", "status")),
     CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
                "Configuration"),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
@@ -125,6 +128,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("normal", "fast", "status", "on", "off")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]"),
+    CommandDef("indicator", "Pick the TUI busy-indicator style", "Configuration",
+               cli_only=True, args_hint="[kaomoji|emoji|unicode|ascii]",
+               subcommands=("kaomoji", "emoji", "unicode", "ascii")),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
     CommandDef("busy", "Control what Enter does while Hermes is working", "Configuration",
@@ -142,6 +148,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
+    CommandDef("curator", "Background skill maintenance (status, run, pin, archive)",
+               "Tools & Skills", args_hint="[subcommand]",
+               subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore")),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
@@ -943,6 +952,42 @@ def slack_subcommand_map() -> dict[str, str]:
 # Autocomplete
 # ---------------------------------------------------------------------------
 
+
+# Per-process cache for /model<space> LM Studio autocomplete. Probing on
+# every keystroke would block the UI; a short TTL keeps it live without
+# hammering the server.
+_LMSTUDIO_COMPLETION_CACHE: tuple[float, list[str]] | None = None
+
+
+def _lmstudio_completion_models() -> list[str]:
+    """Locally-loaded LM Studio models for /model autocomplete (cached, gated)."""
+    global _LMSTUDIO_COMPLETION_CACHE
+    # Gate: don't probe 127.0.0.1 on every keystroke for users who don't use LM Studio.
+    if not (os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL")):
+        try:
+            from hermes_cli.auth import _load_auth_store
+            store = _load_auth_store() or {}
+            if "lmstudio" not in (store.get("providers") or {}) \
+               and "lmstudio" not in (store.get("credential_pool") or {}):
+                return []
+        except Exception:
+            return []
+    now = time.time()
+    if _LMSTUDIO_COMPLETION_CACHE and (now - _LMSTUDIO_COMPLETION_CACHE[0]) < 30.0:
+        return _LMSTUDIO_COMPLETION_CACHE[1]
+    try:
+        from hermes_cli.models import fetch_lmstudio_models
+        models = fetch_lmstudio_models(
+            api_key=os.environ.get("LM_API_KEY", ""),
+            base_url=os.environ.get("LM_BASE_URL") or "http://127.0.0.1:1234/v1",
+            timeout=0.8,
+        )
+    except Exception:
+        models = []
+    _LMSTUDIO_COMPLETION_CACHE = (now, models)
+    return models
+
+
 class SlashCommandCompleter(Completer):
     """Autocomplete for built-in slash commands, subcommands, and skill commands."""
 
@@ -1366,6 +1411,19 @@ class SlashCommandCompleter(Completer):
                     )
         except Exception:
             pass
+        # LM Studio: surface locally-loaded models. Gated on the user actually
+        # having LM Studio configured (env var or auth-store entry) so we
+        # don't probe 127.0.0.1 on every keystroke for users who don't use it.
+        for name in _lmstudio_completion_models():
+            if name in seen:
+                continue
+            if name.startswith(sub_lower) and name != sub_lower:
+                yield Completion(
+                    name,
+                    start_position=-len(sub_text),
+                    display=name,
+                    display_meta="LM Studio",
+                )
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor

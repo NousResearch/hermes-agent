@@ -29,6 +29,28 @@ def _install_sidecar_publisher() -> None:
     )
 
 
+# How long to wait for orderly shutdown (atexit + finalisers) before
+# falling back to ``os._exit(0)`` so a wedged worker mid-flush can't
+# strand the process.  1s covers the gateway's own shutdown work
+# (thread-pool drain + session finalize) on every machine we've
+# tested; override via ``HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S`` if a
+# slower environment needs more headroom (e.g. encrypted disks
+# flushing checkpoints) and accept that a longer grace also means a
+# longer wait when shutdown actually deadlocks.
+_DEFAULT_SHUTDOWN_GRACE_S = 1.0
+
+
+def _shutdown_grace_seconds() -> float:
+    raw = (os.environ.get("HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S") or "").strip()
+    if not raw:
+        return _DEFAULT_SHUTDOWN_GRACE_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_SHUTDOWN_GRACE_S
+    return value if value > 0 else _DEFAULT_SHUTDOWN_GRACE_S
+
+
 def _log_signal(signum: int, frame) -> None:
     """Capture WHICH thread and WHERE a termination signal hit us.
 
@@ -38,6 +60,15 @@ def _log_signal(signum: int, frame) -> None:
     handler the gateway-exited banner in the TUI has no trace — the
     crash log never sees a Python exception because the kernel reaps
     the process before the interpreter runs anything.
+
+    Termination semantics: ``sys.exit(0)`` here used to race the worker
+    pool — a thread holding ``_stdout_lock`` mid-flush would block the
+    interpreter shutdown indefinitely.  We now log the stack, give the
+    process the configured shutdown grace
+    (``HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S``, default
+    ``_DEFAULT_SHUTDOWN_GRACE_S``) to drain naturally on a background
+    thread, and fall back to ``os._exit(0)`` so a wedged write/flush
+    can never strand the process.
     """
     name = {
         signal.SIGPIPE: "SIGPIPE",
@@ -62,7 +93,31 @@ def _log_signal(signum: int, frame) -> None:
     except Exception:
         pass
     print(f"[gateway-signal] {name}", file=sys.stderr, flush=True)
-    sys.exit(0)
+
+    import threading as _threading
+
+    def _hard_exit() -> None:
+        # If a worker thread is still mid-flush on a half-closed pipe,
+        # ``sys.exit(0)`` would wait forever for it to drop the GIL on
+        # interpreter shutdown.  ``os._exit`` skips atexit handlers but
+        # breaks the deadlock.  The crash log + stderr line above are
+        # the forensic trail.
+        os._exit(0)
+
+    timer = _threading.Timer(_shutdown_grace_seconds(), _hard_exit)
+    timer.daemon = True
+    timer.start()
+
+    try:
+        sys.exit(0)
+    except SystemExit:
+        # Re-raise so the main-thread interpreter unwinds and runs
+        # atexit + finalisers inside the grace window.  Python signal
+        # handlers always run on the main thread, but a worker thread
+        # holding ``_stdout_lock`` mid-flush can keep that unwind
+        # waiting indefinitely; the daemon timer above is the safety
+        # net for that exact case.
+        raise
 
 
 # SIGPIPE: ignore, don't exit. The old SIG_DFL killed the process
@@ -110,11 +165,29 @@ def main():
     # a model_tools.py module-level side effect; moved to explicit
     # startup calls to avoid freezing the gateway's loop on lazy import
     # (#16856).
+    #
+    # Cold-start guard: importing ``tools.mcp_tool`` transitively pulls the
+    # full MCP SDK (mcp, pydantic, httpx, jsonschema, starlette parsers —
+    # ~200ms on macOS), which runs on the TUI's critical path before
+    # ``gateway.ready`` can be emitted.  The overwhelming majority of users
+    # have no ``mcp_servers`` configured, in which case every byte of that
+    # import is wasted.  Check the config first (cheap — it's already been
+    # loaded once by ``_config_mtime`` elsewhere) and only pay the import
+    # cost when there's actually MCP work to do.
     try:
-        from tools.mcp_tool import discover_mcp_tools
-        discover_mcp_tools()
+        from hermes_cli.config import read_raw_config
+        _mcp_servers = (read_raw_config() or {}).get("mcp_servers")
+        _has_mcp_servers = isinstance(_mcp_servers, dict) and len(_mcp_servers) > 0
     except Exception:
-        pass
+        # Be conservative: if we can't decide, fall back to the old
+        # behaviour and let the discovery path handle its own errors.
+        _has_mcp_servers = True
+    if _has_mcp_servers:
+        try:
+            from tools.mcp_tool import discover_mcp_tools
+            discover_mcp_tools()
+        except Exception:
+            pass
 
     if not write_json({
         "jsonrpc": "2.0",

@@ -27,7 +27,6 @@ import time
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
-    as_completed,
 )
 from typing import Any, Dict, List, Optional
 
@@ -2367,7 +2366,14 @@ DELEGATE_TASK_SCHEMA = {
         "WHEN NOT TO USE (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
-        "- Tasks needing user interaction -> subagents cannot use clarify\n\n"
+        "- Tasks needing user interaction -> subagents cannot use clarify\n"
+        "- Durable long-running work that must outlive the current turn -> "
+        "use cronjob (action='create') or terminal(background=True, "
+        "notify_on_complete=True) instead. delegate_task runs SYNCHRONOUSLY "
+        "inside the parent turn: if the parent is interrupted (user sends a "
+        "new message, /stop, /new) the child is cancelled with status="
+        "'interrupted' and its work is discarded. Children cannot continue "
+        "in the background.\n\n"
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"

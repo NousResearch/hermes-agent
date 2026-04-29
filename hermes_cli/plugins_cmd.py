@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -519,7 +520,7 @@ def _get_disabled_set() -> set:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        disabled = config.get("plugins", {}).get("disabled", [])
+        disabled = cfg_get(config, "plugins", "disabled", default=[])
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
         return set()
@@ -763,7 +764,7 @@ def _get_current_memory_provider() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("memory", {}).get("provider", "") or ""
+        return cfg_get(config, "memory", "provider", default="") or ""
     except Exception:
         return ""
 
@@ -773,7 +774,7 @@ def _get_current_context_engine() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("context", {}).get("engine", "compressor") or "compressor"
+        return cfg_get(config, "context", "engine", default="compressor") or "compressor"
     except Exception:
         return "compressor"
 
@@ -999,7 +1000,6 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
             # We need to map logical cursor positions to screen rows
             # accounting for non-navigable separator/headers
 
-            draw_row = 0  # tracks navigable item index
 
             # --- General Plugins section ---
             if n_plugins > 0:

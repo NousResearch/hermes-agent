@@ -6,14 +6,14 @@ Shows the status of all Hermes Agent components.
 
 import os
 import sys
-import subprocess
+import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
-from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.config import cfg_get, get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
@@ -26,12 +26,15 @@ def check_mark(ok: bool) -> str:
     return color("✗", Colors.RED)
 
 def redact_key(key: str) -> str:
-    """Redact an API key for display."""
-    if not key:
-        return "(not set)"
-    if len(key) < 12:
-        return "***"
-    return key[:4] + "..." + key[-4:]
+    """Redact an API key for display.
+
+    Thin wrapper over :func:`agent.redact.mask_secret`. Preserves the
+    "(not set)" placeholder in dim color to match ``hermes config``'s
+    output (previously this variant was missing the DIM color —
+    consolidated via PR that also introduced ``mask_secret``).
+    """
+    from agent.redact import mask_secret
+    return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
 def _format_iso_timestamp(value) -> str:
@@ -274,6 +277,23 @@ def show_status(args):
         label = "configured" if configured else "not configured (run: hermes model)"
         print(f"  {pname:<16} {check_mark(configured)} {label}")
 
+    # LM Studio reachability — only probe when it's the active provider so
+    # users with foreign configs don't see noise. Auth rejection vs. silent
+    # empty list is the most common LM Studio support case.
+    if _effective_provider_label() == "LM Studio":
+        from hermes_cli.models import probe_lmstudio_models
+        model_cfg = config.get("model")
+        base = (model_cfg.get("base_url") if isinstance(model_cfg, dict) else None) or get_env_value("LM_BASE_URL") or "http://127.0.0.1:1234/v1"
+        try:
+            models = probe_lmstudio_models(api_key=get_env_value("LM_API_KEY") or "", base_url=base, timeout=1.5)
+            if models is None:
+                ok, msg = False, f"unreachable at {base}"
+            else:
+                ok, msg = True, f"reachable ({len(models)} model(s)) at {base}"
+        except AuthError:
+            ok, msg = False, "auth rejected — set LM_API_KEY"
+        print(f"  {'LM Studio':<16} {check_mark(ok)} {msg}")
+
     # =========================================================================
     # Terminal Configuration
     # =========================================================================
@@ -286,7 +306,7 @@ def show_status(args):
         # (hermes status doesn't go through cli.py's config loading)
         try:
             _cfg = load_config()
-            terminal_env = _cfg.get("terminal", {}).get("backend", "local")
+            terminal_env = cfg_get(_cfg, "terminal", "backend", default="local")
         except Exception:
             terminal_env = "local"
     print(f"  Backend:      {terminal_env}")

@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Set
 
 
 from hermes_cli.config import (
+    cfg_get,
     load_config, save_config, get_env_value, save_env_value,
 )
 from hermes_cli.colors import Colors, color
@@ -467,7 +468,10 @@ def _run_post_setup(post_setup_key: str):
     import shutil
     if post_setup_key in ("agent_browser", "browserbase"):
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
-        if not node_modules.exists() and shutil.which("npm"):
+        npm_bin = shutil.which("npm")
+        npx_bin = shutil.which("npx")
+        # Step 1: install the agent-browser npm package into node_modules/
+        if not node_modules.exists() and npm_bin:
             _print_info("    Installing Node.js dependencies for browser tools...")
             import subprocess
             result = subprocess.run(
@@ -479,8 +483,94 @@ def _run_post_setup(post_setup_key: str):
             else:
                 from hermes_constants import display_hermes_home
                 _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install")
+                if result.stderr:
+                    _print_info(f"      {result.stderr.strip()[:200]}")
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
+            return
+
+        # Step 2: only the local browser provider actually needs Chromium on
+        # disk. Cloud providers (Browserbase, Browser Use, Firecrawl) host
+        # their own Chromium and don't need the local install.
+        if post_setup_key != "agent_browser":
+            return
+
+        # Step 3: ensure the Chromium / headless-shell build agent-browser
+        # drives is actually installed. Without it the CLI hangs on first
+        # use until the command timeout fires. Skip inside Docker — the
+        # image bakes Chromium in at build time, and runtime users usually
+        # can't write to PLAYWRIGHT_BROWSERS_PATH anyway.
+        try:
+            # Import lazily so the tools_config UI doesn't pull in the full
+            # browser_tool module at import time.
+            from tools.browser_tool import (
+                _chromium_installed,
+                _running_in_docker,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            _print_warning(f"    Could not check Chromium status: {exc}")
+            return
+
+        if _chromium_installed():
+            _print_success("    Chromium browser already installed")
+            return
+
+        if _running_in_docker():
+            _print_warning(
+                "    Chromium is missing but you're running in Docker."
+            )
+            _print_info(
+                "    Pull the latest image to get the bundled Chromium:"
+            )
+            _print_info(
+                "      docker pull ghcr.io/nousresearch/hermes-agent:latest"
+            )
+            return
+
+        if not npx_bin:
+            _print_warning(
+                "    npx not found - install Chromium manually: npx agent-browser install --with-deps"
+            )
+            return
+
+        _print_info("    Installing Chromium (~170MB one-time download)...")
+        import subprocess
+        # Prefer the bundled agent-browser install subcommand so the
+        # version of Chromium matches the CLI. Fall back to npx shim on
+        # setups where the local bin stub isn't present.
+        local_ab = PROJECT_ROOT / "node_modules" / ".bin" / "agent-browser"
+        if sys.platform == "win32":
+            local_ab_win = local_ab.with_suffix(".cmd")
+            if local_ab_win.exists():
+                local_ab = local_ab_win
+        install_cmd = (
+            [str(local_ab), "install", "--with-deps"]
+            if local_ab.exists()
+            else [npx_bin, "-y", "agent-browser", "install", "--with-deps"]
+        )
+        try:
+            result = subprocess.run(
+                install_cmd,
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT), timeout=600,
+            )
+            if result.returncode == 0:
+                _print_success("    Chromium installed")
+                # Invalidate the cached "missing" result so subsequent
+                # check_browser_requirements() calls see the new install.
+                import tools.browser_tool as _bt
+                _bt._cached_chromium_installed = None
+            else:
+                _print_warning("    Chromium install failed:")
+                tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+                for line in tail:
+                    _print_info(f"      {line[:200]}")
+                _print_info("    Run manually: npx agent-browser install --with-deps")
+        except subprocess.TimeoutExpired:
+            _print_warning("    Chromium install timed out (>10min)")
+            _print_info("    Run manually: npx agent-browser install --with-deps")
+        except Exception as exc:
+            _print_warning(f"    Chromium install failed: {exc}")
+            _print_info("    Run manually: npx agent-browser install --with-deps")
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
@@ -876,7 +966,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
 
     # Get existing toolsets for this platform
-    existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
+    existing_toolsets = cfg_get(config, "platform_toolsets", platform, default=[])
     if not isinstance(existing_toolsets, list):
         existing_toolsets = []
     existing_toolsets = [str(ts) for ts in existing_toolsets]
@@ -1263,23 +1353,23 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
         if provider.get("tts_provider"):
             return (
                 feature.managed_by_nous
-                and config.get("tts", {}).get("provider") == provider["tts_provider"]
+                and cfg_get(config, "tts", "provider") == provider["tts_provider"]
             )
         if "browser_provider" in provider:
-            current = config.get("browser", {}).get("cloud_provider")
+            current = cfg_get(config, "browser", "cloud_provider")
             return feature.managed_by_nous and provider["browser_provider"] == current
         if provider.get("web_backend"):
-            current = config.get("web", {}).get("backend")
+            current = cfg_get(config, "web", "backend")
             return feature.managed_by_nous and current == provider["web_backend"]
         return feature.managed_by_nous
 
     if provider.get("tts_provider"):
-        return config.get("tts", {}).get("provider") == provider["tts_provider"]
+        return cfg_get(config, "tts", "provider") == provider["tts_provider"]
     if "browser_provider" in provider:
-        current = config.get("browser", {}).get("cloud_provider")
+        current = cfg_get(config, "browser", "cloud_provider")
         return provider["browser_provider"] == current
     if provider.get("web_backend"):
-        current = config.get("web", {}).get("backend")
+        current = cfg_get(config, "web", "backend")
         return current == provider["web_backend"]
     if provider.get("imagegen_backend"):
         image_cfg = config.get("image_gen", {})

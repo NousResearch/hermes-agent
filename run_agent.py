@@ -160,6 +160,7 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
+from hermes_cli.config import cfg_get
 
 
 
@@ -1788,7 +1789,7 @@ class AIAgent:
         # compression model. Custom endpoints often cannot report this via
         # /models, so the startup feasibility check needs the config hint.
         try:
-            _aux_cfg = _agent_cfg.get("auxiliary", {}).get("compression", {})
+            _aux_cfg = cfg_get(_agent_cfg, "auxiliary", "compression", default={})
         except Exception:
             _aux_cfg = {}
         if isinstance(_aux_cfg, dict):

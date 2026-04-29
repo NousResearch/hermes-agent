@@ -41,6 +41,7 @@ from typing import Any, Dict, List
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -913,7 +914,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
         self._llm_base_url = self._config.get("llm_base_url", "")
 
-        banks = self._config.get("banks", {}).get("hermes", {})
+        banks = cfg_get(self._config, "banks", "hermes", default={})
         static_bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
         self._bank_id_template = self._config.get("bank_id_template", "") or ""
         self._bank_id = _resolve_bank_id_template(

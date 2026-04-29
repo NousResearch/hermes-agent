@@ -24,6 +24,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import shutil
 import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
@@ -40,6 +42,9 @@ DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
 DEFAULT_MIN_IDLE_HOURS = 2
 DEFAULT_STALE_AFTER_DAYS = 30
 DEFAULT_ARCHIVE_AFTER_DAYS = 90
+DEFAULT_NEGATIVE_CLAIM_TTL_DAYS = 30
+DEFAULT_NEGATIVE_CLAIM_CONFIDENCE_THRESHOLD = 0.6
+DEFAULT_NEGATIVE_CLAIM_MAX_PER_RUN = 10
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +60,7 @@ def _default_state() -> Dict[str, Any]:
         "last_run_at": None,
         "last_run_duration_seconds": None,
         "last_run_summary": None,
+        "last_report_path": None,
         "paused": False,
         "run_count": 0,
     }
@@ -164,6 +170,40 @@ def get_archive_after_days() -> int:
         return DEFAULT_ARCHIVE_AFTER_DAYS
 
 
+def get_revalidate_negative_claims() -> bool:
+    cfg = _load_config()
+    return bool(cfg.get("revalidate_negative_claims", True))
+
+
+def get_negative_claim_ttl_days() -> int:
+    cfg = _load_config()
+    try:
+        return int(cfg.get("negative_claim_ttl_days", DEFAULT_NEGATIVE_CLAIM_TTL_DAYS))
+    except (TypeError, ValueError):
+        return DEFAULT_NEGATIVE_CLAIM_TTL_DAYS
+
+
+def get_negative_claim_confidence_threshold() -> float:
+    cfg = _load_config()
+    try:
+        return float(
+            cfg.get(
+                "negative_claim_confidence_threshold",
+                DEFAULT_NEGATIVE_CLAIM_CONFIDENCE_THRESHOLD,
+            )
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_NEGATIVE_CLAIM_CONFIDENCE_THRESHOLD
+
+
+def get_negative_claim_max_per_run() -> int:
+    cfg = _load_config()
+    try:
+        return int(cfg.get("negative_claim_max_per_run", DEFAULT_NEGATIVE_CLAIM_MAX_PER_RUN))
+    except (TypeError, ValueError):
+        return DEFAULT_NEGATIVE_CLAIM_MAX_PER_RUN
+
+
 # ---------------------------------------------------------------------------
 # Idle / interval check
 # ---------------------------------------------------------------------------
@@ -250,6 +290,105 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             # Skill got used again after being marked stale — reactivate.
             _u.set_state(name, _u.STATE_ACTIVE)
             counts["reactivated"] += 1
+
+    return counts
+
+
+# ---------------------------------------------------------------------------
+# Negative claim revalidation (deterministic, no LLM)
+# ---------------------------------------------------------------------------
+
+_COMMAND_UNAVAILABLE_PATTERNS = (
+    re.compile(r"(?:`([^`]+)`|\b([A-Za-z0-9_.+-]+)\b)\s+command\s+(?:is\s+)?unavailable", re.I),
+    re.compile(r"command\s+(?:`([^`]+)`|\b([A-Za-z0-9_.+-]+)\b)\s+(?:is\s+)?unavailable", re.I),
+    re.compile(r"(?:`([^`]+)`|\b([A-Za-z0-9_.+-]+)\b)\s+(?:is\s+)?not\s+(?:installed|available|found)", re.I),
+)
+
+
+def _extract_unavailable_command(summary: str) -> Optional[str]:
+    text = summary or ""
+    for pat in _COMMAND_UNAVAILABLE_PATTERNS:
+        m = pat.search(text)
+        if not m:
+            continue
+        cmd = next((g for g in m.groups() if g), "").strip()
+        if cmd and cmd.lower() not in {"the", "a", "an", "this", "that"}:
+            return cmd
+    return None
+
+
+def _probe_negative_claim(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Probe one due negative claim using deterministic checks only.
+
+    Returns a dict with status, confidence, summary, and kind. Unknown claim
+    shapes are marked uncertain rather than patched or treated as disproven.
+    """
+    summary = str(row.get("negative_claim_summary") or "")
+    cmd = _extract_unavailable_command(summary)
+    if cmd:
+        found = shutil.which(cmd)
+        if found:
+            return {
+                "status": "disproven",
+                "confidence": 0.2,
+                "summary": f"Revalidated: command '{cmd}' is now available at {found}.",
+                "kind": "command_available",
+            }
+        return {
+            "status": "refreshed",
+            "confidence": row.get("negative_claim_confidence"),
+            "summary": f"Revalidated: command '{cmd}' is still unavailable.",
+            "kind": "command_missing",
+        }
+
+    return {
+        "status": "uncertain",
+        "confidence": row.get("negative_claim_confidence"),
+        "summary": f"Needs manual review: no deterministic probe for claim: {summary}",
+        "kind": "unprobeable",
+    }
+
+
+def revalidate_negative_claims(now: Optional[datetime] = None) -> Dict[str, int]:
+    """Revalidate due negative/environment-dependent claims.
+
+    This pass is intentionally conservative: it only updates sidecar metadata
+    based on deterministic probes. It does not edit SKILL.md content; a later
+    phase can use the report output to drive safe patches when evidence is
+    positive.
+    """
+    if not get_revalidate_negative_claims():
+        return {"checked": 0, "disproven": 0, "refreshed": 0, "uncertain": 0, "skipped": 0}
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+    due = skill_usage.due_negative_claims(
+        now=now,
+        limit=get_negative_claim_max_per_run(),
+        min_confidence=get_negative_claim_confidence_threshold(),
+    )
+    counts = {"checked": 0, "disproven": 0, "refreshed": 0, "uncertain": 0, "skipped": 0}
+    ttl_days = get_negative_claim_ttl_days()
+
+    for row in due:
+        name = row.get("name")
+        if not name:
+            counts["skipped"] += 1
+            continue
+        result = _probe_negative_claim(row)
+        status = str(result.get("status") or "uncertain")
+        counts["checked"] += 1
+        if status not in ("disproven", "refreshed", "uncertain"):
+            status = "uncertain"
+        counts[status] += 1
+        skill_usage.update_negative_claim_revalidation(
+            str(name),
+            status=status,
+            confidence=result.get("confidence"),
+            summary=result.get("summary"),
+            ttl_days=ttl_days,
+            now=now,
+        )
 
     return counts
 
@@ -379,12 +518,16 @@ def _write_run_report(
     before_names: Set[str],
     after_report: List[Dict[str, Any]],
     llm_meta: Dict[str, Any],
+    negative_counts: Optional[Dict[str, int]] = None,
 ) -> Optional[Path]:
     """Write run.json + REPORT.md under logs/curator/{YYYYMMDD-HHMMSS}/.
 
     Returns the report directory path on success, None if the write
     couldn't happen (caller logs and continues — reporting is best-effort).
     """
+    if negative_counts is None:
+        negative_counts = {"checked": 0, "disproven": 0, "refreshed": 0, "uncertain": 0, "skipped": 0}
+
     root = _reports_root()
     try:
         root.mkdir(parents=True, exist_ok=True)
@@ -432,6 +575,7 @@ def _write_run_report(
         "model": llm_meta.get("model", ""),
         "provider": llm_meta.get("provider", ""),
         "auto_transitions": auto_counts,
+        "negative_claim_revalidation": negative_counts,
         "counts": {
             "before": len(before_names),
             "after": len(after_names),
@@ -499,6 +643,16 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     lines.append(f"- marked stale: {auto.get('marked_stale', 0)}")
     lines.append(f"- archived: {auto.get('archived', 0)}")
     lines.append(f"- reactivated: {auto.get('reactivated', 0)}")
+    lines.append("")
+
+    # Negative claim revalidation (pure, no LLM)
+    neg = p.get("negative_claim_revalidation") or {}
+    lines.append("## Negative claim revalidation (pure, no LLM)\n")
+    lines.append(f"- checked: {neg.get('checked', 0)}")
+    lines.append(f"- disproven: {neg.get('disproven', 0)}")
+    lines.append(f"- refreshed: {neg.get('refreshed', 0)}")
+    lines.append(f"- uncertain: {neg.get('uncertain', 0)}")
+    lines.append(f"- skipped: {neg.get('skipped', 0)}")
     lines.append("")
 
     # LLM pass numbers
@@ -607,6 +761,7 @@ def run_curator_review(
     """
     start = datetime.now(timezone.utc)
     counts = apply_automatic_transitions(now=start)
+    negative_counts = revalidate_negative_claims(now=start)
 
     auto_summary_parts = []
     if counts["marked_stale"]:
@@ -615,6 +770,14 @@ def run_curator_review(
         auto_summary_parts.append(f"{counts['archived']} archived")
     if counts["reactivated"]:
         auto_summary_parts.append(f"{counts['reactivated']} reactivated")
+    if negative_counts.get("checked"):
+        auto_summary_parts.append(
+            "negative claims: "
+            f"{negative_counts.get('checked', 0)} checked, "
+            f"{negative_counts.get('disproven', 0)} disproven, "
+            f"{negative_counts.get('refreshed', 0)} refreshed, "
+            f"{negative_counts.get('uncertain', 0)} uncertain"
+        )
     auto_summary = ", ".join(auto_summary_parts) if auto_summary_parts else "no changes"
 
     # Persist state before the LLM pass so a crash mid-review still records
@@ -683,6 +846,7 @@ def run_curator_review(
                 elapsed_seconds=elapsed,
                 auto_counts=counts,
                 auto_summary=auto_summary,
+                negative_counts=negative_counts,
                 before_report=before_report,
                 before_names=before_names,
                 after_report=after_report,
@@ -710,6 +874,7 @@ def run_curator_review(
     return {
         "started_at": start.isoformat(),
         "auto_transitions": counts,
+        "negative_claim_revalidation": negative_counts,
         "summary_so_far": auto_summary,
     }
 

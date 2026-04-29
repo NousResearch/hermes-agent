@@ -66,6 +66,10 @@ def test_curator_defaults(curator_env):
     assert c.get_min_idle_hours() == 2
     assert c.get_stale_after_days() == 30
     assert c.get_archive_after_days() == 90
+    assert c.get_revalidate_negative_claims() is True
+    assert c.get_negative_claim_ttl_days() == 30
+    assert c.get_negative_claim_confidence_threshold() == 0.6
+    assert c.get_negative_claim_max_per_run() == 10
 
 
 def test_curator_config_overrides(curator_env, monkeypatch):
@@ -75,11 +79,19 @@ def test_curator_config_overrides(curator_env, monkeypatch):
         "min_idle_hours": 0.5,
         "stale_after_days": 7,
         "archive_after_days": 60,
+        "revalidate_negative_claims": False,
+        "negative_claim_ttl_days": 45,
+        "negative_claim_confidence_threshold": 0.75,
+        "negative_claim_max_per_run": 3,
     })
     assert c.get_interval_hours() == 12
     assert c.get_min_idle_hours() == 0.5
     assert c.get_stale_after_days() == 7
     assert c.get_archive_after_days() == 60
+    assert c.get_revalidate_negative_claims() is False
+    assert c.get_negative_claim_ttl_days() == 45
+    assert c.get_negative_claim_confidence_threshold() == 0.75
+    assert c.get_negative_claim_max_per_run() == 3
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +261,70 @@ def test_bundled_skill_not_touched_by_transitions(curator_env):
 
 
 # ---------------------------------------------------------------------------
+# Negative claim revalidation pass
+# ---------------------------------------------------------------------------
+
+def test_revalidate_negative_claims_disproves_available_command(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    now = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    u.mark_negative_claim("cmd-skill", "foo command unavailable", confidence=0.9, ttl_days=1, now=now)
+    monkeypatch.setattr(c.shutil, "which", lambda cmd: "/usr/bin/foo" if cmd == "foo" else None)
+
+    counts = c.revalidate_negative_claims(now=now + timedelta(days=2))
+
+    rec = u.get_record("cmd-skill")
+    assert counts["checked"] == 1
+    assert counts["disproven"] == 1
+    assert rec["negative_claim_status"] == "disproven"
+    assert rec["negative_claim_confidence"] < 0.6
+    assert "available" in rec["negative_claim_summary"]
+
+
+def test_revalidate_negative_claims_refreshes_still_missing_command(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    now = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    u.mark_negative_claim("cmd-skill", "bar command unavailable", confidence=0.9, ttl_days=1, now=now)
+    monkeypatch.setattr(c.shutil, "which", lambda cmd: None)
+
+    counts = c.revalidate_negative_claims(now=now + timedelta(days=2))
+
+    rec = u.get_record("cmd-skill")
+    assert counts["checked"] == 1
+    assert counts["refreshed"] == 1
+    assert rec["negative_claim_status"] == "refreshed"
+    assert "still unavailable" in rec["negative_claim_summary"]
+
+
+def test_revalidate_negative_claims_marks_unprobeable_claim_uncertain(curator_env):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    now = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    u.mark_negative_claim("vague-skill", "some provider might be flaky", confidence=0.9, ttl_days=1, now=now)
+
+    counts = c.revalidate_negative_claims(now=now + timedelta(days=2))
+
+    rec = u.get_record("vague-skill")
+    assert counts["checked"] == 1
+    assert counts["uncertain"] == 1
+    assert rec["negative_claim_status"] == "uncertain"
+
+
+def test_revalidate_negative_claims_respects_disabled_config(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    now = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    u.mark_negative_claim("cmd-skill", "foo command unavailable", confidence=0.9, ttl_days=1, now=now)
+    monkeypatch.setattr(c, "_load_config", lambda: {"revalidate_negative_claims": False})
+
+    counts = c.revalidate_negative_claims(now=now + timedelta(days=2))
+
+    assert counts["checked"] == 0
+    assert u.get_record("cmd-skill")["negative_claim_status"] == "active"
+
+
+# ---------------------------------------------------------------------------
 # run_curator_review orchestration
 # ---------------------------------------------------------------------------
 
@@ -263,6 +339,40 @@ def test_run_review_records_state(curator_env):
     assert state["last_run_at"] is not None
     assert state["run_count"] >= 1
     assert state["last_run_summary"] is not None
+
+
+def test_run_review_applies_negative_claim_revalidation(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "cmd-skill")
+    now = datetime.now(timezone.utc) - timedelta(days=3)
+    u.mark_negative_claim("cmd-skill", "foo command unavailable", confidence=0.9, ttl_days=1, now=now)
+    monkeypatch.setattr(c.shutil, "which", lambda cmd: None)
+
+    result = c.run_curator_review(synchronous=True)
+
+    assert result["negative_claim_revalidation"]["checked"] == 1
+    assert u.get_record("cmd-skill")["negative_claim_status"] == "refreshed"
+    assert "negative" in c.load_state()["last_run_summary"]
+
+
+def test_run_review_report_includes_negative_claim_revalidation(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "cmd-skill")
+    now = datetime.now(timezone.utc) - timedelta(days=3)
+    u.mark_negative_claim("cmd-skill", "foo command unavailable", confidence=0.9, ttl_days=1, now=now)
+    monkeypatch.setattr(c.shutil, "which", lambda cmd: None)
+
+    c.run_curator_review(synchronous=True)
+
+    report_path = Path(c.load_state()["last_report_path"])
+    payload = json.loads((report_path / "run.json").read_text(encoding="utf-8"))
+    report_md = (report_path / "REPORT.md").read_text(encoding="utf-8")
+    assert payload["negative_claim_revalidation"]["checked"] == 1
+    assert "Negative claim revalidation" in report_md
 
 
 def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):

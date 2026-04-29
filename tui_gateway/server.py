@@ -4751,6 +4751,24 @@ def _resolve_browser_cdp_url() -> str:
     return ""
 
 
+def _is_default_local_cdp(parsed) -> bool:
+    return (
+        parsed.scheme in {"http", "ws"}
+        and parsed.hostname in {"127.0.0.1", "localhost"}
+        and (parsed.port or 80) == 9222
+    )
+
+
+def _browser_connect_error(url: str, port: int) -> str:
+    from hermes_cli.browser_connect import manual_chrome_debug_command
+
+    return (
+        f"Chrome is not reachable at {url}. "
+        "Start Chrome with remote debugging, then retry /browser connect:\n"
+        f"{manual_chrome_debug_command(port)}"
+    )
+
+
 @method("browser.manage")
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
@@ -4764,7 +4782,9 @@ def _(rid, params: dict) -> dict:
             },
         )
     if action == "connect":
-        url = params.get("url", "http://localhost:9222")
+        from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
+
+        url = params.get("url", DEFAULT_BROWSER_CDP_URL)
         try:
             import urllib.request
             from urllib.parse import urlparse
@@ -4813,7 +4833,28 @@ def _(rid, params: dict) -> dict:
                     except Exception:
                         continue
                 if not ok:
-                    return _err(rid, 5031, f"could not reach browser CDP at {url}")
+                    if _is_default_local_cdp(parsed):
+                        import platform
+                        from hermes_cli.browser_connect import try_launch_chrome_debug
+
+                        port = parsed.port or 9222
+                        if try_launch_chrome_debug(port, platform.system()):
+                            for _ in range(10):
+                                time.sleep(0.5)
+                                for probe in probe_urls:
+                                    try:
+                                        with urllib.request.urlopen(probe, timeout=1.0) as resp:
+                                            if 200 <= getattr(resp, "status", 200) < 300:
+                                                ok = True
+                                                break
+                                    except Exception:
+                                        continue
+                                if ok:
+                                    break
+                        if not ok:
+                            return _err(rid, 5031, _browser_connect_error(url, port))
+                    else:
+                        return _err(rid, 5031, f"could not reach browser CDP at {url}")
 
             # Persist a normalized URL for downstream CDP resolution.
             # Discovery-style inputs (`http://host:port` or

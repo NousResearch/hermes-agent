@@ -1,5 +1,6 @@
 """Tests for setup.py configuration flows."""
 import json
+import os
 import sys
 import types
 
@@ -478,6 +479,83 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     assert config["terminal"]["backend"] == "modal"
     assert config["terminal"]["modal_mode"] == "direct"
+
+
+def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "old-oidc")
+    monkeypatch.setitem(sys.modules, "vercel", types.ModuleType("vercel"))
+    config = load_config()
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select terminal backend:":
+            return 5
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    prompt_values = iter(["python3.13", "yes", "2", "4096", "token", "project", "team"])
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
+
+    from hermes_cli.setup import setup_terminal_backend
+
+    setup_terminal_backend(config)
+
+    assert config["terminal"]["backend"] == "vercel_sandbox"
+    assert config["terminal"]["vercel_runtime"] == "python3.13"
+    assert config["terminal"]["container_disk"] == 51200
+    assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
+    assert "VERCEL_OIDC_TOKEN" not in os.environ
+    assert os.environ["VERCEL_TOKEN"] == "token"
+    assert os.environ["VERCEL_PROJECT_ID"] == "project"
+    assert os.environ["VERCEL_TEAM_ID"] == "team"
+
+
+def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    project_root = tmp_path / "project"
+    nested = project_root / "app" / "src"
+    nested.mkdir(parents=True)
+    vercel_dir = project_root / ".vercel"
+    vercel_dir.mkdir()
+    (vercel_dir / "project.json").write_text(
+        json.dumps({"projectId": "linked-project", "orgId": "linked-team"}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(nested)
+    monkeypatch.setitem(sys.modules, "vercel", types.ModuleType("vercel"))
+    config = load_config()
+    config["terminal"]["container_disk"] = 999
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select terminal backend:":
+            return 5
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    prompt_values = iter(["node24", "no", "1", "5120", "token", "", ""])
+    defaults = {}
+
+    def fake_prompt(message, default="", **kwargs):
+        defaults[message] = default
+        value = next(prompt_values)
+        return value or default
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
+
+    from hermes_cli.setup import setup_terminal_backend
+
+    setup_terminal_backend(config)
+
+    assert config["terminal"]["backend"] == "vercel_sandbox"
+    assert config["terminal"]["container_persistent"] is False
+    assert config["terminal"]["container_disk"] == 51200
+    assert "VERCEL_OIDC_TOKEN" not in os.environ
+    assert os.environ["VERCEL_TOKEN"] == "token"
+    assert os.environ["VERCEL_PROJECT_ID"] == "linked-project"
+    assert os.environ["VERCEL_TEAM_ID"] == "linked-team"
+    assert defaults["    Vercel project ID"] == "linked-project"
+    assert defaults["    Vercel team ID"] == "linked-team"
 
 
 def test_resolve_hermes_chat_argv_prefers_which(monkeypatch):

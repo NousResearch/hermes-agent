@@ -9,6 +9,7 @@ Built-in TTS providers:
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
+- Gradium TTS: API-based multilingual TTS, needs GRADIUM_API_KEY
 - xAI TTS: Grok voices, uses xAI Grok OAuth credentials or XAI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
@@ -163,6 +164,25 @@ def _import_piper():
     return PiperVoice
 
 
+def _import_gradium():
+    """Lazy import gradium. Returns the module or raises ImportError.
+
+    Calls :func:`tools.lazy_deps.ensure` first so the ``gradium`` SDK gets
+    installed on demand if the user picked Gradium as their TTS provider
+    but never ran the post-setup hook (e.g. enabled it by editing config.yaml
+    directly). Mirrors the ElevenLabs/Mistral lazy-import paths.
+    """
+    try:
+        from tools.lazy_deps import ensure
+        ensure("tts.gradium", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:  # FeatureUnavailable or any unexpected error
+        raise ImportError(str(e))
+    import gradium
+    return gradium
+
+
 # ===========================================================================
 # Defaults
 # ===========================================================================
@@ -207,6 +227,8 @@ DEFAULT_GEMINI_AUDIO_TAGS = False
 GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
 # Base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
 DEFAULT_DEEPINFRA_TTS_VOICE = "default"
+DEFAULT_GRADIUM_TTS_MODEL = "default"
+DEFAULT_GRADIUM_TTS_VOICE_ID = "YTpq7expH9539ERJ"
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -236,6 +258,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "gradium": 4000,      # per Gradium API guidance
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -401,6 +424,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "xai",
     "mistral",
     "gemini",
+    "gradium",
     "neutts",
     "kittentts",
     "piper",
@@ -1949,6 +1973,105 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
+# Provider: Gradium TTS
+# ===========================================================================
+async def _gradium_tts_async(
+    api_key: str,
+    text: str,
+    voice_id: str,
+    model_name: str,
+    output_format: str,
+) -> bytes:
+    """Call Gradium's async TTS endpoint and return raw audio bytes."""
+    gradium = _import_gradium()
+    client = gradium.client.GradiumClient(api_key=api_key)
+    result = await client.tts(
+        setup={
+            "model_name": model_name,
+            "voice_id": voice_id,
+            "output_format": output_format,
+        },
+        text=text,
+    )
+    return result.raw_data
+
+
+def _generate_gradium_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Gradium TTS.
+
+    Gradium can emit `wav` or `opus` natively (also `pcm` and a few rates),
+    we pick the format from the requested file extension. `.ogg` gets Opus
+    directly (no ffmpeg pass needed for Telegram voice bubbles). For `.mp3`
+    or any other extension Gradium doesn't natively produce, we fall back
+    to requesting WAV and ffmpeg-converting.
+    """
+    api_key = (get_env_value("GRADIUM_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError("GRADIUM_API_KEY not set.")
+
+    gr_config = tts_config.get("gradium", {})
+    voice_id = str(gr_config.get("voice_id") or DEFAULT_GRADIUM_TTS_VOICE_ID).strip()
+    model_name = str(gr_config.get("model") or DEFAULT_GRADIUM_TTS_MODEL).strip()
+
+    lower = output_path.lower()
+    if lower.endswith(".ogg"):
+        output_format = "opus"
+    elif lower.endswith(".wav"):
+        output_format = "wav"
+    else:
+        # Gradium does not produce mp3 natively, request wav and transcode.
+        output_format = "wav"
+
+    try:
+        audio_bytes = asyncio.run(
+            _gradium_tts_async(api_key, text, voice_id, model_name, output_format)
+        )
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error("Gradium TTS failed: %s", e, exc_info=True)
+        raise RuntimeError(f"Gradium TTS failed: {type(e).__name__}") from e
+
+    if not audio_bytes:
+        raise RuntimeError("Gradium TTS returned empty audio data")
+
+    # Native-format fast path: extension matches what we asked for.
+    if (lower.endswith(".ogg") and output_format == "opus") or (
+        lower.endswith(".wav") and output_format == "wav"
+    ):
+        with open(output_path, "wb") as f:
+            f.write(audio_bytes)
+        return output_path
+
+    # Fallback: stage WAV and ffmpeg-convert to the requested extension (.mp3, …).
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(audio_bytes)
+        wav_path = tmp.name
+
+    try:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="ignore")[:300]
+                raise RuntimeError(f"ffmpeg conversion failed: {stderr}")
+        else:
+            logger.warning(
+                "ffmpeg not found; writing raw WAV to %s (extension may be misleading)",
+                output_path,
+            )
+            shutil.copyfile(wav_path, output_path)
+    finally:
+        try:
+            os.remove(wav_path)
+        except OSError:
+            pass
+
+    return output_path
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -2369,7 +2492,7 @@ def text_to_speech_tool(
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini"}:
+        elif want_opus and provider in {"openai", "elevenlabs", "mistral", "gemini", "gradium"}:
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -2459,6 +2582,18 @@ def text_to_speech_tool(
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
             _generate_gemini_tts(text, file_str, tts_config)
+
+        elif provider == "gradium":
+            try:
+                _import_gradium()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Gradium provider selected but 'gradium' package not installed. "
+                             "Run: pip install 'hermes-agent[tts-gradium]'"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Gradium TTS...")
+            _generate_gradium_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -2568,7 +2703,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
+        elif provider in {"elevenlabs", "openai", "mistral", "gemini", "gradium"}:
             voice_compatible = want_opus and file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -2667,6 +2802,12 @@ def check_tts_requirements() -> bool:
         return _check_kittentts_available()
     if provider == "piper":
         return _check_piper_available()
+    if provider == "gradium":
+        try:
+            _import_gradium()
+        except ImportError:
+            return False
+        return bool(get_env_value("GRADIUM_API_KEY"))
 
     try:
         from agent.tts_registry import get_provider
@@ -2967,6 +3108,8 @@ if __name__ == "__main__":
     )
     print(f"  MiniMax:    {'API key set' if get_env_value('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
     print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
+    print(f"  Gradium:    {'installed' if _check(_import_gradium, 'gradium') else 'not installed (pip install gradium)'}")
+    print(f"    API Key:  {'set' if get_env_value('GRADIUM_API_KEY') else 'not set'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 

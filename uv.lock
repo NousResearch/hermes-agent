@@ -1407,6 +1407,19 @@ wheels = [
 ]
 
 [[package]]
+name = "gradium"
+version = "0.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8c/a1/ed6ed1efbae0bf8c858290866ffcf93f0cabea8db5c7a3544e04ea3c46e5/gradium-0.6.0.tar.gz", hash = "sha256:da911914060916a3bf2693bf8a0aa9661b5326f8a3b46d7cc00721d58f93d734", size = 1322858, upload-time = "2026-06-23T11:53:28.909Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/0c/7c46c148feddfc2ad8089156872349054ec868f99eb66edda35c7c5c2697/gradium-0.6.0-py3-none-any.whl", hash = "sha256:929953f0ed3e6816cc0c48c3e741ca6700624694c9ab1098570e39288aa0b73d", size = 25540, upload-time = "2026-06-23T11:53:20.99Z" },
+]
+
+[[package]]
 name = "greenlet"
 version = "3.5.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1707,6 +1720,9 @@ termux-all = [
     { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+tts-gradium = [
+    { name = "gradium" },
+]
 tts-premium = [
     { name = "elevenlabs" },
 ]
@@ -1770,6 +1786,7 @@ requires-dist = [
     { name = "google-auth", marker = "extra == 'vertex'", specifier = "==2.55.1" },
     { name = "google-auth-httplib2", marker = "extra == 'google'", specifier = "==0.3.1" },
     { name = "google-auth-oauthlib", marker = "extra == 'google'", specifier = "==1.3.1" },
+    { name = "gradium", marker = "extra == 'tts-gradium'", specifier = "==0.6.0" },
     { name = "hermes-agent", extras = ["acp"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["acp"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["cli"], marker = "extra == 'all'" },
@@ -1855,7 +1872,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "tts-gradium", "voice", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"

@@ -2141,7 +2141,7 @@ DEFAULT_CONFIG = {
     # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
         # Set explicitly to pin a backend:
-        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "gradium" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
         "edge": {
             "voice": "en-US-AriaNeural",
@@ -2215,6 +2215,10 @@ DEFAULT_CONFIG = {
             "model": "",  # empty = first tts-tagged model from the live catalog
             "voice": "default",
             # "base_url": "",  # override DEEPINFRA_BASE_URL for TTS only
+        },
+        "gradium": {
+            "voice_id": "YTpq7expH9539ERJ",  # default english voice id
+            "model": "default",
         },
     },
 
@@ -4142,6 +4146,13 @@ OPTIONAL_ENV_VARS = {
         "prompt": "ElevenLabs API key",
         "url": "https://elevenlabs.io/",
         "tools": ["elevenlabs_tts", "voice_transcription"],
+        "password": True,
+        "category": "tool",
+    },
+    "GRADIUM_API_KEY": {
+        "description": "Gradium API key for text-to-speech",
+        "prompt": "Gradium API key",
+        "url": "https://gradium.ai/",
         "password": True,
         "category": "tool",
     },

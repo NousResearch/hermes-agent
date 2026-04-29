@@ -608,7 +608,7 @@ class CopilotACPClient:
                     end = start + limit if isinstance(limit, int) and limit > 0 else None
                     content = "".join(lines[start:end])
                 if content:
-                    content = redact_sensitive_text(content)
+                    content = redact_sensitive_text(content, force=True)
                 response = {
                     "jsonrpc": "2.0",
                     "id": message_id,

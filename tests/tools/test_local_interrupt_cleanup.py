@@ -16,6 +16,7 @@ import signal
 import subprocess
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,6 +36,38 @@ def _pgid_still_alive(pgid: int) -> bool:
         return True
     except ProcessLookupError:
         return False
+
+
+def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
+    """If the shell wrapper exits before cleanup, still kill its process group.
+
+    Without the cached pgid fallback, ``os.getpgid(proc.pid)`` raises for the
+    dead wrapper and cleanup falls back to ``proc.kill()``, which cannot reach
+    orphaned grandchildren still running in the original process group.
+    """
+    env = object.__new__(LocalEnvironment)
+    proc = SimpleNamespace(
+        pid=12345,
+        _hermes_pgid=67890,
+        poll=lambda: 0,
+        kill=lambda: None,
+    )
+    killpg_calls = []
+
+    def fake_getpgid(_pid):
+        raise ProcessLookupError
+
+    def fake_killpg(pgid, sig):
+        killpg_calls.append((pgid, sig))
+        if sig == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+
+    env._kill_process(proc)
+
+    assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():

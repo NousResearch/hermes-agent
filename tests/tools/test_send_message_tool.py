@@ -881,6 +881,159 @@ class TestParseTargetRefSlack:
         assert _parse_target_ref("telegram", "C0B0QV5434G")[2] is False
 
 
+class TestSendSlackUserDm:
+    """_send_slack resolves user IDs (U...) to DM channels via conversations.open."""
+
+    @staticmethod
+    def _build_conversations_open_response(ok=True, channel_id="D1234567890"):
+        """Build a mock response for conversations.open."""
+        resp = MagicMock()
+        resp.status = 200
+        resp.json = AsyncMock(return_value={"ok": ok, "channel": {"id": channel_id}} if ok else {"ok": False, "error": "user_not_found"})
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=None)
+        return resp
+
+    @staticmethod
+    def _build_post_message_response(ok=True):
+        """Build a mock response for chat.postMessage."""
+        resp = MagicMock()
+        resp.status = 200
+        resp.json = AsyncMock(return_value={"ok": ok, "ts": "1234567890.123456"} if ok else {"ok": False, "error": "channel_not_found"})
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=None)
+        return resp
+
+    def _build_session_sequence(self, *responses):
+        """Build a session that returns given responses for sequential POST calls."""
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.post = MagicMock(side_effect=list(responses))
+        return session
+
+    def test_sends_to_user_id_resolves_dm(self):
+        """Sending to a user ID (U...) calls conversations.open then chat.postMessage with the DM channel."""
+        from tools.send_message_tool import _send_slack
+
+        open_resp = self._build_conversations_open_response(channel_id="D999888777")
+        post_resp = self._build_post_message_response()
+        session = self._build_session_sequence(open_resp, post_resp)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("xoxb-token", "U1234567890", "Hello via DM resolution"))
+
+        assert result["success"] is True
+        assert result["chat_id"] == "D999888777"
+        # Verify conversations.open was called first
+        open_call_url = session.post.call_args_list[0].args[0]
+        assert "conversations.open" in open_call_url
+        open_payload = session.post.call_args_list[0].kwargs["json"]
+        assert open_payload == {"users": "U1234567890"}
+        # Verify chat.postMessage was called with the resolved DM channel
+        post_call_url = session.post.call_args_list[1].args[0]
+        assert "chat.postMessage" in post_call_url
+        post_payload = session.post.call_args_list[1].kwargs["json"]
+        assert post_payload["channel"] == "D999888777"
+
+    def test_channel_id_skips_resolution(self):
+        """Channel IDs (C..., G..., D...) go directly to chat.postMessage without conversations.open."""
+        from tools.send_message_tool import _send_slack
+
+        post_resp = self._build_post_message_response()
+        session = self._build_session_sequence(post_resp)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("xoxb-token", "C1234567890", "Hello channel"))
+
+        assert result["success"] is True
+        assert result["chat_id"] == "C1234567890"
+        # Only one POST call — no conversations.open
+        assert session.post.call_count == 1
+        call_url = session.post.call_args.args[0]
+        assert "chat.postMessage" in call_url
+
+    def test_private_channel_skips_resolution(self):
+        """Private channel IDs (G...) go directly to chat.postMessage."""
+        from tools.send_message_tool import _send_slack
+
+        post_resp = self._build_post_message_response()
+        session = self._build_session_sequence(post_resp)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("xoxb-token", "G1234567890", "Hello private channel"))
+
+        assert result["success"] is True
+        assert result["chat_id"] == "G1234567890"
+        assert session.post.call_count == 1
+
+    def test_existing_dm_channel_skips_resolution(self):
+        """Existing DM IDs (D...) go directly to chat.postMessage."""
+        from tools.send_message_tool import _send_slack
+
+        post_resp = self._build_post_message_response()
+        session = self._build_session_sequence(post_resp)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("xoxb-token", "D1234567890", "Hello existing DM"))
+
+        assert result["success"] is True
+        assert result["chat_id"] == "D1234567890"
+        assert session.post.call_count == 1
+
+    def test_user_id_resolution_failure_returns_error(self):
+        """When conversations.open fails, _send_slack returns an error without calling chat.postMessage."""
+        from tools.send_message_tool import _send_slack, _slack_dm_cache
+
+        _slack_dm_cache.clear()
+
+        open_resp = self._build_conversations_open_response(ok=False)
+        session = self._build_session_sequence(open_resp)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("xoxb-token", "U9999999999", "Hello"))
+
+        assert "error" in result
+        assert "user ID resolution failed" in result["error"]
+        # Only conversations.open was called, not chat.postMessage
+        assert session.post.call_count == 1
+        open_call_url = session.post.call_args.args[0]
+        assert "conversations.open" in open_call_url
+
+    def test_user_id_resolution_cached(self):
+        """User ID -> DM channel resolution is cached; second send skips conversations.open."""
+        from tools.send_message_tool import _send_slack, _slack_dm_cache
+
+        _slack_dm_cache.clear()
+
+        # First send: conversations.open + chat.postMessage
+        open_resp = self._build_conversations_open_response(channel_id="D555444333")
+        post_resp1 = self._build_post_message_response()
+        session1 = self._build_session_sequence(open_resp, post_resp1)
+
+        with patch("aiohttp.ClientSession", return_value=session1):
+            result1 = asyncio.run(_send_slack("xoxb-token", "U1112223334", "First message"))
+
+        assert result1["success"] is True
+        assert result1["chat_id"] == "D555444333"
+        assert session1.post.call_count == 2  # conversations.open + chat.postMessage
+
+        # Second send: only chat.postMessage (cache hit)
+        post_resp2 = self._build_post_message_response()
+        session2 = self._build_session_sequence(post_resp2)
+
+        with patch("aiohttp.ClientSession", return_value=session2):
+            result2 = asyncio.run(_send_slack("xoxb-token", "U1112223334", "Second message"))
+
+        assert result2["success"] is True
+        assert result2["chat_id"] == "D555444333"
+        assert session2.post.call_count == 1  # Only chat.postMessage
+        post_call_url = session2.post.call_args.args[0]
+        assert "chat.postMessage" in post_call_url
+
+        _slack_dm_cache.clear()
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 

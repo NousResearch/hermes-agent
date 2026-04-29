@@ -27,6 +27,9 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 # conversations.open to obtain a D... ID. Without this gate, Slack IDs fall
 # through to channel-name resolution, which only matches by name and fails.
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
+# Cache for Slack user ID -> DM conversation ID resolution.
+# Keyed by "{token}:{user_id}" to support multi-workspace setups.
+_slack_dm_cache: Dict[str, str] = {}
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
@@ -980,13 +983,60 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         return _error(f"Discord send failed: {e}")
 
 
+async def _resolve_slack_user_dm(token: str, user_id: str) -> Optional[str]:
+    """Resolve a Slack user ID (U...) to a DM conversation ID (D...) via conversations.open.
+
+    Results are cached per (token, user_id) pair to avoid redundant API calls.
+    Returns None if resolution fails.
+    """
+    cache_key = f"{token}:{user_id}"
+    if cache_key in _slack_dm_cache:
+        return _slack_dm_cache[cache_key]
+
+    try:
+        import aiohttp
+    except ImportError:
+        return None
+    try:
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url()
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        url = "https://slack.com/api/conversations.open"
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15), **_sess_kw) as session:
+            payload = {"users": user_id}
+            async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
+                data = await resp.json()
+                if data.get("ok") and data.get("channel", {}).get("id"):
+                    channel_id = data["channel"]["id"]
+                    _slack_dm_cache[cache_key] = channel_id
+                    return channel_id
+                logger.warning("Slack conversations.open failed for %s: %s", user_id, data.get("error", "unknown"))
+                return None
+    except Exception as e:
+        logger.warning("Slack conversations.open exception for %s: %s", user_id, e)
+        return None
+
+
 async def _send_slack(token, chat_id, message):
-    """Send via Slack Web API."""
+    """Send via Slack Web API.
+
+    Supports both Slack conversation IDs (C..., G..., D...) and user IDs (U...).
+    User IDs are automatically resolved to DM conversation IDs via
+    conversations.open and cached to avoid redundant API calls.
+    """
     try:
         import aiohttp
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
+        # Resolve Slack user IDs (U...) to DM conversation IDs (D...)
+        if chat_id.startswith("U"):
+            resolved = await _resolve_slack_user_dm(token, chat_id)
+            if resolved is None:
+                return _error(f"Slack user ID resolution failed for {chat_id}")
+            chat_id = resolved
+
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _proxy = resolve_proxy_url()
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)

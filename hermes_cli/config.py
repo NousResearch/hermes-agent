@@ -3123,6 +3123,43 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         "Use `hermes plugins enable <name>` to activate."
                     )
 
+    # ── Version 21 → 22: preserve terminal.cwd and auxiliary models during migrations
+    # Some migration blocks call save_config() which internally runs
+    # _normalize_root_model_keys that can inadvertently reset terminal.cwd to
+    # default (".") and drop auxiliary.model when the normalized form differs
+    # from what was migrated. This step re-reads the raw file and restores
+    # both fields if they were lost. See issues #17182.
+    if current_ver < 22:
+        raw = read_raw_config()
+        migrated_cfg = load_config()
+
+        # Restore terminal.cwd if it was set in raw but missing in migrated
+        raw_terminal = raw.get("terminal", {})
+        if isinstance(raw_terminal, dict) and "cwd" in raw_terminal:
+            migrated_terminal = migrated_cfg.get("terminal", {})
+            if not isinstance(migrated_terminal, dict):
+                migrated_terminal = {}
+            if not migrated_terminal.get("cwd") or migrated_terminal.get("cwd") in (".", "auto", "cwd", ""):
+                migrated_terminal["cwd"] = raw_terminal["cwd"]
+                migrated_cfg["terminal"] = migrated_terminal
+                save_config(migrated_cfg)
+                if not quiet:
+                    print(f"  ✓ Preserved terminal.cwd={raw_terminal['cwd']} across migration")
+
+        # Restore auxiliary.model / auxiliary.provider if set in raw but dropped
+        raw_aux = raw.get("auxiliary", {})
+        migrated_aux = migrated_cfg.get("auxiliary", {})
+        if isinstance(raw_aux, dict):
+            for key in ("model", "provider", "base_url"):
+                if key in raw_aux and raw_aux[key]:
+                    if not migrated_aux.get(key):
+                        migrated_aux[key] = raw_aux[key]
+            if migrated_aux:
+                migrated_cfg["auxiliary"] = migrated_aux
+                save_config(migrated_cfg)
+                if not quiet:
+                    print(f"  ✓ Preserved auxiliary config across migration")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     

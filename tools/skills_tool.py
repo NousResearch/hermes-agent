@@ -1512,3 +1512,61 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
+
+
+# ---------------------------------------------------------------------------
+# skills_reload — rescan the skills dir without restarting the gateway
+# ---------------------------------------------------------------------------
+
+def skills_reload(task_id: str | None = None) -> str:
+    """Re-scan ``~/.hermes/skills/`` and clear in-process skill caches.
+
+    Use this after installing a skill via the shell during a session so the
+    new skill becomes visible to ``skills_list`` / ``skill_view`` and the
+    skill catalogue in the system prompt without a gateway restart.
+
+    Returns:
+        JSON string with ``added``, ``removed``, ``unchanged``, ``total``,
+        and ``commands`` keys. ``added``/``removed`` are bare skill names
+        (no leading slash).
+    """
+    try:
+        from agent.skill_commands import reload_skills as _reload
+        result = _reload()
+    except Exception as e:
+        return json.dumps({"success": False, "error": str(e)})
+
+    return json.dumps({
+        "success": True,
+        "added": result.get("added", []),
+        "removed": result.get("removed", []),
+        "unchanged_count": len(result.get("unchanged", [])),
+        "total": result.get("total", 0),
+        "commands": result.get("commands", 0),
+    })
+
+
+SKILLS_RELOAD_SCHEMA = {
+    "name": "skills_reload",
+    "description": (
+        "Re-scan the skills directory and clear in-process skill caches. "
+        "Use after installing or removing a skill mid-session (e.g. via the "
+        "shell tool or skills_hub) so the new skill becomes visible to "
+        "skills_list / skill_view without restarting the gateway. Returns "
+        "the diff of added/removed skill names plus the new total count."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+registry.register(
+    name="skills_reload",
+    toolset="skills",
+    schema=SKILLS_RELOAD_SCHEMA,
+    handler=lambda args, **kw: skills_reload(task_id=kw.get("task_id")),
+    check_fn=check_skills_requirements,
+    emoji="🔄",
+)

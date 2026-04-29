@@ -2,9 +2,58 @@ import { Box, Link, Text } from '@hermes/ink'
 import { memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
-import { texToUnicode } from '../lib/mathUnicode.js'
+import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
+
+// `\boxed{X}` regions in `texToUnicode` output are marked with the
+// non-printable U+0001 / U+0002 sentinels. Split on them and render the
+// boxed segment with `inverse + bold` so it reads as a highlighter-pen
+// emphasis on top of whatever color the parent `<Text>` is using (amber
+// for math). The leading / trailing space inside the highlight gives a
+// one-cell visual margin so the highlight reads as a block, not a hug.
+const renderMath = (text: string): ReactNode => {
+  if (!text.includes(BOX_OPEN)) {
+    return text
+  }
+
+  const out: ReactNode[] = []
+  let i = 0
+  let key = 0
+
+  while (i < text.length) {
+    const start = text.indexOf(BOX_OPEN, i)
+
+    if (start < 0) {
+      out.push(text.slice(i))
+
+      break
+    }
+
+    if (start > i) {
+      out.push(text.slice(i, start))
+    }
+
+    const end = text.indexOf(BOX_CLOSE, start + 1)
+
+    if (end < 0) {
+      out.push(text.slice(start))
+
+      break
+    }
+
+    out.push(
+      <Text bold inverse key={key++}>
+        {' '}
+        {text.slice(start + 1, end)}{' '}
+      </Text>
+    )
+
+    i = end + 1
+  }
+
+  return out
+}
 
 const FENCE_RE = /^\s*(`{3,}|~{3,})(.*)$/
 const FENCE_CLOSE_RE = /^\s*(`{3,}|~{3,})\s*$/
@@ -171,31 +220,39 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     } else if (m[6]) {
       parts.push(
         <Text key={parts.length} strikethrough>
-          {m[6]}
+          <MdInline t={t} text={m[6]} />
         </Text>
       )
     } else if (m[7]) {
+      // Code is the one wrap that does NOT recurse — inline `code` spans
+      // are verbatim by definition. Letting MdInline reprocess them
+      // would corrupt regex examples and shell snippets.
       parts.push(
         <Text color={t.color.amber} dimColor key={parts.length}>
           {m[7]}
         </Text>
       )
     } else if (m[8] ?? m[9]) {
+      // Recurse into bold / italic / strike / highlight so nested
+      // `$...$` math (and other inline tokens) inside a `**bolded
+      // statement with $\mathbb{Z}$ math**` actually render. Without
+      // this the inner content is dropped into a single `<Text bold>`
+      // verbatim and the math renderer never sees it.
       parts.push(
         <Text bold key={parts.length}>
-          {m[8] ?? m[9]}
+          <MdInline t={t} text={m[8] ?? m[9]!} />
         </Text>
       )
     } else if (m[10] ?? m[11]) {
       parts.push(
         <Text italic key={parts.length}>
-          {m[10] ?? m[11]}
+          <MdInline t={t} text={m[10] ?? m[11]!} />
         </Text>
       )
     } else if (m[12]) {
       parts.push(
         <Text backgroundColor={t.color.diffAdded} color={t.color.diffAddedWord} key={parts.length}>
-          {m[12]}
+          <MdInline t={t} text={m[12]} />
         </Text>
       )
     } else if (m[13]) {
@@ -236,7 +293,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
       // raw LaTeX rather than vanishing.
       parts.push(
         <Text color={t.color.amber} italic key={parts.length}>
-          {texToUnicode(m[17] ?? m[18]!)}
+          {renderMath(texToUnicode(m[17] ?? m[18]!))}
         </Text>
       )
     }
@@ -456,9 +513,7 @@ function MdImpl({ compact, t, text }: MdProps) {
           start('code')
           nodes.push(
             <Box flexDirection="column" key={key} paddingLeft={2}>
-              <Text color={t.color.dim}>─ math</Text>
-
-              {inner ? <Text color={t.color.amber}>{texToUnicode(inner)}</Text> : null}
+              {inner ? <Text color={t.color.amber}>{renderMath(texToUnicode(inner))}</Text> : null}
             </Box>
           )
           i++
@@ -504,11 +559,9 @@ function MdImpl({ compact, t, text }: MdProps) {
         start('code')
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
-            <Text color={t.color.dim}>─ math</Text>
-
             {block.map((l, j) => (
               <Text color={t.color.amber} key={j}>
-                {texToUnicode(l)}
+                {renderMath(texToUnicode(l))}
               </Text>
             ))}
           </Box>

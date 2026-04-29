@@ -136,6 +136,20 @@ const SYMBOLS: Record<string, string> = {
   '\\models': '⊨',
   '\\vdash': '⊢',
   '\\mid': '∣',
+  '\\nmid': '∤',
+  '\\divides': '∣',
+
+  // Common standalone glyphs
+  '\\blacksquare': '■',
+  '\\square': '□',
+  '\\Box': '□',
+  '\\qed': '∎',
+  '\\bigstar': '★',
+
+  // Modular arithmetic — the `\pmod{p}` form (with arg) is handled below;
+  // the bare `\bmod` / `\mod` commands are simple text substitutions.
+  '\\bmod': 'mod',
+  '\\mod': 'mod',
 
   // Brackets / fences (named delimiter commands; the `\left\X` / `\right\X`
   // unwrapping below leaves these behind for the symbol pass to resolve).
@@ -403,6 +417,14 @@ const SUBSCRIPT: Record<string, string> = {
   x: 'ₓ'
 }
 
+// Sentinel control characters used to mark `\boxed` / `\fbox` regions in
+// the converted output. The renderer splits on these to apply a highlight
+// style; consumers that don't want highlighting can strip them with the
+// exported `BOX_RE` below.
+export const BOX_OPEN = '\u0001'
+export const BOX_CLOSE = '\u0002'
+export const BOX_RE = /\u0001([^\u0001\u0002]*)\u0002/g
+
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 // Pre-compile two symbol regexes: one for letter-ending commands (`\pi`,
@@ -473,6 +495,154 @@ const convertScript = (input: string, table: Record<string, string>, sigil: '^' 
   return `${sigil}(${trimmed})`
 }
 
+// Walk the string and parse `{...}` honouring nested braces. Unlike a
+// `\{[^{}]*\}` regex this survives `\frac{|t|^{p-1}|P(t)|^p}{...}` where
+// the numerator contains its own braces from a superscript. Returns the
+// inner content (without the outer braces) and the offset just past the
+// closing `}`. Returns null if there is no balanced brace at `start`.
+const readBraced = (s: string, start: number): { content: string; end: number } | null => {
+  if (s[start] !== '{') {
+    return null
+  }
+
+  let depth = 1
+  let i = start + 1
+
+  while (i < s.length && depth > 0) {
+    const c = s[i]
+
+    // Skip escapes — `\{` and `\}` inside a body are literal braces and
+    // should not change the brace counter.
+    if (c === '\\' && i + 1 < s.length) {
+      i += 2
+      continue
+    }
+
+    if (c === '{') {
+      depth++
+    } else if (c === '}') {
+      depth--
+    }
+
+    if (depth > 0) {
+      i++
+    }
+  }
+
+  if (depth !== 0) {
+    return null
+  }
+
+  return { content: s.slice(start + 1, i), end: i + 1 }
+}
+
+// Replace every occurrence of `\command{arg}` using balanced-brace parsing
+// (so `\boxed{x^{n+1}}` works where a `[^{}]*` regex would fail). The
+// `render` callback receives the inner content already recursed-into, so
+// `\boxed{\boxed{x}}` resolves outside-in cleanly. Unmatched `\command`
+// (no following `{...}`) is preserved verbatim.
+const replaceBracedCommand = (input: string, command: string, render: (content: string) => string): string => {
+  const cmdLen = command.length
+  let out = ''
+  let i = 0
+
+  while (i < input.length) {
+    const idx = input.indexOf(command, i)
+
+    if (idx < 0) {
+      out += input.slice(i)
+
+      return out
+    }
+
+    const after = input[idx + cmdLen]
+
+    if (after && /[A-Za-z]/.test(after)) {
+      out += input.slice(i, idx + cmdLen)
+      i = idx + cmdLen
+      continue
+    }
+
+    out += input.slice(i, idx)
+
+    let p = idx + cmdLen
+
+    while (input[p] === ' ' || input[p] === '\t') p++
+
+    const arg = readBraced(input, p)
+
+    if (!arg) {
+      out += input.slice(idx, p + 1)
+      i = p + 1
+      continue
+    }
+
+    out += render(replaceBracedCommand(arg.content, command, render))
+    i = arg.end
+  }
+
+  return out
+}
+
+// Replace every `\frac{num}{den}` with `num/den` (parens around either
+// side when its precedence demands it). The recursion handles nested
+// fractions naturally: `\frac{1}{\frac{1}{x}}` collapses to `1/(1/x)`
+// because we recurse into `den` before deciding whether to parenthesise.
+const replaceFracs = (input: string): string => {
+  let out = ''
+  let i = 0
+
+  while (i < input.length) {
+    const idx = input.indexOf('\\frac', i)
+
+    if (idx < 0) {
+      out += input.slice(i)
+
+      return out
+    }
+
+    const after = input[idx + 5]
+
+    // `(?![A-Za-z])` — protect hypothetical commands like `\fraction`.
+    if (after && /[A-Za-z]/.test(after)) {
+      out += input.slice(i, idx + 5)
+      i = idx + 5
+      continue
+    }
+
+    out += input.slice(i, idx)
+
+    let p = idx + 5
+
+    while (input[p] === ' ' || input[p] === '\t') p++
+
+    const num = readBraced(input, p)
+
+    if (!num) {
+      out += input.slice(idx, p + 1)
+      i = p + 1
+      continue
+    }
+
+    p = num.end
+
+    while (input[p] === ' ' || input[p] === '\t') p++
+
+    const den = readBraced(input, p)
+
+    if (!den) {
+      out += input.slice(idx, p + 1)
+      i = p + 1
+      continue
+    }
+
+    out += `${wrapForFrac(replaceFracs(num.content))}/${wrapForFrac(replaceFracs(den.content))}`
+    i = den.end
+  }
+
+  return out
+}
+
 // Wrap multi-token expressions in parens so `\frac{a+b}{c}` becomes
 // `(a+b)/c` rather than `a+b/c`. We only wrap when the expression has
 // loose precedence — additive operators or whitespace that would change
@@ -516,15 +686,18 @@ export function texToUnicode(input: string): string {
   s = s.replace(/\\dot\s*\{([^{}]+)\}/g, (_, c: string) => `${c}\u0307`)
   s = s.replace(/\\ddot\s*\{([^{}]+)\}/g, (_, c: string) => `${c}\u0308`)
 
-  // Apply \frac repeatedly so nested fractions resolve from the inside
-  // out — `\frac{1}{1+\frac{1}{x}}` collapses cleanly.
-  let prev = ''
-  let guard = 0
+  s = replaceFracs(s)
 
-  while (s !== prev && guard++ < 8) {
-    prev = s
-    s = s.replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, (_, num: string, den: string) => `${wrapForFrac(num)}/${wrapForFrac(den)}`)
-  }
+  // `\boxed{X}` / `\fbox{X}` highlight a final answer. Terminals can't
+  // draw a real box, so we wrap the content in U+0001 / U+0002 control
+  // characters — non-printable, never present in real text — and let the
+  // markdown renderer split on them and apply a highlight style (inverse
+  // video) to the bracketed region. This keeps `texToUnicode` pure-string
+  // while letting the React layer do the actual visual emphasis.
+  // Argument is parsed with balanced braces so nested `{...}` from
+  // superscripts / fractions inside the box survive.
+  s = replaceBracedCommand(s, '\\boxed', body => `${BOX_OPEN}${body.trim()}${BOX_CLOSE}`)
+  s = replaceBracedCommand(s, '\\fbox', body => `${BOX_OPEN}${body.trim()}${BOX_CLOSE}`)
 
   // `\xrightarrow{label}` / `\xleftarrow{label}` collapse to an arrow with
   // the label inline. LaTeX renders the label above the arrow; in monospace
@@ -536,6 +709,30 @@ export function texToUnicode(input: string): string {
   s = s.replace(/\\Longrightarrow/g, '⟹')
   s = s.replace(/\\Longleftarrow/g, '⟸')
   s = s.replace(/\\Longleftrightarrow/g, '⟺')
+
+  // `\pmod{p}` → ` (mod p)` (LaTeX adds parens automatically); `\pod{p}`
+  // is a paren-less variant; `\tag{n}` is the equation-number annotation
+  // shown to the right of an equation. Collapse to a single-space-prefixed
+  // bracketed form. The leading `\s*` in the pattern absorbs any whitespace
+  // already in the source so we don't end up with `b  (mod p)` (double
+  // space) when the user wrote `b \pmod{p}`.
+  s = s.replace(/\s*\\pmod\s*\{([^{}]*)\}/g, (_, p: string) => ` (mod ${p.trim()})`)
+  s = s.replace(/\s*\\pod\s*\{([^{}]*)\}/g, (_, p: string) => ` (${p.trim()})`)
+  s = s.replace(/\s*\\tag\s*\{([^{}]*)\}/g, (_, n: string) => ` (${n.trim()})`)
+
+  // `\big`, `\Big`, `\bigg`, `\Bigg` (with optional `l`/`r`/`m` suffix)
+  // are sizing wrappers analogous to `\left`/`\right` but without the
+  // automatic-pairing semantics. Strip them and leave whatever delimiter
+  // follows. The trailing `(?![A-Za-z])` protects `\bigtriangleup` and
+  // any other letter-continuation command from being shaved.
+  s = s.replace(/\\(?:Bigg|bigg|Big|big)[lrm]?(?![A-Za-z])/g, '')
+
+  // Style / size hints that don't typeset any glyph and only affect how
+  // things would be sized in a real LaTeX engine. In a terminal every
+  // glyph is one monospace cell, so there's nothing to do — drop them
+  // (with any trailing whitespace) so they don't leak through as raw
+  // `\displaystyle` in the output.
+  s = s.replace(/\\(?:scriptscriptstyle|displaystyle|scriptstyle|textstyle|nolimits|limits)(?![A-Za-z])\s*/g, '')
 
   // `\left` and `\right` are sizing wrappers around any delimiter — bare
   // (`\left(`), escaped (`\left\{`), or named (`\left\langle`). Strip the

@@ -860,6 +860,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         chat_id=str(origin["chat_id"]) if origin else "",
         chat_name=origin.get("chat_name", "") if origin else "",
     )
+    _cron_delivery_vars = (
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+        "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+        "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+    )
+    for _var_name in _cron_delivery_vars:
+        _VAR_MAP[_var_name].set("")
 
     # Per-job working directory.  When set (and validated at create/update
     # time), we point TERMINAL_CWD at it so:
@@ -898,8 +905,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         if delivery_target:
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
-            if delivery_target.get("thread_id") is not None:
-                _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(str(delivery_target["thread_id"]))
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(
+                ""
+                if delivery_target.get("thread_id") is None
+                else str(delivery_target["thread_id"])
+            )
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
@@ -1198,6 +1208,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
+        for _var_name in _cron_delivery_vars:
+            _VAR_MAP[_var_name].set("")
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")

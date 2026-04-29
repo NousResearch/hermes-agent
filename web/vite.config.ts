@@ -1,4 +1,4 @@
-//fix blabla
+//fix(config): preserve user values during migration
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";

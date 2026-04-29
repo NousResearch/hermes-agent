@@ -2213,14 +2213,15 @@ def _set_nested(config: dict, dotted_key: str, value):
     current[parts[-1]] = value
 
 
-def get_missing_config_fields() -> List[Dict[str, Any]]:
+def get_missing_config_fields(config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """
     Check which config fields are missing or outdated (recursive).
     
     Walks the DEFAULT_CONFIG tree at arbitrary depth and reports any keys
-    present in defaults but absent from the user's loaded config.
+    present in defaults but absent from the supplied config.
     """
-    config = load_config()
+    if config is None:
+        config = load_config()
     missing = []
 
     def _check(defaults: dict, current: dict, prefix: str = ""):
@@ -2239,6 +2240,86 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
 
     _check(DEFAULT_CONFIG, config)
     return missing
+
+
+_CWD_PLACEHOLDERS = {".", "auto", "cwd", ""}
+
+
+def _migrate_legacy_terminal_root_fields(config: Dict[str, Any]) -> bool:
+    """Move legacy root cwd/backend aliases into the terminal section."""
+    changed = False
+    terminal = config.get("terminal")
+    if not isinstance(terminal, dict):
+        terminal = {}
+
+    root_cwd = (
+        str(config.get("cwd", "")).strip()
+        if config.get("cwd") is not None
+        else ""
+    )
+    terminal_cwd = (
+        str(terminal.get("cwd", "")).strip()
+        if terminal.get("cwd") is not None
+        else ""
+    )
+    if root_cwd and terminal_cwd in _CWD_PLACEHOLDERS:
+        terminal["cwd"] = root_cwd
+        changed = True
+
+    root_backend = (
+        str(config.get("backend", "")).strip()
+        if config.get("backend") is not None
+        else ""
+    )
+    if root_backend and not terminal.get("backend"):
+        terminal["backend"] = root_backend
+        changed = True
+
+    if changed:
+        config["terminal"] = terminal
+        config.pop("cwd", None)
+        config.pop("backend", None)
+    return changed
+
+
+def _migrate_legacy_auxiliary_root_fields(config: Dict[str, Any]) -> bool:
+    """Expand legacy auxiliary.provider/model fields to per-task config."""
+    auxiliary = config.get("auxiliary")
+    if not isinstance(auxiliary, dict):
+        return False
+
+    legacy_keys = ("provider", "model", "base_url", "api_key", "api_mode", "extra_body")
+    legacy = {
+        key: auxiliary.get(key)
+        for key in legacy_keys
+        if key in auxiliary and auxiliary.get(key) not in (None, "")
+    }
+    if not legacy:
+        return False
+
+    changed = False
+    for task, defaults in DEFAULT_CONFIG.get("auxiliary", {}).items():
+        if not isinstance(defaults, dict):
+            continue
+        task_config = auxiliary.get(task)
+        if not isinstance(task_config, dict):
+            task_config = {}
+            auxiliary[task] = task_config
+            changed = True
+        for key, value in legacy.items():
+            if key not in defaults:
+                continue
+            current_value = task_config.get(key)
+            default_value = defaults.get(key)
+            if current_value in (None, "") or current_value == default_value:
+                task_config[key] = copy.deepcopy(value)
+                changed = True
+
+    for key in legacy_keys:
+        if key in auxiliary:
+            auxiliary.pop(key, None)
+            changed = True
+    return changed
 
 
 def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
@@ -3213,11 +3294,22 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             else:
                 print("  Set later with: hermes config set <key> <value>")
     
-    # Check for missing config fields
-    missing_config = get_missing_config_fields()
+    # Check for missing config fields against the raw on-disk config. Using
+    # load_config() here merges DEFAULT_CONFIG first, which hides missing keys
+    # and can persist default placeholders over legacy user settings.
+    raw_config = read_raw_config()
+    raw_config_changed = False
+    if _migrate_legacy_terminal_root_fields(raw_config):
+        raw_config_changed = True
+        results["config_added"].append("terminal.cwd/backend (migrated from root aliases)")
+    if _migrate_legacy_auxiliary_root_fields(raw_config):
+        raw_config_changed = True
+        results["config_added"].append("auxiliary.* (migrated from legacy auxiliary root fields)")
+
+    missing_config = get_missing_config_fields(raw_config)
     
     if missing_config:
-        config = load_config()
+        config = raw_config
         
         for field in missing_config:
             key = field["key"]
@@ -3231,9 +3323,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         # Update version and save
         config["_config_version"] = latest_ver
         save_config(config)
-    elif current_ver < latest_ver:
+    elif current_ver < latest_ver or raw_config_changed:
         # Just update version
-        config = load_config()
+        config = raw_config
         config["_config_version"] = latest_ver
         save_config(config)
 

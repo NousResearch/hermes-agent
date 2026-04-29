@@ -635,6 +635,75 @@ class TestDiscordChannelPromptsConfig:
         assert raw["discord"]["channel_prompts"] == {}
 
 
+class TestConfigMigrationPreservesUserValues:
+    def test_migrate_preserves_explicit_cwd_timezone_and_auxiliary_models(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "terminal": {"cwd": "/home/super/Workspace"},
+                    "timezone": "Asia/Shanghai",
+                    "auxiliary": {
+                        "title_generation": {
+                            "provider": "alibaba",
+                            "model": "qwen3.6-plus",
+                        },
+                        "approval": {
+                            "provider": "alibaba",
+                            "model": "qwen3.6-plus",
+                        },
+                        "session_search": {
+                            "provider": "alibaba",
+                            "model": "qwen3.6-plus",
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["terminal"]["cwd"] == "/home/super/Workspace"
+        assert raw["timezone"] == "Asia/Shanghai"
+        assert raw["auxiliary"]["title_generation"]["model"] == "qwen3.6-plus"
+        assert raw["auxiliary"]["approval"]["model"] == "qwen3.6-plus"
+        assert raw["auxiliary"]["session_search"]["model"] == "qwen3.6-plus"
+
+    def test_migrate_expands_legacy_auxiliary_root_model_to_tasks(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "cwd": "/home/super/Workspace",
+                    "auxiliary": {
+                        "provider": "alibaba",
+                        "model": "qwen3.6-plus",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["terminal"]["cwd"] == "/home/super/Workspace"
+        assert "cwd" not in raw
+        assert "provider" not in raw["auxiliary"]
+        assert "model" not in raw["auxiliary"]
+        for task in DEFAULT_CONFIG["auxiliary"]:
+            assert raw["auxiliary"][task]["provider"] == "alibaba"
+            assert raw["auxiliary"][task]["model"] == "qwen3.6-plus"
+
+
 class TestUserMessagePreviewConfig:
     def test_default_config_preview_line_counts(self):
         preview = DEFAULT_CONFIG["display"]["user_message_preview"]

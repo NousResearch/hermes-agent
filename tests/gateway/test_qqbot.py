@@ -1,9 +1,9 @@
 """Tests for the QQ Bot platform adapter."""
 
-import asyncio
 import json
 import os
 import sys
+import asyncio
 from unittest import mock
 
 import pytest
@@ -502,10 +502,6 @@ class TestBuildTextBody:
         assert body.get("message_reference", {}).get("message_id") == "msg_123"
 
 
-# ---------------------------------------------------------------------------
-# _wait_for_reconnection / send reconnection wait
-# ---------------------------------------------------------------------------
-
 class TestWaitForReconnection:
     """Test that send() waits for reconnection instead of silently dropping."""
 
@@ -517,11 +513,9 @@ class TestWaitForReconnection:
     async def test_send_waits_and_succeeds_on_reconnect(self):
         """send() should wait for reconnection and then deliver the message."""
         adapter = self._make_adapter(app_id="a", client_secret="b")
-        # Initially disconnected
         adapter._running = False
         adapter._http_client = mock.MagicMock()
 
-        # Simulate reconnection after 0.3s (faster than real interval)
         async def fake_api_request(*args, **kwargs):
             return {"id": "msg_123"}
 
@@ -530,13 +524,11 @@ class TestWaitForReconnection:
         adapter._RECONNECT_POLL_INTERVAL = 0.1
         adapter._RECONNECT_WAIT_SECONDS = 5.0
 
-        # Schedule reconnection after a short delay
         async def reconnect_after_delay():
             await asyncio.sleep(0.3)
             adapter._running = True
 
         asyncio.get_event_loop().create_task(reconnect_after_delay())
-
         result = await adapter.send("test_openid", "Hello, world!")
         assert result.success
         assert result.message_id == "msg_123"
@@ -565,7 +557,6 @@ class TestWaitForReconnection:
             return {"id": "msg_immediate"}
 
         adapter._api_request = fake_api_request
-
         result = await adapter.send("test_openid", "Hello!")
         assert result.success
         assert result.message_id == "msg_immediate"
@@ -582,3 +573,48 @@ class TestWaitForReconnection:
         assert not result.success
         assert result.retryable is True
         assert "Not connected" in result.error
+
+
+class TestGatewayUrlFetch:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    def test_get_gateway_url_retries_then_succeeds(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._ensure_token = mock.AsyncMock(return_value="tok")
+
+        resp_fail = mock.Mock()
+        resp_fail.raise_for_status.side_effect = RuntimeError("temporary error")
+        resp_ok = mock.Mock()
+        resp_ok.raise_for_status.return_value = None
+        resp_ok.json.return_value = {"url": "wss://qq-gateway.example/ws"}
+
+        adapter._http_client = mock.Mock()
+        adapter._http_client.get = mock.AsyncMock(side_effect=[resp_fail, resp_ok])
+
+        async def _run():
+            with mock.patch("gateway.platforms.qqbot.adapter.asyncio.sleep", new=mock.AsyncMock()):
+                return await adapter._get_gateway_url()
+
+        url = asyncio.run(_run())
+        assert url == "wss://qq-gateway.example/ws"
+        assert adapter._last_gateway_url == "wss://qq-gateway.example/ws"
+        assert adapter._http_client.get.await_count == 2
+
+    def test_get_gateway_url_uses_cached_value_after_retries_fail(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._ensure_token = mock.AsyncMock(return_value="tok")
+        adapter._last_gateway_url = "wss://cached.qq/ws"
+
+        resp_fail = mock.Mock()
+        resp_fail.raise_for_status.side_effect = RuntimeError("gateway down")
+        adapter._http_client = mock.Mock()
+        adapter._http_client.get = mock.AsyncMock(return_value=resp_fail)
+
+        async def _run():
+            with mock.patch("gateway.platforms.qqbot.adapter.asyncio.sleep", new=mock.AsyncMock()):
+                return await adapter._get_gateway_url()
+
+        url = asyncio.run(_run())
+        assert url == "wss://cached.qq/ws"

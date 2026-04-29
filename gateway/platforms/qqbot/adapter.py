@@ -101,6 +101,7 @@ from gateway.platforms.qqbot.constants import (
     RECONNECT_BACKOFF,
     MAX_RECONNECT_ATTEMPTS,
     RATE_LIMIT_DELAY,
+    GATEWAY_URL_RETRY_DELAYS,
     QUICK_DISCONNECT_THRESHOLD,
     MAX_QUICK_DISCONNECT_COUNT,
     MAX_MESSAGE_LENGTH,
@@ -207,6 +208,7 @@ class QQAdapter(BasePlatformAdapter):
 
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
         self._upload_cache: Dict[str, Dict[str, Any]] = {}
+        self._last_gateway_url: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -358,26 +360,42 @@ class QQAdapter(BasePlatformAdapter):
             return self._access_token
 
     async def _get_gateway_url(self) -> str:
-        """Fetch the WebSocket gateway URL from the REST API."""
-        token = await self._ensure_token()
-        try:
-            resp = await self._http_client.get(
-                f"{API_BASE}{GATEWAY_URL_PATH}",
-                headers={
-                    "Authorization": f"QQBot {token}",
-                    "User-Agent": build_user_agent(),
-                },
-                timeout=DEFAULT_API_TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            raise RuntimeError(f"Failed to get QQ Bot gateway URL: {exc}") from exc
+        """Fetch the WebSocket gateway URL with retry and cache fallback."""
+        last_exc: Optional[Exception] = None
+        for attempt, delay in enumerate(GATEWAY_URL_RETRY_DELAYS, start=1):
+            if delay > 0:
+                await asyncio.sleep(delay)
+            token = await self._ensure_token()
+            try:
+                resp = await self._http_client.get(
+                    f"{API_BASE}{GATEWAY_URL_PATH}",
+                    headers={
+                        "Authorization": f"QQBot {token}",
+                        "User-Agent": build_user_agent(),
+                    },
+                    timeout=DEFAULT_API_TIMEOUT,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                url = data.get("url")
+                if not url:
+                    raise RuntimeError(f"QQ Bot gateway response missing url: {data}")
+                self._last_gateway_url = str(url)
+                return self._last_gateway_url
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "[%s] Failed to fetch gateway URL (attempt %d/%d): %s",
+                    self._log_tag,
+                    attempt,
+                    len(GATEWAY_URL_RETRY_DELAYS),
+                    exc,
+                )
 
-        url = data.get("url")
-        if not url:
-            raise RuntimeError(f"QQ Bot gateway response missing url: {data}")
-        return url
+        if self._last_gateway_url:
+            logger.warning("[%s] Falling back to cached gateway URL", self._log_tag)
+            return self._last_gateway_url
+        raise RuntimeError(f"Failed to get QQ Bot gateway URL: {last_exc}")
 
     # ------------------------------------------------------------------
     # WebSocket lifecycle

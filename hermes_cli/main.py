@@ -2745,7 +2745,7 @@ def _model_flow_custom(config):
     current_url = get_env_value("OPENAI_BASE_URL") or ""
     current_key = get_env_value("OPENAI_API_KEY") or ""
 
-    print("Custom OpenAI-compatible endpoint configuration:")
+    print("Custom endpoint configuration (OpenAI / Anthropic compatible):")
     if current_url:
         print(f"  Current URL: {current_url}")
     if current_key:
@@ -2831,6 +2831,44 @@ def _model_flow_custom(config):
             else:
                 print(f"  If /v1 should not be in the base URL, try: {suggested}")
 
+    # Select API protocol — auto-detect from URL, then let user confirm/choose
+    from hermes_cli.runtime_provider import _detect_api_mode_for_url
+
+    detected_mode = _detect_api_mode_for_url(effective_url)
+    api_mode = None
+    try:
+        if detected_mode:
+            mode_label = "Anthropic Messages" if detected_mode == "anthropic_messages" else (
+                "Codex Responses" if detected_mode == "codex_responses" else detected_mode
+            )
+            print(f"\n  Auto-detected API protocol: {mode_label}")
+            confirm = input(f"  Use {mode_label}? [Y/n]: ").strip().lower()
+            if confirm in ("", "y", "yes"):
+                api_mode = detected_mode
+            else:
+                detected_mode = None  # fall through to manual selection
+        if not detected_mode:
+            print("\n  Select API protocol:")
+            print("    1. OpenAI Chat Completions (default)")
+            print("    2. Anthropic Messages")
+            proto_pick = input("  Choice [1-2] (1): ").strip()
+            if proto_pick == "2":
+                api_mode = "anthropic_messages"
+            else:
+                api_mode = "chat_completions"
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    # Auto-strip /v1 for Anthropic protocol — the SDK appends /v1/messages itself
+    if api_mode == "anthropic_messages" and effective_url.rstrip("/").endswith("/v1"):
+        import re as _re
+        effective_url = _re.sub(r"/v1/?$", "", effective_url)
+        if base_url:
+            base_url = effective_url
+        print(f"  Note: stripped /v1 from URL (Anthropic SDK adds /v1/messages automatically)")
+        print(f"  Updated URL: {effective_url}")
+
     # Select model — use probe results when available, fall back to manual input
     model_name = ""
     detected_models = probe.get("models") or []
@@ -2894,7 +2932,10 @@ def _model_flow_custom(config):
         model["base_url"] = effective_url
         if effective_key:
             model["api_key"] = effective_key
-        model.pop("api_mode", None)  # let runtime auto-detect from URL
+        if api_mode and api_mode != "chat_completions":
+            model["api_mode"] = api_mode
+        else:
+            model.pop("api_mode", None)
         save_config(cfg)
         deactivate_provider()
 
@@ -2917,7 +2958,10 @@ def _model_flow_custom(config):
         _caller_model["base_url"] = effective_url
         if effective_key:
             _caller_model["api_key"] = effective_key
-        _caller_model.pop("api_mode", None)
+        if api_mode and api_mode != "chat_completions":
+            _caller_model["api_mode"] = api_mode
+        else:
+            _caller_model.pop("api_mode", None)
         config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
@@ -2928,6 +2972,7 @@ def _model_flow_custom(config):
         model_name or "",
         context_length=context_length,
         name=display_name,
+        api_mode=api_mode,
     )
 
 
@@ -2966,7 +3011,7 @@ def _custom_provider_api_key_config_value(provider_info, resolved_api_key=""):
 
 
 def _save_custom_provider(
-    base_url, api_key="", model="", context_length=None, name=None
+    base_url, api_key="", model="", context_length=None, name=None, api_mode=None
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
@@ -2990,6 +3035,9 @@ def _save_custom_provider(
             if model and entry.get("model") != model:
                 entry["model"] = model
                 changed = True
+            if api_mode and entry.get("api_mode") != api_mode:
+                entry["api_mode"] = api_mode
+                changed = True
             if model and context_length:
                 models_cfg = entry.get("models", {})
                 if not isinstance(models_cfg, dict):
@@ -3009,6 +3057,8 @@ def _save_custom_provider(
     entry = {"name": name, "base_url": base_url}
     if api_key:
         entry["api_key"] = api_key
+    if api_mode:
+        entry["api_mode"] = api_mode
     if model:
         entry["model"] = model
     if model and context_length:

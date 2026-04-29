@@ -598,10 +598,13 @@ def resolve_custom_provider(
         if requested not in {display_name.lower(), slug}:
             continue
 
+        entry_api_mode = (entry.get("api_mode") or "").strip().lower()
+        transport = "anthropic_messages" if entry_api_mode == "anthropic_messages" else "openai_chat"
+
         return ProviderDef(
             id=slug,
             name=display_name,
-            transport="openai_chat",
+            transport=transport,
             api_key_env_vars=(),
             base_url=api_url,
             is_aggregator=False,

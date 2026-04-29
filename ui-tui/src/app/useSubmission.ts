@@ -126,6 +126,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return sys('session not ready yet')
       }
 
+      // Plain prompts are the common path and should not pay an extra RPC
+      // before prompt.submit. File-drop detection can still run for inputs
+      // that contain an absolute/tilde path or file:// URI.
+      if (!looksLikeSlashCommand(text) && !/(?:^|\s)(?:file:\/\/|~\/|\/)[^\s]+/.test(text)) {
+        return startSubmit(text, expand(text), showUserMessage)
+      }
+
       gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
         .then(r => {
           if (!r?.matched) {

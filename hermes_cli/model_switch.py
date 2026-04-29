@@ -1019,7 +1019,19 @@ def list_authenticated_providers(
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
     seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
 
-    data = fetch_models_dev()
+    # When ``model_catalog.enabled`` is False, the user has explicitly opted
+    # out of the curated/models.dev catalog and only wants the providers they
+    # defined themselves to surface in the picker (#16970). Sections 1, 2,
+    # and 2b all draw from the catalog; sections 3 and 4 (user-defined
+    # ``providers:`` and ``custom_providers:``) are independent and continue
+    # to run unconditionally so the picker still has something to show.
+    try:
+        from hermes_cli.model_catalog import _load_catalog_config
+        catalog_enabled = bool(_load_catalog_config().get("enabled", True))
+    except Exception:
+        catalog_enabled = True
+
+    data = fetch_models_dev() if catalog_enabled else {}
 
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
@@ -1061,7 +1073,7 @@ def list_authenticated_providers(
         curated["lmstudio"] = live
 
     # --- 1. Check Hermes-mapped providers ---
-    for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
+    for hermes_id, mdev_id in (PROVIDER_TO_MODELS_DEV.items() if catalog_enabled else ()):
         # Skip aliases that map to the same models.dev provider (e.g.
         # kimi-coding and kimi-coding-cn both → kimi-for-coding).
         # The first one with valid credentials wins (#10526).
@@ -1134,7 +1146,7 @@ def list_authenticated_providers(
     # while _PROVIDER_MODELS and config.yaml use Hermes IDs ("copilot").
     _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
 
-    for pid, overlay in HERMES_OVERLAYS.items():
+    for pid, overlay in (HERMES_OVERLAYS.items() if catalog_enabled else ()):
         if pid.lower() in seen_slugs:
             continue
 
@@ -1248,7 +1260,7 @@ def list_authenticated_providers(
     except ImportError:
         _canon_provs = []
 
-    for _cp in _canon_provs:
+    for _cp in (_canon_provs if catalog_enabled else ()):
         if _cp.slug.lower() in seen_slugs:
             continue
 

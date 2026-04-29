@@ -454,6 +454,101 @@ def test_list_authenticated_providers_no_duplicate_labels_across_schemas(monkeyp
 
 
 # =============================================================================
+# Tests for model_catalog.enabled=false honoring (#16970)
+# =============================================================================
+
+
+def _stub_catalog_config(monkeypatch, *, enabled: bool):
+    """Force list_authenticated_providers to read this catalog-enabled flag."""
+    from hermes_cli import model_catalog
+
+    monkeypatch.setattr(
+        model_catalog,
+        "_load_catalog_config",
+        lambda: {
+            "enabled": enabled,
+            "url": "https://example.invalid/catalog.json",
+            "ttl_hours": 24.0,
+            "providers": {},
+        },
+    )
+
+
+def test_list_authenticated_providers_hides_built_ins_when_catalog_disabled(monkeypatch):
+    """With model_catalog.enabled=false, built-in providers should not appear.
+
+    Repro from #16970: user defines a custom provider for an endpoint that
+    overlaps with a built-in (e.g. dashscope), sets ``model_catalog.enabled:
+    false`` to suppress the built-in row, but the picker still shows both.
+    """
+    _stub_catalog_config(monkeypatch, enabled=False)
+    # Pretend the user has OpenAI credentials in the env. Without the fix,
+    # this would surface a built-in OpenAI row in section 1.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    custom_providers = [
+        {
+            "name": "my-dashscope",
+            "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
+            "api_key": "sk-sp-test",
+            "model": "qwen3.6-plus",
+            "models": {"qwen3.6-plus": {"context_length": 500000}},
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="my-dashscope",
+        user_providers={},
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    # Only user-config / custom_providers entries — no built-ins.
+    sources = {p.get("source") for p in providers}
+    assert sources <= {"user-config", "custom"}, (
+        f"Expected only user-defined sources when catalog disabled, got: "
+        f"{sorted(sources)}"
+    )
+
+    # And specifically: the OpenAI built-in row must not appear.
+    slugs = [p["slug"] for p in providers]
+    assert "openai" not in slugs, (
+        f"Built-in openai leaked into picker despite catalog disabled: {slugs}"
+    )
+
+
+def test_list_authenticated_providers_shows_built_ins_when_catalog_enabled(monkeypatch):
+    """With model_catalog.enabled=true (default), built-in flow runs as before.
+
+    Locks in that the catalog-disabled gate is opt-in only and does not
+    accidentally suppress section 1/2/2b when the flag is true.
+    """
+    _stub_catalog_config(monkeypatch, enabled=True)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "openai": {
+                "name": "OpenAI",
+                "env": ["OPENAI_API_KEY"],
+            }
+        },
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="openai",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+
+    slugs = [p["slug"] for p in providers]
+    assert "openai" in slugs, (
+        f"Built-in openai should appear when catalog enabled: {slugs}"
+    )
+
+
+# =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================
 

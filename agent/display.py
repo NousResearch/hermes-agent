@@ -828,6 +828,13 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
 
+    # Web-search-specific: empty results are treated as failure
+    if tool_name == "web_search":
+        if isinstance(data, dict):
+            web_data = data.get("data", {}).get("web", [])
+            if data.get("success") is True and len(web_data) == 0:
+                return True, " [0 results]"
+
     # Extract specific error message if present in JSON
     if isinstance(data, dict):
         err = data.get("error") or data.get("message")
@@ -888,7 +895,14 @@ def get_cute_tool_message(
         return f"{line}{failure_suffix}"
 
     if tool_name == "web_search":
-        return _wrap(f"┊ 🔍 search    {_trunc(args.get('query', ''), 64)}  {dur}")
+        count_note = ""
+        if result:
+            data = safe_json_loads(result)
+            if isinstance(data, dict):
+                web_data = data.get("data", {}).get("web", [])
+                count = len(web_data)
+                count_note = f"  ({count} result{'s' if count != 1 else ''})"
+        return _wrap(f"┊ 🔍 search    {_trunc(args.get('query', ''), 64)}{count_note}  {dur}")
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:

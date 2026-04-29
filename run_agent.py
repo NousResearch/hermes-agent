@@ -8091,6 +8091,18 @@ class AIAgent:
         )
         _is_tokenhub = base_url_host_matches(self._base_url_lower, "tokenhub.tencentmaas.com")
         _is_lmstudio = (self.provider or "").strip().lower() == "lmstudio"
+        _is_deepseek = (
+            self.provider == "deepseek"
+            or "deepseek" in (self.model or "").lower()
+            or base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
+
+        # Gemini detection — model name contains "gemini" (covers Liaobots,
+        # OpenRouter, and other OpenAI-compatible proxies). The native Gemini
+        # adapter (gemini_native_adapter.py) is used only when the base URL
+        # matches generativelanguage.googleapis.com — this flag is for the
+        # chat_completions transport path.
+        _is_gemini = "gemini" in (self.model or "").lower()
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -8164,6 +8176,8 @@ class AIAgent:
             is_kimi=_is_kimi,
             is_tokenhub=_is_tokenhub,
             is_lmstudio=_is_lmstudio,
+            is_deepseek=_is_deepseek,
+            is_gemini=_is_gemini,
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,
@@ -9282,6 +9296,7 @@ class AIAgent:
                         self.tool_progress_callback(
                             "tool.completed", function_name, None, None,
                             duration=tool_duration, is_error=is_error,
+                            result=function_result,
                         )
                     except Exception as cb_err:
                         logging.debug(f"Tool progress callback error: {cb_err}")
@@ -9755,6 +9770,17 @@ class AIAgent:
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
+
+                # DeepSeek / Liaobots thinking mode: null content for
+                # tool-call messages (see main loop for details #15250).
+                if (
+                    api_msg.get("role") == "assistant"
+                    and api_msg.get("content") == ""
+                    and api_msg.get("tool_calls")
+                    and self._needs_deepseek_tool_reasoning()
+                ):
+                    api_msg["content"] = None
+
                 self._copy_reasoning_content_for_api(msg, api_msg)
                 for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                     api_msg.pop(internal_field, None)
@@ -10419,6 +10445,19 @@ class AIAgent:
             api_messages = []
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
+
+                # DeepSeek / Liaobots thinking mode: assistant tool-call
+                # messages must use null content (per OpenAI spec) -- empty
+                # string "" triggers Liaobots internal format converter to
+                # reject with HTTP 400 "content[].thinking must be passed
+                # back" (refs #15250).
+                if (
+                    api_msg.get("role") == "assistant"
+                    and api_msg.get("content") == ""
+                    and api_msg.get("tool_calls")
+                    and self._needs_deepseek_tool_reasoning()
+                ):
+                    api_msg["content"] = None
 
                 # Inject ephemeral context into the current turn's user message.
                 # Sources: memory manager prefetch + plugin pre_llm_call hooks

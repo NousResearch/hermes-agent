@@ -479,6 +479,102 @@ def _common_betas_for_base_url(base_url: str | None) -> list[str]:
     return _COMMON_BETAS
 
 
+def extract_stream_error_payload(exc: BaseException) -> Optional[Dict[str, Any]]:
+    """Extract the original service-side error payload from an Anthropic SDK
+    streaming RuntimeError.
+
+    The SDK's streaming accumulator (``anthropic.lib.streaming._messages.
+    accumulate_event``) raises::
+
+        RuntimeError('Unexpected event order, got <type> before "message_start"')
+
+    when the server sends a non-``message_start`` event as the first stream
+    event.  In practice this happens when Bedrock/Anthropic returns an
+    ``error`` event (throttling, overloaded, 5xx, validation) at the start
+    of the stream.  The accumulator's type guard rejects the event without
+    forwarding the payload, so the caller sees the cryptic "event order"
+    message with no context.
+
+    The raw event object — with the full error payload intact — is still
+    preserved in the raising frame's locals.  This helper walks
+    ``exc.__traceback__`` to the innermost frame and recovers it, returning
+    a ``dict`` like::
+
+        {"type": "overloaded_error", "message": "Bedrock is currently overloaded"}
+
+    Returns ``None`` if the exception is not the expected RuntimeError, or
+    if no recoverable event payload is present (e.g. different failure mode).
+    """
+    if not isinstance(exc, RuntimeError):
+        return None
+    if "Unexpected event order" not in str(exc):
+        return None
+
+    tb = getattr(exc, "__traceback__", None)
+    while tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    if tb is None:
+        return None
+
+    frame_locals = tb.tb_frame.f_locals
+    event = frame_locals.get("event")
+    if event is None:
+        return None
+
+    # The SDK misconstructs the event as RawMessageStartEvent via
+    # construct_type_unchecked, but the actual fields (type, error) remain
+    # accessible on the pydantic model.
+    payload: Dict[str, Any] = {}
+    event_type = getattr(event, "type", None)
+    if event_type:
+        payload["event_type"] = event_type
+    err = getattr(event, "error", None)
+    if err is not None:
+        # err may be a pydantic model, a dict, or a str
+        if hasattr(err, "model_dump"):
+            payload["error"] = err.model_dump()
+        elif hasattr(err, "to_dict"):
+            payload["error"] = err.to_dict()
+        elif isinstance(err, dict):
+            payload["error"] = err
+        else:
+            payload["error"] = {"message": str(err)}
+    # Final fallback: dump the entire event model if we got nothing useful
+    if not payload.get("error") and hasattr(event, "model_dump"):
+        try:
+            payload["raw_event"] = event.model_dump()
+        except Exception:
+            pass
+    return payload or None
+
+
+def format_stream_error_message(exc: RuntimeError, payload: Dict[str, Any]) -> str:
+    """Format a recovered stream error payload into a human-readable message
+    suitable for re-raising.
+
+    Produces output like::
+
+        overloaded_error: Bedrock is currently overloaded, please retry
+        (original SDK error: Unexpected event order, got error before "message_start")
+    """
+    err = payload.get("error") or {}
+    err_type = err.get("type") if isinstance(err, dict) else None
+    err_msg = err.get("message") if isinstance(err, dict) else None
+
+    if err_type and err_msg:
+        head = f"{err_type}: {err_msg}"
+    elif err_msg:
+        head = str(err_msg)
+    elif err_type:
+        head = err_type
+    elif payload.get("raw_event"):
+        head = f"service error event: {payload['raw_event']}"
+    else:
+        head = f"service returned event_type={payload.get('event_type', 'unknown')}"
+
+    return f"{head} (anthropic SDK: {exc})"
+
+
 def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 

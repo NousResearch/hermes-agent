@@ -6864,49 +6864,81 @@ class AIAgent:
             # Reset stale-stream timer for this attempt
             last_chunk_time["t"] = time.time()
             # Use the Anthropic SDK's streaming context manager
-            with self._anthropic_client.messages.stream(**api_kwargs) as stream:
-                for event in stream:
-                    # Update stale-stream timer on every event so the
-                    # outer poll loop knows data is flowing.  Without
-                    # this, the detector kills healthy long-running
-                    # Opus streams after 180 s even when events are
-                    # actively arriving (the chat_completions path
-                    # already does this at the top of its chunk loop).
-                    last_chunk_time["t"] = time.time()
-                    self._touch_activity("receiving stream response")
+            try:
+                with self._anthropic_client.messages.stream(**api_kwargs) as stream:
+                    for event in stream:
+                        # Update stale-stream timer on every event so the
+                        # outer poll loop knows data is flowing.  Without
+                        # this, the detector kills healthy long-running
+                        # Opus streams after 180 s even when events are
+                        # actively arriving (the chat_completions path
+                        # already does this at the top of its chunk loop).
+                        last_chunk_time["t"] = time.time()
+                        self._touch_activity("receiving stream response")
 
-                    if self._interrupt_requested:
-                        break
+                        if self._interrupt_requested:
+                            break
 
-                    event_type = getattr(event, "type", None)
+                        event_type = getattr(event, "type", None)
 
-                    if event_type == "content_block_start":
-                        block = getattr(event, "content_block", None)
-                        if block and getattr(block, "type", None) == "tool_use":
-                            has_tool_use = True
-                            tool_name = getattr(block, "name", None)
-                            if tool_name:
-                                _fire_first_delta()
-                                self._fire_tool_gen_started(tool_name)
-
-                    elif event_type == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        if delta:
-                            delta_type = getattr(delta, "type", None)
-                            if delta_type == "text_delta":
-                                text = getattr(delta, "text", "")
-                                if text and not has_tool_use:
+                        if event_type == "content_block_start":
+                            block = getattr(event, "content_block", None)
+                            if block and getattr(block, "type", None) == "tool_use":
+                                has_tool_use = True
+                                tool_name = getattr(block, "name", None)
+                                if tool_name:
                                     _fire_first_delta()
-                                    self._fire_stream_delta(text)
-                                    deltas_were_sent["yes"] = True
-                            elif delta_type == "thinking_delta":
-                                thinking_text = getattr(delta, "thinking", "")
-                                if thinking_text:
-                                    _fire_first_delta()
-                                    self._fire_reasoning_delta(thinking_text)
+                                    self._fire_tool_gen_started(tool_name)
 
-                # Return the native Anthropic Message for downstream processing
-                return stream.get_final_message()
+                        elif event_type == "content_block_delta":
+                            delta = getattr(event, "delta", None)
+                            if delta:
+                                delta_type = getattr(delta, "type", None)
+                                if delta_type == "text_delta":
+                                    text = getattr(delta, "text", "")
+                                    if text and not has_tool_use:
+                                        _fire_first_delta()
+                                        self._fire_stream_delta(text)
+                                        deltas_were_sent["yes"] = True
+                                elif delta_type == "thinking_delta":
+                                    thinking_text = getattr(delta, "thinking", "")
+                                    if thinking_text:
+                                        _fire_first_delta()
+                                        self._fire_reasoning_delta(thinking_text)
+
+                    # Return the native Anthropic Message for downstream processing
+                    return stream.get_final_message()
+            except RuntimeError as _stream_rt_err:
+                # The Anthropic SDK's streaming accumulator raises
+                # `RuntimeError('Unexpected event order, got <type> before
+                # "message_start"')` when the first SSE event isn't
+                # message_start — typically when Bedrock / Anthropic returns
+                # an `error` event first (throttling, overload, 5xx,
+                # validation).  The SDK has the payload but discards it
+                # via construct_type_unchecked, leaving callers with a
+                # cryptic "event order" message.  Recover the original
+                # payload from the raising frame's locals and re-raise
+                # with meaningful context so the user (and retry logic)
+                # can see what actually happened.
+                from agent.anthropic_adapter import (
+                    extract_stream_error_payload,
+                    format_stream_error_message,
+                )
+                _payload = extract_stream_error_payload(_stream_rt_err)
+                if _payload is not None:
+                    _msg = format_stream_error_message(_stream_rt_err, _payload)
+                    # Re-raise as RuntimeError with the real message so
+                    # logs / _summarize_api_error surface actionable context.
+                    # (We keep it as RuntimeError rather than attempting to
+                    # construct a typed Anthropic SDK exception because
+                    # APIStatusError subclasses require an httpx.Response
+                    # we don't have at this point.  The outer retry loop's
+                    # classifier handles RuntimeError retry eligibility via
+                    # substring matching on the message.)
+                    raise RuntimeError(_msg) from _stream_rt_err
+                # Couldn't recover a payload — let the original exception
+                # propagate unchanged.
+                raise
 
         def _call():
             import httpx as _httpx

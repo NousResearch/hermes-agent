@@ -1,0 +1,37 @@
+# Reference copy for ~/.codex/config.toml MCP server registration.
+# Install per-machine by appending this file to ~/.codex/config.toml.
+
+[mcp_servers.github]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+
+[mcp_servers.github.env]
+GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}"
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-playwright"]
+
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+
+[mcp_servers.context7.env]
+UPSTASH_REDIS_REST_TOKEN = "${UPSTASH_TOKEN}"
+
+[mcp_servers.sentry]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-sentry"]
+
+[mcp_servers.sentry.env]
+SENTRY_AUTH_TOKEN = "${SENTRY_AUTH_TOKEN}"
+SENTRY_ORG = "${SENTRY_ORG}"
+SENTRY_PROJECT = "${SENTRY_PROJECT}"
+
+[mcp_servers.supabase]
+command = "npx"
+args = ["-y", "@supabase/mcp-server-supabase"]
+
+[mcp_servers.supabase.env]
+SUPABASE_URL = "${SUPABASE_URL}"
+SUPABASE_KEY = "${SUPABASE_KEY}"

@@ -141,6 +141,12 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/details toggle')).toBe(true)
     expect(getUiState().detailsMode).toBe('expanded')
     expect(getUiState().detailsModeCommandOverride).toBe(true)
+    expect(getUiState().sections).toEqual({
+      thinking: 'expanded',
+      tools: 'expanded',
+      subagents: 'expanded',
+      activity: 'expanded'
+    })
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
       key: 'details_mode',
       value: 'expanded'

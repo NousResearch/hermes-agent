@@ -12,8 +12,9 @@ from typing import Any, Callable, Mapping, Sequence
 from gateway.image2_browser_preflight import BROWSER_STATE_ENV, evaluate_browser_preflight
 from gateway.image2_candidate_gate import evaluate_candidate_gate
 from gateway.image2_delivery_contract import evaluate_delivery_contract
-from gateway.image2_feishu_delivery import send_feishu_image_from_contract
+from gateway.image2_feishu_delivery import send_feishu_files_from_print_package, send_feishu_image_from_contract
 from gateway.image2_generation import probe_opencli_browser_state, run_opencli_generation
+from gateway.image2_print import package_flat_print_outputs
 from gateway.image2_review_gate import evaluate_review_gate
 from gateway.image2_store import Image2JobStore
 from gateway.image2_visual_reviewer import review_candidate_image
@@ -25,6 +26,8 @@ REVIEWER_ENV_OPTIONS = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "IMAGE2_REVIEWER_PRO
 Generator = Callable[..., dict[str, Any]]
 Reviewer = Callable[..., dict[str, Any]]
 DeliverySender = Callable[..., dict[str, Any]]
+PrintPackager = Callable[..., dict[str, Any]]
+FileDeliverySender = Callable[..., dict[str, Any]]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -146,13 +149,14 @@ def _terminal_success(
     worker_id: str,
     job_dir: Path,
     payload: Mapping[str, Any],
+    reason: str = "Feishu native image read-back verified",
 ) -> dict[str, Any]:
     row = store.mark_readback_verified(task_id=task_id, worker_id=worker_id) or {}
     result = {
         "task_id": task_id,
         "worker_id": worker_id,
         "status": "readback_verified",
-        "reason": "Feishu native image read-back verified",
+        "reason": reason,
         "exit_code": 0,
         "db_status": row.get("status"),
     }
@@ -186,8 +190,10 @@ def run_worker(
     generator: Generator | None = None,
     reviewer: Reviewer | None = None,
     delivery_sender: DeliverySender | None = None,
+    print_packager: PrintPackager | None = None,
+    file_delivery_sender: FileDeliverySender | None = None,
 ) -> dict[str, Any]:
-    """Claim, generate, gate, review, deliver, and read-back exactly one Image2 task."""
+    """Claim, generate, gate, review, deliver/read-back, or package approved print finals."""
     env = dict(environ if environ is not None else os.environ)
     runtime = Path(runtime_root)
     store = Image2JobStore(db_path=Path(db_path), runtime_root=runtime)
@@ -216,6 +222,129 @@ def run_worker(
         "prompt_excerpt": prompt_text[:240],
         "prompt_artifacts": artifact_info["prompt_artifacts"],
     }
+
+    message_for_print = dict(artifact_info.get("message") or _load_json(job_dir / "message.json"))
+    print_request = message_for_print.get("print_request") if isinstance(message_for_print.get("print_request"), Mapping) else None
+    if print_request:
+        if not env.get("FEISHU_APP_ID") or not env.get("FEISHU_APP_SECRET"):
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="delivery_preflight_missing",
+                last_error="delivery_preflight_missing: FEISHU_APP_ID / FEISHU_APP_SECRET are required",
+                extra={"print_request": print_request, **prompt_common},
+                exit_code=6,
+            )
+        approved_path = Path(str(print_request.get("approved_image_path") or ""))
+        expected_approved_sha = str(print_request.get("approved_image_sha256") or "")
+        if not approved_path.is_file() or not expected_approved_sha:
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_approved_source_missing",
+                last_error="print_approved_source_missing: approved image path or sha256 missing",
+                extra={"print_request": print_request, **prompt_common},
+                exit_code=6,
+            )
+        actual_approved_sha = hashlib.sha256(approved_path.read_bytes()).hexdigest()
+        if actual_approved_sha != expected_approved_sha:
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_approved_source_sha_mismatch",
+                last_error="print_approved_source_sha_mismatch: approved image bytes changed after preview read-back",
+                extra={"print_request": print_request, "approved_sha256_actual": actual_approved_sha, **prompt_common},
+                exit_code=6,
+            )
+        store.mark_status(task_id=str(task_id), status="packaging_print_files", worker_id=str(worker_id), last_error=None)
+        try:
+            packager = print_packager or package_flat_print_outputs
+            package_result = packager(
+                job_dir=job_dir,
+                approved_image_path=approved_path,
+                spec=dict(print_request.get("spec") or {}),
+                environ=env,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_package_failed",
+                last_error=f"print_package_failed: {exc.__class__.__name__}: {exc}",
+                extra={"print_request": print_request, **prompt_common},
+                exit_code=6,
+            )
+        (job_dir / "print" / "reports").mkdir(parents=True, exist_ok=True)
+        (job_dir / "print" / "reports" / "package_report.json").write_text(_safe_json(package_result), encoding="utf-8")
+        if str(package_result.get("approved_sha256") or expected_approved_sha) != expected_approved_sha:
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_package_source_sha_mismatch",
+                last_error="print_package_source_sha_mismatch: package did not use approved preview bytes",
+                extra={"print_request": print_request, "print_package": package_result, **prompt_common},
+                exit_code=6,
+            )
+        if package_result.get("status") != "pass":
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_package_rejected",
+                last_error="print_package_rejected: " + str(package_result.get("reason") or package_result.get("status")),
+                extra={"print_request": print_request, "print_package": package_result, **prompt_common},
+                exit_code=6,
+            )
+        files = [
+            {"path": str(package_result.get("psd_path") or ""), "file_name": Path(str(package_result.get("psd_path") or "")).name},
+            {"path": str(package_result.get("pdf_path") or ""), "file_name": Path(str(package_result.get("pdf_path") or "")).name},
+        ]
+        try:
+            sender = file_delivery_sender or send_feishu_files_from_print_package
+            reply_to = str(message_for_print.get("thread_id") or message_for_print.get("root_id") or message_for_print.get("parent_id") or message_for_print.get("upper_message_id") or message_for_print.get("feishu_message_id") or "")
+            delivery_report = sender(files=files, chat_id=str(message_for_print.get("chat_id") or ""), reply_to=reply_to, environ=env)
+        except Exception as exc:  # noqa: BLE001
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_delivery_failed",
+                last_error=f"print_delivery_failed: {exc.__class__.__name__}: {exc}",
+                extra={"print_request": print_request, "print_package": package_result, **prompt_common},
+                exit_code=6,
+            )
+        (job_dir / "print" / "reports" / "delivery_report.json").write_text(_safe_json(delivery_report), encoding="utf-8")
+        if delivery_report.get("verified") is not True:
+            return _terminal_failure(
+                store=store,
+                task_id=str(task_id),
+                worker_id=str(worker_id),
+                job_dir=job_dir,
+                reason="print_delivery_readback_failed",
+                last_error="print_delivery_readback_failed: expected verified file read-backs",
+                extra={"print_request": print_request, "print_package": package_result, "print_delivery": delivery_report, **prompt_common},
+                exit_code=6,
+            )
+        return _terminal_success(
+            store=store,
+            task_id=str(task_id),
+            worker_id=str(worker_id),
+            job_dir=job_dir,
+            payload={"print_request": print_request, "print_package": package_result, "print_delivery": delivery_report, **prompt_common},
+            reason="Feishu print files read-back verified",
+        )
 
     missing = missing_live_preflight(env)
     if missing:

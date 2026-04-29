@@ -177,6 +177,103 @@ class FeishuImageClient:
             "chat_id": chat_id,
         }
 
+    def upload_file(self, file_path: Path, *, token: str, file_name: str = "") -> str:
+        file_path = Path(file_path)
+        if not file_path.is_file():
+            raise FeishuDeliveryError(f"file does not exist: {file_path}")
+        name = file_name or file_path.name
+        mime = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+        with file_path.open("rb") as handle:
+            payload = self._check_payload(
+                self.http_post(
+                    f"{self.base_url}/im/v1/files",
+                    headers={"Authorization": f"Bearer {token}"},
+                    data={"file_type": "stream", "file_name": name},
+                    files={"file": (name, handle, mime)},
+                    timeout=120,
+                ),
+                action="upload_file",
+            )
+        file_key = (payload.get("data") or {}).get("file_key")
+        if not file_key:
+            raise FeishuDeliveryError("file_key missing in Feishu upload response")
+        return str(file_key)
+
+    def send_file_message(self, *, chat_id: str, file_key: str, token: str, reply_to: str = "") -> str:
+        body = {"msg_type": "file", "content": json.dumps({"file_key": file_key}, ensure_ascii=False), "uuid": str(uuid.uuid4())}
+        if reply_to:
+            body["reply_in_thread"] = True
+            payload = self._check_payload(
+                self.http_post(
+                    f"{self.base_url}/im/v1/messages/{reply_to}/reply",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
+                    json=body,
+                    timeout=30,
+                ),
+                action="reply_file_message",
+            )
+        else:
+            payload = self._check_payload(
+                self.http_post(
+                    f"{self.base_url}/im/v1/messages?receive_id_type=chat_id",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"},
+                    json={"receive_id": chat_id, "msg_type": "file", "content": body["content"], "uuid": body["uuid"]},
+                    timeout=30,
+                ),
+                action="send_file_message",
+            )
+        message_id = (payload.get("data") or {}).get("message_id")
+        if not message_id:
+            raise FeishuDeliveryError("message_id missing in Feishu send response")
+        return str(message_id)
+
+    @staticmethod
+    def _readback_file_key(readback: Mapping[str, Any]) -> str:
+        content = (readback.get("body") or {}).get("content") if isinstance(readback.get("body"), Mapping) else None
+        content = content or readback.get("content")
+        if not content:
+            return ""
+        try:
+            parsed = json.loads(content) if isinstance(content, str) else content
+        except json.JSONDecodeError:
+            return ""
+        return str(parsed.get("file_key") or "") if isinstance(parsed, Mapping) else ""
+
+    def send_file_and_verify(self, file_path: Path, *, chat_id: str, reply_to: str = "", file_name: str = "") -> dict[str, Any]:
+        file_path = Path(file_path)
+        file_sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
+        token = self.tenant_access_token()
+        file_key = self.upload_file(file_path, token=token, file_name=file_name)
+        message_id = self.send_file_message(chat_id=chat_id, reply_to=reply_to, file_key=file_key, token=token)
+        readback = self.read_message(message_id=message_id, token=token)
+        msg_type = readback.get("msg_type")
+        if msg_type != "file":
+            raise FeishuDeliveryError(f"read-back msg_type mismatch: expected file, got {msg_type!r}")
+        readback_key = self._readback_file_key(readback)
+        if not readback_key:
+            raise FeishuDeliveryError("read-back file_key missing")
+        if readback_key != file_key:
+            raise FeishuDeliveryError("read-back file_key mismatch")
+        return {
+            "verified": True,
+            "message_id": message_id,
+            "file_key": file_key,
+            "readback_msg_type": msg_type,
+            "file_path": str(file_path),
+            "file_sha256": file_sha256,
+            "reply_to": reply_to,
+            "chat_id": chat_id,
+        }
+
+    def send_files_and_verify(self, files: list[Mapping[str, Any]], *, chat_id: str, reply_to: str = "") -> dict[str, Any]:
+        readbacks = []
+        for item in files:
+            path = Path(str(item.get("path") or "")).expanduser()
+            if not path.is_file():
+                raise FeishuDeliveryError(f"file does not exist: {path}")
+            readbacks.append(self.send_file_and_verify(path, chat_id=chat_id, reply_to=reply_to, file_name=str(item.get("file_name") or path.name)))
+        return {"verified": bool(readbacks) and all(item.get("verified") is True and item.get("readback_msg_type") == "file" for item in readbacks), "readbacks": readbacks, "chat_id": chat_id, "reply_to": reply_to}
+
 
 def send_feishu_image_from_contract(
     *,
@@ -191,3 +288,17 @@ def send_feishu_image_from_contract(
         env.update({str(k): str(v) for k, v in environ.items()})
     client = FeishuImageClient(app_id=env.get("FEISHU_APP_ID"), app_secret=env.get("FEISHU_APP_SECRET"))
     return client.send_image_and_verify(Path(image_path), chat_id=str(chat_id), reply_to=str(reply_to or ""), candidate_sha256=str(candidate_sha256 or ""))
+
+
+def send_feishu_files_from_print_package(
+    *,
+    files: list[Mapping[str, Any]],
+    chat_id: str,
+    reply_to: str,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    env = dict(os.environ)
+    if environ:
+        env.update({str(k): str(v) for k, v in environ.items()})
+    client = FeishuImageClient(app_id=env.get("FEISHU_APP_ID"), app_secret=env.get("FEISHU_APP_SECRET"))
+    return client.send_files_and_verify(files, chat_id=str(chat_id), reply_to=str(reply_to or ""))

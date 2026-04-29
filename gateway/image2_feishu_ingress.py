@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
 
+from gateway.image2_print import parse_print_spec, should_handle_print_request
 from gateway.image2_store import Image2JobStore
 
 try:  # PyYAML is available in the Hermes runtime, but keep tests importable.
@@ -1023,6 +1024,74 @@ def build_feishu_message_payload(
     }
 
 
+def find_latest_verified_image2_preview(
+    settings: Image2IngressSettings,
+    *,
+    chat_id: str,
+    root_id: str | None,
+    thread_id: str | None,
+) -> Optional[Dict[str, Any]]:
+    """Return the latest exactly verified non-print preview in the same Feishu thread."""
+    db_path = Path(settings.db_path)
+    ids = _dedupe_identities(root_id, thread_id)
+    if not db_path.exists() or not str(chat_id or "").strip() or not ids:
+        return None
+    where = ["chat_id = ?", "status = ?"]
+    params: list[Any] = [str(chat_id), "readback_verified"]
+    placeholders = ",".join("?" for _ in ids)
+    where.append(f"(root_id IN ({placeholders}) OR thread_id IN ({placeholders}))")
+    params.extend(ids)
+    params.extend(ids)
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM image2_jobs WHERE " + " AND ".join(where) + " ORDER BY updated_at DESC, created_at DESC LIMIT 20",
+                params,
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+    for row in rows:
+        item = dict(row)
+        try:
+            payload = json.loads(str(item.get("payload_json") or "{}"))
+        except json.JSONDecodeError:
+            payload = {}
+        if isinstance(payload, Mapping) and payload.get("print_request"):
+            continue
+        job_dir = Path(str(item.get("job_dir") or ""))
+        result_path = job_dir / "worker_result.json"
+        if not result_path.is_file():
+            continue
+        try:
+            worker_result = json.loads(result_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        contract = worker_result.get("delivery_contract") or {}
+        if contract.get("status") != "ready_to_send":
+            continue
+        image_path = Path(str(contract.get("image_path") or ""))
+        image_sha256 = str(contract.get("image_sha256") or "")
+        if not image_path.is_file() or not image_sha256:
+            continue
+        try:
+            if _sha256_local_file(image_path) != image_sha256:
+                continue
+        except OSError:
+            continue
+        readback = worker_result.get("delivery_readback") or {}
+        if readback.get("verified") is not True or readback.get("readback_msg_type") != "image" or not str(readback.get("message_id") or ""):
+            continue
+        return {
+            "task_id": str(item.get("task_id") or ""),
+            "job_dir": str(job_dir),
+            "approved_image_path": str(image_path),
+            "approved_image_sha256": image_sha256,
+            "feishu_image_message_id": str(readback.get("message_id") or ""),
+        }
+    return None
+
+
 def enqueue_feishu_job(
     settings: Image2IngressSettings,
     message_payload: Mapping[str, Any],
@@ -1148,9 +1217,49 @@ def handle_image2_feishu_ingress_event(
     if not loaded.enabled:
         return None
     source = getattr(event, "source", None)
+    raw_text = str(getattr(event, "text", "") or "")
+    chat_id, root_id, thread_id = canonical_image2_thread_identity(event, settings=loaded)
+    if should_handle_print_request(raw_text):
+        spec = parse_print_spec(raw_text)
+        if spec.get("status") == "need_clarification":
+            return str(spec.get("message") or "要出最终印刷稿，需要先补尺寸。")
+        if spec.get("status") == "ok":
+            approved = find_latest_verified_image2_preview(loaded, chat_id=chat_id, root_id=root_id, thread_id=thread_id)
+            if not approved:
+                return "⚠️ 还没有找到同一飞书话题里已发出并通过回读的预览图。请先定好设计稿，再回复：定稿，出印刷版，尺寸 例如 100×150cm。"
+            payload = {
+                "source_platform": "feishu",
+                "feishu_message_id": str(getattr(event, "message_id", "") or ""),
+                "chat_id": chat_id,
+                "root_id": root_id or "",
+                "thread_id": thread_id or root_id or "",
+                "text": raw_text,
+                "source_files": [],
+                "print_request": {
+                    "approved_task_id": approved["task_id"],
+                    "approved_image_path": approved["approved_image_path"],
+                    "approved_image_sha256": approved.get("approved_image_sha256", ""),
+                    "feishu_image_message_id": approved.get("feishu_image_message_id", ""),
+                    "spec": spec,
+                },
+            }
+            try:
+                job = dict(enqueue_func(loaded, payload))
+            except Exception as exc:
+                logger.warning("[Image2Ingress] Failed to enqueue Feishu print request: %s", exc.__class__.__name__)
+                return "⚠️ 印刷定稿任务入队失败：已停止普通聊天兜底，请稍后重试或联系维护。"
+            task_id = str(job.get("task_id") or "")
+            if loaded.launch_worker and task_id and not job.get("already_existed"):
+                try:
+                    launcher = launch_func or (lambda s, *, task_id: launch_image2_worker(s, task_id=task_id))
+                    launcher(loaded, task_id=task_id)
+                except Exception:
+                    logger.exception("[Image2Ingress] Enqueued print %s but failed to launch Image2 worker", task_id)
+            return f"✅ 已进入印刷定稿队列 `{task_id}`。我会按 {spec['width_mm']}×{spec['height_mm']}mm / {spec['dpi']}DPI 生成扁平单层 PSD 和 PDF proof，并回传飞书文件。"
+
     is_visual_request = should_handle_feishu_visual_request(
         platform=getattr(source, "platform", None),
-        text=str(getattr(event, "text", "") or ""),
+        text=raw_text,
         message_type=getattr(event, "message_type", "text"),
     )
 

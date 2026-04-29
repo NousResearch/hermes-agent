@@ -1,5 +1,3 @@
-import { evictInkCaches } from '@hermes/ink'
-
 import { type HeapDumpResult, performHeapDump } from './memory.js'
 
 export type MemoryLevel = 'critical' | 'high' | 'normal'
@@ -19,6 +17,26 @@ export interface MemoryMonitorOptions {
 }
 
 const GB = 1024 ** 3
+
+// Deferred @hermes/ink import: loading `@hermes/ink` at module top-level
+// pulls the full ~414KB Ink bundle (React, renderer, components, hooks) onto
+// the critical path before the Python gateway can even be spawned. That
+// serialised roughly 150ms of Node work in front of gw.start() on every
+// cold `hermes --tui` launch.
+//
+// evictInkCaches only runs inside `tick()`, which fires on a 10s timer and
+// only when heap pressure crosses the high-water mark — by then Ink has
+// long since been loaded by the app entry. This dynamic import is a no-op
+// on the hot path (module is already in the ESM cache); when a startup
+// spike somehow trips the threshold before the app registers its own Ink
+// import, we pay the load cost exactly once, inside the tick that needs it.
+let _evictInkCaches: ((level: 'all' | 'half') => unknown) | null = null
+async function _ensureEvictInkCaches(): Promise<(level: 'all' | 'half') => unknown> {
+  if (_evictInkCaches) return _evictInkCaches
+  const mod = await import('@hermes/ink')
+  _evictInkCaches = mod.evictInkCaches as (level: 'all' | 'half') => unknown
+  return _evictInkCaches
+}
 
 export function startMemoryMonitor({
   criticalBytes = 2.5 * GB,
@@ -43,7 +61,16 @@ export function startMemoryMonitor({
 
     // Prune Ink content caches before dump/exit — half on 'high' (recoverable),
     // full on 'critical' (post-dump RSS reduction, keeps user running).
-    evictInkCaches(level === 'critical' ? 'all' : 'half')
+    // Deferred import keeps `@hermes/ink` off the cold-start critical path;
+    // by the time a tick fires 10s after launch the app has already loaded
+    // the same module, so this resolves instantly from the ESM cache.
+    try {
+      const evictInkCaches = await _ensureEvictInkCaches()
+      evictInkCaches(level === 'critical' ? 'all' : 'half')
+    } catch {
+      // Best-effort: if the dynamic import fails for any reason we still
+      // continue to the heap dump below so the user gets diagnostics.
+    }
 
     dumped.add(level)
     const dump = await performHeapDump(level === 'critical' ? 'auto-critical' : 'auto-high').catch(() => null)

@@ -1,5 +1,5 @@
 import { Box, Link, Text } from '@hermes/ink'
-import { memo, type ReactNode, useMemo } from 'react'
+import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
@@ -9,9 +9,10 @@ import type { Theme } from '../theme.js'
 // `\boxed{X}` regions in `texToUnicode` output are marked with the
 // non-printable U+0001 / U+0002 sentinels. Split on them and render the
 // boxed segment with `inverse + bold` so it reads as a highlighter-pen
-// emphasis on top of whatever color the parent `<Text>` is using (amber
-// for math). The leading / trailing space inside the highlight gives a
-// one-cell visual margin so the highlight reads as a block, not a hug.
+// emphasis on top of whatever color the parent `<Text>` is using (the
+// theme accent for math). The leading / trailing space inside the
+// highlight gives a one-cell visual margin so the highlight reads as a
+// block, not a hug.
 const renderMath = (text: string): ReactNode => {
   if (!text.includes(BOX_OPEN)) {
     return text
@@ -144,7 +145,7 @@ const autolinkUrl = (raw: string) =>
 
 const renderAutolink = (k: number, t: Theme, raw: string) => (
   <Link key={k} url={autolinkUrl(raw)}>
-    <Text color={t.color.amber} underline>
+    <Text color={t.color.accent} underline>
       {raw.replace(/^mailto:/, '')}
     </Text>
   </Link>
@@ -171,18 +172,35 @@ export const stripInlineMarkup = (v: string) =>
 const renderTable = (k: number, rows: string[][], t: Theme) => {
   const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => stripInlineMarkup(r[ci] ?? '').length)))
 
+  // Thin divider under the header.  Without it tables look like prose
+  // with extra spacing because the header is just accent-coloured text
+  // (#15534).  We avoid full borders on purpose — column widths come
+  // from `stripInlineMarkup(...).length` (UTF-16 code units, not
+  // display width), so a real outline often misaligns on emoji and
+  // East-Asian wide characters; one dim solid rule (`─`) under row 0
+  // plus tab-style column gaps reads cleanly on every terminal we
+  // tested.
+  const sep = widths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
+
   return (
     <Box flexDirection="column" key={k} paddingLeft={2}>
       {rows.map((row, ri) => (
-        <Box key={ri}>
-          {widths.map((w, ci) => (
-            <Text color={ri === 0 ? t.color.amber : undefined} key={ci}>
-              <MdInline t={t} text={row[ci] ?? ''} />
-              {' '.repeat(Math.max(0, w - stripInlineMarkup(row[ci] ?? '').length))}
-              {ci < widths.length - 1 ? '  ' : ''}
+        <Fragment key={ri}>
+          <Box>
+            {widths.map((w, ci) => (
+              <Text bold={ri === 0} color={ri === 0 ? t.color.accent : undefined} key={ci}>
+                <MdInline t={t} text={row[ci] ?? ''} />
+                {' '.repeat(Math.max(0, w - stripInlineMarkup(row[ci] ?? '').length))}
+                {ci < widths.length - 1 ? '  ' : ''}
+              </Text>
+            ))}
+          </Box>
+          {ri === 0 && rows.length > 1 ? (
+            <Text color={t.color.muted} dimColor>
+              {sep}
             </Text>
-          ))}
-        </Box>
+          ) : null}
+        </Fragment>
       ))}
     </Box>
   )
@@ -203,14 +221,14 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
 
     if (m[1] && m[2]) {
       parts.push(
-        <Text color={t.color.dim} key={parts.length}>
+        <Text color={t.color.muted} key={parts.length}>
           [image: {m[1]}] {m[2]}
         </Text>
       )
     } else if (m[3] && m[4]) {
       parts.push(
         <Link key={parts.length} url={m[4]}>
-          <Text color={t.color.amber} underline>
+          <Text color={t.color.accent} underline>
             {m[3]}
           </Text>
         </Link>
@@ -228,7 +246,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
       // are verbatim by definition. Letting MdInline reprocess them
       // would corrupt regex examples and shell snippets.
       parts.push(
-        <Text color={t.color.amber} dimColor key={parts.length}>
+        <Text color={t.color.accent} dimColor key={parts.length}>
           {m[7]}
         </Text>
       )
@@ -257,19 +275,19 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
       )
     } else if (m[13]) {
       parts.push(
-        <Text color={t.color.dim} key={parts.length}>
+        <Text color={t.color.muted} key={parts.length}>
           [{m[13]}]
         </Text>
       )
     } else if (m[14]) {
       parts.push(
-        <Text color={t.color.dim} key={parts.length}>
+        <Text color={t.color.muted} key={parts.length}>
           ^{m[14]}
         </Text>
       )
     } else if (m[15]) {
       parts.push(
-        <Text color={t.color.dim} key={parts.length}>
+        <Text color={t.color.muted} key={parts.length}>
           _{m[15]}
         </Text>
       )
@@ -286,13 +304,13 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     } else if (m[17] ?? m[18]) {
       // Inline math is run through `texToUnicode` (Greek letters, ℕℤℚℝ,
       // operators, sub/superscripts, fractions) and rendered in italic
-      // amber. Italic is the disambiguator — links use amber+underline,
+      // accent. Italic is the disambiguator — links use accent+underline,
       // so without italic readers can't tell `\mathbb{R}` (math) from a
       // hyperlinked word. Anything `texToUnicode` doesn't recognise is
       // preserved verbatim, so unfamiliar commands just look like their
       // raw LaTeX rather than vanishing.
       parts.push(
-        <Text color={t.color.amber} italic key={parts.length}>
+        <Text color={t.color.accent} italic key={parts.length}>
           {renderMath(texToUnicode(m[17] ?? m[18]!))}
         </Text>
       )
@@ -402,11 +420,11 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (media) {
         start('paragraph')
         nodes.push(
-          <Text color={t.color.dim} key={key}>
+          <Text color={t.color.muted} key={key}>
             {'▸ '}
 
             <Link url={/^(?:\/|[a-z]:[\\/])/i.test(media) ? `file://${media}` : media}>
-              <Text color={t.color.amber} underline>
+              <Text color={t.color.accent} underline>
                 {media}
               </Text>
             </Link>
@@ -453,7 +471,7 @@ function MdImpl({ compact, t, text }: MdProps) {
 
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
-            {lang && !isDiff && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
+            {lang && !isDiff && <Text color={t.color.muted}>{'─ ' + lang}</Text>}
 
             {block.map((l, j) => {
               if (highlighted) {
@@ -479,7 +497,7 @@ function MdImpl({ compact, t, text }: MdProps) {
               return (
                 <Text
                   backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
-                  color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.dim : undefined}
+                  color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.muted : undefined}
                   dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
                   key={j}
                 >
@@ -513,7 +531,7 @@ function MdImpl({ compact, t, text }: MdProps) {
           start('code')
           nodes.push(
             <Box flexDirection="column" key={key} paddingLeft={2}>
-              {inner ? <Text color={t.color.amber}>{renderMath(texToUnicode(inner))}</Text> : null}
+              {inner ? <Text color={t.color.accent}>{renderMath(texToUnicode(inner))}</Text> : null}
             </Box>
           )
           i++
@@ -560,7 +578,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
             {block.map((l, j) => (
-              <Text color={t.color.amber} key={j}>
+              <Text color={t.color.accent} key={j}>
                 {renderMath(texToUnicode(l))}
               </Text>
             ))}
@@ -576,7 +594,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (heading) {
         start('heading')
         nodes.push(
-          <Text bold color={t.color.amber} key={key}>
+          <Text bold color={t.color.accent} key={key}>
             <MdInline t={t} text={heading} />
           </Text>
         )
@@ -588,7 +606,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (i + 1 < lines.length && SETEXT_RE.test(lines[i + 1]!)) {
         start('heading')
         nodes.push(
-          <Text bold color={t.color.amber} key={key}>
+          <Text bold color={t.color.accent} key={key}>
             <MdInline t={t} text={line.trim()} />
           </Text>
         )
@@ -600,7 +618,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (HR_RE.test(line)) {
         start('rule')
         nodes.push(
-          <Text color={t.color.dim} key={key}>
+          <Text color={t.color.muted} key={key}>
             {'─'.repeat(36)}
           </Text>
         )
@@ -614,7 +632,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (footnote) {
         start('list')
         nodes.push(
-          <Text color={t.color.dim} key={key}>
+          <Text color={t.color.muted} key={key}>
             [{footnote[1]}] <MdInline t={t} text={footnote[2] ?? ''} />
           </Text>
         )
@@ -623,7 +641,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         while (i < lines.length && /^\s{2,}\S/.test(lines[i]!)) {
           nodes.push(
             <Box key={`${key}-cont-${i}`} paddingLeft={2}>
-              <Text color={t.color.dim}>
+              <Text color={t.color.muted}>
                 <MdInline t={t} text={lines[i]!.trim()} />
               </Text>
             </Box>
@@ -652,7 +670,7 @@ function MdImpl({ compact, t, text }: MdProps) {
 
           nodes.push(
             <Text key={`${key}-def-${i}`}>
-              <Text color={t.color.dim}> · </Text>
+              <Text color={t.color.muted}> · </Text>
               <MdInline t={t} text={def} />
             </Text>
           )
@@ -672,7 +690,7 @@ function MdImpl({ compact, t, text }: MdProps) {
 
         nodes.push(
           <Text key={key}>
-            <Text color={t.color.dim}>
+            <Text color={t.color.muted}>
               {' '.repeat(indentDepth(bullet[1]!) * 2)}
               {marker}{' '}
             </Text>
@@ -691,7 +709,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         start('list')
         nodes.push(
           <Text key={key}>
-            <Text color={t.color.dim}>
+            <Text color={t.color.muted}>
               {' '.repeat(indentDepth(numbered[1]!) * 2)}
               {numbered[2]}.{' '}
             </Text>
@@ -719,7 +737,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         nodes.push(
           <Box flexDirection="column" key={key}>
             {quoteLines.map((ql, qi) => (
-              <Text color={t.color.dim} key={qi}>
+              <Text color={t.color.muted} key={qi}>
                 {' '.repeat(Math.max(0, ql.depth - 1) * 2)}
                 {'│ '}
                 <MdInline t={t} text={ql.text} />
@@ -756,7 +774,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (summary) {
         start('paragraph')
         nodes.push(
-          <Text color={t.color.dim} key={key}>
+          <Text color={t.color.muted} key={key}>
             ▶ {summary}
           </Text>
         )
@@ -768,7 +786,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (/^<\/?[^>]+>$/.test(line.trim())) {
         start('paragraph')
         nodes.push(
-          <Text color={t.color.dim} key={key}>
+          <Text color={t.color.muted} key={key}>
             {line.trim()}
           </Text>
         )

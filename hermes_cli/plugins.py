@@ -1339,6 +1339,21 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
 
 
+_thread_tool_whitelist = threading.local()
+
+
+def set_thread_tool_whitelist(
+    allowed: Optional[Set[str]],
+    deny_msg_fmt: str = "Tool '{tool_name}' denied: not in this thread's tool whitelist",
+) -> None:
+    _thread_tool_whitelist.allowed = allowed
+    _thread_tool_whitelist.fmt = deny_msg_fmt
+
+
+def clear_thread_tool_whitelist() -> None:
+    _thread_tool_whitelist.allowed = None
+
+
 def get_pre_tool_call_block_message(
     tool_name: str,
     args: Optional[Dict[str, Any]],
@@ -1357,6 +1372,11 @@ def get_pre_tool_call_block_message(
     directive wins.  Invalid or irrelevant hook return values are
     silently ignored so existing observer-only hooks are unaffected.
     """
+    allowed = getattr(_thread_tool_whitelist, "allowed", None)
+    if allowed is not None and tool_name not in allowed:
+        fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
+        return fmt.format(tool_name=tool_name)
+
     hook_results = invoke_hook(
         "pre_tool_call",
         tool_name=tool_name,

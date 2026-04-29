@@ -264,6 +264,22 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
 
+    # 3b. Isolate Playwright browser downloads from ~/.cache/ms-playwright.
+    #     GitHub-hosted runners often retain chromium-* dirs there; combined
+    #     with the old multi-root scan that caused false "installed" positives,
+    #     browser subprocess calls hung until command timeout. Point at an empty
+    #     per-test dir and rely on browser_tool._chromium_search_roots() honoring
+    #     PLAYWRIGHT_BROWSERS_PATH exclusively when set.
+    _pw_root = tmp_path / "ms_playwright_browsers"
+    _pw_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(_pw_root))
+    try:
+        from tools import browser_tool as _browser_tool_mod
+
+        _browser_tool_mod._cached_chromium_installed = None
+    except Exception:
+        pass
+
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")

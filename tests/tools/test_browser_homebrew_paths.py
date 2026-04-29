@@ -65,10 +65,11 @@ class TestDiscoverHomebrewNodeDirs:
         entries = ["node@20", "node@24", "openssl", "node", "python@3.12"]
 
         def mock_isdir(p):
-            if p == "/opt/homebrew/opt":
+            # Normalize for Windows (\\opt\\homebrew\\opt vs /opt/homebrew/opt).
+            key = str(p).replace("\\", "/").rstrip("/")
+            if key == "/opt/homebrew/opt":
                 return True
-            # node@20/bin and node@24/bin exist
-            if p in (
+            if key in (
                 "/opt/homebrew/opt/node@20/bin",
                 "/opt/homebrew/opt/node@24/bin",
             ):
@@ -80,8 +81,10 @@ class TestDiscoverHomebrewNodeDirs:
             result = _discover_homebrew_node_dirs()
 
         assert len(result) == 2
-        assert "/opt/homebrew/opt/node@20/bin" in result
-        assert "/opt/homebrew/opt/node@24/bin" in result
+        n20 = os.path.join("/opt/homebrew/opt", "node@20", "bin")
+        n24 = os.path.join("/opt/homebrew/opt", "node@24", "bin")
+        assert n20 in result
+        assert n24 in result
 
     def test_excludes_plain_node(self):
         """'node' (unversioned) should be excluded — covered by /opt/homebrew/bin."""
@@ -378,9 +381,13 @@ class TestRunBrowserCommandPathConstruction:
         def selective_isdir(p):
             if p in fake_homebrew_dirs or p.startswith(str(tmp_path)):
                 return True
-            if "/opt/homebrew/" in p:
+            ps = str(p).replace("\\", "/")
+            if "/opt/homebrew/" in ps:
                 return True  # _SANE_PATH dirs
             return real_isdir(p)
+
+        hermes_home = str(tmp_path / "hermes-home")
+        Path(hermes_home).mkdir(parents=True, exist_ok=True)
 
         with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
  patch("tools.browser_tool._chromium_installed", return_value=True), \
@@ -392,7 +399,15 @@ class TestRunBrowserCommandPathConstruction:
              patch("os.open", return_value=99), \
              patch("os.close"), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": "/usr/bin:/bin",
+                     "HOME": "/home/test",
+                     "HERMES_HOME": hermes_home,
+                 },
+                 clear=True,
+             ):
             # The function reads from temp files for stdout/stderr
             with patch("builtins.open", mock_open(read_data=fake_json)):
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
@@ -425,11 +440,15 @@ class TestRunBrowserCommandPathConstruction:
         real_isdir = os.path.isdir
 
         def selective_isdir(p):
-            if "/opt/homebrew/" in p:
+            ps = str(p).replace("\\", "/")
+            if "/opt/homebrew/" in ps:
                 return True
             if p.startswith(str(tmp_path)):
                 return True
             return real_isdir(p)
+
+        hermes_home = str(tmp_path / "hermes-home")
+        Path(hermes_home).mkdir(parents=True, exist_ok=True)
 
         with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
  patch("tools.browser_tool._chromium_installed", return_value=True), \
@@ -441,7 +460,15 @@ class TestRunBrowserCommandPathConstruction:
              patch("os.open", return_value=99), \
              patch("os.close"), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": "/usr/bin:/bin",
+                     "HOME": "/home/test",
+                     "HERMES_HOME": hermes_home,
+                 },
+                 clear=True,
+             ):
             with patch("builtins.open", mock_open(read_data=fake_json)):
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
 
@@ -471,7 +498,8 @@ class TestRunBrowserCommandPathConstruction:
         real_isdir = os.path.isdir
 
         def selective_isdir(path):
-            if path in (
+            key = str(path).replace("\\", "/")
+            if key in (
                 "/data/data/com.termux/files/usr/bin",
                 "/data/data/com.termux/files/usr/sbin",
             ):
@@ -479,6 +507,9 @@ class TestRunBrowserCommandPathConstruction:
             if path.startswith(str(tmp_path)):
                 return True
             return real_isdir(path)
+
+        hermes_home = str(tmp_path / "hermes-home")
+        Path(hermes_home).mkdir(parents=True, exist_ok=True)
 
         with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
  patch("tools.browser_tool._chromium_installed", return_value=True), \
@@ -490,7 +521,15 @@ class TestRunBrowserCommandPathConstruction:
              patch("os.open", return_value=99), \
              patch("os.close"), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": "/usr/bin:/bin",
+                     "HOME": "/home/test",
+                     "HERMES_HOME": hermes_home,
+                 },
+                 clear=True,
+             ):
             with patch("builtins.open", mock_open(read_data=fake_json)):
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
 

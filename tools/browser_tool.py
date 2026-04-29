@@ -2728,19 +2728,21 @@ _cached_chromium_installed: Optional[bool] = None
 def _chromium_search_roots() -> List[str]:
     """Directories to scan for a Chromium / headless-shell build.
 
-    Order mirrors what agent-browser and Playwright actually probe:
+    When ``PLAYWRIGHT_BROWSERS_PATH`` is set to a real path (not ``0``),
+    Playwright stores browsers *only* under that directory — return it alone so
+    we do not treat unrelated ``chromium-*`` dirs under the default user cache
+    as proof of install (false positives on CI runners).
 
-    1. ``PLAYWRIGHT_BROWSERS_PATH`` when set (Docker image sets this to
-       ``/opt/hermes/.playwright``).
-    2. ``~/.cache/ms-playwright`` — Playwright's default on Linux/macOS.
-    3. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
-    4. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
-       on Windows.
+    Otherwise probe defaults:
+
+    1. ``~/.cache/ms-playwright`` — Linux (and others via ``XDG_CACHE_HOME``).
+    2. ``~/Library/Caches/ms-playwright`` — macOS.
+    3. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Windows.
     """
     roots: List[str] = []
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
     if env_path and env_path != "0":
-        roots.append(env_path)
+        return [env_path]
     home = os.path.expanduser("~")
     roots.append(os.path.join(home, ".cache", "ms-playwright"))
     if sys.platform == "darwin":

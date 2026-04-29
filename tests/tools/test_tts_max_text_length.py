@@ -37,6 +37,9 @@ class TestResolveMaxTextLength:
     def test_gemini_default(self):
         assert _resolve_max_text_length("gemini", {}) == PROVIDER_MAX_TEXT_LENGTH["gemini"]
 
+    def test_local_command_default(self):
+        assert _resolve_max_text_length("local_command", {}) == PROVIDER_MAX_TEXT_LENGTH["local_command"]
+
     def test_unknown_provider_falls_back(self):
         assert _resolve_max_text_length("does-not-exist", {}) == FALLBACK_MAX_TEXT_LENGTH
 
@@ -114,7 +117,8 @@ class TestResolveMaxTextLength:
 
     def test_all_documented_providers_have_defaults(self):
         expected = {"edge", "openai", "xai", "minimax", "mistral",
-                    "gemini", "elevenlabs", "neutts", "kittentts"}
+                    "gemini", "elevenlabs", "neutts", "kittentts",
+                    "local_command"}
         assert expected.issubset(PROVIDER_MAX_TEXT_LENGTH.keys())
 
 

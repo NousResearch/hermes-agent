@@ -18,7 +18,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
-| **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
+| **Anthropic** | `hermes model` (Claude Pro/Max subscription via OAuth — uses your included Claude Code usage; also supports Anthropic API key or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
@@ -157,6 +157,12 @@ If you're trying to switch to a provider you haven't set up yet (e.g. you only h
 ### Anthropic (Native)
 
 Use Claude models directly through the Anthropic API — no OpenRouter proxy needed. Supports three auth methods:
+
+:::info Claude Pro / Max subscription usage
+When you authenticate via `hermes model` → Anthropic OAuth (or via `hermes auth add anthropic --type oauth`), Hermes consumes the **extra usage included with your Claude Pro or Max subscription** — the same quota Claude Code uses. This is per Anthropic's policy: requests identified as Claude Code route against your subscription's included Claude Code usage before any overage billing. You do not need an Anthropic API key or pay-per-token credits for this path — your Pro/Max plan covers it.
+
+If you use an `ANTHROPIC_API_KEY` instead, requests are billed pay-per-token against that key's organization (standard API pricing, independent of your Pro/Max subscription).
+:::
 
 ```bash
 # With an API key (pay-per-token)

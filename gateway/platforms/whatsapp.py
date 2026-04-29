@@ -208,15 +208,33 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if raw is None:
             return set()
         if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        return {part.strip() for part in str(raw).split(",") if part.strip()}
+            return {self._normalize_jid(str(part)) for part in raw if str(part).strip()}
+        return {self._normalize_jid(part) for part in str(raw).split(",") if part.strip()}
+
+    @staticmethod
+    def _normalize_jid(jid: str) -> str:
+        """Strip WhatsApp JID suffixes so bare phone numbers match JID-formatted senders.
+
+        The Node.js bridge delivers ``senderId`` as a full JID such as
+        ``85296456787@s.whatsapp.net`` or ``85296456787:33@s.whatsapp.net``,
+        while ``allow_from`` in *config.yaml* is typically configured with bare
+        phone numbers like ``85296456787``.  Without normalisation the
+        ``allowlist`` dm_policy silently drops every DM.
+        """
+        return (
+            str(jid)
+            .strip()
+            .split(":")[0]   # remove device-index suffix  e.g. "85296456787:33@…"
+            .split("@")[0]   # remove @s.whatsapp.net / @lid / etc.
+            .lstrip("+")     # normalise leading +
+        )
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Check whether a DM from the given sender should be processed."""
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
+            return self._normalize_jid(sender_id) in self._allow_from
         # "open" — all DMs allowed
         return True
 
@@ -225,7 +243,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "allowlist":
-            return chat_id in self._group_allow_from
+            return self._normalize_jid(chat_id) in self._group_allow_from
         # "open" — all groups allowed
         return True
 

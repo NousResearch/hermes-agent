@@ -271,10 +271,17 @@ def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
     _write_skill(skills_dir, "a")
 
     calls = []
-    monkeypatch.setattr(
-        c, "_run_llm_review",
-        lambda prompt: (calls.append(prompt), "stubbed-summary")[1],
-    )
+    def _stub(prompt):
+        calls.append(prompt)
+        return {
+            "final": "stubbed-summary",
+            "summary": "stubbed-summary",
+            "model": "stub-model",
+            "provider": "stub-provider",
+            "tool_calls": [],
+            "error": None,
+        }
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
 
     captured = []
     c.run_curator_review(on_summary=lambda s: captured.append(s), synchronous=True)

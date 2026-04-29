@@ -94,7 +94,7 @@ def fetch_imgflip_templates() -> list:
         data = json.loads(_fetch_url(IMGFLIP_API))
         memes = data.get("data", {}).get("memes", [])
         with open(IMGFLIP_CACHE_FILE, "w") as f:
-            json.dump(memes, f)
+            json.dump(memes, f, ensure_ascii=False)
         return memes
     except Exception as e:
         # If fetch fails and we have stale cache, use it

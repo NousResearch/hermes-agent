@@ -206,7 +206,7 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
 
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload))
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
@@ -541,7 +541,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         return False, _read_json_file(lock_path)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(record, handle)
+            json.dump(record, handle, ensure_ascii=False)
     except Exception:
         try:
             lock_path.unlink(missing_ok=True)

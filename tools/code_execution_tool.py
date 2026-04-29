@@ -281,8 +281,8 @@ def _call(tool_name, args):
 
     # Write request atomically (write to .tmp, then rename)
     tmp = req_file + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump({"tool": tool_name, "args": args, "seq": _seq}, f)
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"tool": tool_name, "args": args, "seq": _seq}, f, ensure_ascii=False)
     os.rename(tmp, req_file)
 
     # Wait for response with adaptive polling

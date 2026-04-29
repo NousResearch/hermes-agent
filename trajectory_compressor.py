@@ -1175,7 +1175,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         if self.config.metrics_enabled:
             metrics_path = output_dir / self.config.metrics_output_file
             with open(metrics_path, 'w') as f:
-                json.dump(self.aggregate_metrics.to_dict(), f, indent=2)
+                json.dump(self.aggregate_metrics.to_dict(), f, indent=2, ensure_ascii=False)
             console.print(f"\n💾 Metrics saved to {metrics_path}")
     
     def _print_summary(self):

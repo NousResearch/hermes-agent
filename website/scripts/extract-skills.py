@@ -255,7 +255,7 @@ def main():
 
     os.makedirs(os.path.dirname(OUTPUT), exist_ok=True)
     with open(OUTPUT, "w") as f:
-        json.dump(all_skills, f, indent=2)
+        json.dump(all_skills, f, indent=2, ensure_ascii=False)
 
     print(f"Extracted {len(all_skills)} skills to {OUTPUT}")
     print(f"  {len(local)} local ({sum(1 for s in local if s['source'] == 'built-in')} built-in, "

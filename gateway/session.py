@@ -702,7 +702,7 @@ class SessionStore:
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+                json.dump(data, f, indent=2, ensure_ascii=False)
                 f.flush()
                 os.fsync(f.fileno())
             atomic_replace(tmp_path, sessions_file)

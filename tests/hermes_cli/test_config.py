@@ -361,6 +361,56 @@ class TestSanitizeEnvLines:
             fixes = sanitize_env_file()
             assert fixes == 0
 
+    # ── Substring false-positive tests (Pass 1) ──
+
+    def test_glm_key_not_split_by_lm_substring(self):
+        """GLM_API_KEY should NOT be split by LM_API_KEY substring match."""
+        lines = ["GLM_API_KEY=b2d3fc.example.key\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["GLM_API_KEY=b2d3fc.example.key\n"]
+
+    def test_glm_base_url_not_split_by_lm_substring(self):
+        """GLM_BASE_URL should NOT be split by LM_BASE_URL substring match."""
+        lines = ["GLM_BASE_URL=https://open.bigmodel.cn/api/v4\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["GLM_BASE_URL=https://open.bigmodel.cn/api/v4\n"]
+
+    def test_concatenated_still_splits_with_substring_keys_present(self):
+        """Real concatenation still splits even when substring keys exist."""
+        lines = ["FAL_KEY=abc123FIRECRAWL_API_KEY=def456\n"]
+        result = _sanitize_env_lines(lines)
+        assert len(result) == 2
+        assert result[0] == "FAL_KEY=abc123\n"
+        assert result[1] == "FIRECRAWL_API_KEY=def456\n"
+
+    # ── Split key merge tests (Pass 0) ──
+
+    def test_merge_split_glm_key(self):
+        """Split G + LM_API_KEY= lines get merged back into GLM_API_KEY=."""
+        lines = ["G\n", "LM_API_KEY=b2d3fc.example.key\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["GLM_API_KEY=b2d3fc.example.key\n"]
+
+    def test_merge_split_glm_base_url(self):
+        """Split G + LM_BASE_URL= lines get merged back into GLM_BASE_URL=."""
+        lines = ["G\n", "LM_BASE_URL=https://open.bigmodel.cn/api/v4\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["GLM_BASE_URL=https://open.bigmodel.cn/api/v4\n"]
+
+    def test_no_merge_on_unrelated_uppercase(self):
+        """Bare uppercase text that doesn't form a known key is NOT merged."""
+        lines = ["SOME_RANDOM_TEXT\n", "OPENAI_API_KEY=sk-abc\n"]
+        result = _sanitize_env_lines(lines)
+        assert len(result) == 2
+        assert result[0] == "SOME_RANDOM_TEXT\n"
+        assert result[1] == "OPENAI_API_KEY=sk-abc\n"
+
+    def test_merge_with_blank_line_between(self):
+        """Merge works even with blank lines between fragment and key."""
+        lines = ["G\n", "\n", "LM_API_KEY=b2d3fc.example.key\n"]
+        result = _sanitize_env_lines(lines)
+        assert result == ["\n", "GLM_API_KEY=b2d3fc.example.key\n"]
+
 
 class TestOptionalEnvVarsRegistry:
     """Verify that key env vars are registered in OPTIONAL_ENV_VARS."""

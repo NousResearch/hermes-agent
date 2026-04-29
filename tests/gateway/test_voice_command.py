@@ -52,19 +52,24 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+from gateway.config import Platform
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_event(text: str = "", message_type=MessageType.TEXT, chat_id="123") -> MessageEvent:
+def _make_event(
+    text: str = "",
+    message_type=MessageType.TEXT,
+    chat_id="123",
+    platform=Platform.TELEGRAM,
+) -> MessageEvent:
     source = SessionSource(
         chat_id=chat_id,
         user_id="user1",
-        platform=MagicMock(),
+        platform=platform,
     )
-    source.platform.value = "telegram"
     source.thread_id = None
     event = MessageEvent(text=text, message_type=message_type, source=source)
     event.message_id = "msg42"
@@ -169,12 +174,14 @@ class TestHandleVoiceCommand:
         from gateway.config import Platform
         runner._voice_mode = {"telegram:123": "off", "telegram:456": "all"}
         adapter = SimpleNamespace(
+            _auto_tts_enabled_chats=set(),
             _auto_tts_disabled_chats=set(),
             platform=Platform.TELEGRAM,
         )
 
         runner._sync_voice_mode_state_to_adapter(adapter)
 
+        assert adapter._auto_tts_enabled_chats == {"456"}
         assert adapter._auto_tts_disabled_chats == {"123"}
 
     def test_sync_populates_enabled_chats_from_voice_modes(self, runner):
@@ -231,6 +238,7 @@ class TestHandleVoiceCommand:
         restored_runner = _make_runner(tmp_path)
         restored_runner._voice_mode = restored_runner._load_voice_modes()
         adapter = SimpleNamespace(
+            _auto_tts_enabled_chats=set(),
             _auto_tts_disabled_chats=set(),
             platform=Platform.TELEGRAM,
         )
@@ -238,6 +246,7 @@ class TestHandleVoiceCommand:
         restored_runner._sync_voice_mode_state_to_adapter(adapter)
 
         assert restored_runner._voice_mode["telegram:123"] == "off"
+        assert adapter._auto_tts_enabled_chats == set()
         assert adapter._auto_tts_disabled_chats == {"123"}
 
     @pytest.mark.asyncio
@@ -253,8 +262,7 @@ class TestHandleVoiceCommand:
     async def test_platform_isolation(self, runner):
         """Same chat_id on different platforms must not collide (#12542)."""
         telegram_event = _make_event("/voice on", chat_id="999")
-        slack_event = _make_event("/voice off", chat_id="999")
-        slack_event.source.platform.value = "slack"
+        slack_event = _make_event("/voice off", chat_id="999", platform=Platform.SLACK)
 
         await runner._handle_voice_command(telegram_event)
         await runner._handle_voice_command(slack_event)
@@ -315,16 +323,17 @@ class TestAutoVoiceReply:
     #
     # | Platform      | Input | Mode       | base | runner | Expected     |
     # |---------------|-------|------------|------|--------|--------------|
-    # | Telegram      | voice | off        | yes  | skip   | 1 audio      |
+    # | Telegram      | voice | off        | no   | skip   | 0 audio      |
     # | Telegram      | voice | voice_only | yes  | skip*  | 1 audio      |
     # | Telegram      | voice | all        | yes  | skip*  | 1 audio      |
     # | Telegram      | text  | off        | skip | skip   | 0 audio      |
     # | Telegram      | text  | voice_only | skip | skip   | 0 audio      |
     # | Telegram      | text  | all        | skip | yes    | 1 audio      |
+    # | Telegram      | video | all        | skip | skip   | 0 audio      |
     # | Discord text  | voice | all        | yes  | skip*  | 1 audio      |
     # | Discord text  | text  | all        | skip | yes    | 1 audio      |
     # | Discord VC    | voice | all        | skip†| yes    | 1 audio (VC) |
-    # | Web UI        | voice | off        | yes  | skip   | 1 audio      |
+    # | Web UI        | voice | off        | no   | skip   | 0 audio      |
     # | Web UI        | voice | all        | yes  | skip*  | 1 audio      |
     # | Web UI        | text  | all        | skip | yes    | 1 audio      |
     # | Slack         | voice | all        | yes  | skip*  | 1 audio      |
@@ -352,6 +361,58 @@ class TestAutoVoiceReply:
     def test_text_input_voice_only_no_reply(self, runner):
         """voice_only + text input: neither fires."""
         assert self._call(runner, "voice_only", MessageType.TEXT) is False
+
+    def test_video_input_all_mode_no_voice_reply(self, runner):
+        """Video inputs should be answered from visual context, not auto-TTS."""
+        assert self._call(runner, "all", MessageType.VIDEO) is False
+
+    def test_photo_input_all_mode_no_voice_reply(self, runner):
+        """Image inputs should stay in the visual/text response path."""
+        assert self._call(runner, "all", MessageType.PHOTO) is False
+
+    def test_video_input_wants_video_note_reply(self, runner):
+        event = _make_event(message_type=MessageType.VIDEO)
+
+        assert runner._wants_video_note_reply_for_type(event.source, event.message_type) is True
+
+    def test_media_turn_filters_voice_generation_tools(self, runner):
+        agent = SimpleNamespace(
+            tools=[
+                {"function": {"name": "text_to_speech"}},
+                {"function": {"name": "terminal"}},
+                {"function": {"name": "skill_view"}},
+                {"function": {"name": "vision_analyze"}},
+            ],
+            valid_tool_names={"text_to_speech", "terminal", "skill_view", "vision_analyze"},
+        )
+
+        runner._filter_voice_output_tools_for_media_turn(agent)
+
+        assert [tool["function"]["name"] for tool in agent.tools] == ["vision_analyze"]
+        assert agent.valid_tool_names == {"vision_analyze"}
+
+    def test_video_reply_mode_prompt_blocks_audio_tools(self, runner):
+        prompt = runner._append_media_reply_mode_prompt(
+            "base prompt",
+            message_type=MessageType.VIDEO,
+            wants_video_note=True,
+        )
+
+        assert "Telegram video/video note" in prompt
+        assert "Do not call text_to_speech" in prompt
+        assert "gateway will turn those words into a Telegram video note" in prompt
+
+    def test_photo_reply_mode_prompt_is_relational_not_descriptive(self, runner):
+        prompt = runner._append_media_reply_mode_prompt(
+            "base prompt",
+            message_type=MessageType.PHOTO,
+            wants_video_note=False,
+            wants_photo_reply=True,
+        )
+
+        assert "Treat the visual analysis as private context" in prompt
+        assert "gateway will attach a fresh Liz photo back" in prompt
+        assert "Do not describe the image back" in prompt
 
     # -- Mode off: nothing fires -------------------------------------------
 
@@ -466,6 +527,153 @@ class TestSendVoiceReply:
              patch("os.makedirs"):
             # Should not raise
             await runner._send_voice_reply(event, "Hello")
+
+
+# =====================================================================
+# _send_video_note_reply
+# =====================================================================
+
+class TestSendVideoNoteReply:
+
+    @pytest.fixture
+    def runner(self, tmp_path):
+        return _make_runner(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_calls_video_note_script_for_telegram_video(self, runner, tmp_path):
+        script = tmp_path / "send-liz-speaking-video-note.sh"
+        script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        (tmp_path / "liz-current-activity.json").write_text(
+            json.dumps({
+                "scene_prompt": "Liz at the kitchen table in her Altona flat, evening light, wearing home leisure outfit",
+                "scene_id": "place-home-kitchen-table",
+                "outfit_id": "wardrobe-leisure",
+                "extra_refs": ["place-home-kitchen-table", "wardrobe-leisure"],
+            }),
+            encoding="utf-8",
+        )
+        event = _make_event(message_type=MessageType.VIDEO)
+        event.source.thread_id = "topic-1"
+
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout='{"ok": true, "has_video_note": true, "message_id": 55}\n',
+            stderr="",
+        )
+
+        with (
+            patch.object(runner, "_video_note_reply_script", return_value=script),
+            patch.object(runner, "_liz_media_memory_root", return_value=tmp_path),
+            patch("gateway.run.subprocess.run", return_value=completed) as mock_run,
+        ):
+            sent = await runner._send_video_note_reply(event, "Plans are civilized and quiet.")
+
+        assert sent is True
+        command = mock_run.call_args.args[0]
+        assert str(script) == command[0]
+        assert "kitchen table" in command[1]
+        assert "Reference pictures are loose anchors" in command[1]
+        assert "front-camera selfie video note" not in command[1]
+        assert "Plans are civilized and quiet." in command
+        assert "123" in command
+        assert "topic-1" in command
+        assert "native" in command
+        assert command[7] == "seated_table"
+        entity_refs = command[8].split(",")
+        assert "place-home-kitchen-table" in entity_refs
+        assert "wardrobe-leisure" in entity_refs
+
+    @pytest.mark.asyncio
+    async def test_video_note_script_failure_falls_back_to_text(self, runner, tmp_path):
+        script = tmp_path / "send-liz-speaking-video-note.sh"
+        script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        event = _make_event(message_type=MessageType.VIDEO)
+        completed = SimpleNamespace(returncode=1, stdout="", stderr="boom")
+
+        with (
+            patch.object(runner, "_video_note_reply_script", return_value=script),
+            patch("gateway.run.subprocess.run", return_value=completed),
+        ):
+            sent = await runner._send_video_note_reply(event, "hello")
+
+        assert sent is False
+
+
+# =====================================================================
+# _send_photo_reply
+# =====================================================================
+
+class TestSendPhotoReply:
+
+    @pytest.fixture
+    def runner(self, tmp_path):
+        return _make_runner(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_calls_selfie_script_and_sends_image(self, runner, tmp_path):
+        script = tmp_path / "gen-liz-selfie-xai.py"
+        script.write_text("#!/usr/bin/env python\n", encoding="utf-8")
+        (tmp_path / "liz-current-activity.json").write_text(
+            json.dumps({
+                "scene_prompt": "Liz curled into the sofa corner in her Hamburg flat, warm evening light",
+                "scene_id": "place-hamburg-flat-sofa-corner",
+                "outfit_id": "wardrobe-leisure",
+                "extra_refs": ["place-hamburg-flat-sofa-corner", "wardrobe-leisure"],
+            }),
+            encoding="utf-8",
+        )
+        event = _make_event(message_type=MessageType.PHOTO)
+        adapter = AsyncMock()
+        adapter.send_image_file = AsyncMock(return_value=SimpleNamespace(success=True, error=None))
+        runner.adapters[event.source.platform] = adapter
+
+        def fake_run(command, **kwargs):
+            out_path = command[2]
+            with open(out_path, "wb") as f:
+                f.write(b"fake image")
+            return SimpleNamespace(returncode=0, stdout=out_path, stderr="")
+
+        with (
+            patch.object(runner, "_photo_reply_script", return_value=script),
+            patch.object(runner, "_photo_reply_output_dir", return_value=tmp_path),
+            patch.object(runner, "_liz_media_memory_root", return_value=tmp_path),
+            patch("gateway.run.subprocess.run", side_effect=fake_run) as mock_run,
+        ):
+            sent = await runner._send_photo_reply(event, "annoyingly good photo.")
+
+        assert sent is True
+        command = mock_run.call_args.args[0]
+        assert str(script) == command[1]
+        assert "annoyingly good photo." in command[3]
+        assert "sofa corner" in command[3]
+        assert "sofa selfie or POV-detail" in command[3]
+        assert "not a framed portrait of Liz on the couch" in command[3]
+        assert "No invisible photographer" in command[3]
+        assert "Reference pictures are loose anchors" in command[3]
+        assert "front-camera selfie" not in command[3]
+        assert "apartment-bedroom-interior" not in command
+        assert "--no-continuity" in command
+        assert "place-hamburg-flat-sofa-corner" in command
+        assert "wardrobe-leisure" in command
+        adapter.send_image_file.assert_awaited_once()
+        assert adapter.send_image_file.call_args.kwargs["caption"] == "annoyingly good photo."
+
+    @pytest.mark.asyncio
+    async def test_photo_script_failure_falls_back_to_text(self, runner, tmp_path):
+        script = tmp_path / "gen-liz-selfie-xai.py"
+        script.write_text("#!/usr/bin/env python\n", encoding="utf-8")
+        event = _make_event(message_type=MessageType.PHOTO)
+
+        with (
+            patch.object(runner, "_photo_reply_script", return_value=script),
+            patch(
+                "gateway.run.subprocess.run",
+                return_value=SimpleNamespace(returncode=1, stdout="", stderr="boom"),
+            ),
+        ):
+            sent = await runner._send_photo_reply(event, "hello")
+
+        assert sent is False
 
 
 # =====================================================================

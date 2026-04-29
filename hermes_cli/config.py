@@ -993,6 +993,9 @@ DEFAULT_CONFIG = {
     "telegram": {
         "reactions": False,            # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
+        "process_bot_messages": False, # Ignore bot-authored inbound messages by default to prevent agent-to-agent loops
+        "free_response_threads": [],   # Topic IDs that bypass require_mention, useful for each specialist's home topic
+        "collaboration_threads": [],   # Topic IDs where mention/reply/pattern triggers are allowed without opening the whole group
     },
 
     # Slack platform settings (gateway mode)

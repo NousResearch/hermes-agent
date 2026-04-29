@@ -22,6 +22,7 @@ def _make_adapter():
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(enabled=True, token="***", extra={})
     adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
+    adapter._mention_patterns = []
     return adapter
 
 
@@ -49,8 +50,26 @@ def _message(text=None, caption=None, entities=None, caption_entities=None):
         caption_entities=caption_entities or [],
         message_thread_id=None,
         chat=SimpleNamespace(id=-100, type="group"),
+        from_user=SimpleNamespace(id=111, is_bot=False, full_name="Alex"),
         reply_to_message=None,
     )
+
+
+def _bot_message(text=None, *, reply_to_bot=False, mentioned=False):
+    entities = [_mention_entity(text)] if mentioned and text else []
+    reply_to_message = None
+    if reply_to_bot:
+        reply_to_message = SimpleNamespace(
+            message_id=123,
+            from_user=SimpleNamespace(id=999, is_bot=True),
+            text="previous bot message",
+            caption=None,
+        )
+    msg = _message(text=text, entities=entities)
+    msg.from_user = SimpleNamespace(id=222, is_bot=True, full_name="Other Bot")
+    msg.message_thread_id = 1
+    msg.reply_to_message = reply_to_message
+    return msg
 
 
 class TestRealMentionsAreDetected:
@@ -183,3 +202,67 @@ class TestCaseInsensitivity:
         text = "hi @Hermes_Bot"
         msg = _message(text=text, entities=[_mention_entity(text, mention="@Hermes_Bot")])
         assert adapter._message_mentions_bot(msg) is True
+
+
+class TestBotAuthoredLoopPrevention:
+    """Bot-authored group messages must not trigger agent-to-agent loops by default."""
+
+    def test_bot_reply_to_this_bot_is_ignored_by_default(self, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_PROCESS_BOT_MESSAGES", raising=False)
+        adapter = _make_adapter()
+        adapter.config.extra = {"collaboration_threads": [1], "require_mention": False}
+
+        msg = _bot_message("Ack. Loop is reproducible.", reply_to_bot=True)
+
+        assert adapter._should_process_message(msg) is False
+
+    def test_bot_mention_is_ignored_by_default(self, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_PROCESS_BOT_MESSAGES", raising=False)
+        adapter = _make_adapter()
+        adapter.config.extra = {"collaboration_threads": [1], "require_mention": False}
+        text = "@hermes_bot can you check this?"
+
+        msg = _bot_message(text, mentioned=True)
+
+        assert adapter._should_process_message(msg) is False
+
+    def test_bot_messages_can_be_opted_in_with_explicit_mention(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_PROCESS_BOT_MESSAGES", "true")
+        adapter = _make_adapter()
+        adapter.config.extra = {"collaboration_threads": [1], "require_mention": False}
+        text = "@hermes_bot can you check this?"
+
+        msg = _bot_message(text, mentioned=True)
+
+        assert adapter._should_process_message(msg) is True
+
+    def test_human_message_in_collaboration_thread_is_processed_without_direct_trigger(self, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_PROCESS_BOT_MESSAGES", raising=False)
+        adapter = _make_adapter()
+        adapter.config.extra = {"collaboration_threads": [1], "require_mention": True}
+
+        msg = _message("Vlady asked to check the SAGEOBOT UI changes")
+        msg.message_thread_id = 1
+
+        assert adapter._should_process_message(msg) is True
+
+    def test_human_mention_in_collaboration_thread_is_processed(self, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_PROCESS_BOT_MESSAGES", raising=False)
+        adapter = _make_adapter()
+        adapter.config.extra = {"collaboration_threads": [1], "require_mention": True}
+        text = "@hermes_bot can you check the SAGEOBOT UI changes?"
+
+        msg = _message(text=text, entities=[_mention_entity(text)])
+        msg.message_thread_id = 1
+
+        assert adapter._should_process_message(msg) is True
+
+    def test_free_response_thread_bypasses_mention_requirement(self, monkeypatch):
+        monkeypatch.delenv("TELEGRAM_PROCESS_BOT_MESSAGES", raising=False)
+        adapter = _make_adapter()
+        adapter.config.extra = {"free_response_threads": [23], "require_mention": True}
+
+        msg = _message("can you audit this workout?")
+        msg.message_thread_id = 23
+
+        assert adapter._should_process_message(msg) is True

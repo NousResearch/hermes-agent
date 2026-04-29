@@ -819,6 +819,16 @@ class MessageType(Enum):
     COMMAND = "command"  # /command style
 
 
+VOICE_OUTPUT_BLOCKED_MEDIA_TYPES = frozenset({
+    MessageType.PHOTO,
+    MessageType.VIDEO,
+    MessageType.AUDIO,
+    MessageType.DOCUMENT,
+    MessageType.STICKER,
+    MessageType.LOCATION,
+})
+
+
 class ProcessingOutcome(Enum):
     """Result classification for message-processing lifecycle hooks."""
 
@@ -1555,6 +1565,11 @@ class BasePlatformAdapter(ABC):
         Default falls back to send_voice (shows audio player).
         """
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+
+    @staticmethod
+    def blocks_voice_output_for_event(event: MessageEvent) -> bool:
+        """Return True when an inbound turn should not emit audio-only media."""
+        return getattr(event, "message_type", None) in VOICE_OUTPUT_BLOCKED_MEDIA_TYPES
 
     async def send_video(
         self,
@@ -2413,6 +2428,21 @@ class BasePlatformAdapter(ABC):
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
+                _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
+                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
+                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+                if media_files and self.blocks_voice_output_for_event(event):
+                    before_count = len(media_files)
+                    media_files = [
+                        item for item in media_files
+                        if Path(item[0]).suffix.lower() not in _AUDIO_EXTS
+                    ]
+                    if before_count != len(media_files):
+                        logger.info(
+                            "[%s] Suppressed audio MEDIA output for %s input",
+                            self.name,
+                            event.message_type.value if event.message_type else "media",
+                        )
                 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
@@ -2514,10 +2544,6 @@ class BasePlatformAdapter(ABC):
                         logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
 
                 # Send extracted media files — route by file type
-                _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
-                _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
-                _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
-
                 for media_path, is_voice in media_files:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)

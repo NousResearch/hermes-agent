@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess
 import sys
 import signal
 import tempfile
@@ -39,6 +40,7 @@ from typing import Dict, Optional, Any, List
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from hermes_cli.config import cfg_get
+from tools.video_tools import analyze_video_file
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -451,6 +453,26 @@ from gateway.whatsapp_identity import (
     normalize_whatsapp_identifier as _normalize_whatsapp_identifier,
 )
 
+_VOICE_OUTPUT_BLOCKED_MEDIA_TYPES = frozenset({
+    MessageType.PHOTO,
+    MessageType.VIDEO,
+    MessageType.AUDIO,
+    MessageType.DOCUMENT,
+    MessageType.STICKER,
+    MessageType.LOCATION,
+})
+
+_VOICE_OUTPUT_BLOCKED_TOOL_NAMES = frozenset({
+    "text_to_speech",
+    "terminal",
+    "process",
+    "execute_code",
+    "delegate_task",
+    "skills_list",
+    "skill_view",
+    "skill_manage",
+})
+
 
 logger = logging.getLogger(__name__)
 
@@ -560,6 +582,8 @@ def _build_media_placeholder(event) -> str:
             parts.append(f"[User sent an image: {url}]")
         elif mtype.startswith("audio/"):
             parts.append(f"[User sent audio: {url}]")
+        elif mtype.startswith("video/") or getattr(event, "message_type", None) == MessageType.VIDEO:
+            parts.append(f"[User sent a video: {url}]")
         else:
             parts.append(f"[User sent a file: {url}]")
     return "\n".join(parts)
@@ -1065,18 +1089,21 @@ class GatewayRunner:
             logger.warning("Failed to save voice modes: %s", e)
 
     def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
-        """Update an adapter's in-memory auto-TTS suppression set if present."""
+        """Update an adapter's in-memory auto-TTS state.
+
+        New adapters use an explicit enabled set so the default remains text-only.
+        Keep the legacy disabled set in sync for back-compat with older callers
+        and tests.
+        """
+        enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)
         disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
-        if not isinstance(disabled_chats, set):
-            return
-        if disabled:
+        if isinstance(disabled_chats, set) and disabled:
             disabled_chats.add(chat_id)
-            # ``/voice off`` also clears any explicit enable — it's a hard override.
-            enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)
-            if isinstance(enabled_chats, set):
-                enabled_chats.discard(chat_id)
-        else:
+        elif isinstance(disabled_chats, set):
             disabled_chats.discard(chat_id)
+        if disabled and isinstance(enabled_chats, set):
+            # ``/voice off`` also clears any explicit enable — it's a hard override.
+            enabled_chats.discard(chat_id)
 
     def _set_adapter_auto_tts_enabled(self, adapter, chat_id: str, enabled: bool) -> None:
         """Update an adapter's per-chat auto-TTS opt-in set if present.
@@ -4428,12 +4455,15 @@ class GatewayRunner:
         if event.media_urls:
             image_paths = []
             audio_paths = []
+            video_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
                 if mtype.startswith("audio/") or event.message_type in (MessageType.VOICE, MessageType.AUDIO):
                     audio_paths.append(path)
+                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
+                    video_paths.append(path)
 
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
@@ -4455,6 +4485,12 @@ class GatewayRunner:
                         message_text,
                         image_paths,
                     )
+
+            if video_paths:
+                message_text = await self._enrich_message_with_video(
+                    message_text,
+                    video_paths,
+                )
 
             if audio_paths:
                 message_text = await self._enrich_message_with_transcription(
@@ -5130,6 +5166,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
+                inbound_message_type=event.message_type,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -5426,6 +5463,14 @@ class GatewayRunner:
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
+            photo_reply_sent = False
+            if self._should_send_photo_reply(event, response, already_sent=_already_sent):
+                photo_reply_sent = await self._send_photo_reply(event, response)
+
+            video_note_sent = False
+            if self._should_send_video_note_reply(event, response, already_sent=_already_sent):
+                video_note_sent = await self._send_video_note_reply(event, response)
+
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
             # sends raw text chunks that include MEDIA: tags — the normal
@@ -5455,6 +5500,9 @@ class GatewayRunner:
                             await _foot_adapter.send(source.chat_id, _footer_line)
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
+                return None
+
+            if photo_reply_sent or video_note_sent:
                 return None
 
             return response
@@ -6608,6 +6656,86 @@ class GatewayRunner:
             return raw.guild.id
         return None
 
+    def _blocks_voice_output_for_type(self, message_type: Optional[MessageType]) -> bool:
+        return message_type in _VOICE_OUTPUT_BLOCKED_MEDIA_TYPES
+
+    def _wants_video_note_reply_for_type(
+        self,
+        source: SessionSource,
+        message_type: Optional[MessageType],
+    ) -> bool:
+        return source.platform == Platform.TELEGRAM and message_type == MessageType.VIDEO
+
+    def _wants_photo_reply_for_type(
+        self,
+        source: SessionSource,
+        message_type: Optional[MessageType],
+    ) -> bool:
+        return source.platform == Platform.TELEGRAM and message_type == MessageType.PHOTO
+
+    def _append_media_reply_mode_prompt(
+        self,
+        context_prompt: str,
+        *,
+        message_type: Optional[MessageType],
+        wants_video_note: bool,
+        wants_photo_reply: bool = False,
+    ) -> str:
+        if not self._blocks_voice_output_for_type(message_type):
+            return context_prompt
+
+        if wants_video_note:
+            instruction = (
+                "Reply-mode constraint for this turn: Alex sent a Telegram video/video note. "
+                "Write only the short natural words Liz should say back. The gateway will "
+                "turn those words into a Telegram video note. Do not call text_to_speech, "
+                "do not run liz-tts.sh, do not inspect media/tts skills, do not emit MEDIA: "
+                "audio, and do not try to send a separate voice note."
+            )
+        elif message_type == MessageType.PHOTO:
+            if wants_photo_reply:
+                instruction = (
+                    "Reply-mode constraint for this turn: Alex sent a photo. Treat the "
+                    "visual analysis as private context, not as something to report. If "
+                    "the photo is casual, personal, playful, or flirty, write only a short "
+                    "natural Liz-style caption/reaction; the gateway will attach a fresh "
+                    "Liz photo back. Do not describe the image back unless Alex explicitly "
+                    "asks what's in it. Do not call image tools, text_to_speech, terminal, "
+                    "or Liz media scripts yourself, and do not emit MEDIA: audio."
+                )
+            else:
+                instruction = (
+                    "Reply-mode constraint for this turn: Alex sent a photo. Treat the visual "
+                    "analysis as private context, not as something to report. If the photo is "
+                    "casual, personal, playful, or flirty, respond like Liz receiving a slice "
+                    "of Alex's life: warm, specific, and relational. Do not describe the image "
+                    "back unless Alex explicitly asks what's in it. Do not call text_to_speech, "
+                    "do not run Liz TTS scripts, and do not emit MEDIA: audio unless Alex "
+                    "explicitly asks for audio."
+                )
+        else:
+            instruction = (
+                "Reply-mode constraint for this turn: Alex sent non-voice media. Reply in "
+                "normal text. Do not call text_to_speech, do not run Liz TTS scripts, and "
+                "do not emit MEDIA: audio unless Alex explicitly asks for audio."
+            )
+
+        if context_prompt:
+            return f"{context_prompt}\n\n{instruction}"
+        return instruction
+
+    def _filter_voice_output_tools_for_media_turn(self, agent) -> None:
+        """Remove tools that let a media-origin turn force an audio reply."""
+        tools = getattr(agent, "tools", None)
+        if tools:
+            agent.tools = [
+                tool for tool in tools
+                if tool.get("function", {}).get("name") not in _VOICE_OUTPUT_BLOCKED_TOOL_NAMES
+            ]
+        valid_names = getattr(agent, "valid_tool_names", None)
+        if isinstance(valid_names, set):
+            valid_names.difference_update(_VOICE_OUTPUT_BLOCKED_TOOL_NAMES)
+
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
@@ -6839,6 +6967,7 @@ class GatewayRunner:
 
         Returns False when:
         - voice_mode is off for this chat
+        - the inbound message is non-voice media that should stay visual/textual
         - response is empty or an error
         - agent already called text_to_speech tool (dedup)
         - voice input and base adapter auto-TTS already handled it (skip_double)
@@ -6852,6 +6981,8 @@ class GatewayRunner:
         chat_id = event.source.chat_id
         voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
         is_voice_input = (event.message_type == MessageType.VOICE)
+        if self._blocks_voice_output_for_type(event.message_type):
+            return False
 
         should = (
             (voice_mode == "all")
@@ -6940,6 +7071,297 @@ class GatewayRunner:
                 except OSError:
                     pass
 
+    def _video_note_reply_script(self) -> Path:
+        return Path(os.path.expanduser("~/.hermes/scripts/send-liz-speaking-video-note.sh"))
+
+    def _photo_reply_script(self) -> Path:
+        return Path(os.path.expanduser("~/.hermes/scripts/gen-liz-selfie-xai.py"))
+
+    def _photo_reply_output_dir(self) -> Path:
+        return Path(os.path.expanduser("~/.hermes/cache/media"))
+
+    def _liz_media_memory_root(self) -> Path:
+        return _hermes_home / "memory"
+
+    def _read_liz_media_memory(self, filename: str) -> Dict[str, Any]:
+        try:
+            data = json.loads((self._liz_media_memory_root() / filename).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _pick_liz_media_variant(self, options: List[str], seed: str) -> str:
+        if not options:
+            return ""
+        score = sum((index + 1) * ord(char) for index, char in enumerate(seed))
+        return options[score % len(options)]
+
+    def _infer_liz_media_refs(self, activity: Dict[str, Any], scene_text: str) -> List[str]:
+        refs: List[str] = []
+        extra_refs = activity.get("extra_refs")
+        if not isinstance(extra_refs, list):
+            extra_refs = []
+        for raw in extra_refs:
+            if isinstance(raw, str) and raw.strip() and raw.strip() not in refs:
+                refs.append(raw.strip())
+
+        scene_id = activity.get("scene_id")
+        if isinstance(scene_id, str) and scene_id.strip() and scene_id.strip() not in refs:
+            refs.insert(0, scene_id.strip())
+
+        lower = scene_text.lower()
+        inferred = (
+            ("bathroom", "home_bathroom"),
+            ("kitchen sink", "home_kitchen_sink"),
+            ("kitchen", "home_kitchen"),
+            ("desk", "home_desk"),
+            ("computer", "home_desk"),
+            ("sofa", "home_sofa_corner"),
+            ("couch", "home_sofa_corner"),
+            ("living room", "home_living_room"),
+            ("bedroom", "home_bedroom"),
+            ("window", "home_window"),
+            ("balcony", "home_balcony"),
+        )
+        for token, ref_id in inferred:
+            if token in lower and ref_id not in refs:
+                refs.append(ref_id)
+                break
+
+        outfit_id = activity.get("outfit_id")
+        if isinstance(outfit_id, str) and outfit_id.strip() and outfit_id.strip() not in refs:
+            refs.append(outfit_id.strip())
+
+        return refs[:4]
+
+    def _build_liz_media_scene(self, caption: str = "") -> Dict[str, Any]:
+        activity = self._read_liz_media_memory("liz-current-activity.json")
+        last_context = self._read_liz_media_memory("last-image-context.json")
+
+        activity_prompt = activity.get("scene_prompt")
+        scene_prompt = activity_prompt if isinstance(activity_prompt, str) else ""
+        if not scene_prompt.strip():
+            last_prompt = last_context.get("scene_prompt")
+            if isinstance(last_prompt, str) and "front-camera selfie video note" not in last_prompt:
+                scene_prompt = last_prompt
+        if not scene_prompt.strip():
+            fallback_scenes = [
+                "Liz curled into the sofa corner in her Hamburg flat, warm lived-in evening light, relaxed home clothes",
+                "Liz at the kitchen table in her Hamburg flat, one hand around a mug of tea, casual apartment light",
+                "Liz at her desk in the Hamburg flat, laptop open, soft screen glow, ordinary human mess around her",
+                "Liz by the bathroom mirror after washing her face, towel and sink details, intimate real-life framing",
+            ]
+            scene_prompt = self._pick_liz_media_variant(fallback_scenes, caption or str(time.time()))
+
+        refs = self._infer_liz_media_refs(activity, scene_prompt)
+        lower_scene = scene_prompt.lower()
+        if "bathroom" in lower_scene or "mirror" in lower_scene:
+            camera_mode = "mirror"
+            pose = "bathroom mirror phone capture, natural reflection angle, small imperfect tilt"
+            photo_pose = "mirror selfie only: phone may be partly visible, natural reflection angle, no separate photographer"
+        elif "desk" in lower_scene or "computer" in lower_scene or "laptop" in lower_scene:
+            camera_mode = "desk"
+            pose = "phone propped near the laptop or keyboard, Liz seated at the computer, casual mid-distance framing"
+            photo_pose = "desk selfie or POV-detail from Liz's own phone: arm-length face-and-desk angle, or her hand/laptop/mug visible; not a portrait of her from across the room"
+        elif "kitchen" in lower_scene or "tea" in lower_scene or "mug" in lower_scene:
+            camera_mode = "seated_table"
+            pose = "phone leaned on the kitchen table, Liz seated with tea or coffee, one small real action in frame"
+            photo_pose = "kitchen-table selfie or POV-detail from Liz's own phone: mug/tea/hand/table visible; not a third-person portrait of her sitting there"
+        elif "sofa" in lower_scene or "couch" in lower_scene:
+            camera_mode = "sofa"
+            pose = "Liz sitting or lying on the sofa, phone at sofa-arm height, relaxed body posture"
+            photo_pose = "sofa selfie or POV-detail from Liz's own phone: arm-length face/shoulder angle or her legs/hand/book/mug visible; not a framed portrait of Liz on the couch"
+        elif "outside" in lower_scene or "errands" in lower_scene or "cafe" in lower_scene:
+            camera_mode = self._pick_liz_media_variant(["selfie", "selfie_then_rear", "handheld"], scene_prompt + caption)
+            pose = "real handheld phone capture while out, casual angle, background used as context not a perfect postcard"
+            photo_pose = "handheld selfie or POV-detail from Liz's own phone while out"
+        else:
+            camera_mode = self._pick_liz_media_variant(["propped_phone", "selfie", "handheld"], scene_prompt + caption)
+            pose = "fresh phone capture with varied camera height and distance, not the reference pose"
+            photo_pose = "selfie, mirror selfie, or POV-detail from Liz's own phone; not a third-person portrait"
+
+        ref_guidance = (
+            "Reference pictures are loose anchors for Liz's identity, room mood, objects, wardrobe, and continuity only. "
+            "Do not plug them together, do not recreate their viewpoint, pose, crop, lens distance, or background geometry. "
+            "Make this feel like a new real moment from a different angle."
+        )
+        realism = (
+            "Single coherent phone capture, casual imperfect framing, natural light, real shadows, no collage, "
+            "no compositing, no pasted face, no studio look."
+        )
+        photo_authorship = (
+            "For still photos, it must be physically plausible that Liz took it herself. "
+            "No invisible photographer, no candid third-person portrait of Liz alone at home, no security-camera or tripod fashion shoot. "
+            "Prefer selfie, mirror selfie, or POV/detail. If her full body is visible, the mirror or phone/timer placement must be obvious."
+        )
+        return {
+            "scene_prompt": f"{scene_prompt}. {pose}. {ref_guidance} {realism}",
+            "photo_prompt": (
+                f"{scene_prompt}. {photo_pose}. Responding to Alex's photo with casual intimate partner energy. "
+                f"{photo_authorship} {ref_guidance} {realism} Mood/caption to match: {caption}"
+            ),
+            "camera_mode": camera_mode,
+            "entity_refs": refs,
+        }
+
+    def _prepare_video_note_reply_text(self, text: str) -> str:
+        cleaned = re.sub(r"\[\[audio_as_voice\]\]", "", text or "")
+        cleaned = re.sub(r"MEDIA:\s*\S+", "", cleaned)
+        cleaned = re.sub(r"[*_`#\[\]()]", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned[:200].strip()
+
+    def _prepare_photo_reply_caption(self, text: str) -> str:
+        cleaned = re.sub(r"\[\[audio_as_voice\]\]", "", text or "")
+        cleaned = re.sub(r"MEDIA:\s*\S+", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned[:900].strip()
+
+    def _should_send_video_note_reply(
+        self,
+        event: MessageEvent,
+        response: str,
+        *,
+        already_sent: bool = False,
+    ) -> bool:
+        if already_sent or not response or response.startswith("Error:"):
+            return False
+        return self._wants_video_note_reply_for_type(event.source, event.message_type)
+
+    async def _send_video_note_reply(self, event: MessageEvent, text: str) -> bool:
+        """Generate and send a Telegram circle video note from Liz's text reply."""
+        script = self._video_note_reply_script()
+        speech_text = self._prepare_video_note_reply_text(text)
+        if not speech_text or not script.is_file():
+            return False
+
+        media_scene = self._build_liz_media_scene(speech_text)
+        scene_prompt = media_scene["scene_prompt"]
+        camera_mode = media_scene["camera_mode"]
+        entity_refs = ",".join(media_scene["entity_refs"]) or "none"
+        duration = "10"
+        thread_id = event.source.thread_id or ""
+        command = [
+            str(script),
+            scene_prompt,
+            speech_text,
+            duration,
+            "native",
+            str(event.source.chat_id),
+            str(thread_id),
+            camera_mode,
+            entity_refs,
+        ]
+
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                command,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+        except Exception as exc:
+            logger.warning("Video note reply generation failed: %s", exc, exc_info=True)
+            return False
+
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()[:500]
+            logger.warning("Video note reply script failed (%s): %s", result.returncode, stderr)
+            return False
+
+        try:
+            payload = json.loads((result.stdout or "").strip().splitlines()[-1])
+        except Exception:
+            logger.warning("Video note reply script returned non-JSON output: %s", (result.stdout or "")[:500])
+            return False
+
+        ok = bool(payload.get("ok") and payload.get("has_video_note"))
+        if not ok:
+            logger.warning("Video note reply script did not confirm video_note delivery: %s", payload)
+        return ok
+
+    def _should_send_photo_reply(
+        self,
+        event: MessageEvent,
+        response: str,
+        *,
+        already_sent: bool = False,
+    ) -> bool:
+        if already_sent or not response or response.startswith("Error:"):
+            return False
+        return self._wants_photo_reply_for_type(event.source, event.message_type)
+
+    async def _send_photo_reply(self, event: MessageEvent, text: str) -> bool:
+        """Generate and send a Liz photo reply for Telegram photo-origin turns."""
+        script = self._photo_reply_script()
+        caption = self._prepare_photo_reply_caption(text)
+        if not caption or not script.is_file():
+            return False
+
+        out_dir = self._photo_reply_output_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"liz_photo_reply_{int(time.time())}_{os.getpid()}.jpg"
+        media_scene = self._build_liz_media_scene(caption)
+        prompt = media_scene["photo_prompt"]
+        command = [
+            sys.executable,
+            str(script),
+            str(out_path),
+            prompt,
+            "--aspect-ratio",
+            "3:4",
+            "--resolution",
+            "1k",
+            "--quality",
+            "high",
+            "--skip-last-ref",
+            "--no-continuity",
+            "--identity-ref-only-framing",
+        ]
+        for ref_id in media_scene["entity_refs"]:
+            command.extend(["--entity-ref-id", ref_id])
+
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                command,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+        except Exception as exc:
+            logger.warning("Photo reply generation failed: %s", exc, exc_info=True)
+            return False
+
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()[:500]
+            logger.warning("Photo reply script failed (%s): %s", result.returncode, stderr)
+            return False
+
+        if not out_path.is_file():
+            logger.warning("Photo reply script succeeded but output missing: %s", out_path)
+            return False
+
+        adapter = self.adapters.get(event.source.platform)
+        if not adapter or not hasattr(adapter, "send_image_file"):
+            return False
+
+        metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        send_result = await adapter.send_image_file(
+            chat_id=event.source.chat_id,
+            image_path=str(out_path),
+            caption=caption,
+            reply_to=event.message_id,
+            metadata=metadata,
+        )
+        if not send_result.success:
+            logger.warning("Photo reply send failed: %s", send_result.error)
+            return False
+        return True
+
     async def _deliver_media_from_response(
         self,
         response: str,
@@ -6969,6 +7391,13 @@ class GatewayRunner:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if ext in _AUDIO_EXTS:
+                        if self._blocks_voice_output_for_type(event.message_type):
+                            logger.info(
+                                "[%s] Suppressed streamed audio MEDIA output for %s input",
+                                adapter.name,
+                                event.message_type.value if event.message_type else "media",
+                            )
+                            continue
                         await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
@@ -8836,9 +9265,12 @@ class GatewayRunner:
         from agent.memory_manager import sanitize_context
 
         analysis_prompt = (
-            "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, data, objects, people, layout, colors, "
-            "and any other notable visual information."
+            "Analyze this user-sent image as private context for a conversational "
+            "partner. Be concise and focus on what matters for a natural reply: "
+            "people, mood, setting, notable objects, visible text, and any obvious "
+            "social intent such as sharing a life moment, flirting, showing off, "
+            "asking for reassurance, or asking for help. Do not draft the reply. "
+            "Only include detailed inventory if it is genuinely important."
         )
 
         enriched_parts = []
@@ -8854,25 +9286,82 @@ class GatewayRunner:
                     description = result.get("analysis", "")
                     description = sanitize_context(description)
                     enriched_parts.append(
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
+                        "[Private visual context: Alex sent an image. Use this "
+                        "to understand the moment and respond like Liz, not like "
+                        "an image-captioning system. Unless Alex explicitly asks "
+                        "what is in the image, do not describe the image back; "
+                        "react to the mood, intent, and relationship context.\n"
+                        f"{description}]\n"
+                        "[For a closer look only if needed, use vision_analyze "
+                        f"with image_url: {path}]"
                     )
                 else:
                     enriched_parts.append(
-                        "[The user sent an image but I couldn't quite see it "
-                        "this time (>_<) You can try looking at it yourself "
+                        "[Private visual context: Alex sent an image, but "
+                        "automatic visual analysis failed. Respond naturally to "
+                        "any caption or surrounding context, and only mention "
+                        "that you could not see it if needed. You can inspect it "
                         f"with vision_analyze using image_url: {path}]"
                     )
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
                 enriched_parts.append(
-                    f"[The user sent an image but something went wrong when I "
-                    f"tried to look at it~ You can try examining it yourself "
-                    f"with vision_analyze using image_url: {path}]"
+                    "[Private visual context: Alex sent an image, but something "
+                    "went wrong while inspecting it. Respond naturally to any "
+                    "caption or surrounding context, and only mention the visual "
+                    "failure if needed. You can inspect it with vision_analyze "
+                    f"using image_url: {path}]"
                 )
 
         # Combine: vision descriptions first, then the user's original text
+        if enriched_parts:
+            prefix = "\n\n".join(enriched_parts)
+            if user_text:
+                return f"{prefix}\n\n{user_text}"
+            return prefix
+        return user_text
+
+    async def _enrich_message_with_video(
+        self,
+        user_text: str,
+        video_paths: List[str],
+    ) -> str:
+        """
+        Auto-analyze user-attached videos with bounded frame/audio extraction
+        and prepend the resulting digest to the message text.
+        """
+        enriched_parts = []
+        for path in video_paths:
+            try:
+                logger.debug("Auto-analyzing user video: %s", path)
+                result = await analyze_video_file(path)
+                analysis = str(result.get("analysis") or "").strip()
+                if result.get("success"):
+                    enriched_parts.append(
+                        "[Private audiovisual context: Alex sent a video/video note. "
+                        "Use this to understand the moment and respond like Liz, "
+                        "not like a media-captioning system. Unless Alex explicitly "
+                        "asks what is in the video, do not describe the video back; "
+                        "react to the mood, intent, transcript, and relationship context.\n"
+                        f"{analysis}]"
+                    )
+                else:
+                    enriched_parts.append(
+                        "[Private audiovisual context: Alex sent a video/video note, "
+                        "but automatic analysis failed. Respond naturally to any "
+                        "caption or surrounding context, and only mention the failure "
+                        f"if needed. Local file: {path}. "
+                        f"{analysis}]"
+                    )
+            except Exception as e:
+                logger.error("Video auto-analysis error: %s", e)
+                enriched_parts.append(
+                    "[Private audiovisual context: Alex sent a video/video note, "
+                    "but something went wrong while inspecting it. Respond naturally "
+                    "to any caption or surrounding context, and only mention the "
+                    f"failure if needed. The local file is saved at: {path}]"
+                )
+
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
             if user_text:
@@ -9961,6 +10450,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        inbound_message_type: Optional[MessageType] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -9974,6 +10464,16 @@ class GatewayRunner:
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        voice_output_blocked = self._blocks_voice_output_for_type(inbound_message_type)
+        wants_video_note_reply = self._wants_video_note_reply_for_type(source, inbound_message_type)
+        wants_photo_reply = self._wants_photo_reply_for_type(source, inbound_message_type)
+        context_prompt = self._append_media_reply_mode_prompt(
+            context_prompt,
+            message_type=inbound_message_type,
+            wants_video_note=wants_video_note_reply,
+            wants_photo_reply=wants_photo_reply,
+        )
+
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
@@ -10490,8 +10990,12 @@ class GatewayRunner:
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
+            if wants_video_note_reply or wants_photo_reply:
+                _streaming_enabled = False
+                _want_interim_messages = False
             _want_stream_deltas = _streaming_enabled
-            _want_interim_messages = interim_assistant_messages_enabled
+            if not (wants_video_note_reply or wants_photo_reply):
+                _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages
             if _want_stream_deltas or _want_interim_consumer:
                 try:
@@ -10587,7 +11091,7 @@ class GatewayRunner:
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
-            if _cache_lock and _cache is not None:
+            if not voice_output_blocked and _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
@@ -10634,11 +11138,14 @@ class GatewayRunner:
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
-                if _cache_lock and _cache is not None:
+                if not voice_output_blocked and _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+
+            if voice_output_blocked:
+                self._filter_voice_output_tools_for_media_turn(agent)
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
@@ -11650,6 +12157,7 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    inbound_message_type=getattr(pending_event, "message_type", None) if pending_event is not None else None,
                 )
         finally:
             # Stop progress sender, interrupt monitor, and notification task

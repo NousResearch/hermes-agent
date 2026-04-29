@@ -839,8 +839,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
                 self._handle_location_message
             ))
+            video_note_filter = getattr(filters, "VIDEO_NOTE", None)
+            media_filter = (
+                filters.PHOTO
+                | filters.VIDEO
+                | (video_note_filter if video_note_filter is not None else filters.VIDEO)
+                | filters.AUDIO
+                | filters.VOICE
+                | filters.Document.ALL
+                | filters.Sticker.ALL
+            )
             self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+                media_filter,
                 self._handle_media_message
             ))
             # Handle inline keyboard button callbacks (update prompts)
@@ -2328,26 +2338,56 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
-    def _telegram_ignored_threads(self) -> set[int]:
-        raw = self.config.extra.get("ignored_threads")
+    def _telegram_thread_id_set(self, config_key: str, env_key: str) -> set[int]:
+        raw = self.config.extra.get(config_key)
         if raw is None:
-            raw = os.getenv("TELEGRAM_IGNORED_THREADS", "")
+            raw = os.getenv(env_key, "")
 
         if isinstance(raw, list):
             values = raw
         else:
             values = str(raw).split(",")
 
-        ignored: set[int] = set()
+        thread_ids: set[int] = set()
         for value in values:
             text = str(value).strip()
             if not text:
                 continue
             try:
-                ignored.add(int(text))
+                thread_ids.add(int(text))
             except (TypeError, ValueError):
-                logger.warning("[%s] Ignoring invalid Telegram thread id: %r", self.name, value)
-        return ignored
+                logger.warning("[%s] Ignoring invalid Telegram thread id for %s: %r", self.name, config_key, value)
+        return thread_ids
+
+    def _telegram_ignored_threads(self) -> set[int]:
+        return self._telegram_thread_id_set("ignored_threads", "TELEGRAM_IGNORED_THREADS")
+
+    def _telegram_collaboration_threads(self) -> set[int]:
+        return self._telegram_thread_id_set("collaboration_threads", "TELEGRAM_COLLABORATION_THREADS")
+
+    def _telegram_free_response_threads(self) -> set[int]:
+        return self._telegram_thread_id_set("free_response_threads", "TELEGRAM_FREE_RESPONSE_THREADS")
+
+    def _telegram_process_bot_messages(self) -> bool:
+        """Return whether Telegram bot-authored inbound messages may trigger runs.
+
+        Default is false. Letting bots process other bots' group replies creates
+        easy agent-to-agent loops, especially in forum collaboration threads.
+        """
+        configured = self.config.extra.get("process_bot_messages")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("TELEGRAM_PROCESS_BOT_MESSAGES", "false").lower() in ("true", "1", "yes", "on")
+
+    @staticmethod
+    def _message_from_bot(message: Message) -> bool:
+        user = getattr(message, "from_user", None)
+        is_bot = getattr(user, "is_bot", False) if user is not None else False
+        if isinstance(is_bot, str):
+            return is_bot.lower() in ("true", "1", "yes", "on")
+        return is_bot is True
 
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
@@ -2489,13 +2529,32 @@ class TelegramAdapter(BasePlatformAdapter):
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
+        if self._message_from_bot(message) and not self._telegram_process_bot_messages():
+            logger.info(
+                "[%s] Ignoring Telegram message from bot user %s to prevent agent-to-agent loops",
+                self.name,
+                getattr(getattr(message, "from_user", None), "id", "unknown"),
+            )
+            return False
         if not self._is_group_chat(message):
             return True
         thread_id = getattr(message, "message_thread_id", None)
+        chat = getattr(message, "chat", None)
+        if thread_id is None and getattr(chat, "is_forum", False):
+            # Telegram omits message_thread_id for some forum General-topic
+            # messages, but _build_message_event maps that case to synthetic
+            # thread "1". Apply the same mapping here so thread gates are
+            # evaluated before open-group/free-response fallbacks.
+            thread_id = self._GENERAL_TOPIC_THREAD_ID
         if thread_id is not None:
             try:
-                if int(thread_id) in self._telegram_ignored_threads():
+                thread_id_int = int(thread_id)
+                if thread_id_int in self._telegram_ignored_threads():
                     return False
+                if thread_id_int in self._telegram_free_response_threads():
+                    return True
+                if thread_id_int in self._telegram_collaboration_threads():
+                    return True
             except (TypeError, ValueError):
                 logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
@@ -2703,11 +2762,13 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = update.message
         
         # Determine media type
+        video_note = getattr(msg, "video_note", None)
+
         if msg.sticker:
             msg_type = MessageType.STICKER
         elif msg.photo:
             msg_type = MessageType.PHOTO
-        elif msg.video:
+        elif msg.video or video_note:
             msg_type = MessageType.VIDEO
         elif msg.audio:
             msg_type = MessageType.AUDIO
@@ -2784,9 +2845,10 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
 
-        elif msg.video:
+        elif msg.video or video_note:
             try:
-                file_obj = await msg.video.get_file()
+                video_obj = msg.video or video_note
+                file_obj = await video_obj.get_file()
                 video_bytes = await file_obj.download_as_bytearray()
                 ext = ".mp4"
                 if getattr(file_obj, "file_path", None):
@@ -3154,6 +3216,7 @@ class TelegramAdapter(BasePlatformAdapter):
             user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
+            is_bot=(getattr(user, "is_bot", False) is True) if user else False,
         )
         
         # Extract reply context if this message is a reply

@@ -282,7 +282,10 @@ Hermes Agent works in Telegram group chats with a few considerations:
   - `@botusername` mentions
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
-- If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
+- Use `telegram.free_response_threads` for topics where the bot should answer normal human messages even when `telegram.require_mention: true` is enabled
+- Use `telegram.collaboration_threads` for shared specialist topics where ordinary human messages may wake relevant bots, while bot-authored messages stay ignored by default
+- Bot-authored Telegram messages are ignored by default (`telegram.process_bot_messages: false`) to prevent agent-to-agent reply loops when multiple Hermes bots share a group
+- If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal human group messages it can see
 
 ### Example group trigger configuration
 
@@ -291,15 +294,34 @@ Add this to `~/.hermes/config.yaml`:
 ```yaml
 telegram:
   require_mention: true
+  process_bot_messages: false  # Default. Keep off unless you are building an explicit bot-to-bot bridge.
   mention_patterns:
     - "^\\s*chompy\\b"
+  free_response_threads:
+    - 23          # Topic where this bot can answer ordinary messages without a mention
+  collaboration_threads:
+    - 1           # Shared General topic: human messages may wake relevant bots; bot-authored messages stay ignored
   ignored_threads:
     - 31
     - "42"
 ```
 
 This example allows all the usual direct triggers plus messages that begin with `chompy`, even if they do not use an `@mention`.
+Messages in Telegram topic `23` bypass the mention requirement. Human messages in collaboration topic `1` are accepted so a shared specialist room can route by prompt/domain judgment, while bot-authored messages remain ignored by default to prevent loops.
 Messages in Telegram topics `31` and `42` are always ignored before the mention and free-response checks run.
+
+### Multi-bot groups and loop prevention
+
+When several Hermes-powered bots are in the same Telegram group, do not let their visible replies trigger each other by default. Telegram treats a bot reply to another bot as a normal group update; without a bot-authored-message guard, two agents can keep replying to each other's fallback/status messages.
+
+Hermes therefore ignores inbound messages from Telegram bot users unless you explicitly opt in:
+
+```yaml
+telegram:
+  process_bot_messages: true
+```
+
+Only enable this for a deliberately designed bridge with narrow triggers and a separate loop breaker. For normal specialist teams, keep bot-to-bot coordination internal: one agent delegates work behind the scenes, then one agent posts the human-facing answer.
 
 ### Notes on `mention_patterns`
 

@@ -705,11 +705,21 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+                frt = telegram_cfg.get("free_response_threads")
+                if frt is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_THREADS"):
+                    if isinstance(frt, list):
+                        frt = ",".join(str(v) for v in frt)
+                    os.environ["TELEGRAM_FREE_RESPONSE_THREADS"] = str(frt)
                 ignored_threads = telegram_cfg.get("ignored_threads")
                 if ignored_threads is not None and not os.getenv("TELEGRAM_IGNORED_THREADS"):
                     if isinstance(ignored_threads, list):
                         ignored_threads = ",".join(str(v) for v in ignored_threads)
                     os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
+                collaboration_threads = telegram_cfg.get("collaboration_threads")
+                if collaboration_threads is not None and not os.getenv("TELEGRAM_COLLABORATION_THREADS"):
+                    if isinstance(collaboration_threads, list):
+                        collaboration_threads = ",".join(str(v) for v in collaboration_threads)
+                    os.environ["TELEGRAM_COLLABORATION_THREADS"] = str(collaboration_threads)
                 if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
                 if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):

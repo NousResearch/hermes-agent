@@ -93,6 +93,7 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     # Media flags — all None except explicit payload
     msg.photo = photo
     msg.video = None
+    msg.video_note = None
     msg.audio = None
     msg.voice = None
     msg.sticker = None
@@ -365,6 +366,21 @@ class TestVideoDownloadBlock:
         file_obj.file_path = "videos/clip.mp4"
         msg = _make_message()
         msg.video = _make_video(file_obj)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    @pytest.mark.asyncio
+    async def test_round_video_note_is_cached_as_video(self, adapter):
+        file_obj = _make_file_obj(b"fake-round-mp4")
+        file_obj.file_path = "videos/round-video.mp4"
+        msg = _make_message()
+        msg.video_note = _make_video(file_obj)
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())

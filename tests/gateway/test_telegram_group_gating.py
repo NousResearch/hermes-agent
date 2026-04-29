@@ -5,7 +5,14 @@ from unittest.mock import AsyncMock
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
-def _make_adapter(require_mention=None, free_response_chats=None, mention_patterns=None, ignored_threads=None):
+def _make_adapter(
+    require_mention=None,
+    free_response_chats=None,
+    mention_patterns=None,
+    ignored_threads=None,
+    collaboration_threads=None,
+    free_response_threads=None,
+):
     from gateway.platforms.telegram import TelegramAdapter
 
     extra = {}
@@ -17,6 +24,10 @@ def _make_adapter(require_mention=None, free_response_chats=None, mention_patter
         extra["mention_patterns"] = mention_patterns
     if ignored_threads is not None:
         extra["ignored_threads"] = ignored_threads
+    if collaboration_threads is not None:
+        extra["collaboration_threads"] = collaboration_threads
+    if free_response_threads is not None:
+        extra["free_response_threads"] = free_response_threads
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -35,6 +46,7 @@ def _group_message(
     *,
     chat_id=-100,
     thread_id=None,
+    is_forum=False,
     reply_to_bot=False,
     entities=None,
     caption=None,
@@ -49,7 +61,7 @@ def _group_message(
         entities=entities or [],
         caption_entities=caption_entities or [],
         message_thread_id=thread_id,
-        chat=SimpleNamespace(id=chat_id, type="group"),
+        chat=SimpleNamespace(id=chat_id, type="group", is_forum=is_forum),
         reply_to_message=reply_to_message,
     )
 
@@ -124,12 +136,73 @@ def test_free_response_chats_bypass_mention_requirement():
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201)) is False
 
 
+def test_free_response_threads_bypass_mention_requirement():
+    adapter = _make_adapter(require_mention=True, free_response_threads=[31, "42"])
+
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=31)) is True
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=42)) is True
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=99)) is False
+
+
 def test_ignored_threads_drop_group_messages_before_other_gates():
     adapter = _make_adapter(require_mention=False, free_response_chats=["-200"], ignored_threads=[31, "42"])
 
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=31)) is False
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=42)) is False
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=99)) is True
+
+
+def test_collaboration_threads_accept_human_messages_even_when_group_requires_mentions():
+    adapter = _make_adapter(
+        require_mention=True,
+        collaboration_threads=[1, "99"],
+    )
+
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=1)) is True
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=99)) is True
+    assert adapter._should_process_message(
+        _group_message("hi @hermes_bot", chat_id=-200, thread_id=1, entities=[_mention_entity("hi @hermes_bot")])
+    ) is True
+    assert adapter._should_process_message(_group_message("replying", chat_id=-200, thread_id=99, reply_to_bot=True)) is True
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=100)) is False
+
+
+def test_forum_general_without_thread_id_uses_synthetic_thread_for_ambient_collaboration():
+    adapter = _make_adapter(
+        require_mention=True,
+        mention_patterns=[r"^\s*chompy\b"],
+        collaboration_threads=[1],
+    )
+
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, is_forum=True)) is True
+    assert adapter._should_process_message(
+        _group_message("chompy check this", chat_id=-200, is_forum=True)
+    ) is True
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, thread_id=100)) is False
+
+
+def test_forum_general_without_thread_id_honors_ignored_threads_before_collaboration_gating():
+    adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        ignored_threads=[1],
+        collaboration_threads=[1],
+    )
+
+    assert adapter._should_process_message(
+        _group_message("hi @hermes_bot", chat_id=-200, is_forum=True, entities=[_mention_entity("hi @hermes_bot")])
+    ) is False
+    assert adapter._should_process_message(_group_message("replying", chat_id=-200, is_forum=True, reply_to_bot=True)) is False
+
+
+def test_non_forum_group_without_thread_id_keeps_open_group_behavior():
+    adapter = _make_adapter(
+        require_mention=False,
+        free_response_chats=["-200"],
+        collaboration_threads=[1],
+    )
+
+    assert adapter._should_process_message(_group_message("hello everyone", chat_id=-200, is_forum=False)) is True
 
 
 def test_regex_mention_patterns_allow_custom_wake_words():
@@ -191,3 +264,28 @@ def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):
 
     assert config is not None
     assert __import__("os").environ["TELEGRAM_IGNORED_THREADS"] == "31,42"
+
+
+def test_config_bridges_telegram_collaboration_threads(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  collaboration_threads:\n"
+        "    - 1\n"
+        "    - \"99\"\n"
+        "  free_response_threads:\n"
+        "    - 1242\n"
+        "    - \"2274\"\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_COLLABORATION_THREADS", raising=False)
+    monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_THREADS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ["TELEGRAM_COLLABORATION_THREADS"] == "1,99"
+    assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_THREADS"] == "1242,2274"

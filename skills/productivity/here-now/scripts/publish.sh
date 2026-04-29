@@ -18,6 +18,8 @@ CLIENT=""
 TARGET=""
 FORKABLE=""
 SPA_MODE=""
+FROM_DRIVE=""
+DRIVE_VERSION=""
 
 usage() {
   cat <<'USAGE'
@@ -33,6 +35,8 @@ Options:
   --client <name>         Agent name for attribution (e.g. cursor, claude-code)
   --forkable              Allow others to fork this site
   --spa                   Enable SPA routing
+  --from-drive <drv_...>  Publish a Drive snapshot instead of local files
+  --version <dv_...>      Drive version for --from-drive (default: current head)
   --base-url <url>        API base (default: https://here.now)
   --allow-nonherenow-base-url
                          Allow auth requests to non-default API base URL
@@ -71,14 +75,20 @@ while [[ $# -gt 0 ]]; do
     --allow-nonherenow-base-url) ALLOW_NON_HERENOW_BASE_URL=1; shift ;;
     --forkable)     FORKABLE="true"; shift ;;
     --spa)          SPA_MODE="true"; shift ;;
+    --from-drive)   FROM_DRIVE="$2"; shift 2 ;;
+    --version)      DRIVE_VERSION="$2"; shift 2 ;;
     --help|-h)      usage ;;
     -*)             die "unknown option: $1" ;;
     *)              [[ -z "$TARGET" ]] && TARGET="$1" || die "unexpected argument: $1"; shift ;;
   esac
 done
 
-[[ -n "$TARGET" ]] || usage
-[[ -e "$TARGET" ]] || die "path does not exist: $TARGET"
+if [[ -n "$FROM_DRIVE" ]]; then
+  [[ -z "$TARGET" ]] || die "--from-drive does not accept a local file-or-dir argument"
+else
+  [[ -n "$TARGET" ]] || usage
+  [[ -e "$TARGET" ]] || die "path does not exist: $TARGET"
+fi
 
 # Load API key from credentials file if not provided via flag or env
 if [[ -z "$API_KEY" && -f "$CREDENTIALS_FILE" ]]; then
@@ -98,6 +108,57 @@ fi
 # Auto-load claim token from state file for anonymous updates
 if [[ -n "$SLUG" && -z "$CLAIM_TOKEN" && -z "$API_KEY" && -f "$STATE_FILE" ]]; then
   CLAIM_TOKEN=$("$JQ_BIN" -r --arg s "$SLUG" '.publishes[$s].claimToken // empty' "$STATE_FILE" 2>/dev/null || true)
+fi
+
+if [[ -n "$FROM_DRIVE" ]]; then
+  [[ -n "$API_KEY" ]] || die "--from-drive requires an account API key"
+  BODY=$("$JQ_BIN" -n --arg d "$FROM_DRIVE" '{driveId:$d}')
+  [[ -n "$DRIVE_VERSION" ]] && BODY=$(echo "$BODY" | "$JQ_BIN" --arg v "$DRIVE_VERSION" '.versionId = $v')
+  [[ -n "$SLUG" ]] && BODY=$(echo "$BODY" | "$JQ_BIN" --arg s "$SLUG" '.slug = $s')
+  if [[ -n "$TITLE" || -n "$DESCRIPTION" ]]; then
+    viewer="{}"
+    [[ -n "$TITLE" ]] && viewer=$(echo "$viewer" | "$JQ_BIN" --arg t "$TITLE" '.title = $t')
+    [[ -n "$DESCRIPTION" ]] && viewer=$(echo "$viewer" | "$JQ_BIN" --arg d "$DESCRIPTION" '.description = $d')
+    BODY=$(echo "$BODY" | "$JQ_BIN" --argjson v "$viewer" '.viewer = $v')
+  fi
+  [[ "$FORKABLE" == "true" ]] && BODY=$(echo "$BODY" | "$JQ_BIN" '.forkable = true')
+  [[ "$SPA_MODE" == "true" ]] && BODY=$(echo "$BODY" | "$JQ_BIN" '.spaMode = true')
+  CLIENT_HEADER_VALUE="here-now-publish-sh"
+  if [[ -n "$CLIENT" ]]; then
+    normalized_client=$(echo "$CLIENT" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9._-' '-')
+    normalized_client="${normalized_client#-}"
+    normalized_client="${normalized_client%-}"
+    if [[ -n "$normalized_client" ]]; then
+      CLIENT_HEADER_VALUE="${normalized_client}/publish-sh"
+    fi
+  fi
+
+  echo "publishing from Drive..." >&2
+  RESPONSE=$(curl -sS -X POST "$BASE_URL/api/v1/publish/from-drive" \
+    -H "authorization: Bearer $API_KEY" \
+    -H "x-herenow-client: $CLIENT_HEADER_VALUE" \
+    -H "content-type: application/json" \
+    -d "$BODY")
+  if echo "$RESPONSE" | "$JQ_BIN" -e '.error' >/dev/null 2>&1; then
+    err=$(echo "$RESPONSE" | "$JQ_BIN" -r '.error')
+    die "$err"
+  fi
+  SITE_URL=$(echo "$RESPONSE" | "$JQ_BIN" -r '.siteUrl')
+  OUT_SLUG=$(echo "$RESPONSE" | "$JQ_BIN" -r '.slug')
+  CURRENT_VERSION=$(echo "$RESPONSE" | "$JQ_BIN" -r '.currentVersionId')
+  DRIVE_VERSION_OUT=$(echo "$RESPONSE" | "$JQ_BIN" -r '.driveVersionId')
+  echo "$SITE_URL"
+  echo "" >&2
+  echo "publish_result.site_url=$SITE_URL" >&2
+  echo "publish_result.slug=$OUT_SLUG" >&2
+  echo "publish_result.action=from_drive" >&2
+  echo "publish_result.auth_mode=authenticated" >&2
+  echo "publish_result.api_key_source=$API_KEY_SOURCE" >&2
+  echo "publish_result.persistence=permanent" >&2
+  echo "publish_result.drive_id=$FROM_DRIVE" >&2
+  echo "publish_result.drive_version_id=$DRIVE_VERSION_OUT" >&2
+  echo "publish_result.current_version_id=$CURRENT_VERSION" >&2
+  exit 0
 fi
 
 compute_sha256() {

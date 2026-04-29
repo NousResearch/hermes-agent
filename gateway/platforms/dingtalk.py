@@ -31,10 +31,12 @@ import json
 import logging
 import os
 import re
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 try:
     import dingtalk_stream
@@ -108,6 +110,296 @@ DINGTALK_TYPE_MAPPING = {
     "picture": "image",
     "voice": "audio",
 }
+
+
+# Media upload limits.  DingTalk /media/upload caps at 20 MB per file.
+_DINGTALK_MEDIA_MAX_SIZE = 20 * 1024 * 1024
+# File-extension → (media_type, msg_key) routing for /media/upload.
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"})
+_VIDEO_EXTS = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm"})
+_VOICE_EXTS = frozenset({".amr", ".mp3", ".wav", ".aac", ".m4a", ".ogg"})
+
+# LWCP-encoded sender_id (opaque DingTalk-internal form).  Treated as OTO but
+# the OpenAPI will reject it as ``staffId.notExisted`` unless the caller has
+# resolved it to a real staffId via the contact APIs first.
+_LWCP_SENDER_RE = re.compile(r'^\$:LWCP_')
+# Real openConversationId (group chat): ``cid...==`` base64-padded form.
+_OPEN_CONVERSATION_RE = re.compile(r'^cid[A-Za-z0-9+/_\-]+={0,2}$')
+
+# DingTalk message type → runtime content type
+DINGTALK_TYPE_MAPPING = {
+    "picture": "image",
+    "voice": "audio",
+}
+
+# ---------------------------------------------------------------------------
+# File content auto-parsing (ported from dingtalk-openclaw-connector
+# core/message-handler.ts:700-956)
+# ---------------------------------------------------------------------------
+
+# Extensions that can be parsed as plain text and injected into agent context.
+_TEXT_FILE_EXTS = frozenset({
+    ".txt", ".md", ".json", ".xml", ".yaml", ".yml", ".csv", ".log",
+    ".js", ".ts", ".py", ".java", ".c", ".cpp", ".h", ".sh", ".bat",
+    ".html", ".css", ".sql", ".rb", ".go", ".rs", ".toml", ".ini", ".cfg",
+})
+_DOCX_EXTS = frozenset({".docx", ".doc"})
+_PDF_EXTS = frozenset({".pdf"})
+_EXCEL_EXTS = frozenset({".xlsx", ".xls", ".xlsm"})
+# All parseable extensions (text + docx + pdf + excel).
+_PARSEABLE_FILE_EXTS = _TEXT_FILE_EXTS | _DOCX_EXTS | _PDF_EXTS | _EXCEL_EXTS
+
+
+def _file_type_label(ext: str) -> str:
+    """Return a human-readable Chinese label for a file extension."""
+    if ext in _TEXT_FILE_EXTS:
+        return "文本文件"
+    if ext in _DOCX_EXTS:
+        return "Word 文档"
+    if ext in _PDF_EXTS:
+        return "PDF 文档"
+    if ext in {".xlsx", ".xls"}:
+        return "Excel 表格"
+    if ext in {".pptx", ".ppt"}:
+        return "PPT 演示文稿"
+    if ext in {".zip", ".rar", ".7z", ".tar", ".gz"}:
+        return "压缩包"
+    if ext in _IMAGE_EXTS:
+        return "图片"
+    if ext in _VIDEO_EXTS:
+        return "视频"
+    if ext in _VOICE_EXTS:
+        return "音频"
+    return "文件"
+
+
+def _parse_text_file(file_path: str) -> Optional[str]:
+    """Read a plain-text file and return its content."""
+    try:
+        text = Path(file_path).read_text(encoding="utf-8", errors="replace").strip()
+        return text if text else None
+    except Exception as exc:
+        logger.warning("Failed to read text file %s: %s", file_path, exc)
+        return None
+
+
+def _parse_docx_file(file_path: str) -> Optional[str]:
+    """Extract raw text from a .docx file using python-docx."""
+    try:
+        import docx  # python-docx
+    except ImportError:
+        logger.warning(
+            "python-docx not installed, cannot parse .docx. "
+            "Install with: pip install python-docx"
+        )
+        return None
+    try:
+        doc = docx.Document(file_path)
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        text = "\n".join(paragraphs).strip()
+        return text if text else None
+    except Exception as exc:
+        logger.warning("Failed to parse docx %s: %s", file_path, exc)
+        return None
+
+
+def _parse_pdf_file(file_path: str) -> Optional[str]:
+    """Extract text from a PDF file.
+
+    Tries pdfplumber first (better table / layout handling), then falls back
+    to PyPDF2.
+    """
+    # Try pdfplumber
+    try:
+        import pdfplumber
+        with pdfplumber.open(file_path) as pdf:
+            pages_text = [p.extract_text() or "" for p in pdf.pages]
+        text = "\n".join(pages_text).strip()
+        if text:
+            return text
+    except ImportError:
+        pass
+    except Exception as exc:
+        logger.warning("pdfplumber failed for %s: %s", file_path, exc)
+
+    # Fallback to PyPDF2
+    try:
+        from PyPDF2 import PdfReader
+        reader = PdfReader(file_path)
+        pages_text = [page.extract_text() or "" for page in reader.pages]
+        text = "\n".join(pages_text).strip()
+        return text if text else None
+    except ImportError:
+        logger.warning(
+            "Neither pdfplumber nor PyPDF2 installed, cannot parse PDF. "
+            "Install with: pip install pdfplumber  or  pip install PyPDF2"
+        )
+        return None
+    except Exception as exc:
+        logger.warning("PyPDF2 failed for %s: %s", file_path, exc)
+        return None
+
+
+def _parse_excel_file(file_path: str) -> Optional[str]:
+    """Extract text representation from an Excel (.xlsx/.xls/.xlsm) file.
+
+    Tries openpyxl first (modern xlsx), then falls back to xlrd (legacy xls).
+    Converts each sheet into a Markdown-style table so the LLM can reason
+    over the data directly.
+    """
+    # -- Try openpyxl (xlsx / xlsm) --
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        sheets_text: List[str] = []
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            rows: List[List[str]] = []
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c) if c is not None else "" for c in row]
+                rows.append(cells)
+            if not rows:
+                continue
+            # Build markdown table
+            header = "| " + " | ".join(rows[0]) + " |"
+            sep = "| " + " | ".join(["---"] * len(rows[0])) + " |"
+            body_lines = []
+            for r in rows[1:]:
+                # Pad or truncate to header length
+                padded = r + [""] * (len(rows[0]) - len(r))
+                body_lines.append("| " + " | ".join(padded[:len(rows[0])]) + " |")
+            table = "\n".join([header, sep] + body_lines)
+            sheets_text.append(f"### Sheet: {sheet_name}\n\n{table}")
+        wb.close()
+        text = "\n\n".join(sheets_text).strip()
+        if text:
+            return text
+    except ImportError:
+        pass
+    except Exception as exc:
+        logger.warning("openpyxl failed for %s: %s", file_path, exc)
+
+    # -- Fallback: pandas (handles both xlsx and xls) --
+    try:
+        import pandas as pd
+        xls = pd.ExcelFile(file_path)
+        sheets_text = []
+        for sheet_name in xls.sheet_names:
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+            md_table = df.to_markdown(index=False)
+            if md_table:
+                sheets_text.append(f"### Sheet: {sheet_name}\n\n{md_table}")
+        text = "\n\n".join(sheets_text).strip()
+        return text if text else None
+    except ImportError:
+        logger.warning(
+            "Neither openpyxl nor pandas installed, cannot parse Excel. "
+            "Install with: pip install openpyxl  or  pip install pandas"
+        )
+        return None
+    except Exception as exc:
+        logger.warning("pandas Excel parse failed for %s: %s", file_path, exc)
+        return None
+
+
+def _parse_file_content(file_path: str, file_name: str) -> Optional[str]:
+    """Dispatch to the correct parser based on file extension.
+
+    Returns the extracted text, or None if unparseable / binary.
+    """
+    ext = os.path.splitext(file_name)[1].lower()
+    if ext in _TEXT_FILE_EXTS:
+        return _parse_text_file(file_path)
+    if ext in _DOCX_EXTS:
+        return _parse_docx_file(file_path)
+    if ext in _PDF_EXTS:
+        return _parse_pdf_file(file_path)
+    if ext in _EXCEL_EXTS:
+        return _parse_excel_file(file_path)
+    return None
+
+
+# Persistent inbound-media storage.  Files live here so agent tools
+# (vision_analyze / transcribe_audio / read_file …) can reopen them after
+# ``_on_message`` returns.  Cleanup on adapter connect ages out files
+# older than 24 h so the directory doesn't grow unboundedly.
+
+def _inbound_media_dir() -> str:
+    base = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    path = os.path.join(base, "inbound_media")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _cleanup_inbound_media(older_than_seconds: int = 24 * 3600) -> int:
+    """Delete inbox files older than the cutoff.  Returns the count removed."""
+    removed = 0
+    try:
+        dir_path = _inbound_media_dir()
+        now = time.time()
+        for name in os.listdir(dir_path):
+            full = os.path.join(dir_path, name)
+            try:
+                if os.path.isfile(full) and (now - os.path.getmtime(full)) > older_than_seconds:
+                    os.unlink(full)
+                    removed += 1
+            except OSError:
+                continue
+    except Exception:
+        logger.debug("inbound media cleanup failed", exc_info=True)
+    return removed
+
+
+async def _download_file_to_inbox(
+    url: str, file_name: str, *, msg_id: str = "", timeout: float = 60.0,
+) -> Optional[str]:
+    """Download *url* into the persistent inbox; agent tools can reopen it.
+
+    ``msg_id`` is hashed into the output filename so concurrent messages
+    don't clobber each other.
+    """
+    if not HTTPX_AVAILABLE:
+        return None
+    try:
+        ext = os.path.splitext(file_name)[1] or ""
+        base = re.sub(r'[^\w.-]', '_', os.path.splitext(file_name)[0])[:80] or "file"
+        slug = re.sub(r'[^\w]', '', msg_id)[:16] if msg_id else uuid.uuid4().hex[:12]
+        out_path = os.path.join(_inbound_media_dir(), f"{slug}_{base}{ext}")
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+        with open(out_path, "wb") as fh:
+            fh.write(resp.content)
+        logger.info(
+            "Downloaded inbound media %s (%d bytes) -> %s",
+            file_name, len(resp.content), out_path,
+        )
+        return out_path
+    except Exception as exc:
+        logger.warning("Failed to download inbound media %s: %s", file_name, exc)
+        return None
+
+
+# Extension → MIME type used when we hand a local inbound file off to the
+# agent via ``event.media_urls`` / ``media_types``.
+_EXT_TO_MIME = {
+    ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".wav": "audio/wav",
+    ".ogg": "audio/ogg", ".amr": "audio/amr", ".aac": "audio/aac",
+    ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm",
+    ".avi": "video/x-msvideo", ".mkv": "video/x-matroska",
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+    ".pdf": "application/pdf", ".md": "text/markdown", ".txt": "text/plain",
+    ".csv": "text/csv", ".json": "application/json",
+    ".zip": "application/zip", ".tar": "application/x-tar", ".gz": "application/gzip",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+
+def _mime_for_file(file_name: str) -> str:
+    ext = os.path.splitext(file_name)[1].lower()
+    return _EXT_TO_MIME.get(ext, "application/octet-stream")
 
 
 def check_dingtalk_requirements() -> bool:
@@ -229,6 +521,11 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         try:
             self._http_client = httpx.AsyncClient(timeout=30.0)
+
+            # Purge stale inbound-media files (>24h).
+            removed = _cleanup_inbound_media()
+            if removed:
+                logger.info("[%s] Cleaned up %d stale inbound media files", self.name, removed)
 
             credential = dingtalk_stream.Credential(
                 self._client_id, self._client_secret
@@ -594,6 +891,68 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         # Determine message type and build media list
         msg_type, media_urls, media_types = self._extract_media(message)
+
+        logger.info(
+            "[%s] Pre-file-parse state: msg_type_str=%s text=%r media_urls=%d extensions_keys=%s",
+            self.name,
+            getattr(message, "message_type", "?"),
+            (text[:60] if text else ""),
+            len(media_urls),
+            list(getattr(message, "extensions", {}).keys())[:10],
+        )
+
+        # ------------------------------------------------------------------
+        # Download remote image URLs to local files.
+        #
+        # DingTalk's signed OSS URLs are not universally accessible — the
+        # vision_analyze_tool fails when it tries to download them directly
+        # because the OSS signature is bound to specific request context.
+        # Mirrors connector's downloadImageToFile / downloadMediaByCode
+        # approach: download in the gateway process (same IP/context as the
+        # DingTalk SDK) and pass local file paths to the agent.
+        # ------------------------------------------------------------------
+        if media_urls:
+            try:
+                media_urls = await self._download_images_to_local(
+                    media_urls, media_types, message,
+                )
+            except Exception:
+                logger.warning(
+                    "[%s] Image download to local failed (non-fatal), keeping URLs",
+                    self.name, exc_info=True,
+                )
+
+        # ------------------------------------------------------------------
+        # File content auto-parsing: download text-type files (.md, .txt,
+        # .json, .docx, .pdf, etc.) and inject their content into ``text``
+        # so the LLM can see the content immediately without needing tools.
+        # Mirrors dingtalk-openclaw-connector core/message-handler.ts:1226-1328.
+        # ------------------------------------------------------------------
+        try:
+            file_parts, file_attachments = await self._extract_and_parse_file_attachments(message)
+            if file_parts:
+                file_text = "\n\n".join(file_parts)
+                text = f"{text}\n\n{file_text}" if text else file_text
+                logger.info(
+                    "[%s] Injected %d file content block(s) into message text",
+                    self.name, len(file_parts),
+                )
+            # Expose each downloaded media file to the agent as a ``file://``
+            # URI so tools (transcribe_audio / vision_analyze / read_file …)
+            # can open them.
+            for local_path, mime in file_attachments:
+                media_urls.append(f"file://{local_path}")
+                media_types.append(mime)
+            if file_attachments:
+                logger.info(
+                    "[%s] Attached %d local file(s) to event media_urls",
+                    self.name, len(file_attachments),
+                )
+        except Exception:
+            logger.warning(
+                "[%s] File content extraction failed (non-fatal), continuing",
+                self.name, exc_info=True,
+            )
 
         if not text and not media_urls:
             logger.debug("[%s] Empty message, skipping", self.name)
@@ -1159,6 +1518,218 @@ class DingTalkAdapter(BasePlatformAdapter):
             logger.debug(
                 "[%s] _send_emotion %s failed", self.name, action, exc_info=True
             )
+
+
+    async def _download_images_to_local(
+        self,
+        media_urls: List[str],
+        media_types: List[str],
+        message: "ChatbotMessage",
+    ) -> List[str]:
+        """Download remote image URLs to local temp files.
+
+        DingTalk's ``_resolve_media_codes`` replaces download codes with signed
+        OSS URLs.  These signed URLs are **not universally accessible** — the
+        OSS signature may be bound to specific request headers, IP ranges, or
+        Referer, so the downstream ``vision_analyze_tool`` (which runs in a
+        different network context) consistently fails with "Invalid image
+        source" or HTTP 403.
+
+        The reference connector (dingtalk-openclaw-connector) avoids this by
+        downloading images to local files first and passing ``file://`` paths.
+        We mirror that approach here: for each image in *media_urls*, download
+        via httpx (which runs in the same process as the DingTalk SDK and
+        therefore shares the same network/IP context) and replace the URL with
+        the local temp-file path.
+
+        Non-image entries and entries that fail to download are left unchanged.
+        """
+        result = list(media_urls)  # shallow copy
+        robot_code = getattr(message, "robot_code", None) or self._client_id
+        token: Optional[str] = None  # lazy-fetched
+
+        for i, url in enumerate(media_urls):
+            mtype = media_types[i] if i < len(media_types) else ""
+            if mtype != "image":
+                continue  # only process images
+
+            try:
+                download_url = url
+                # If URL is still a download code (not http), resolve it first
+                if not url.startswith("http"):
+                    if token is None:
+                        token = await self._get_access_token()
+                    download_url = await self._resolve_single_download_url(
+                        url, robot_code, token,
+                    )
+                    if not download_url:
+                        logger.warning(
+                            "[%s] Failed to resolve image download code, keeping original",
+                            self.name,
+                        )
+                        continue
+
+                # Download to persistent inbox (kept for agent tool re-access
+                # long after _on_message returns).
+                ext = ".png"  # safe default for images
+                # Try to detect from URL path (before query params)
+                url_path = download_url.split("?")[0]
+                for img_ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"):
+                    if url_path.lower().endswith(img_ext):
+                        ext = img_ext
+                        break
+
+                msg_id = getattr(message, "message_id", "") or ""
+                local_path = await _download_file_to_inbox(
+                    download_url, f"image{ext}", msg_id=msg_id, timeout=30.0,
+                )
+                if local_path:
+                    result[i] = local_path
+                    logger.info(
+                        "[%s] Downloaded image to local: %s -> %s",
+                        self.name, url[:60], local_path,
+                    )
+                else:
+                    logger.warning(
+                        "[%s] Image download failed, keeping original URL: %s",
+                        self.name, url[:80],
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Image download error (non-fatal): %s", self.name, exc,
+                )
+
+        return result
+
+    async def _extract_and_parse_file_attachments(
+        self, message: "ChatbotMessage",
+    ) -> Tuple[List[str], List[Tuple[str, str]]]:
+        """Download rich-media attachments and describe them for the agent.
+
+        Handles:
+          * msgtype='file'  → download to inbox + parse if small text
+          * msgtype='audio' → download + surface DingTalk STT recognition
+          * msgtype='video' → download
+          * richText items   → download each (non-picture) item
+
+        DingTalk's SDK only parses ``text``/``picture``/``richText``; the raw
+        ``content`` dict for ``file``/``audio``/``video`` lives in
+        ``message.extensions['content']``.
+
+        Returns ``(parts, attachments)``:
+          * ``parts`` — text blocks injected into the user message so the
+            LLM knows what was sent and where to find it.
+          * ``attachments`` — ``[(local_path, mime_type), ...]`` the caller
+            merges into ``event.media_urls`` / ``media_types`` so tools
+            (``transcribe_audio``, ``vision_analyze``, ``read_file`` …) can
+            open the file directly.
+
+        Files live in ``~/.hermes/inbound_media/``; the cleanup sweep on
+        adapter connect ages out anything older than 24 h.
+        """
+        parts: List[str] = []
+        attachments: List[Tuple[str, str]] = []
+        # (download_code_or_url, file_name, extra_text_hint)
+        items: List[Tuple[str, str, str]] = []
+
+        msg_type_str = getattr(message, "message_type", "") or ""
+        extensions = getattr(message, "extensions", {}) or {}
+        msg_id = getattr(message, "message_id", "") or ""
+
+        raw_content: Optional[Dict[str, Any]] = None
+        if msg_type_str in ("file", "audio", "video"):
+            _raw = extensions.get("content", None)
+            if isinstance(_raw, str):
+                try:
+                    _raw = json.loads(_raw)
+                except (ValueError, TypeError):
+                    _raw = None
+            if isinstance(_raw, dict):
+                raw_content = _raw
+
+        # 1) file msgtype
+        if msg_type_str == "file" and raw_content:
+            dl = raw_content.get("downloadCode", "")
+            fn = raw_content.get("fileName", "")
+            if dl and fn:
+                items.append((dl, fn, ""))
+                logger.info("[%s] Found file attachment: %s", self.name, fn)
+
+        # 2) audio msgtype — carry DingTalk's STT text as the extra hint
+        if msg_type_str == "audio" and raw_content:
+            dl = raw_content.get("downloadCode", "")
+            fn = raw_content.get("fileName", "") or "audio.amr"
+            recog = (
+                raw_content.get("recognition")
+                or raw_content.get("recognition_text")
+                or ""
+            )
+            if dl:
+                items.append((dl, fn, recog))
+            elif recog:
+                parts.append(
+                    f"🎤 **音频**: {fn}\n"
+                    f"📝 语音识别结果:\n{recog}"
+                )
+
+        # 3) video msgtype
+        if msg_type_str == "video" and raw_content:
+            dl = raw_content.get("downloadCode", "")
+            fn = raw_content.get("fileName", "") or "video.mp4"
+            if dl:
+                items.append((dl, fn, ""))
+
+        # 4) richText non-picture items (pictures handled upstream by
+        #    ``_resolve_media_codes`` + ``_extract_media`` +
+        #    ``_download_images_to_local``).
+        rich_text = getattr(message, "rich_text_content", None)
+        if rich_text:
+            rich_list = getattr(rich_text, "rich_text_list", []) or []
+            for item in rich_list:
+                if not isinstance(item, dict):
+                    continue
+                dl = item.get("downloadCode") or item.get("download_code") or ""
+                fn = item.get("fileName") or item.get("file_name") or ""
+                itype = item.get("type", "")
+                if dl and fn and itype not in ("picture",):
+                    items.append((dl, fn, ""))
+
+        # 5) Future-proofing: SDK typed ``file_content`` attribute
+        if msg_type_str == "file" and not items:
+            fc = getattr(message, "file_content", None)
+            if fc:
+                dl = getattr(fc, "download_code", None) or ""
+                fn = getattr(fc, "file_name", None) or ""
+                if dl and fn:
+                    items.append((dl, fn, ""))
+
+        if not items:
+            return parts, attachments
+
+        # Download every collected item into the persistent inbox and
+        # describe it for the LLM.
+        token = await self._get_access_token()
+        robot_code = getattr(message, "robot_code", None) or self._client_id
+
+        for dl_code, fname, extra in items:
+            download_url = dl_code
+            if not dl_code.startswith("http"):
+                download_url = await self._resolve_single_download_url(
+                    dl_code, robot_code, token,
+                )
+            if not download_url:
+                parts.append(f"⚠️ 文件获取失败: {fname}")
+                continue
+
+            local_path = await _download_file_to_inbox(
+                download_url, fname, msg_id=msg_id,
+            )
+            if not local_path:
+                parts.append(f"⚠️ 文件下载失败: {fname}")
+                continue
+
+            mime = _mime_for_file(fname)
+            attachments.append((local_path, mime))
 
     async def _resolve_media_codes(self, message: "ChatbotMessage") -> None:
         """Resolve download codes in message to actual URLs."""

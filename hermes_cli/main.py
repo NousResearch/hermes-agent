@@ -832,64 +832,69 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
 _NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert"})
 
 
-def _tui_need_npm_install(root: Path) -> bool:
-    """True when @hermes/ink is missing or node_modules is behind package-lock.json.
+def _npm_install_in_sync(root: Path) -> bool:
+    """True when ``node_modules/.package-lock.json`` matches ``package-lock.json``.
 
-    Compares ``package-lock.json`` against ``node_modules/.package-lock.json``
-    (npm's hidden lockfile) by **content**, not mtime: git checkouts and npm
-    rewrites can bump the root lockfile's timestamp even when installed deps
-    already match, which used to trigger a spurious "Installing TUI
-    dependencies" on every launch.
+    Compares the committed lockfile against npm's hidden lockfile by
+    **content**, not mtime: git checkouts and npm rewrites can bump the root
+    lockfile's timestamp even when installed deps already match, which used
+    to trigger spurious reinstalls on every launch / update.
 
     For each entry in the root lock's ``packages`` map:
-      - missing from hidden lock → reinstall (unless the entry is marked
+      - missing from hidden lock → out of sync (unless the entry is marked
         ``optional`` or ``peer``, which npm may intentionally skip per platform)
       - present but with differing fields (excluding npm-written runtime
-        annotations like ``ideallyInert``) → reinstall
+        annotations like ``ideallyInert``) → out of sync
 
     Extra entries that exist only in the hidden lock are ignored — stale
     transitives left over from a removed dependency don't break runtime and
     we'd rather not force a reinstall for them. Falls back to mtime
     comparison if either lockfile is unparseable.
+
+    Returns ``False`` when either lockfile is absent: a missing
+    ``package-lock.json`` means we cannot prove sync, and a missing hidden
+    lockfile means ``node_modules`` was never populated. Callers that want
+    to treat "no lockfile committed" as "skip install" must guard for that
+    case before calling.
     """
+    lock = root / "package-lock.json"
+    marker = root / "node_modules" / ".package-lock.json"
+    if not lock.is_file() or not marker.is_file():
+        return False
+
+    try:
+        wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
+        installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return marker.stat().st_mtime >= lock.stat().st_mtime
+
+    def comparable(pkg: dict) -> dict:
+        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+
+    for name, pkg in wanted.items():
+        if not name or not isinstance(pkg, dict):
+            continue
+
+        if name not in installed:
+            if pkg.get("optional") or pkg.get("peer"):
+                continue
+            return False
+
+        if isinstance(installed[name], dict) and comparable(pkg) != comparable(installed[name]):
+            return False
+
+    return True
+
+
+def _tui_need_npm_install(root: Path) -> bool:
+    """True when @hermes/ink is missing or node_modules is behind package-lock.json."""
     ink = root / "node_modules" / "@hermes" / "ink" / "package.json"
     if not ink.is_file():
         return True
     lock = root / "package-lock.json"
     if not lock.is_file():
         return False
-    marker = root / "node_modules" / ".package-lock.json"
-    if not marker.is_file():
-        return True
-
-    # Compare lockfile contents, not mtimes: git checkouts and npm rewrites
-    # can bump the root lockfile timestamp even when installed deps already
-    # match. Fall back to mtime when either file is unparseable.
-    try:
-        wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
-        installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return lock.stat().st_mtime > marker.stat().st_mtime
-
-    def comparable(pkg: dict) -> dict:
-        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
-
-    for name, pkg in wanted.items():
-        if not name:
-            continue
-
-        if not isinstance(pkg, dict):
-            continue
-
-        if name not in installed:
-            if pkg.get("optional") or pkg.get("peer"):
-                continue
-            return True
-
-        if isinstance(installed[name], dict) and comparable(pkg) != comparable(installed[name]):
-            return True
-
-    return False
+    return not _npm_install_in_sync(root)
 
 
 def _find_bundled_tui(tui_dir: Path) -> Optional[Path]:
@@ -6026,6 +6031,15 @@ def _update_node_dependencies() -> None:
     print("→ Updating Node.js dependencies...")
     for label, path in paths:
         if not (path / "package.json").exists():
+            continue
+
+        # `npm ci` deletes and re-installs node_modules from scratch even
+        # when the committed lockfile already matches what's installed,
+        # which is the slow path on metered or restricted networks (#17268).
+        # Skip when the hidden lockfile already records the same package
+        # tree — npm's own freshness check is the source of truth.
+        if _npm_install_in_sync(path):
+            print(f"  ✓ {label} (already in sync with lockfile)")
             continue
 
         result = _run_npm_install_deterministic(

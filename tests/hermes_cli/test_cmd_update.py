@@ -106,11 +106,14 @@ class TestCmdUpdateBranchFallback:
         pull_cmds = [c for c in commands if "pull" in c]
         assert len(pull_cmds) == 0
 
+    @patch("hermes_cli.main._npm_install_in_sync", return_value=False)
     @patch("shutil.which")
     @patch("subprocess.run")
     def test_update_refreshes_repo_and_tui_node_dependencies(
-        self, mock_run, mock_which, mock_args
+        self, mock_run, mock_which, _mock_in_sync, mock_args
     ):
+        # Force the install path regardless of whether the dev machine's
+        # node_modules already matches package-lock.json (#17268).
         mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
         mock_run.side_effect = _make_run_side_effect(
             branch="main", verify_ok=True, commit_count="1"

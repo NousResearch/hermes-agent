@@ -21,7 +21,7 @@ x402 is an HTTP-native payment protocol: when a client hits a protected endpoint
 
 This skill wraps Coinbase's `awal` CLI and bundles five workflows: wallet auth, funding, bazaar discovery, making paid requests, and monetizing your own API. The typical consumer flow is **find → check → pay**:
 
-1. **Find** a service via the bazaar (`npx awal@latest x402 bazaar search …`)
+1. **Find** a service in `references/services-catalog.md` (curated) or via `npx awal@latest x402 bazaar search …` (live)
 2. **Check** its requirements (`npx awal@latest x402 details <url>`)
 3. **Pay** to call it (`npx awal@latest x402 pay <url> …`)
 
@@ -45,9 +45,9 @@ This skill wraps Coinbase's `awal` CLI and bundles five workflows: wallet auth, 
 
 | Goal                                | Reference                          |
 | ----------------------------------- | ---------------------------------- |
+| Discover services / known catalog   | `references/search-bazaar.md`      |
 | Sign in / wallet authentication     | `references/authenticate.md`       |
 | Top up the wallet (USDC onramp)     | `references/fund.md`               |
-| Discover paid APIs in the bazaar    | `references/search-bazaar.md`      |
 | Call a paid API endpoint            | `references/pay.md`                |
 | Build & deploy a paid API server    | `references/monetize.md`           |
 

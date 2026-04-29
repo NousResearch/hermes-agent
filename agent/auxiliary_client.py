@@ -229,6 +229,33 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "zai": "glm-5v-turbo",
 }
 
+# Sentinel returned by _resolve_strict_vision_backend for MiniMax so that
+# call_llm / async_call_llm can detect it and use the dedicated VLM endpoint
+# (/v1/coding_plan/vlm) instead of the standard chat completions API.
+_MINIMAX_VLM_SENTINEL = object()
+
+
+def _resolve_minimax_api_key() -> Optional[str]:
+    try:
+        from hermes_cli.auth import (
+            PROVIDER_REGISTRY,
+            resolve_api_key_provider_credentials,
+        )
+    except ImportError:
+        return None
+    for prov in ("minimax", "minimax-cn"):
+        pconfig = PROVIDER_REGISTRY.get(prov)
+        if pconfig is None:
+            continue
+        if pconfig.auth_type != "api_key":
+            continue
+        creds = resolve_api_key_provider_credentials(prov)
+        key = str(creds.get("api_key", "")).strip()
+        if key:
+            return key
+    return None
+
+
 # OpenRouter app attribution headers
 _OR_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
@@ -2408,6 +2435,7 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
     "nous",
+    "minimax",
 )
 
 
@@ -2432,6 +2460,12 @@ def _resolve_strict_vision_backend(
         return _try_anthropic()
     if provider == "custom":
         return _try_custom_endpoint()
+    # MiniMax: use dedicated /v1/coding_plan/vlm endpoint for vision.
+    # The sentinel tells call_llm/async_call_llm to bypass the standard
+    # chat completions path and use _call_minimax_vlm instead.
+    if provider in ("minimax", "minimax-cn"):
+        if _resolve_minimax_api_key() is not None:
+            return _MINIMAX_VLM_SENTINEL, "MiniMax-M2.7"
     return None, None
 
 
@@ -3168,6 +3202,234 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
     return response
 
 
+def _call_minimax_vlm(
+    messages: list,
+    timeout: float = 60.0,
+    extra_body: dict = None,
+) -> Any:
+    """Call MiniMax VLM via the dedicated /v1/coding_plan/vlm endpoint.
+
+    Unlike the standard chat completions API, MiniMax's VLM endpoint accepts
+    ``{"prompt": str, "image_url": str}`` and returns ``{"content": str}``.
+    The ``messages`` arg follows the same format as vision_tools.py produces:
+    ``[{"role": "user", "content": [{"type": "text", ...}, {"type": "image_url", ...}]}]``.
+
+    Returns a mock completion object with ``.choices[0].message.content`` set
+    so that the caller (e.g. ``extract_content_or_reasoning``) works uniformly.
+    """
+    import httpx
+
+    api_key = _resolve_minimax_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "MiniMax VLM: no API key found. Set MINIMAX_API_KEY or "
+            "MINIMAX_CN_API_KEY environment variable."
+        )
+
+    # Determine which base URL to use based on which key is set.
+    # MINIMAX_CN_API_KEY → api.minimaxi.com; otherwise → api.minimax.io
+    cn_key_prefixes = ("sk-cp-", "eyJ")
+    base_url = (
+        "https://api.minimaxi.com"
+        if api_key.startswith(cn_key_prefixes)
+        else "https://api.minimax.io"
+    )
+
+    # Extract prompt text and image data URL from messages.
+    prompt = ""
+    image_url = ""
+    for msg in messages:
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                prompt = block.get("text", "")
+            elif block.get("type") == "image_url":
+                image_url = (
+                    block.get("image_url", {}).get("url", "")
+                    if isinstance(block.get("image_url"), dict)
+                    else str(block.get("image_url", ""))
+                )
+
+    if not prompt:
+        raise ValueError("MiniMax VLM: no prompt text found in messages")
+    if not image_url:
+        raise ValueError("MiniMax VLM: no image URL found in messages")
+
+    # Validate image_url is a data: URL (MiniMax VLM requires base64)
+    if not image_url.startswith("data:image/"):
+        raise ValueError(
+            "MiniMax VLM: image_url must be a base64 data: URL. "
+            f"Got: {image_url[:60]}..."
+        )
+
+    url = f"{base_url}/v1/coding_plan/vlm"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    body: Dict[str, Any] = {"prompt": prompt, "image_url": image_url}
+    if extra_body:
+        body.update(extra_body)
+
+    try:
+        response = httpx.post(url, headers=headers, json=body, timeout=timeout)
+    except Exception as exc:
+        raise RuntimeError(f"MiniMax VLM request failed (connection): {exc}") from exc
+
+    trace_id = response.headers.get("Trace-Id", "")
+    trace_str = f" Trace-Id: {trace_id}" if trace_id else ""
+
+    if not response.is_success:
+        body_text = response.text[:400]
+        raise RuntimeError(
+            f"MiniMax VLM request failed ({response.status_code} {response.reason_phrase})."
+            f"{trace_str} Body: {body_text}"
+        )
+
+    try:
+        json_resp = response.json()
+    except Exception:
+        raise RuntimeError(f"MiniMax VLM response was not JSON.{trace_str}")
+
+    base_resp = json_resp.get("base_resp", {})
+    status_code = base_resp.get("status_code", -1)
+    if status_code != 0:
+        msg_text = base_resp.get("status_msg", "").strip()
+        raise RuntimeError(
+            f"MiniMax VLM API error ({status_code})"
+            f"{f': {msg_text}' if msg_text else ''}.{trace_str}"
+        )
+
+    content = json_resp.get("content", "").strip()
+    if not content:
+        raise RuntimeError(f"MiniMax VLM returned empty content.{trace_str}")
+
+    # Wrap in a mock chat completion response for uniform extract_content_or_reasoning
+    class _MiniMaxVLMWrapper:
+        """Minimal mock matching the openai.ChatCompletion shape."""
+        def __init__(self, text: str):
+            class _Msg:
+                def __init__(self, t: str):
+                    self.content = t
+            class _Choice:
+                def __init__(self, t: str):
+                    self.message = _Msg(t)
+            self.choices = [_Choice(text)]
+
+    return _MiniMaxVLMWrapper(content)
+
+
+async def _async_call_minimax_vlm(
+    messages: list,
+    timeout: float = 60.0,
+    extra_body: dict = None,
+) -> Any:
+    """Async version of _call_minimax_vlm using httpx.AsyncClient."""
+    import httpx
+
+    api_key = _resolve_minimax_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "MiniMax VLM: no API key found. Set MINIMAX_API_KEY or "
+            "MINIMAX_CN_API_KEY environment variable."
+        )
+
+    cn_key_prefixes = ("sk-cp-", "eyJ")
+    base_url = (
+        "https://api.minimaxi.com"
+        if api_key.startswith(cn_key_prefixes)
+        else "https://api.minimax.io"
+    )
+
+    prompt = ""
+    image_url = ""
+    for msg in messages:
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                prompt = block.get("text", "")
+            elif block.get("type") == "image_url":
+                image_url = (
+                    block.get("image_url", {}).get("url", "")
+                    if isinstance(block.get("image_url"), dict)
+                    else str(block.get("image_url", ""))
+                )
+
+    if not prompt:
+        raise ValueError("MiniMax VLM: no prompt text found in messages")
+    if not image_url:
+        raise ValueError("MiniMax VLM: no image URL found in messages")
+
+    if not image_url.startswith("data:image/"):
+        raise ValueError(
+            "MiniMax VLM: image_url must be a base64 data: URL. "
+            f"Got: {image_url[:60]}..."
+        )
+
+    url = f"{base_url}/v1/coding_plan/vlm"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    body: Dict[str, Any] = {"prompt": prompt, "image_url": image_url}
+    if extra_body:
+        body.update(extra_body)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=body, timeout=timeout)
+    except Exception as exc:
+        raise RuntimeError(f"MiniMax VLM request failed (connection): {exc}") from exc
+
+    trace_id = response.headers.get("Trace-Id", "")
+    trace_str = f" Trace-Id: {trace_id}" if trace_id else ""
+
+    if not response.is_success:
+        body_text = response.text[:400]
+        raise RuntimeError(
+            f"MiniMax VLM request failed ({response.status_code} {response.reason_phrase})."
+            f"{trace_str} Body: {body_text}"
+        )
+
+    try:
+        json_resp = response.json()
+    except Exception:
+        raise RuntimeError(f"MiniMax VLM response was not JSON.{trace_str}")
+
+    base_resp = json_resp.get("base_resp", {})
+    status_code = base_resp.get("status_code", -1)
+    if status_code != 0:
+        msg_text = base_resp.get("status_msg", "").strip()
+        raise RuntimeError(
+            f"MiniMax VLM API error ({status_code})"
+            f"{f': {msg_text}' if msg_text else ''}.{trace_str}"
+        )
+
+    content = json_resp.get("content", "").strip()
+    if not content:
+        raise RuntimeError(f"MiniMax VLM returned empty content.{trace_str}")
+
+    class _MiniMaxVLMWrapper:
+        def __init__(self, text: str):
+            class _Choice:
+                class _Msg:
+                    def __init__(self, t: str):
+                        self.content = t
+                def __init__(self, t: str):
+                    self.message = self._Msg(t)
+            self.choices = [self._Choice(text)]
+
+    return _MiniMaxVLMWrapper(content)
+
+
 def call_llm(
     task: str = None,
     *,
@@ -3236,6 +3498,11 @@ def call_llm(
                 f"Run: hermes setup"
             )
         resolved_provider = effective_provider or resolved_provider
+
+        # MiniMax: bypass standard chat completions and use the dedicated VLM endpoint.
+        if client is _MINIMAX_VLM_SENTINEL:
+            logger.info("Auxiliary vision: using MiniMax VLM (%s)", final_model or "MiniMax-M2.7")
+            return _call_minimax_vlm(messages, timeout=effective_timeout, extra_body=extra_body)
     else:
         client, final_model = _get_cached_client(
             resolved_provider,
@@ -3549,6 +3816,11 @@ async def async_call_llm(
                 f"Run: hermes setup"
             )
         resolved_provider = effective_provider or resolved_provider
+
+        # MiniMax: bypass standard chat completions and use the dedicated VLM endpoint.
+        if client is _MINIMAX_VLM_SENTINEL:
+            logger.info("Auxiliary vision (async): using MiniMax VLM (%s)", final_model or "MiniMax-M2.7")
+            return await _async_call_minimax_vlm(messages, timeout=effective_timeout, extra_body=extra_body)
     else:
         client, final_model = _get_cached_client(
             resolved_provider,

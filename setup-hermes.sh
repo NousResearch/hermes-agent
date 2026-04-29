@@ -31,6 +31,11 @@ cd "$SCRIPT_DIR"
 
 PYTHON_VERSION="3.11"
 
+# Check if running in an interactive terminal
+is_interactive() {
+    [ -t 0 ] && [ -t 1 ]
+}
+
 is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
@@ -220,10 +225,11 @@ if command -v rg &> /dev/null; then
     echo -e "${GREEN}✓${NC} ripgrep found"
 else
     echo -e "${YELLOW}⚠${NC} ripgrep not found (file search will use grep fallback)"
-    read -p "Install ripgrep for faster search? [Y/n] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-        INSTALLED=false
+    if is_interactive; then
+        read -p "Install ripgrep for faster search? [Y/n] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+            INSTALLED=false
 
         if is_termux; then
             pkg install -y ripgrep && INSTALLED=true
@@ -386,14 +392,19 @@ else
     echo "  hermes gateway install # Install gateway service (messaging + cron)"
 fi
 echo "  hermes cron list     # View scheduled jobs"
-echo "  hermes doctor        # Diagnose issues"
+echo " hermes doctor # Diagnose issues"
 echo ""
 
-# Ask if they want to run setup wizard now
-read -p "Would you like to run the setup wizard now? [Y/n] " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-    echo ""
-    # Run directly with venv Python (no activation needed)
-    "$SCRIPT_DIR/venv/bin/python" -m hermes_cli.main setup
+# Ask if they want to run setup wizard now (skip in non-interactive environments)
+if is_interactive; then
+    read -p "Would you like to run the setup wizard now? [Y/n] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+        echo ""
+        # Run directly with venv Python (no activation needed)
+        "$SCRIPT_DIR/venv/bin/python" -m hermes_cli.main setup
+    fi
+else
+    echo -e "${CYAN}→${NC} Non-interactive environment detected. Skipping setup wizard prompt."
+    echo -e "${CYAN}→${NC} Run 'hermes setup' manually to configure API keys."
 fi

@@ -15,9 +15,8 @@ Usage:
 
 import logging
 import os
-import re
+import platform
 import shutil
-import sys
 import json
 import re
 import concurrent.futures
@@ -599,6 +598,7 @@ def load_cli_config() -> Dict[str, Any]:
 
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
+
 
 # Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
 # This ensures CLI sessions produce a log trail even before AIAgent is instantiated.
@@ -2118,6 +2118,8 @@ class HermesCLI:
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
+        self.disabled_toolsets = CLI_CONFIG["agent"].get("disabled_toolsets") or []
+
         if toolsets and "all" not in toolsets and "*" not in toolsets:
             # Validate each toolset — MCP server names are resolved via
             # live registry aliases (registered during discover_mcp_tools),
@@ -3568,6 +3570,7 @@ class HermesCLI:
                 credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
+                disabled_toolsets=self.disabled_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,

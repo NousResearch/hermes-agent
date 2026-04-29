@@ -23,6 +23,8 @@ Public API (signatures preserved from the original 2,400-line version):
 import json
 import asyncio
 import logging
+import os
+import sys
 import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
@@ -356,12 +358,17 @@ def _compute_tool_definitions(
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
-
-    elif disabled_toolsets:
+    else:
+        # Default: start with everything
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
+    # Always apply disabled toolsets as a subtraction step at the end.
+    # This ensures that even if a composite toolset (like hermes-cli)
+    # is enabled, any tools belonging to a disabled toolset are strictly
+    # stripped out. See issue #15291.
+    if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
@@ -376,10 +383,6 @@ def _compute_tool_definitions(
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
-    else:
-        from toolsets import get_all_toolsets
-        for ts_name in get_all_toolsets():
-            tools_to_include.update(resolve_toolset(ts_name))
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()

@@ -178,6 +178,50 @@ class TestFormatMessageCodeBlocks:
         assert r"`\\\\server\\share`" in result
 
 
+@pytest.mark.asyncio
+async def test_send_chunks_raw_markdown_before_formatting_code_blocks(adapter):
+    """Chunked Telegram sends keep fenced code blocks valid per chunk."""
+    sent_messages = []
+
+    async def mock_send_message(**kwargs):
+        sent_messages.append(kwargs)
+        return MagicMock(message_id=len(sent_messages))
+
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = mock_send_message
+
+    code_lines = [
+        f"print('line_{i:03d}')  # `backtick` \\ path_(x)"
+        for i in range(1, 180)
+    ]
+    content = (
+        "Before code\n"
+        "```python\n"
+        + "\n".join(code_lines)
+        + "\n```\n"
+        "After code\n"
+        "GROUP_TOPIC_FORMATTING_TEST_COMPLETE"
+    )
+
+    result = await adapter.send("123", content)
+
+    assert result.success is True
+    assert len(sent_messages) > 1
+    first_text = sent_messages[0]["text"]
+    all_text = "\n".join(message["text"] for message in sent_messages)
+
+    from gateway.platforms.base import utf16_len
+    assert all(utf16_len(message["text"]) <= adapter.MAX_MESSAGE_LENGTH for message in sent_messages)
+    assert "line_001" in first_text
+    assert "line_080" in first_text
+    assert "GROUP\\_TOPIC\\_FORMATTING\\_TEST\\_COMPLETE" in all_text
+    # If the continuation marker is appended to the closing fence line,
+    # Telegram MarkdownV2 may parse the chunk as an unterminated code block and
+    # hide/drop the visible code block in the delivered message.
+    assert "``` \\" not in first_text
+    assert re.search(r"\n```\n\\\(1/\d+\\\)", first_text)
+
+
 # =========================================================================
 # format_message - bold and italic
 # =========================================================================

@@ -1501,19 +1501,30 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
-            # Format and split message if needed
-            formatted = self.format_message(content)
-            chunks = self.truncate_message(
-                formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
-            )
-            if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix. Escape the
-                # MarkdownV2-special parentheses so Telegram doesn't reject the
-                # chunk and fall back to plain text.
-                chunks = [
-                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
-                    for chunk in chunks
-                ]
+            # Split raw Markdown first, then format each chunk independently.
+            # Formatting the whole response before splitting can leave fenced
+            # code blocks invalid when Telegram parses each chunk on its own.
+            # Because MarkdownV2 escaping can expand text, retry with a smaller
+            # raw budget until every formatted chunk fits Telegram's UTF-16
+            # message limit.
+            raw_limit = self.MAX_MESSAGE_LENGTH
+            for _ in range(8):
+                raw_chunks = self.truncate_message(
+                    content, raw_limit, len_fn=utf16_len,
+                )
+                chunks = [self.format_message(chunk) for chunk in raw_chunks]
+                if all(utf16_len(chunk) <= self.MAX_MESSAGE_LENGTH for chunk in chunks):
+                    break
+                worst_len = max(utf16_len(chunk) for chunk in chunks)
+                next_limit = int(raw_limit * (self.MAX_MESSAGE_LENGTH - 64) / worst_len)
+                raw_limit = max(512, min(raw_limit - 1, next_limit))
+            else:
+                # Extremely escape-heavy text still exceeded the limit after
+                # adaptive shrinking.  Fall back to formatted splitting rather
+                # than sending over-limit text; this path should be rare.
+                chunks = self.truncate_message(
+                    self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+                )
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)

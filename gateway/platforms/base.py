@@ -3627,11 +3627,18 @@ class BasePlatformAdapter(ABC):
 
             chunks.append(full_chunk)
 
-        # Append chunk indicators when the response spans multiple messages
+        # Append chunk indicators when the response spans multiple messages.
+        # If a chunk ends with a synthetic closing code fence, keep the marker
+        # on its own line so Markdown parsers still see a valid closing fence.
         if len(chunks) > 1:
             total = len(chunks)
             chunks = [
-                f"{chunk} ({i + 1}/{total})" for i, chunk in enumerate(chunks)
+                (
+                    f"{chunk}\n({i + 1}/{total})"
+                    if chunk.rstrip().endswith("```")
+                    else f"{chunk} ({i + 1}/{total})"
+                )
+                for i, chunk in enumerate(chunks)
             ]
 
         return chunks

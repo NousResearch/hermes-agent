@@ -513,6 +513,13 @@ def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
 
 def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Sibling test (test_vercel_setup_configures_access_token_auth) calls
+    # save_env_value which mutates os.environ directly and never restores
+    # it. When xdist schedules both tests in the same worker, VERCEL_*
+    # from the earlier run masks the .vercel/project.json defaults that
+    # this test exercises. Clear them before load.
+    for _leaked in ("VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID", "VERCEL_OIDC_TOKEN"):
+        monkeypatch.delenv(_leaked, raising=False)
     project_root = tmp_path / "project"
     nested = project_root / "app" / "src"
     nested.mkdir(parents=True)

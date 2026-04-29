@@ -298,7 +298,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         def reopen_session(self, _sid):
             return None
 
-        def get_messages_as_conversation(self, _sid):
+        def get_messages_as_conversation(self, _sid, **_kwargs):
             return [
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "yo"},

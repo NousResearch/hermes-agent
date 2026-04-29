@@ -199,7 +199,26 @@ def _resolve_max_text_length(
         if mapped:
             return mapped
 
-    return PROVIDER_MAX_TEXT_LENGTH.get(key, FALLBACK_MAX_TEXT_LENGTH)
+    return PROVIDER_MAX_TEXT_LENGTH.get(key) or _resolve_max_text_length_from_plugin(key) or FALLBACK_MAX_TEXT_LENGTH
+
+
+def _resolve_max_text_length_from_plugin(provider_key: str) -> Optional[int]:
+    """Ask the plugin registry for *provider_key*'s max_text_length.
+
+    Returns None when the provider isn't registered (caller falls through
+    to the ``FALLBACK_MAX_TEXT_LENGTH``).
+    """
+    try:
+        from agent.tts_registry import get_provider
+
+        backend = get_provider(provider_key)
+        if backend is not None:
+            cap = backend.max_text_length()
+            if isinstance(cap, int) and cap > 0:
+                return cap
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return None
 
 
 # ===========================================================================
@@ -973,6 +992,161 @@ def _finalize_tts_response(provider: str, file_str: str) -> str:
 
 
 # ===========================================================================
+# Plugin dispatch — mirrors image_generation_tool._dispatch_to_plugin_provider
+# ===========================================================================
+
+# LEGACY provider names handled by the in-tree if/elif chain in
+# text_to_speech_tool.  Plugin dispatch skips these names so existing
+# users with tts.provider: edge/openai/etc. see zero change.  When a
+# legacy provider is ported into plugins/voice/<name>/, remove its
+# entry here AND delete the corresponding hardcoded branch in the
+# same PR — see docs in agent/tts_registry.py.
+LEGACY_TTS_PROVIDERS = frozenset({
+    "edge", "elevenlabs", "openai", "minimax", "mistral",
+    "gemini", "xai", "kittentts", "neutts",
+})
+
+
+def _finalize_tts_response_from_plugin(provider: str, result: dict) -> str:
+    """Build the tool JSON response from a plugin provider's result dict.
+
+    Consumes the contract documented in TtsProvider.synthesize().  Reads
+    file_path / native_opus / voice_compatible from the result (rather
+    than inferring from a hardcoded provider-name list) so plugin
+    backends can produce any format without gateway voice-bubble drift.
+    """
+    if not result.get("success"):
+        # Provider returned an error dict — pass through.
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", "TTS provider reported failure"),
+            "error_type": result.get("error_type", "runtime"),
+            "provider": provider,
+        }, ensure_ascii=False)
+
+    file_str = result.get("file_path")
+    if not file_str or not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
+        return json.dumps({
+            "success": False,
+            "error": f"TTS plugin '{provider}' reported success but no output file",
+        }, ensure_ascii=False)
+
+    voice_compatible = bool(result.get("voice_compatible"))
+    native_opus = bool(result.get("native_opus"))
+    # If the plugin didn't produce a voice-compatible file, attempt
+    # ffmpeg Opus conversion exactly like the legacy path does.
+    if not voice_compatible and not native_opus and not file_str.endswith(".ogg"):
+        opus_path = _convert_to_opus(file_str)
+        if opus_path:
+            file_str = opus_path
+            voice_compatible = True
+
+    file_size = os.path.getsize(file_str)
+    logger.info(
+        "TTS audio saved: %s (%s bytes, provider: %s [plugin])",
+        file_str, f"{file_size:,}", provider,
+    )
+
+    media_tag = f"MEDIA:{file_str}"
+    if voice_compatible:
+        media_tag = f"[[audio_as_voice]]\n{media_tag}"
+
+    return json.dumps({
+        "success": True,
+        "file_path": file_str,
+        "media_tag": media_tag,
+        "provider": provider,
+        "voice_compatible": voice_compatible,
+    }, ensure_ascii=False)
+
+
+def _dispatch_to_plugin_tts_provider(
+    text: str,
+    file_str: str,
+    tts_config: Dict[str, Any],
+    provider: str,
+) -> Optional[str]:
+    """Route to a plugin-registered TTS provider when appropriate.
+
+    Mirrors tools.image_generation_tool._dispatch_to_plugin_provider.
+
+    Returns the tool JSON response on dispatch; returns None when the
+    caller should fall through to the legacy hardcoded chain.
+
+    The dispatcher fires ONLY when ``provider`` is:
+    - non-empty (unset → legacy Edge default)
+    - NOT in LEGACY_TTS_PROVIDERS (edge/elevenlabs/etc. stay hardcoded)
+    """
+    if not provider or provider in LEGACY_TTS_PROVIDERS:
+        return None
+
+    try:
+        from agent.tts_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        backend = get_provider(provider)
+    except Exception as exc:
+        logger.debug("tts plugin dispatch skipped (discovery): %s", exc)
+        return None
+
+    if backend is None:
+        # Long-lived sessions may have discovered plugins before a
+        # bundled backend was patched in or before config changed.  Retry
+        # with a forced refresh.
+        try:
+            from hermes_cli.plugins import _ensure_plugins_discovered
+            _ensure_plugins_discovered(force=True)
+            from agent.tts_registry import get_provider
+            backend = get_provider(provider)
+        except Exception as exc:
+            logger.debug("tts plugin force-refresh skipped: %s", exc)
+
+    if backend is None:
+        return json.dumps({
+            "success": False,
+            "error": (
+                f"tts.provider='{provider}' is set but no plugin has registered "
+                f"that name — provider not registered. Run `hermes plugins list` "
+                f"to see available TTS backends."
+            ),
+            "error_type": "provider_not_registered",
+        }, ensure_ascii=False)
+
+    sub_config = tts_config.get(provider, {}) if isinstance(tts_config.get(provider), dict) else {}
+    try:
+        result = backend.synthesize(text, file_str, sub_config)
+    except ValueError as exc:
+        logger.debug("tts plugin '%s' raised ValueError: %s", provider, exc)
+        return json.dumps({
+            "success": False,
+            "error": str(exc),
+            "error_type": "config",
+            "provider": provider,
+        }, ensure_ascii=False)
+    except Exception as exc:
+        logger.exception("tts plugin '%s' raised", provider)
+        return json.dumps({
+            "success": False,
+            "error": str(exc),
+            "error_type": "runtime",
+            "provider": provider,
+        }, ensure_ascii=False)
+
+    if not isinstance(result, dict):
+        return json.dumps({
+            "success": False,
+            "error": (
+                f"TTS plugin '{provider}' returned {type(result).__name__}, "
+                f"expected dict with 'success' key"
+            ),
+            "error_type": "contract",
+        }, ensure_ascii=False)
+
+    return _finalize_tts_response_from_plugin(provider, result)
+
+
+# ===========================================================================
 # Main tool function
 # ===========================================================================
 def text_to_speech_tool(
@@ -1039,6 +1213,15 @@ def text_to_speech_tool(
     file_str = str(file_path)
 
     try:
+        # Plugin-registry dispatch (prepend).  Fires only when tts.provider
+        # names a non-legacy backend registered via a plugin.  Returns
+        # None to fall through to the existing hardcoded chain below.
+        dispatched = _dispatch_to_plugin_tts_provider(
+            text, file_str, tts_config, provider,
+        )
+        if dispatched is not None:
+            return dispatched
+
         # Generate audio with the configured provider
         if provider == "elevenlabs":
             try:
@@ -1204,6 +1387,21 @@ def check_tts_requirements() -> bool:
         return True
     if _check_kittentts_available():
         return True
+    # Plugin-registered providers are available when any reports
+    # is_available() True.  Consulted LAST so cheap in-tree checks
+    # succeed first and plugin discovery cost isn't paid when unneeded.
+    try:
+        from agent.tts_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        _ensure_plugins_discovered()
+        for plugin in list_providers():
+            try:
+                if plugin.is_available():
+                    return True
+            except Exception:
+                continue
+    except Exception as exc:
+        logger.debug("plugin TTS requirements check skipped: %s", exc)
     return False
 
 

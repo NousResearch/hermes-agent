@@ -224,7 +224,12 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
             ))}
 
-            <Box onMouseDown={captureInputDrag} onMouseDrag={dragFromPromptRow} onMouseUp={endInputDrag} position="relative">
+            <Box
+              onMouseDown={captureInputDrag}
+              onMouseDrag={dragFromPromptRow}
+              onMouseUp={endInputDrag}
+              position="relative"
+            >
               <Box width={promptWidth}>
                 {sh ? (
                   <Text color={ui.theme.color.shellDollar}>{promptLabel}</Text>

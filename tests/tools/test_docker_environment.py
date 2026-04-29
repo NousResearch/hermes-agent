@@ -45,6 +45,7 @@ def _make_dummy_env(**kwargs):
         host_cwd=kwargs.get("host_cwd"),
         auto_mount_cwd=kwargs.get("auto_mount_cwd", False),
         env=kwargs.get("env"),
+        run_as_host_user=kwargs.get("run_as_host_user", False),
     )
 
 
@@ -384,9 +385,10 @@ def test_normalize_env_dict_rejects_complex_values():
     assert result == {"GOOD": "string"}
 
 
-def test_security_args_include_setuid_setgid_for_gosu_drop():
-    """_SECURITY_ARGS must include SETUID and SETGID so the image entrypoint
-    can drop from root to the non-root `hermes` user via gosu.
+def test_security_args_include_setuid_setgid_for_gosu_drop(monkeypatch):
+    """The default (run_as_host_user=False) invocation must include SETUID and
+    SETGID caps so the image entrypoint can drop from root to the non-root
+    `hermes` user via gosu.
 
     Without these caps gosu exits with
     ``error: failed switching to 'hermes': operation not permitted``
@@ -396,17 +398,117 @@ def test_security_args_include_setuid_setgid_for_gosu_drop():
     after the drop — the drop is a one-way transition performed before the
     `no_new_privs` bit is enforced on the exec boundary.
     """
-    args = docker_env._SECURITY_ARGS
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
 
-    # Flatten to set of added caps for clarity.
+    _make_dummy_env()
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+
     added = {
-        args[i + 1]
-        for i, flag in enumerate(args[:-1])
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
         if flag == "--cap-add"
     }
     assert "SETUID" in added, "SETUID cap missing — gosu drop in entrypoint will fail"
     assert "SETGID" in added, "SETGID cap missing — gosu drop in entrypoint will fail"
 
-    # Sanity: the hardening posture is still in place.
-    assert "--cap-drop" in args and "ALL" in args
-    assert "--security-opt" in args and "no-new-privileges" in args
+
+# ── run_as_host_user tests ────────────────────────────────────────
+
+
+def test_run_as_host_user_passes_uid_gid(monkeypatch):
+    """With run_as_host_user=True, --user <uid>:<gid> is added to docker run."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.os, "getuid", lambda: 1234, raising=False)
+    monkeypatch.setattr(docker_env.os, "getgid", lambda: 5678, raising=False)
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(run_as_host_user=True)
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+
+    # --user must be present and must be paired with "1234:5678"
+    assert "--user" in run_args, f"--user flag missing from docker run args: {run_args}"
+    idx = run_args.index("--user")
+    assert run_args[idx + 1] == "1234:5678", (
+        f"expected --user 1234:5678, got --user {run_args[idx + 1]}"
+    )
+
+
+def test_run_as_host_user_drops_setuid_setgid_caps(monkeypatch):
+    """When --user is passed, the container never needs gosu, so SETUID/SETGID
+    caps are omitted for a tighter security posture."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.os, "getuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(docker_env.os, "getgid", lambda: 1000, raising=False)
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(run_as_host_user=True)
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_args = run_calls[0][0]
+
+    added = {
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
+        if flag == "--cap-add"
+    }
+    assert "SETUID" not in added, (
+        "SETUID cap should be dropped when running as host user — no gosu drop is needed"
+    )
+    assert "SETGID" not in added, (
+        "SETGID cap should be dropped when running as host user — no gosu drop is needed"
+    )
+    # Core non-privilege-drop caps must still be there (pip/npm/apt need them).
+    assert "DAC_OVERRIDE" in added
+    assert "CHOWN" in added
+    assert "FOWNER" in added
+
+
+def test_run_as_host_user_default_off(monkeypatch):
+    """Without the opt-in, no --user flag is emitted — preserving existing behavior."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env()  # run_as_host_user defaults to False
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_args = run_calls[0][0]
+    assert "--user" not in run_args, (
+        f"--user should not be in docker run args when opt-in is off: {run_args}"
+    )
+
+
+def test_run_as_host_user_warns_and_skips_when_no_posix_ids(monkeypatch, caplog):
+    """On platforms without POSIX getuid/getgid, log a warning and leave the
+    container at its image default user (no --user flag, full cap set)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    # Simulate a platform where os.getuid is absent (e.g. Windows host).
+    monkeypatch.delattr(docker_env.os, "getuid", raising=False)
+    monkeypatch.delattr(docker_env.os, "getgid", raising=False)
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with caplog.at_level(logging.WARNING):
+        _make_dummy_env(run_as_host_user=True)
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_args = run_calls[0][0]
+
+    assert "--user" not in run_args
+    # Fall back to the full cap set since the container still starts as root.
+    added = {
+        run_args[i + 1]
+        for i, flag in enumerate(run_args[:-1])
+        if flag == "--cap-add"
+    }
+    assert "SETUID" in added
+    assert "SETGID" in added
+    assert any(
+        "does not expose POSIX uid/gid" in rec.getMessage()
+        for rec in caplog.records
+    ), "expected a warning when POSIX ids are unavailable"

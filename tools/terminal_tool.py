@@ -980,6 +980,7 @@ def _get_env_config() -> Dict[str, Any]:
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
+        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in ("true", "1", "yes"),
     }
 
 
@@ -1035,6 +1036,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
             forward_env=docker_forward_env,
             env=docker_env,
+            run_as_host_user=cc.get("docker_run_as_host_user", False),
         )
     
     elif env_type == "singularity":
@@ -1663,6 +1665,7 @@ def terminal_tool(
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
                                 "docker_env": config.get("docker_env", {}),
+                                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                             }
 
                         local_config = None

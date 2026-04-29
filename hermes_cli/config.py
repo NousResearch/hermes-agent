@@ -515,6 +515,16 @@ DEFAULT_CONFIG = {
         # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
         # Default off because passing host directories into a sandbox weakens isolation.
         "docker_mount_cwd_to_workspace": False,
+        # Explicit opt-in: run the Docker container as the host user's uid:gid
+        # (via `--user`).  When enabled, files written into bind-mounted dirs
+        # (docker_volumes, the persistent workspace, or the auto-mounted cwd)
+        # are owned by your host user instead of root, which avoids needing
+        # `sudo chown` after container runs. Default off to preserve behavior
+        # for images whose entrypoints expect to start as root (e.g. the
+        # bundled Hermes image, which drops to the `hermes` user via gosu).
+        # When on, SETUID/SETGID caps are omitted from the container since
+        # no privilege drop is needed.
+        "docker_run_as_host_user": False,
         # Persistent shell — keep a long-lived bash shell across execute() calls
         # so cwd/env vars/shell variables survive between commands.
         # Enabled by default for non-local backends (SSH); local is always opt-in
@@ -4376,6 +4386,7 @@ def set_config_value(key: str, value: str):
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+        "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "terminal.cwd": "TERMINAL_CWD",
         "terminal.timeout": "TERMINAL_TIMEOUT",
         "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",

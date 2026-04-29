@@ -778,6 +778,14 @@ def load_gateway_config() -> GatewayConfig:
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
                     os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
 
+            # Bridge top-level *_HOME_CHANNEL / *_HOME_CHANNEL_NAME keys
+            # written by /sethome into os.environ so _apply_env_overrides()
+            # can pick them up after a Gateway restart.
+            for key in list(yaml_cfg.keys()):
+                if key.endswith("_HOME_CHANNEL") or key.endswith("_HOME_CHANNEL_NAME"):
+                    if not os.getenv(key):
+                        os.environ[key] = str(yaml_cfg[key])
+
     except Exception as e:
         logger.warning(
             "Failed to process config.yaml — falling back to .env / gateway.json values. "

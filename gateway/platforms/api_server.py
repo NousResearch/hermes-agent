@@ -713,6 +713,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        reasoning_callback=None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -753,6 +754,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            reasoning_callback=reasoning_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
         )
@@ -2387,6 +2389,21 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+        # Wire reasoning_callback so reasoning.delta events stream to clients
+        # in real time (mirrors message.delta for the thinking channel).
+        def _reasoning_cb(text: Optional[str]) -> None:
+            if not text:
+                return
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, {
+                    "event": "reasoning.delta",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "text": text,
+                })
+            except Exception:
+                pass
+
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
 
@@ -2444,6 +2461,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
+                    reasoning_callback=_reasoning_cb,
                 )
                 self._active_run_agents[run_id] = agent
                 def _run_sync():

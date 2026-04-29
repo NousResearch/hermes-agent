@@ -2904,14 +2904,15 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         _stub_urlopen(monkeypatch, ok=False)
-        with patch("hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False):
+        with patch("hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False), \
+             patch("hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[]):
             resp = server.handle_request(
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
             )
 
     assert resp["error"]["code"] == 5031
-    assert "Start Chrome with remote debugging" in resp["error"]["message"]
-    assert "google-chrome --remote-debugging-port=9222" in resp["error"]["message"]
+    assert "No Chrome/Chromium executable was found" in resp["error"]["message"]
+    assert "--remote-debugging-port=9222" in resp["error"]["message"]
     assert "BROWSER_CDP_URL" not in os.environ
 
 

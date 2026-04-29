@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 
@@ -64,6 +65,14 @@ def get_chrome_debug_candidates(system: str) -> list[str]:
             "google-chrome", "google-chrome-stable", "chromium-browser",
             "chromium", "brave-browser", "microsoft-edge",
         )
+        for base in ("/mnt/c/Program Files", "/mnt/c/Program Files (x86)"):
+            for parts in (
+                ("Google", "Chrome", "Application", "chrome.exe"),
+                ("Chromium", "Application", "chrome.exe"),
+                ("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+                ("Microsoft", "Edge", "Application", "msedge.exe"),
+            ):
+                add(os.path.join(base, *parts))
 
     return candidates
 
@@ -72,27 +81,29 @@ def chrome_debug_data_dir() -> str:
     return str(get_hermes_home() / "chrome-debug")
 
 
-def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> str:
+def _chrome_debug_args(port: int) -> list[str]:
+    return [
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={chrome_debug_data_dir()}",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+
+
+def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> str | None:
     system = system or platform.system()
-    data_dir = chrome_debug_data_dir()
+    candidates = get_chrome_debug_candidates(system)
+    if candidates:
+        return " ".join(shlex.quote(part) for part in [candidates[0], *_chrome_debug_args(port)])
+
     if system == "Darwin":
         return (
             'open -a "Google Chrome" --args'
             f" --remote-debugging-port={port}"
-            f' --user-data-dir="{data_dir}"'
+            f' --user-data-dir="{chrome_debug_data_dir()}"'
             " --no-first-run --no-default-browser-check"
         )
-    if system == "Windows":
-        return (
-            f"chrome.exe --remote-debugging-port={port}"
-            f' --user-data-dir="{data_dir}"'
-            " --no-first-run --no-default-browser-check"
-        )
-    return (
-        f"google-chrome --remote-debugging-port={port}"
-        f' --user-data-dir="{data_dir}"'
-        " --no-first-run --no-default-browser-check"
-    )
+    return None
 
 
 def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> bool:
@@ -105,10 +116,7 @@ def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | 
         subprocess.Popen(
             [
                 candidates[0],
-                f"--remote-debugging-port={port}",
-                f"--user-data-dir={chrome_debug_data_dir()}",
-                "--no-first-run",
-                "--no-default-browser-check",
+                *_chrome_debug_args(port),
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

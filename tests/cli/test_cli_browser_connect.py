@@ -4,6 +4,7 @@ import os
 from unittest.mock import patch
 
 from cli import HermesCLI
+from hermes_cli.browser_connect import manual_chrome_debug_command
 
 
 def _assert_chrome_debug_cmd(cmd, expected_chrome, expected_port):
@@ -55,3 +56,26 @@ class TestChromeDebugLaunch:
             assert HermesCLI._try_launch_chrome_debug(9222, "Windows") is True
 
         _assert_chrome_debug_cmd(captured["cmd"], installed, 9222)
+
+    def test_manual_command_uses_detected_linux_browser(self):
+        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: "/usr/bin/chromium" if name == "chromium" else None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == "/usr/bin/chromium"):
+            command = manual_chrome_debug_command(9222, "Linux")
+
+        assert command is not None
+        assert command.startswith("/usr/bin/chromium --remote-debugging-port=9222")
+
+    def test_manual_command_uses_wsl_windows_chrome_when_available(self):
+        chrome = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
+
+        with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == chrome):
+            command = manual_chrome_debug_command(9222, "Linux")
+
+        assert command is not None
+        assert command.startswith(f"'{chrome}' --remote-debugging-port=9222")
+
+    def test_manual_command_returns_none_when_linux_browser_missing(self):
+        with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", return_value=False):
+            assert manual_chrome_debug_command(9222, "Linux") is None

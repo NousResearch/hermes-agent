@@ -99,23 +99,41 @@ def _load_hermes_env_vars() -> dict[str, str]:
 
 
 def find_docker() -> Optional[str]:
-    """Locate the docker CLI binary.
+    """Locate the docker (or podman) CLI binary.
 
-    Checks ``shutil.which`` first (respects PATH), then probes well-known
-    install locations on macOS where Docker Desktop may not be in PATH
-    (e.g. when running as a gateway service via launchd).
+    Resolution order:
+    1. ``HERMES_DOCKER_BINARY`` env var — explicit override (e.g. ``/usr/bin/podman``)
+    2. ``docker`` on PATH via ``shutil.which``
+    3. ``podman`` on PATH via ``shutil.which``
+    4. Well-known macOS Docker Desktop install locations
 
-    Returns the absolute path, or ``None`` if docker cannot be found.
+    Returns the absolute path, or ``None`` if neither runtime can be found.
     """
     global _docker_executable
     if _docker_executable is not None:
         return _docker_executable
 
+    # 1. Explicit override via env var (e.g. for Podman on immutable distros)
+    override = os.getenv("HERMES_DOCKER_BINARY")
+    if override and os.path.isfile(override) and os.access(override, os.X_OK):
+        _docker_executable = override
+        logger.info("Using HERMES_DOCKER_BINARY override: %s", override)
+        return override
+
+    # 2. docker on PATH
     found = shutil.which("docker")
     if found:
         _docker_executable = found
         return found
 
+    # 3. podman on PATH (drop-in compatible for our use case)
+    found = shutil.which("podman")
+    if found:
+        _docker_executable = found
+        logger.info("Using podman as container runtime: %s", found)
+        return found
+
+    # 4. Well-known macOS Docker Desktop locations
     for path in _DOCKER_SEARCH_PATHS:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             _docker_executable = path
@@ -130,9 +148,15 @@ def find_docker() -> Optional[str]:
 # We drop all capabilities then add back the minimum needed:
 #   DAC_OVERRIDE - root can write to bind-mounted dirs owned by host user
 #   CHOWN/FOWNER - package managers (pip, npm, apt) need to set file ownership
+#   SETUID/SETGID - the image entrypoint drops from root to the 'hermes'
+#       user via `gosu`, which requires these caps. Combined with
+#       `no-new-privileges`, gosu still cannot escalate back to root after
+#       the drop, so the security posture is preserved. Omitted entirely
+#       when the container starts as a non-root user via --user, since
+#       no gosu drop is needed in that mode.
 # Block privilege escalation and limit PIDs.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
-_SECURITY_ARGS = [
+_BASE_SECURITY_ARGS = [
     "--cap-drop", "ALL",
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
@@ -143,6 +167,39 @@ _SECURITY_ARGS = [
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
     "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
 ]
+
+# Extra caps needed when the container starts as root and an entrypoint
+# must drop privileges via gosu/su. Skipped when --user is passed because
+# the container already starts unprivileged and never needs to switch.
+_GOSU_CAP_ARGS = [
+    "--cap-add", "SETUID",
+    "--cap-add", "SETGID",
+]
+
+
+def _build_security_args(run_as_host_user: bool) -> list[str]:
+    """Return the security/cap/tmpfs args tailored to the privilege mode."""
+    if run_as_host_user:
+        return list(_BASE_SECURITY_ARGS)
+    return list(_BASE_SECURITY_ARGS) + list(_GOSU_CAP_ARGS)
+
+
+def _resolve_host_user_spec() -> Optional[str]:
+    """Return ``<uid>:<gid>`` for the current host user, or ``None`` on platforms
+    where this is not meaningful (e.g. Windows without posix ids).
+
+    We intentionally read ``os.getuid()``/``os.getgid()`` directly rather than
+    going through ``getpass``/``pwd`` so this stays cheap and never raises on
+    nameless UIDs (nss lookups can fail inside sandboxed launchers).
+    """
+    get_uid = getattr(os, "getuid", None)
+    get_gid = getattr(os, "getgid", None)
+    if get_uid is None or get_gid is None:
+        return None
+    try:
+        return f"{get_uid()}:{get_gid()}"
+    except Exception:  # pragma: no cover - defensive
+        return None
 
 
 _storage_opt_ok: Optional[bool] = None  # cached result across instances
@@ -242,6 +299,7 @@ class DockerEnvironment(BaseEnvironment):
         network: bool = True,
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
+        run_as_host_user: bool = False,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -397,8 +455,35 @@ class DockerEnvironment(BaseEnvironment):
         for key in sorted(self._env):
             env_args.extend(["-e", f"{key}={self._env[key]}"])
 
+        # Optional: run the container as the host user so files written into
+        # bind-mounted dirs (/workspace, /root, docker_volumes entries) are
+        # owned by that user on the host instead of by root. Skip cleanly on
+        # platforms without POSIX uid/gid (e.g. native Windows Docker).
+        user_args: list[str] = []
+        if run_as_host_user:
+            user_spec = _resolve_host_user_spec()
+            if user_spec is not None:
+                user_args = ["--user", user_spec]
+                logger.info("Docker: running container as host user %s", user_spec)
+            else:
+                logger.warning(
+                    "docker_run_as_host_user is enabled but this platform does "
+                    "not expose POSIX uid/gid; container will start as its "
+                    "image default user."
+                )
+                # Fall back to the full cap set — without --user, an image's
+                # entrypoint may still need gosu/su to drop privileges.
+        security_args = _build_security_args(run_as_host_user and bool(user_args))
+
         logger.info(f"Docker volume_args: {volume_args}")
-        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args + env_args
+        all_run_args = (
+            security_args
+            + user_args
+            + writable_args
+            + resource_args
+            + volume_args
+            + env_args
+        )
         logger.info(f"Docker run_args: {all_run_args}")
 
         # Resolve the docker executable once so it works even when

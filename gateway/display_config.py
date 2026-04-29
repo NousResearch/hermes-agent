@@ -9,6 +9,10 @@ Resolution order (first non-None wins):
     3. ``_PLATFORM_DEFAULTS[<platform>][<key>]``  — built-in sensible default
     4. ``_GLOBAL_DEFAULTS[<key>]``              — built-in global default
 
+Exception: ``display.streaming`` is CLI-only.  Gateway streaming follows the
+top-level ``streaming`` config unless ``display.platforms.<platform>.streaming``
+sets an explicit per-platform override.
+
 Backward compatibility: ``display.tool_progress_overrides`` is still read as a
 fallback for ``tool_progress`` when no ``display.platforms`` entry exists.  A
 config migration (version bump) automatically moves the old format into the new
@@ -75,7 +79,9 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "discord":     _TIER_HIGH,
 
     # Tier 2 — edit support, often customer/workspace channels
-    "slack":           _TIER_MEDIUM,
+    # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
+    # "new"/"all" spam permanent lines in channels (hermes-agent#14663).
+    "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
     "feishu":          _TIER_MEDIUM,
@@ -143,10 +149,13 @@ def resolve_display_setting(
             if val is not None:
                 return _normalise(setting, val)
 
-    # 2. Global user setting (display.<key>)
-    val = display_cfg.get(setting)
-    if val is not None:
-        return _normalise(setting, val)
+    # 2. Global user setting (display.<key>).  Skip display.streaming because
+    # that key controls only CLI terminal streaming; gateway token streaming is
+    # governed by the top-level streaming config plus per-platform overrides.
+    if setting != "streaming":
+        val = display_cfg.get(setting)
+        if val is not None:
+            return _normalise(setting, val)
 
     # 3. Built-in platform default
     plat_defaults = _PLATFORM_DEFAULTS.get(platform_key)

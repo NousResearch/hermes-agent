@@ -3,9 +3,11 @@
 import json
 import logging
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Union
+from urllib.parse import urlparse
 
 import yaml
 
@@ -31,6 +33,55 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
+def _preserve_file_mode(path: Path) -> "int | None":
+    """Capture the permission bits of *path* if it exists, else ``None``."""
+    try:
+        return stat.S_IMODE(path.stat().st_mode) if path.exists() else None
+    except OSError:
+        return None
+
+
+def _restore_file_mode(path: Path, mode: "int | None") -> None:
+    """Re-apply *mode* to *path* after an atomic replace.
+
+    ``tempfile.mkstemp`` creates files with 0o600 (owner-only).  After
+    ``os.replace`` swaps the temp file into place the target inherits
+    those restrictive permissions, breaking Docker / NAS volume mounts
+    that rely on broader permissions set by the user.  Calling this
+    right after ``os.replace`` restores the original permissions.
+    """
+    if mode is None:
+        return
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
+    """Atomically move *tmp_path* onto *target*, preserving symlinks.
+
+    ``os.replace(tmp, target)`` atomically swaps ``tmp`` into place at
+    ``target``.  When ``target`` is a symlink, the symlink itself is
+    replaced with a regular file — silently detaching managed deployments
+    that symlink ``config.yaml`` / ``SOUL.md`` / ``auth.json`` etc. from
+    ``~/.hermes/`` to a git-tracked profile package or dotfiles repo
+    (GitHub #16743).
+
+    This helper resolves the symlink first so ``os.replace`` writes to
+    the real file in-place while the symlink survives.  For non-symlink
+    and non-existent paths the behavior is identical to a plain
+    ``os.replace`` call.
+
+    Returns the resolved real path used for the replace, so callers that
+    need to re-apply permissions can target it instead of the symlink.
+    """
+    target_str = str(target)
+    real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
+    os.replace(str(tmp_path), real_path)
+    return real_path
+
+
 def atomic_json_write(
     path: Union[str, Path],
     data: Any,
@@ -54,6 +105,8 @@ def atomic_json_write(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    original_mode = _preserve_file_mode(path)
+
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
@@ -70,7 +123,9 @@ def atomic_json_write(
             )
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, path)
+        # Preserve symlinks — swap in-place on the real file (GitHub #16743).
+        real_path = atomic_replace(tmp_path, path)
+        _restore_file_mode(real_path, original_mode)
     except BaseException:
         # Intentionally catch BaseException so temp-file cleanup still runs for
         # KeyboardInterrupt/SystemExit before re-raising the original signal.
@@ -106,6 +161,8 @@ def atomic_yaml_write(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    original_mode = _preserve_file_mode(path)
+
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
@@ -118,7 +175,9 @@ def atomic_yaml_write(
                 f.write(extra_content)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, path)
+        # Preserve symlinks — swap in-place on the real file (GitHub #16743).
+        real_path = atomic_replace(tmp_path, path)
+        _restore_file_mode(real_path, original_mode)
     except BaseException:
         # Match atomic_json_write: cleanup must also happen for process-level
         # interruptions before we re-raise them.
@@ -162,3 +221,77 @@ def env_int(key: str, default: int = 0) -> int:
 def env_bool(key: str, default: bool = False) -> bool:
     """Read an environment variable as a boolean."""
     return is_truthy_value(os.getenv(key, ""), default=default)
+
+
+# ─── Proxy Helpers ────────────────────────────────────────────────────────────
+
+
+_PROXY_ENV_KEYS = (
+    "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+    "https_proxy", "http_proxy", "all_proxy",
+)
+
+
+def normalize_proxy_url(proxy_url: str | None) -> str | None:
+    """Normalize proxy URLs for httpx/aiohttp compatibility.
+
+    WSL/Clash-style environments often export SOCKS proxies as
+    ``socks://127.0.0.1:PORT``. httpx rejects that alias and expects the
+    explicit ``socks5://`` scheme instead.
+    """
+    candidate = str(proxy_url or "").strip()
+    if not candidate:
+        return None
+    if candidate.lower().startswith("socks://"):
+        return f"socks5://{candidate[len('socks://'):]}"
+    return candidate
+
+
+def normalize_proxy_env_vars() -> None:
+    """Rewrite supported proxy env vars to canonical URL forms in-place."""
+    for key in _PROXY_ENV_KEYS:
+        value = os.getenv(key, "")
+        normalized = normalize_proxy_url(value)
+        if normalized and normalized != value:
+            os.environ[key] = normalized
+
+
+# ─── URL Parsing Helpers ──────────────────────────────────────────────────────
+
+
+def base_url_hostname(base_url: str) -> str:
+    """Return the lowercased hostname for a base URL, or ``""`` if absent.
+
+    Use exact-hostname comparisons against known provider hosts
+    (``api.openai.com``, ``api.x.ai``, ``api.anthropic.com``) instead of
+    substring matches on the raw URL. Substring checks treat attacker- or
+    proxy-controlled paths/hosts like ``https://api.openai.com.example/v1``
+    or ``https://proxy.test/api.openai.com/v1`` as native endpoints, which
+    leads to wrong api_mode / auth routing.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    return (parsed.hostname or "").lower().rstrip(".")
+
+
+def base_url_host_matches(base_url: str, domain: str) -> bool:
+    """Return True when the base URL's hostname is ``domain`` or a subdomain.
+
+    Safer counterpart to ``domain in base_url``, which is the substring
+    false-positive class documented on ``base_url_hostname``. Accepts bare
+    hosts, full URLs, and URLs with paths.
+
+        base_url_host_matches("https://api.moonshot.ai/v1", "moonshot.ai") == True
+        base_url_host_matches("https://moonshot.ai", "moonshot.ai")        == True
+        base_url_host_matches("https://evil.com/moonshot.ai/v1", "moonshot.ai") == False
+        base_url_host_matches("https://moonshot.ai.evil/v1", "moonshot.ai")     == False
+    """
+    hostname = base_url_hostname(base_url)
+    if not hostname:
+        return False
+    domain = (domain or "").strip().lower().rstrip(".")
+    if not domain:
+        return False
+    return hostname == domain or hostname.endswith("." + domain)

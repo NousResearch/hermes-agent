@@ -14,12 +14,64 @@ Import chain (circular-import safe):
     run_agent.py, cli.py, batch_runner.py, etc.
 """
 
+import ast
+import importlib
 import json
 import logging
 import threading
+import time
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+
+def _is_registry_register_call(node: ast.AST) -> bool:
+    """Return True when *node* is a ``registry.register(...)`` call expression."""
+    if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
+        return False
+    func = node.value.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "register"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "registry"
+    )
+
+
+def _module_registers_tools(module_path: Path) -> bool:
+    """Return True when the module contains a top-level ``registry.register(...)`` call.
+
+    Only inspects module-body statements so that helper modules which happen
+    to call ``registry.register()`` inside a function are not picked up.
+    """
+    try:
+        source = module_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(module_path))
+    except (OSError, SyntaxError):
+        return False
+
+    return any(_is_registry_register_call(stmt) for stmt in tree.body)
+
+
+def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
+    """Import built-in self-registering tool modules and return their module names."""
+    tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
+    module_names = [
+        f"tools.{path.stem}"
+        for path in sorted(tools_path.glob("*.py"))
+        if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
+        and _module_registers_tools(path)
+    ]
+
+    imported: List[str] = []
+    for mod_name in module_names:
+        try:
+            importlib.import_module(mod_name)
+            imported.append(mod_name)
+        except Exception as e:
+            logger.warning("Could not import tool module %s: %s", mod_name, e)
+    return imported
 
 
 class ToolEntry:
@@ -46,16 +98,65 @@ class ToolEntry:
         self.max_result_size_chars = max_result_size_chars
 
 
+# ---------------------------------------------------------------------------
+# check_fn TTL cache
+#
+# check_fn callables like tools/terminal_tool.check_terminal_requirements
+# probe external state (Docker daemon, Modal SDK install, playwright binary
+# availability). For a long-lived CLI or gateway process, calling them on
+# every get_definitions() is pure waste — external state changes on human
+# timescales. Cache results for ~30 s so env-var flips via ``hermes tools``
+# or live credential file changes propagate within a turn or two without
+# requiring any explicit invalidation.
+# ---------------------------------------------------------------------------
+
+_CHECK_FN_TTL_SECONDS = 30.0
+_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
+_check_fn_cache_lock = threading.Lock()
+
+
+def _check_fn_cached(fn: Callable) -> bool:
+    """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False."""
+    now = time.monotonic()
+    with _check_fn_cache_lock:
+        cached = _check_fn_cache.get(fn)
+        if cached is not None:
+            ts, value = cached
+            if now - ts < _CHECK_FN_TTL_SECONDS:
+                return value
+    try:
+        value = bool(fn())
+    except Exception:
+        value = False
+    with _check_fn_cache_lock:
+        _check_fn_cache[fn] = (now, value)
+    return value
+
+
+def invalidate_check_fn_cache() -> None:
+    """Drop all cached ``check_fn`` results. Call after config changes that
+    affect tool availability (e.g. ``hermes tools enable``)."""
+    with _check_fn_cache_lock:
+        _check_fn_cache.clear()
+
+
 class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
     def __init__(self):
         self._tools: Dict[str, ToolEntry] = {}
         self._toolset_checks: Dict[str, Callable] = {}
+        self._toolset_aliases: Dict[str, str] = {}
         # MCP dynamic refresh can mutate the registry while other threads are
         # reading tool metadata, so keep mutations serialized and readers on
         # stable snapshots.
         self._lock = threading.RLock()
+        # Monotonically-increasing generation counter. Bumped on every
+        # mutation (register / deregister / register_toolset_alias / MCP
+        # refresh). External callers (e.g. get_tool_definitions) can memoize
+        # against it: a cache entry keyed on the generation is valid for as
+        # long as the generation hasn't changed.
+        self._generation: int = 0
 
     def _snapshot_state(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
         """Return a coherent snapshot of registry entries and toolset checks."""
@@ -96,6 +197,28 @@ class ToolRegistry:
             if entry.toolset == toolset
         )
 
+    def register_toolset_alias(self, alias: str, toolset: str) -> None:
+        """Register an explicit alias for a canonical toolset name."""
+        with self._lock:
+            existing = self._toolset_aliases.get(alias)
+            if existing and existing != toolset:
+                logger.warning(
+                    "Toolset alias collision: '%s' (%s) overwritten by %s",
+                    alias, existing, toolset,
+                )
+            self._toolset_aliases[alias] = toolset
+            self._generation += 1
+
+    def get_registered_toolset_aliases(self) -> Dict[str, str]:
+        """Return a snapshot of ``{alias: canonical_toolset}`` mappings."""
+        with self._lock:
+            return dict(self._toolset_aliases)
+
+    def get_toolset_alias_target(self, alias: str) -> Optional[str]:
+        """Return the canonical toolset name for an alias, or None."""
+        with self._lock:
+            return self._toolset_aliases.get(alias)
+
     # ------------------------------------------------------------------
     # Registration
     # ------------------------------------------------------------------
@@ -117,11 +240,27 @@ class ToolRegistry:
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:
-                logger.warning(
-                    "Tool name collision: '%s' (toolset '%s') is being "
-                    "overwritten by toolset '%s'",
-                    name, existing.toolset, toolset,
+                # Allow MCP-to-MCP overwrites (legitimate: server refresh,
+                # or two MCP servers with overlapping tool names).
+                both_mcp = (
+                    existing.toolset.startswith("mcp-")
+                    and toolset.startswith("mcp-")
                 )
+                if both_mcp:
+                    logger.debug(
+                        "Tool '%s': MCP toolset '%s' overwriting MCP toolset '%s'",
+                        name, toolset, existing.toolset,
+                    )
+                else:
+                    # Reject shadowing — prevent plugins/MCP from overwriting
+                    # built-in tools or vice versa.
+                    logger.error(
+                        "Tool registration REJECTED: '%s' (toolset '%s') would "
+                        "shadow existing tool from toolset '%s'. Deregister the "
+                        "existing tool first if this is intentional.",
+                        name, toolset, existing.toolset,
+                    )
+                    return
             self._tools[name] = ToolEntry(
                 name=name,
                 toolset=toolset,
@@ -136,6 +275,7 @@ class ToolRegistry:
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
+            self._generation += 1
 
     def deregister(self, name: str) -> None:
         """Remove a tool from the registry.
@@ -148,11 +288,19 @@ class ToolRegistry:
             entry = self._tools.pop(name, None)
             if entry is None:
                 return
-            # Drop the toolset check if this was the last tool in that toolset
-            if entry.toolset in self._toolset_checks and not any(
+            # Drop the toolset check and aliases if this was the last tool in
+            # that toolset.
+            toolset_still_exists = any(
                 e.toolset == entry.toolset for e in self._tools.values()
-            ):
+            )
+            if not toolset_still_exists:
                 self._toolset_checks.pop(entry.toolset, None)
+                self._toolset_aliases = {
+                    alias: target
+                    for alias, target in self._toolset_aliases.items()
+                    if target != entry.toolset
+                }
+            self._generation += 1
         logger.debug("Deregistered tool: %s", name)
 
     # ------------------------------------------------------------------
@@ -163,9 +311,17 @@ class ToolRegistry:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
-        are included.
+        are included. ``check_fn()`` results are cached for ~30 s via
+        :func:`_check_fn_cached` to amortize repeat probes (check_terminal_
+        requirements probes modal/docker, browser checks probe playwright,
+        etc.); TTL chosen so env-var changes (``hermes tools enable foo``)
+        still take effect in near-real-time without forcing a full cache
+        flush on every call.
         """
         result = []
+        # Per-call cache on top of the 30 s TTL — handles repeat probes of the
+        # same check_fn within one definitions pass without re-reading the
+        # TTL clock.
         check_results: Dict[Callable, bool] = {}
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
         for name in sorted(tool_names):
@@ -174,12 +330,7 @@ class ToolRegistry:
                 continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
-                    try:
-                        check_results[entry.check_fn] = bool(entry.check_fn())
-                    except Exception:
-                        check_results[entry.check_fn] = False
-                        if not quiet:
-                            logger.debug("Tool %s check raised; skipping", name)
+                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
                 if not check_results[entry.check_fn]:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)

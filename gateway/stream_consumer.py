@@ -43,6 +43,15 @@ class StreamConsumerConfig:
     edit_interval: float = 1.0
     buffer_threshold: int = 40
     cursor: str = " ▉"
+    buffer_only: bool = False
+    # When >0, the final edit for a streamed response is delivered as a
+    # fresh message if the original preview has been visible for at least
+    # this many seconds.  This makes the platform's visible timestamp
+    # reflect completion time instead of first-token time for long-running
+    # responses (e.g. reasoning models that stream slowly).  Ported from
+    # openclaw/openclaw#72038.  Default 0 = always edit in place (legacy
+    # behavior).  The gateway enables this selectively per-platform.
+    fresh_final_after_seconds: float = 0.0
 
 
 class GatewayStreamConsumer:
@@ -82,14 +91,29 @@ class GatewayStreamConsumer:
         chat_id: str,
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
+        on_new_message: Optional[callable] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
+        # Fired whenever a fresh content bubble is created on the platform
+        # (first-send of a new message, commentary, overflow chunk, or
+        # fallback continuation). The gateway uses this to linearize the
+        # tool-progress bubble: when content resumes after a tool batch,
+        # the next tool.started should open a NEW progress bubble below
+        # the content, not edit the old bubble above it.
+        # Called with no arguments. Exceptions are swallowed.
+        self._on_new_message = on_new_message
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
+        # Wall-clock timestamp (time.monotonic) when ``_message_id`` was
+        # first assigned from a successful first-send.  Used by the
+        # fresh-final logic to detect long-lived previews whose edit
+        # timestamps would be stale by completion time.  Ported from
+        # openclaw/openclaw#72038.
+        self._message_created_ts: Optional[float] = None
         self._already_sent = False
         self._edit_supported = True  # Disabled when progressive edits are no longer usable
         self._last_edit_time = 0.0
@@ -99,6 +123,14 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
+        # Cache adapter lifecycle capability: only platforms that need an
+        # explicit finalize call (e.g. DingTalk AI Cards) force us to make
+        # a redundant final edit.  Everyone else keeps the fast path.
+        # Use ``is True`` (not ``bool(...)``) so MagicMock attribute access
+        # in tests doesn't incorrectly enable this path.
+        self._adapter_requires_finalize: bool = (
+            getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
+        )
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -123,10 +155,21 @@ class GatewayStreamConsumer:
         if text:
             self._queue.put((_COMMENTARY, text))
 
+    def _notify_new_message(self) -> None:
+        """Fire the on_new_message callback, swallowing any errors."""
+        cb = self._on_new_message
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception:
+            logger.debug("on_new_message callback error", exc_info=True)
+
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
         self._message_id = None
+        self._message_created_ts = None
         self._accumulated = ""
         self._last_sent_text = ""
         self._fallback_final_send = False
@@ -295,10 +338,13 @@ class GatewayStreamConsumer:
                     got_done
                     or got_segment_break
                     or commentary_text is not None
-                    or (elapsed >= self._current_edit_interval
-                        and self._accumulated)
-                    or len(self._accumulated) >= self.cfg.buffer_threshold
                 )
+                if not self.cfg.buffer_only:
+                    should_edit = should_edit or (
+                        (elapsed >= self._current_edit_interval
+                            and self._accumulated)
+                        or len(self._accumulated) >= self.cfg.buffer_threshold
+                    )
 
                 current_update_visible = False
                 if should_edit and self._accumulated:
@@ -357,7 +403,16 @@ class GatewayStreamConsumer:
                     if not got_done and not got_segment_break and commentary_text is None:
                         display_text += self.cfg.cursor
 
-                    current_update_visible = await self._send_or_edit(display_text)
+                    # Segment break: finalize the current message so platforms
+                    # that need explicit closure (e.g. DingTalk AI Cards) don't
+                    # leave the previous segment stuck in a loading state when
+                    # the next segment (tool progress, next chunk) creates a
+                    # new message below it.  got_done has its own finalize
+                    # path below so we don't finalize here for it.
+                    current_update_visible = await self._send_or_edit(
+                        display_text,
+                        finalize=got_segment_break,
+                    )
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
@@ -368,10 +423,22 @@ class GatewayStreamConsumer:
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
-                        elif current_update_visible:
+                        elif (
+                            current_update_visible
+                            and not self._adapter_requires_finalize
+                        ):
+                            # Mid-stream edit above already delivered the
+                            # final accumulated content.  Skip the redundant
+                            # final edit — but only for adapters that don't
+                            # need an explicit finalize signal.
                             self._final_response_sent = True
                         elif self._message_id:
-                            self._final_response_sent = await self._send_or_edit(self._accumulated)
+                            # Either the mid-stream edit didn't run (no
+                            # visible update this tick) OR the adapter needs
+                            # explicit finalize=True to close the stream.
+                            self._final_response_sent = await self._send_or_edit(
+                                self._accumulated, finalize=True,
+                            )
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                     return
@@ -397,24 +464,41 @@ class GatewayStreamConsumer:
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
                 if got_segment_break:
+                    # If the segment-break edit failed to deliver the
+                    # accumulated content (flood control that has not yet
+                    # promoted to fallback mode, or fallback mode itself),
+                    # _accumulated still holds pre-boundary text the user
+                    # never saw. Flush that tail as a continuation message
+                    # before the reset below wipes _accumulated — otherwise
+                    # text generated before the tool boundary is silently
+                    # dropped (issue #8124).
+                    if (
+                        self._accumulated
+                        and not current_update_visible
+                        and self._message_id
+                        and self._message_id != "__no_edit__"
+                    ):
+                        await self._flush_segment_tail_on_edit_failure()
                     self._reset_segment_state(preserve_no_edit=True)
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 
         except asyncio.CancelledError:
             # Best-effort final edit on cancellation
+            _best_effort_ok = False
             if self._accumulated and self._message_id:
                 try:
-                    await self._send_or_edit(self._accumulated)
+                    _best_effort_ok = bool(await self._send_or_edit(self._accumulated))
                 except Exception:
                     pass
-            # If we delivered any content before being cancelled, mark the
-            # final response as sent so the gateway's already_sent check
-            # doesn't trigger a duplicate message.  The 5-second
-            # stream_task timeout (gateway/run.py) can cancel us while
-            # waiting on a slow Telegram API call — without this flag the
-            # gateway falls through to the normal send path.
-            if self._already_sent:
+            # Only confirm final delivery if the best-effort send above
+            # actually succeeded OR if the final response was already
+            # confirmed before we were cancelled.  Previously this
+            # promoted any partial send (already_sent=True) to
+            # final_response_sent — which suppressed the gateway's
+            # fallback send even when only intermediate text (e.g.
+            # "Let me search…") had been delivered, not the real answer.
+            if _best_effort_ok and not self._final_response_sent:
                 self._final_response_sent = True
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
@@ -464,6 +548,9 @@ class GatewayStreamConsumer:
                 self._message_id = str(result.message_id)
                 self._already_sent = True
                 self._last_sent_text = text
+                # Fresh content bubble — close off any stale tool bubble
+                # above so the next tool starts a new bubble below.
+                self._notify_new_message()
                 return str(result.message_id)
             else:
                 self._edit_supported = False
@@ -513,9 +600,41 @@ class GatewayStreamConsumer:
         self._fallback_final_send = False
         if not continuation.strip():
             # Nothing new to send — the visible partial already matches final text.
-            self._already_sent = True
-            self._final_response_sent = True
-            return
+            # BUT: if final_text itself has meaningful content (e.g. a timeout
+            # message after a long tool call), the prefix-based continuation
+            # calculation may wrongly conclude "already shown" because the
+            # streamed prefix was from a *previous* segment (before the tool
+            # boundary).  In that case, send the full final_text as-is (#10807).
+            if final_text.strip() and final_text != self._visible_prefix():
+                continuation = final_text
+            else:
+                # Defence-in-depth for #7183: the last edit may still show the
+                # cursor character because fallback mode was entered after an
+                # edit failure left it stuck.  Try one final edit to strip it
+                # so the message doesn't freeze with a visible ▉.  Best-effort
+                # — if this edit also fails (flood control still active),
+                # _try_strip_cursor has already been called on fallback entry
+                # and the adaptive-backoff retries will have had their shot.
+                if (
+                    self._message_id
+                    and self._last_sent_text
+                    and self.cfg.cursor
+                    and self._last_sent_text.endswith(self.cfg.cursor)
+                ):
+                    clean_text = self._last_sent_text[:-len(self.cfg.cursor)]
+                    try:
+                        result = await self.adapter.edit_message(
+                            chat_id=self.chat_id,
+                            message_id=self._message_id,
+                            content=clean_text,
+                        )
+                        if result.success:
+                            self._last_sent_text = clean_text
+                    except Exception:
+                        pass
+                self._already_sent = True
+                self._final_response_sent = True
+                return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
         safe_limit = max(500, raw_limit - 100)
@@ -564,6 +683,9 @@ class GatewayStreamConsumer:
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
+            # Each fallback chunk is a fresh platform message — notify
+            # so any stale tool-progress bubble gets closed off.
+            self._notify_new_message()
 
         self._message_id = last_message_id
         self._already_sent = True
@@ -576,6 +698,39 @@ class GatewayStreamConsumer:
         err = getattr(result, "error", "") or ""
         err_lower = err.lower()
         return "flood" in err_lower or "retry after" in err_lower or "rate" in err_lower
+
+    async def _flush_segment_tail_on_edit_failure(self) -> None:
+        """Deliver un-sent tail content before a segment-break reset.
+
+        When an edit fails (flood control, transport error) and a tool
+        boundary arrives before the next retry, ``_accumulated`` holds text
+        that was generated but never shown to the user. Without this flush,
+        the segment reset would discard that tail and leave a frozen cursor
+        in the partial message.
+
+        Sends the tail that sits after the last successfully-delivered
+        prefix as a new message, and best-effort strips the stuck cursor
+        from the previous partial message.
+        """
+        if not self._fallback_final_send:
+            await self._try_strip_cursor()
+        visible = self._fallback_prefix or self._visible_prefix()
+        tail = self._accumulated
+        if visible and tail.startswith(visible):
+            tail = tail[len(visible):].lstrip()
+        tail = self._clean_for_display(tail)
+        if not tail.strip():
+            return
+        try:
+            result = await self.adapter.send(
+                chat_id=self.chat_id,
+                content=tail,
+                metadata=self.metadata,
+            )
+            if result.success:
+                self._already_sent = True
+        except Exception as e:
+            logger.error("Segment-break tail flush error: %s", e)
 
     async def _try_strip_cursor(self) -> None:
         """Best-effort edit to remove the cursor from the last visible message.
@@ -609,19 +764,105 @@ class GatewayStreamConsumer:
                 content=text,
                 metadata=self.metadata,
             )
+            # Note: do NOT set _already_sent = True here.
+            # Commentary messages are interim status updates (e.g. "Using browser
+            # tool..."), not the final response. Setting already_sent would cause
+            # the final response to be incorrectly suppressed when there are
+            # multiple tool calls. See: https://github.com/NousResearch/hermes-agent/issues/10454
             if result.success:
-                self._already_sent = True
-                return True
+                # Commentary counts as fresh content — close off any
+                # stale tool bubble above it so the next tool starts a
+                # new bubble below.
+                self._notify_new_message()
+            return result.success
         except Exception as e:
             logger.error("Commentary send error: %s", e)
-        return False
+            return False
 
-    async def _send_or_edit(self, text: str) -> bool:
+    def _should_send_fresh_final(self) -> bool:
+        """Return True when a long-lived preview should be replaced with a
+        fresh final message instead of an edit.
+
+        Conditions:
+        - Fresh-final is enabled (``fresh_final_after_seconds > 0``).
+        - We have a real preview message id (not the ``__no_edit__`` sentinel
+          and not ``None``).
+        - The preview has been visible for at least the configured threshold.
+
+        Ported from openclaw/openclaw#72038.
+        """
+        threshold = getattr(self.cfg, "fresh_final_after_seconds", 0.0) or 0.0
+        if threshold <= 0:
+            return False
+        if not self._message_id or self._message_id == "__no_edit__":
+            return False
+        if self._message_created_ts is None:
+            return False
+        age = time.monotonic() - self._message_created_ts
+        return age >= threshold
+
+    async def _try_fresh_final(self, text: str) -> bool:
+        """Send ``text`` as a brand-new message (best-effort delete the old
+        preview) so the platform's visible timestamp reflects completion
+        time.  Returns True on successful delivery, False on any failure so
+        the caller falls back to the normal edit path.
+
+        Ported from openclaw/openclaw#72038.
+        """
+        old_message_id = self._message_id
+        try:
+            result = await self.adapter.send(
+                chat_id=self.chat_id,
+                content=text,
+                metadata=self.metadata,
+            )
+        except Exception as e:
+            logger.debug("Fresh-final send failed, falling back to edit: %s", e)
+            return False
+        if not getattr(result, "success", False):
+            return False
+        # Successful fresh send — try to delete the stale preview so the
+        # user doesn't see the old edit-stuck message underneath.  Cleanup
+        # is best-effort; platforms that don't implement ``delete_message``
+        # just leave the preview behind (still an acceptable outcome —
+        # the visible final timestamp is the important part).
+        if old_message_id and old_message_id != "__no_edit__":
+            delete_fn = getattr(self.adapter, "delete_message", None)
+            if delete_fn is not None:
+                try:
+                    await delete_fn(self.chat_id, old_message_id)
+                except Exception as e:
+                    logger.debug(
+                        "Fresh-final preview cleanup failed (%s): %s",
+                        old_message_id, e,
+                    )
+        # Adopt the new message id as the current message so subsequent
+        # callers (e.g. overflow split loops, finalize retries) see a
+        # consistent state.
+        new_message_id = getattr(result, "message_id", None)
+        if new_message_id:
+            self._message_id = new_message_id
+            self._message_created_ts = time.monotonic()
+        else:
+            # Send succeeded but platform didn't return an id — treat the
+            # delivery as final-only and fall back to "__no_edit__" so we
+            # don't try to edit something we can't address.
+            self._message_id = "__no_edit__"
+            self._message_created_ts = None
+        self._already_sent = True
+        self._last_sent_text = text
+        self._final_response_sent = True
+        return True
+
+    async def _send_or_edit(self, text: str, *, finalize: bool = False) -> bool:
         """Send or edit the streaming message.
 
         Returns True if the text was successfully delivered (sent or edited),
         False otherwise.  Callers like the overflow split loop use this to
         decide whether to advance past the delivered chunk.
+
+        ``finalize`` is True when this is the last edit in a streaming
+        sequence.
         """
         # Strip MEDIA: directives so they don't appear as visible text.
         # Media files are delivered as native attachments after the stream
@@ -655,14 +896,38 @@ class GatewayStreamConsumer:
         try:
             if self._message_id is not None:
                 if self._edit_supported:
-                    # Skip if text is identical to what we last sent
-                    if text == self._last_sent_text:
+                    # Skip if text is identical to what we last sent.
+                    # Exception: adapters that require an explicit finalize
+                    # call (REQUIRES_EDIT_FINALIZE) must still receive the
+                    # finalize=True edit even when content is unchanged, so
+                    # their streaming UI can transition out of the in-
+                    # progress state.  Everyone else short-circuits.
+                    if text == self._last_sent_text and not (
+                        finalize and self._adapter_requires_finalize
+                    ):
+                        return True
+                    # Fresh-final for long-lived previews: when finalizing
+                    # the last edit in a streaming sequence, if the
+                    # original preview has been visible for at least
+                    # ``fresh_final_after_seconds``, send the completed
+                    # reply as a fresh message so the platform's visible
+                    # timestamp reflects completion time instead of the
+                    # preview creation time.  Best-effort cleanup of the
+                    # old preview follows.  Ported from
+                    # openclaw/openclaw#72038.  Gated by config so the
+                    # legacy edit-in-place path stays the default.
+                    if (
+                        finalize
+                        and self._should_send_fresh_final()
+                        and await self._try_fresh_final(text)
+                    ):
                         return True
                     # Edit existing message
                     result = await self.adapter.edit_message(
                         chat_id=self.chat_id,
                         message_id=self._message_id,
                         content=text,
+                        finalize=finalize,
                     )
                     if result.success:
                         self._already_sent = True
@@ -723,6 +988,10 @@ class GatewayStreamConsumer:
                 if result.success:
                     if result.message_id:
                         self._message_id = result.message_id
+                        # Track when the preview first became visible to
+                        # the user so fresh-final logic can detect stale
+                        # preview timestamps on long-running responses.
+                        self._message_created_ts = time.monotonic()
                     else:
                         self._edit_supported = False
                     self._already_sent = True
@@ -734,6 +1003,11 @@ class GatewayStreamConsumer:
                         # every delta/tool boundary when platforms accept a
                         # message but do not return an editable message id.
                         self._message_id = "__no_edit__"
+                    # Notify the gateway that a fresh content bubble was
+                    # created so any accumulated tool-progress bubble above
+                    # gets closed off — the next tool fires into a new
+                    # bubble below, preserving chronological order.
+                    self._notify_new_message()
                     return True
                 else:
                     # Initial send failed — disable streaming for this session

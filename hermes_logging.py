@@ -195,10 +195,6 @@ def setup_logging(
         The ``logs/`` directory where files are written.
     """
     global _logging_initialized
-    if _logging_initialized and not force:
-        home = hermes_home or get_hermes_home()
-        return home / "logs"
-
     home = hermes_home or get_hermes_home()
     log_dir = home / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -247,6 +243,9 @@ def setup_logging(
             formatter=RedactingFormatter(_LOG_FORMAT),
             log_filter=_ComponentFilter(COMPONENT_PREFIXES["gateway"]),
         )
+
+    if _logging_initialized and not force:
+        return log_dir
 
     # Ensure root logger level is low enough for the handlers to fire.
     if root.level == logging.NOTSET or root.level > level:
@@ -358,6 +357,7 @@ def _add_rotating_handler(
     path.parent.mkdir(parents=True, exist_ok=True)
     handler = _ManagedRotatingFileHandler(
         str(path), maxBytes=max_bytes, backupCount=backup_count,
+        encoding="utf-8",
     )
     handler.setLevel(level)
     handler.setFormatter(formatter)

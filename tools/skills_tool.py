@@ -69,7 +69,7 @@ Usage:
 import json
 import logging
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, display_hermes_home
 import os
 import re
 from enum import Enum
@@ -77,6 +77,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Tuple
 
 from tools.registry import registry, tool_error
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ def load_env() -> Dict[str, str]:
     if not env_path.exists():
         return env_vars
 
-    with env_path.open() as f:
+    with env_path.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
@@ -124,6 +125,20 @@ class SkillReadinessStatus(str, Enum):
     AVAILABLE = "available"
     SETUP_NEEDED = "setup_needed"
     UNSUPPORTED = "unsupported"
+
+
+# Prompt injection detection — shared by local-skill and plugin-skill paths.
+_INJECTION_PATTERNS: list = [
+    "ignore previous instructions",
+    "ignore all previous",
+    "you are now",
+    "disregard your",
+    "forget your instructions",
+    "new instructions:",
+    "system prompt:",
+    "<system>",
+    "]]>",
+]
 
 
 def set_secret_capture_callback(callback) -> None:
@@ -394,7 +409,7 @@ def _gateway_setup_hint() -> str:
 
         return GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
     except Exception:
-        return "Secure secret entry is not available. Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
+        return f"Secure secret entry is not available. Load this skill in the local CLI to be prompted, or add the key to {display_hermes_home()}/.env manually."
 
 
 def _build_setup_note(
@@ -493,16 +508,35 @@ def _get_disabled_skill_names() -> Set[str]:
     return get_disabled_skill_names()
 
 
+def _get_session_platform() -> str:
+    """Resolve the current platform from gateway session context.
+
+    Mirrors the platform-resolution logic in
+    ``agent.skill_utils.get_disabled_skill_names`` so that
+    ``_is_skill_disabled`` respects ``HERMES_SESSION_PLATFORM``.
+    """
+    try:
+        from gateway.session_context import get_session_env
+        return get_session_env("HERMES_SESSION_PLATFORM") or ""
+    except Exception:
+        return ""
+
+
 def _is_skill_disabled(name: str, platform: str = None) -> bool:
-    """Check if a skill is disabled in config."""
-    import os
+    """Check if a skill is disabled in config.
+
+    Resolves the active platform from (in order of precedence):
+    1. Explicit ``platform`` argument
+    2. ``HERMES_PLATFORM`` environment variable
+    3. ``HERMES_SESSION_PLATFORM`` from gateway session context
+    """
     try:
         from hermes_cli.config import load_config
         config = load_config()
         skills_cfg = config.get("skills", {})
-        resolved_platform = platform or os.getenv("HERMES_PLATFORM")
+        resolved_platform = platform or os.getenv("HERMES_PLATFORM") or _get_session_platform()
         if resolved_platform:
-            platform_disabled = skills_cfg.get("platform_disabled", {}).get(resolved_platform)
+            platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
             if platform_disabled is not None:
                 return name in platform_disabled
         return name in skills_cfg.get("disabled", [])
@@ -521,7 +555,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs
+    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
 
     skills = []
     seen_names: set = set()
@@ -536,7 +570,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:
-        for skill_md in scan_dir.rglob("SKILL.md"):
+        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
 
@@ -585,6 +619,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 continue
 
     return skills
+
+
+def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep every skill listing path ordered the same way."""
+    return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
 def _load_category_description(category_dir: Path) -> Optional[str]:
@@ -652,7 +691,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                     "success": True,
                     "skills": [],
                     "categories": [],
-                    "message": "No skills found. Skills directory created at ~/.hermes/skills/",
+                    "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
                 },
                 ensure_ascii=False,
             )
@@ -676,7 +715,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             all_skills = [s for s in all_skills if s.get("category") == category]
 
         # Sort by category then name
-        all_skills.sort(key=lambda s: (s.get("category") or "", s["name"]))
+        all_skills = _sort_skills(all_skills)
 
         # Extract unique categories
         categories = sorted(
@@ -698,19 +737,198 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
-def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
+# ── Plugin skill serving ──────────────────────────────────────────────────
+
+
+def _serve_plugin_skill(
+    skill_md: Path,
+    namespace: str,
+    bare: str,
+    *,
+    preprocess: bool = True,
+    session_id: str | None = None,
+) -> str:
+    """Read a plugin-provided skill, apply guards, return JSON."""
+    from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
+
+    if namespace in _get_disabled_plugins():
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"Plugin '{namespace}' is disabled. "
+                    f"Re-enable with: hermes plugins enable {namespace}"
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+    except Exception as e:
+        return json.dumps(
+            {"success": False, "error": f"Failed to read skill '{namespace}:{bare}': {e}"},
+            ensure_ascii=False,
+        )
+
+    parsed_frontmatter: Dict[str, Any] = {}
+    try:
+        parsed_frontmatter, _ = _parse_frontmatter(content)
+    except Exception:
+        pass
+
+    if not skill_matches_platform(parsed_frontmatter):
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"Skill '{namespace}:{bare}' is not supported on this platform.",
+                "readiness_status": SkillReadinessStatus.UNSUPPORTED.value,
+            },
+            ensure_ascii=False,
+        )
+
+    # Injection scan — log but still serve (matches local-skill behaviour)
+    if any(p in content.lower() for p in _INJECTION_PATTERNS):
+        logger.warning(
+            "Plugin skill '%s:%s' contains patterns that may indicate prompt injection",
+            namespace, bare,
+        )
+
+    description = str(parsed_frontmatter.get("description", ""))
+    if len(description) > MAX_DESCRIPTION_LENGTH:
+        description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
+
+    # Bundle context banner — tells the agent about sibling skills
+    try:
+        siblings = [
+            s for s in get_plugin_manager().list_plugin_skills(namespace)
+            if s != bare
+        ]
+        if siblings:
+            sib_list = ", ".join(siblings)
+            banner = (
+                f"[Bundle context: This skill is part of the '{namespace}' plugin.\n"
+                f"Sibling skills: {sib_list}.\n"
+                f"Use qualified form to invoke siblings (e.g. {namespace}:{siblings[0]}).]\n\n"
+            )
+        else:
+            banner = f"[Bundle context: This skill is part of the '{namespace}' plugin.]\n\n"
+    except Exception:
+        banner = ""
+
+    rendered_content = content
+    if preprocess:
+        try:
+            from agent.skill_preprocessing import preprocess_skill_content
+
+            rendered_content = preprocess_skill_content(
+                content,
+                skill_md.parent,
+                session_id=session_id,
+            )
+        except Exception:
+            logger.debug(
+                "Could not preprocess plugin skill %s:%s", namespace, bare, exc_info=True
+            )
+
+    return json.dumps(
+        {
+            "success": True,
+            "name": f"{namespace}:{bare}",
+            "content": f"{banner}{rendered_content}" if banner else rendered_content,
+            "description": description,
+            "linked_files": None,
+            "readiness_status": SkillReadinessStatus.AVAILABLE.value,
+        },
+        ensure_ascii=False,
+    )
+
+
+def skill_view(
+    name: str,
+    file_path: str = None,
+    task_id: str = None,
+    preprocess: bool = True,
+) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
 
     Args:
-        name: Name or path of the skill (e.g., "axolotl" or "03-fine-tuning/axolotl")
+        name: Name or path of the skill (e.g., "axolotl" or "03-fine-tuning/axolotl").
+            Qualified names like "plugin:skill" resolve to plugin-provided skills.
         file_path: Optional path to a specific file within the skill (e.g., "references/api.md")
         task_id: Optional task identifier used to probe the active backend
+        preprocess: Apply configured SKILL.md template and inline shell rendering
+            to main skill content. Internal slash/preload callers disable this
+            because they render the skill message themselves.
 
     Returns:
         JSON string with skill content or error message
     """
     try:
+        # ── Qualified name dispatch (plugin skills) ──────────────────
+        # Names containing ':' are routed to the plugin skill registry.
+        # Bare names fall through to the existing flat-tree scan below.
+        if ":" in name:
+            from agent.skill_utils import is_valid_namespace, parse_qualified_name
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+            namespace, bare = parse_qualified_name(name)
+            if not is_valid_namespace(namespace):
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Invalid namespace '{namespace}' in '{name}'. "
+                            f"Namespaces must match [a-zA-Z0-9_-]+."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
+            discover_plugins()  # idempotent
+            pm = get_plugin_manager()
+            plugin_skill_md = pm.find_plugin_skill(name)
+
+            if plugin_skill_md is not None:
+                if not plugin_skill_md.exists():
+                    # Stale registry entry — file deleted out of band
+                    pm.remove_plugin_skill(name)
+                    return json.dumps(
+                        {
+                            "success": False,
+                            "error": (
+                                f"Skill '{name}' file no longer exists at "
+                                f"{plugin_skill_md}. The registry entry has "
+                                f"been cleaned up — try again after the "
+                                f"plugin is reloaded."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                return _serve_plugin_skill(
+                    plugin_skill_md,
+                    namespace,
+                    bare,
+                    preprocess=preprocess,
+                    session_id=task_id,
+                )
+
+            # Plugin exists but this specific skill is missing?
+            available = pm.list_plugin_skills(namespace)
+            if available:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": f"Skill '{bare}' not found in plugin '{namespace}'.",
+                        "available_skills": [f"{namespace}:{s}" for s in available],
+                        "hint": f"The '{namespace}' plugin provides {len(available)} skill(s).",
+                    },
+                    ensure_ascii=False,
+                )
+            # Plugin itself not found — fall through to flat-tree scan
+            # which will return a normal "not found" with suggestions.
+
         from agent.skill_utils import get_external_skills_dirs
 
         # Build list of all skill directories to search
@@ -746,7 +964,9 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         # Search by directory name across all dirs
         if not skill_md:
             for search_dir in all_dirs:
-                for found_skill_md in search_dir.rglob("SKILL.md"):
+                from agent.skill_utils import iter_skill_index_files
+
+                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
                     if found_skill_md.parent.name == name:
                         skill_dir = found_skill_md.parent
                         skill_md = found_skill_md
@@ -765,7 +985,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     break
 
         if not skill_md or not skill_md.exists():
-            available = [s["name"] for s in _find_all_skills()[:20]]
+            available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
             return json.dumps(
                 {
                     "success": False,
@@ -805,17 +1025,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 continue
 
         # Security: detect common prompt injection patterns
-        _INJECTION_PATTERNS = [
-            "ignore previous instructions",
-            "ignore all previous",
-            "you are now",
-            "disregard your",
-            "forget your instructions",
-            "new instructions:",
-            "system prompt:",
-            "<system>",
-            "]]>",
-        ]
+        # (pattern list at module level as _INJECTION_PATTERNS)
         _content_lower = content.lower()
         _injection_detected = any(p in _content_lower for p in _INJECTION_PATTERNS)
 
@@ -825,8 +1035,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 _warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
             if _injection_detected:
                 _warnings.append("skill content contains patterns that may indicate prompt injection")
-            import logging as _logging
-            _logging.getLogger(__name__).warning("Skill security warning for '%s': %s", name, "; ".join(_warnings))
+            logging.getLogger(__name__).warning("Skill security warning for '%s': %s", name, "; ".join(_warnings))
 
         parsed_frontmatter: Dict[str, Any] = {}
         try:
@@ -1104,14 +1313,30 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     exc_info=True,
                 )
 
+        rendered_content = content
+        if preprocess:
+            try:
+                from agent.skill_preprocessing import preprocess_skill_content
+
+                rendered_content = preprocess_skill_content(
+                    content,
+                    skill_dir,
+                    session_id=task_id,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not preprocess skill content for %s", skill_name, exc_info=True
+                )
+
         result = {
             "success": True,
             "name": skill_name,
             "description": frontmatter.get("description", ""),
             "tags": tags,
             "related_skills": related_skills,
-            "content": content,
+            "content": rendered_content,
             "path": rel_path,
+            "skill_dir": str(skill_dir) if skill_dir else None,
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
             if linked_files
@@ -1235,7 +1460,7 @@ SKILL_VIEW_SCHEMA = {
         "properties": {
             "name": {
                 "type": "string",
-                "description": "The skill name (use skills_list to see available skills)",
+                "description": "The skill name (use skills_list to see available skills). For plugin-provided skills, use the qualified form 'plugin:skill' (e.g. 'superpowers:writing-plans').",
             },
             "file_path": {
                 "type": "string",
@@ -1256,13 +1481,32 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
+def _skill_view_with_bump(args, **kw):
+    """Invoke skill_view, then bump view_count on success. Best-effort: a
+    telemetry failure never breaks the tool call."""
+    name = args.get("name", "")
+    result = skill_view(
+        name, file_path=args.get("file_path"), task_id=kw.get("task_id")
+    )
+    try:
+        parsed = json.loads(result)
+        if isinstance(parsed, dict) and parsed.get("success"):
+            # Use the resolved skill name from the payload when present —
+            # qualified forms ("plugin:skill") return with the canonical name.
+            resolved = parsed.get("name") or name
+            if resolved:
+                from tools.skill_usage import bump_view
+                bump_view(str(resolved))
+    except Exception:
+        pass
+    return result
+
+
 registry.register(
     name="skill_view",
     toolset="skills",
     schema=SKILL_VIEW_SCHEMA,
-    handler=lambda args, **kw: skill_view(
-        args.get("name", ""), file_path=args.get("file_path"), task_id=kw.get("task_id")
-    ),
+    handler=_skill_view_with_bump,
     check_fn=check_skills_requirements,
     emoji="📚",
 )

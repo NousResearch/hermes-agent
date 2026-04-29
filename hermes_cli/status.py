@@ -6,7 +6,7 @@ Shows the status of all Hermes Agent components.
 
 import os
 import sys
-import subprocess
+import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -26,12 +26,15 @@ def check_mark(ok: bool) -> str:
     return color("✗", Colors.RED)
 
 def redact_key(key: str) -> str:
-    """Redact an API key for display."""
-    if not key:
-        return "(not set)"
-    if len(key) < 12:
-        return "***"
-    return key[:4] + "..." + key[-4:]
+    """Redact an API key for display.
+
+    Thin wrapper over :func:`agent.redact.mask_secret`. Preserves the
+    "(not set)" placeholder in dim color to match ``hermes config``'s
+    output (previously this variant was missing the DIM color —
+    consolidated via PR that also introduced ``mask_secret``).
+    """
+    from agent.redact import mask_secret
+    return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
 def _format_iso_timestamp(value) -> str:
@@ -122,6 +125,7 @@ def show_status(args):
         "OpenAI": "OPENAI_API_KEY",
         "Z.AI/GLM": "GLM_API_KEY",
         "Kimi": "KIMI_API_KEY",
+        "StepFun Step Plan": "STEPFUN_API_KEY",
         "MiniMax": "MINIMAX_API_KEY",
         "MiniMax-CN": "MINIMAX_CN_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
@@ -163,19 +167,26 @@ def show_status(args):
         qwen_status = {}
 
     nous_logged_in = bool(nous_status.get("logged_in"))
+    nous_error = nous_status.get("error")
+    nous_label = "logged in" if nous_logged_in else "not logged in (run: hermes auth add nous --type oauth)"
     print(
         f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
-        f"{'logged in' if nous_logged_in else 'not logged in (run: hermes model)'}"
+        f"{nous_label}"
     )
-    if nous_logged_in:
-        portal_url = nous_status.get("portal_base_url") or "(unknown)"
-        access_exp = _format_iso_timestamp(nous_status.get("access_expires_at"))
-        key_exp = _format_iso_timestamp(nous_status.get("agent_key_expires_at"))
-        refresh_label = "yes" if nous_status.get("has_refresh_token") else "no"
+    portal_url = nous_status.get("portal_base_url") or "(unknown)"
+    access_exp = _format_iso_timestamp(nous_status.get("access_expires_at"))
+    key_exp = _format_iso_timestamp(nous_status.get("agent_key_expires_at"))
+    refresh_label = "yes" if nous_status.get("has_refresh_token") else "no"
+    if nous_logged_in or portal_url != "(unknown)" or nous_error:
         print(f"    Portal URL: {portal_url}")
+    if nous_logged_in or nous_status.get("access_expires_at"):
         print(f"    Access exp: {access_exp}")
+    if nous_logged_in or nous_status.get("agent_key_expires_at"):
         print(f"    Key exp:    {key_exp}")
+    if nous_logged_in or nous_status.get("has_refresh_token"):
         print(f"    Refresh:    {refresh_label}")
+    if nous_error and not nous_logged_in:
+        print(f"    Error:      {nous_error}")
 
     codex_logged_in = bool(codex_status.get("logged_in"))
     print(
@@ -212,7 +223,7 @@ def show_status(args):
     if managed_nous_tools_enabled():
         features = get_nous_subscription_features(config)
         print()
-        print(color("◆ Nous Subscription Features", Colors.CYAN, Colors.BOLD))
+        print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
         if not features.nous_auth_present:
             print("  Nous Portal   ✗ not logged in")
         else:
@@ -230,6 +241,18 @@ def show_status(args):
             else:
                 state = "not configured"
             print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
+    elif nous_logged_in:
+        # Logged into Nous but on the free tier — show upgrade nudge
+        print()
+        print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
+        print("  Your free-tier Nous account does not include Tool Gateway access.")
+        print("  Upgrade your subscription to unlock managed web, image, TTS, and browser tools.")
+        try:
+            portal_url = nous_status.get("portal_base_url", "").rstrip("/")
+            if portal_url:
+                print(f"  Upgrade: {portal_url}")
+        except Exception:
+            pass
 
     # =========================================================================
     # API-Key Providers
@@ -240,6 +263,7 @@ def show_status(args):
     apikey_providers = {
         "Z.AI / GLM":       ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         "Kimi / Moonshot":  ("KIMI_API_KEY",),
+        "StepFun Step Plan": ("STEPFUN_API_KEY",),
         "MiniMax":          ("MINIMAX_API_KEY",),
         "MiniMax (China)":  ("MINIMAX_CN_API_KEY",),
     }
@@ -252,6 +276,23 @@ def show_status(args):
         configured = bool(key_val)
         label = "configured" if configured else "not configured (run: hermes model)"
         print(f"  {pname:<16} {check_mark(configured)} {label}")
+
+    # LM Studio reachability — only probe when it's the active provider so
+    # users with foreign configs don't see noise. Auth rejection vs. silent
+    # empty list is the most common LM Studio support case.
+    if _effective_provider_label() == "LM Studio":
+        from hermes_cli.models import probe_lmstudio_models
+        model_cfg = config.get("model")
+        base = (model_cfg.get("base_url") if isinstance(model_cfg, dict) else None) or get_env_value("LM_BASE_URL") or "http://127.0.0.1:1234/v1"
+        try:
+            models = probe_lmstudio_models(api_key=get_env_value("LM_API_KEY") or "", base_url=base, timeout=1.5)
+            if models is None:
+                ok, msg = False, f"unreachable at {base}"
+            else:
+                ok, msg = True, f"reachable ({len(models)} model(s)) at {base}"
+        except AuthError:
+            ok, msg = False, "auth rejected — set LM_API_KEY"
+        print(f"  {'LM Studio':<16} {check_mark(ok)} {msg}")
 
     # =========================================================================
     # Terminal Configuration
@@ -306,6 +347,7 @@ def show_status(args):
         "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
         "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
         "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
+        "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():
@@ -315,6 +357,9 @@ def show_status(args):
         home_channel = ""
         if home_var:
             home_channel = os.getenv(home_var, "")
+        # Back-compat: QQBot home channel was renamed from QQ_HOME_CHANNEL to QQBOT_HOME_CHANNEL
+        if not home_channel and home_var == "QQBOT_HOME_CHANNEL":
+            home_channel = os.getenv("QQ_HOME_CHANNEL", "")
         
         status = "configured" if has_token else "not configured"
         if home_channel:
@@ -327,73 +372,36 @@ def show_status(args):
     # =========================================================================
     print()
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
-    
-    if _is_termux():
-        try:
-            from hermes_cli.gateway import find_gateway_pids
-            gateway_pids = find_gateway_pids()
-        except Exception:
-            gateway_pids = []
-        is_running = bool(gateway_pids)
+
+    try:
+        from hermes_cli.gateway import get_gateway_runtime_snapshot, _format_gateway_pids
+
+        snapshot = get_gateway_runtime_snapshot()
+        is_running = snapshot.running
         print(f"  Status:       {check_mark(is_running)} {'running' if is_running else 'stopped'}")
-        print("  Manager:      Termux / manual process")
-        if gateway_pids:
-            rendered = ", ".join(str(pid) for pid in gateway_pids[:3])
-            if len(gateway_pids) > 3:
-                rendered += ", ..."
-            print(f"  PID(s):       {rendered}")
-        else:
+        print(f"  Manager:      {snapshot.manager}")
+        if snapshot.gateway_pids:
+            print(f"  PID(s):       {_format_gateway_pids(snapshot.gateway_pids)}")
+        if snapshot.has_process_service_mismatch:
+            print("  Service:      installed but not managing the current running gateway")
+        elif _is_termux() and not snapshot.gateway_pids:
             print("  Start with:   hermes gateway")
             print("  Note:         Android may stop background jobs when Termux is suspended")
-
-    elif sys.platform.startswith('linux'):
-        from hermes_constants import is_container
-        if is_container():
-            # Docker/Podman: no systemd — check for running gateway processes
-            try:
-                from hermes_cli.gateway import find_gateway_pids
-                gateway_pids = find_gateway_pids()
-                is_active = len(gateway_pids) > 0
-            except Exception:
-                is_active = False
-            print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-            print("  Manager:      docker (foreground)")
+        elif snapshot.service_installed and not snapshot.service_running:
+            print("  Service:      installed but stopped")
+    except Exception:
+        if _is_termux():
+            print(f"  Status:       {color('unknown', Colors.DIM)}")
+            print("  Manager:      Termux / manual process")
+        elif sys.platform.startswith('linux'):
+            print(f"  Status:       {color('unknown', Colors.DIM)}")
+            print("  Manager:      systemd/manual")
+        elif sys.platform == 'darwin':
+            print(f"  Status:       {color('unknown', Colors.DIM)}")
+            print("  Manager:      launchd")
         else:
-            try:
-                from hermes_cli.gateway import get_service_name
-                _gw_svc = get_service_name()
-            except Exception:
-                _gw_svc = "hermes-gateway"
-            try:
-                result = subprocess.run(
-                    ["systemctl", "--user", "is-active", _gw_svc],
-                    capture_output=True,
-                    text=True,
-                    timeout=5
-                )
-                is_active = result.stdout.strip() == "active"
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                is_active = False
-            print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-            print("  Manager:      systemd (user)")
-        
-    elif sys.platform == 'darwin':
-        from hermes_cli.gateway import get_launchd_label
-        try:
-            result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            is_loaded = result.returncode == 0
-        except subprocess.TimeoutExpired:
-            is_loaded = False
-        print(f"  Status:       {check_mark(is_loaded)} {'loaded' if is_loaded else 'not loaded'}")
-        print("  Manager:      launchd")
-    else:
-        print(f"  Status:       {color('N/A', Colors.DIM)}")
-        print("  Manager:      (not supported on this platform)")
+            print(f"  Status:       {color('N/A', Colors.DIM)}")
+            print("  Manager:      (not supported on this platform)")
     
     # =========================================================================
     # Cron Jobs

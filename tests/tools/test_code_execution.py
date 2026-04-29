@@ -279,6 +279,10 @@ raise RuntimeError("deliberate crash")
                 ))
         self.assertEqual(result["status"], "timeout")
         self.assertIn("timed out", result.get("error", ""))
+        # The timeout message must also appear in output so the LLM always
+        # surfaces it to the user (#10807).
+        self.assertIn("timed out", result.get("output", ""))
+        self.assertIn("\u23f0", result.get("output", ""))
 
     def test_web_search_tool(self):
         """Script calls web_search and processes results."""
@@ -766,11 +770,19 @@ class TestLoadConfig(unittest.TestCase):
 
     def test_returns_code_execution_section(self):
         from tools.code_execution_tool import _load_config
-        mock_cli = MagicMock()
-        mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 120, "max_tool_calls": 10}}
-        with patch.dict("sys.modules", {"cli": mock_cli}):
+        with patch("hermes_cli.config.read_raw_config",
+                   return_value={"code_execution": {"timeout": 120, "max_tool_calls": 10}}):
             result = _load_config()
-        self.assertIsInstance(result, dict)
+        self.assertEqual(result, {"timeout": 120, "max_tool_calls": 10})
+
+    def test_does_not_import_interactive_cli(self):
+        from tools.code_execution_tool import _load_config
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 999}}
+        with patch.dict("sys.modules", {"cli": mock_cli}), \
+             patch("hermes_cli.config.read_raw_config", return_value={}):
+            result = _load_config()
+        self.assertEqual(result, {})
 
 
 # ---------------------------------------------------------------------------

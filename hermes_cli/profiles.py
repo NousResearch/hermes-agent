@@ -300,19 +300,10 @@ def _read_config_model(profile_dir: Path) -> tuple:
 
 def _check_gateway_running(profile_dir: Path) -> bool:
     """Check if a gateway is running for a given profile directory."""
-    pid_file = profile_dir / "gateway.pid"
-    if not pid_file.exists():
-        return False
     try:
-        raw = pid_file.read_text().strip()
-        if not raw:
-            return False
-        data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
-        pid = int(data["pid"])
-        os.kill(pid, 0)  # existence check
-        return True
-    except (json.JSONDecodeError, KeyError, ValueError, TypeError,
-            ProcessLookupError, PermissionError, OSError):
+        from gateway.status import get_running_pid
+        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+    except Exception:
         return False
 
 
@@ -872,19 +863,15 @@ def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
                 pass
 
 
-def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
-    """Import a profile from a tar.gz archive.
+def _inspect_profile_archive_roots(archive: Path) -> set[str]:
+    """Return the archive's top-level directory names.
 
-    If *name* is not given, infers it from the archive's top-level directory.
-    Returns the imported profile directory.
+    Profile imports expect exactly one root directory. Inspecting the archive
+    before extraction lets us stage the import safely instead of mutating a
+    live profile tree first and reconciling names later.
     """
     import tarfile
 
-    archive = Path(archive_path)
-    if not archive.exists():
-        raise FileNotFoundError(f"Archive not found: {archive}")
-
-    # Peek at the archive to find the top-level directory name
     with tarfile.open(archive, "r:gz") as tf:
         top_dirs = {
             parts[0]
@@ -898,12 +885,32 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
                 for member in tf.getmembers()
                 if member.isdir()
             }
+    return top_dirs
 
-    inferred_name = name or (top_dirs.pop() if len(top_dirs) == 1 else None)
+
+def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
+    """Import a profile from a tar.gz archive.
+
+    If *name* is not given, infers it from the archive's top-level directory.
+    Returns the imported profile directory.
+    """
+    import tempfile
+
+    archive = Path(archive_path)
+    if not archive.exists():
+        raise FileNotFoundError(f"Archive not found: {archive}")
+
+    top_dirs = _inspect_profile_archive_roots(archive)
+    archive_root = top_dirs.pop() if len(top_dirs) == 1 else None
+    inferred_name = name or archive_root
     if not inferred_name:
         raise ValueError(
             "Cannot determine profile name from archive. "
             "Specify it explicitly: hermes profile import <archive> --name <name>"
+        )
+    if archive_root is None:
+        raise ValueError(
+            "Profile archive must contain exactly one top-level directory."
         )
 
     # Archives exported from the default profile have "default/" as top-level
@@ -923,12 +930,22 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     profiles_root = _get_profiles_root()
     profiles_root.mkdir(parents=True, exist_ok=True)
 
-    _safe_extract_profile_archive(archive, profiles_root)
+    with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
+        staging_root = Path(tmpdir)
+        _safe_extract_profile_archive(archive, staging_root)
 
-    # If the archive extracted under a different name, rename
-    extracted = profiles_root / (top_dirs.pop() if top_dirs else inferred_name)
-    if extracted != profile_dir and extracted.exists():
-        extracted.rename(profile_dir)
+        extracted = staging_root / archive_root
+        if not extracted.is_dir():
+            raise ValueError(
+                f"Profile archive root is missing or invalid: {archive_root}"
+            )
+
+        final_source = extracted
+        if archive_root != inferred_name:
+            final_source = staging_root / inferred_name
+            extracted.rename(final_source)
+
+        shutil.move(str(final_source), str(profile_dir))
 
     return profile_dir
 
@@ -936,6 +953,59 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 # ---------------------------------------------------------------------------
 # Rename
 # ---------------------------------------------------------------------------
+
+def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) -> None:
+    """Rename Honcho host blocks for a renamed profile without changing peers."""
+    old_host = f"hermes.{old_name}"
+    new_host = f"hermes.{new_name}"
+
+    candidates = [
+        new_dir / "honcho.json",
+        _get_default_hermes_home() / "honcho.json",
+        Path.home() / ".honcho" / "config.json",
+    ]
+
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        if resolved in seen or not path.is_file():
+            continue
+        seen.add(resolved)
+
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        hosts = raw.get("hosts")
+        if not isinstance(hosts, dict) or old_host not in hosts:
+            continue
+
+        if new_host in hosts:
+            print(f"⚠ Honcho host block not migrated: {new_host} already exists in {path}")
+            continue
+
+        block = hosts[old_host]
+        if isinstance(block, dict) and "aiPeer" not in block:
+            bare = old_host.split(".", 1)[1] if "." in old_host else old_host
+            block["aiPeer"] = bare
+        hosts[new_host] = hosts.pop(old_host)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        try:
+            tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            tmp.replace(path)
+        except OSError:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            continue
+
+        print(f"✓ Honcho host updated: {old_host} → {new_host}")
+
 
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile.
@@ -967,7 +1037,10 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     old_dir.rename(new_dir)
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
 
-    # 3. Update wrapper script
+    # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
+    _migrate_honcho_profile_host(old_name, new_name, new_dir)
+
+    # 4. Update wrapper script
     remove_wrapper_script(old_name)
     collision = check_alias_collision(new_name)
     if not collision:
@@ -976,7 +1049,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     else:
         print(f"⚠ Cannot create alias '{new_name}' — {collision}")
 
-    # 4. Update active_profile if it pointed to old name
+    # 5. Update active_profile if it pointed to old name
     try:
         if get_active_profile() == old_name:
             set_active_profile(new_name)

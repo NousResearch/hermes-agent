@@ -152,6 +152,24 @@ class TestSkinManagement:
         init_skin_from_config({})
         assert get_active_skin_name() == "default"
 
+    def test_init_skin_from_null_display(self):
+        """display: null should fall back to default, not crash."""
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": None})
+        assert get_active_skin_name() == "default"
+
+    def test_init_skin_from_non_dict_display(self):
+        """display: <non-dict> should fall back to default."""
+        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
+        init_skin_from_config({"display": "invalid"})
+        assert get_active_skin_name() == "default"
+
+        init_skin_from_config({"display": 42})
+        assert get_active_skin_name() == "default"
+
+        init_skin_from_config({"display": []})
+        assert get_active_skin_name() == "default"
+
 
 class TestUserSkins:
     def test_load_user_skin_from_yaml(self, tmp_path, monkeypatch):
@@ -234,7 +252,7 @@ class TestCliBrandingHelpers:
         from hermes_cli.skin_engine import set_active_skin, get_active_prompt_symbol
 
         set_active_skin("ares")
-        assert get_active_prompt_symbol() == "⚔ ❯ "
+        assert get_active_prompt_symbol() == "⚔ "
 
     def test_active_help_header_ares(self):
         from hermes_cli.skin_engine import set_active_skin, get_active_help_header
@@ -250,7 +268,6 @@ class TestCliBrandingHelpers:
 
     def test_prompt_toolkit_style_overrides_cover_tui_classes(self):
         from hermes_cli.skin_engine import set_active_skin, get_prompt_toolkit_style_overrides
-
         set_active_skin("ares")
         overrides = get_prompt_toolkit_style_overrides()
         required = {
@@ -259,6 +276,13 @@ class TestCliBrandingHelpers:
             "prompt",
             "prompt-working",
             "hint",
+            "status-bar",
+            "status-bar-strong",
+            "status-bar-dim",
+            "status-bar-good",
+            "status-bar-warn",
+            "status-bar-bad",
+            "status-bar-critical",
             "input-rule",
             "image-badge",
             "completion-menu",
@@ -307,6 +331,15 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["prompt"] == skin.get_color("prompt")
         assert overrides["input-rule"] == skin.get_color("input_rule")
+        assert overrides["status-bar"] == (
+            f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_text')}"
+        )
+        assert overrides["status-bar-strong"] == (
+            f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_strong')} bold"
+        )
+        assert overrides["status-bar-critical"] == (
+            f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_critical')} bold"
+        )
         assert overrides["clarify-title"] == f"{skin.get_color('banner_title')} bold"
         assert overrides["sudo-prompt"] == f"{skin.get_color('ui_error')} bold"
         assert overrides["approval-title"] == f"{skin.get_color('ui_warn')} bold"

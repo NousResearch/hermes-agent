@@ -13,13 +13,75 @@ from hermes_constants import get_hermes_home
 import copy
 import json
 import logging
+import os
+import re
 import sys
+import time
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_cwd_for_compare(cwd: str | None) -> str:
+    raw = str(cwd or ".").strip()
+    if not raw:
+        raw = "."
+    expanded = os.path.expanduser(raw)
+
+    # Normalize Windows drive paths into the equivalent WSL mount form so
+    # ACP history filters match the same workspace across Windows and WSL.
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", expanded)
+    if match:
+        drive = match.group(1).lower()
+        tail = match.group(2).replace("\\", "/")
+        expanded = f"/mnt/{drive}/{tail}"
+    elif re.match(r"^/mnt/[A-Za-z]/", expanded):
+        expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
+
+    return os.path.normpath(expanded)
+
+
+def _build_session_title(title: Any, preview: Any, cwd: str | None) -> str:
+    explicit = str(title or "").strip()
+    if explicit:
+        return explicit
+    preview_text = str(preview or "").strip()
+    if preview_text:
+        return preview_text
+    leaf = os.path.basename(str(cwd or "").rstrip("/\\"))
+    return leaf or "New thread"
+
+
+def _format_updated_at(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip():
+        return value
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _updated_at_sort_key(value: Any) -> float:
+    if value is None:
+        return float("-inf")
+    if isinstance(value, (int, float)):
+        return float(value)
+    raw = str(value).strip()
+    if not raw:
+        return float("-inf")
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        try:
+            return float(raw)
+        except Exception:
+            return float("-inf")
 
 
 def _acp_stderr_print(*args, **kwargs) -> None:
@@ -42,6 +104,24 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
         register_task_env_overrides(task_id, {"cwd": cwd})
     except Exception:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
+
+
+def _expand_acp_enabled_toolsets(
+    toolsets: List[str] | None = None,
+    mcp_server_names: List[str] | None = None,
+) -> List[str]:
+    """Return ACP toolsets plus explicit MCP server toolsets for this session."""
+    expanded: List[str] = []
+    for name in list(toolsets or ["hermes-acp"]):
+        if name and name not in expanded:
+            expanded.append(name)
+
+    for server_name in list(mcp_server_names or []):
+        toolset_name = f"mcp-{server_name}"
+        if server_name and toolset_name not in expanded:
+            expanded.append(toolset_name)
+
+    return expanded
 
 
 def _clear_task_cwd(task_id: str) -> None:
@@ -162,47 +242,78 @@ class SessionManager:
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
-    def list_sessions(self) -> List[Dict[str, Any]]:
+    def list_sessions(self, cwd: str | None = None) -> List[Dict[str, Any]]:
         """Return lightweight info dicts for all sessions (memory + database)."""
+        normalized_cwd = _normalize_cwd_for_compare(cwd) if cwd else None
+        db = self._get_db()
+        persisted_rows: dict[str, dict[str, Any]] = {}
+
+        if db is not None:
+            try:
+                for row in db.list_sessions_rich(source="acp", limit=1000):
+                    persisted_rows[str(row["id"])] = dict(row)
+            except Exception:
+                logger.debug("Failed to load ACP sessions from DB", exc_info=True)
+
         # Collect in-memory sessions first.
         with self._lock:
             seen_ids = set(self._sessions.keys())
-            results = [
-                {
-                    "session_id": s.session_id,
-                    "cwd": s.cwd,
-                    "model": s.model,
-                    "history_len": len(s.history),
-                }
-                for s in self._sessions.values()
-            ]
+            results = []
+            for s in self._sessions.values():
+                history_len = len(s.history)
+                if history_len <= 0:
+                    continue
+                if normalized_cwd and _normalize_cwd_for_compare(s.cwd) != normalized_cwd:
+                    continue
+                persisted = persisted_rows.get(s.session_id, {})
+                preview = next(
+                    (
+                        str(msg.get("content") or "").strip()
+                        for msg in s.history
+                        if msg.get("role") == "user" and str(msg.get("content") or "").strip()
+                    ),
+                    persisted.get("preview") or "",
+                )
+                results.append(
+                    {
+                        "session_id": s.session_id,
+                        "cwd": s.cwd,
+                        "model": s.model,
+                        "history_len": history_len,
+                        "title": _build_session_title(persisted.get("title"), preview, s.cwd),
+                        "updated_at": _format_updated_at(
+                            persisted.get("last_active") or persisted.get("started_at") or time.time()
+                        ),
+                    }
+                )
 
         # Merge any persisted sessions not currently in memory.
-        db = self._get_db()
-        if db is not None:
-            try:
-                rows = db.search_sessions(source="acp", limit=1000)
-                for row in rows:
-                    sid = row["id"]
-                    if sid in seen_ids:
-                        continue
-                    # Extract cwd from model_config JSON.
-                    cwd = "."
-                    mc = row.get("model_config")
-                    if mc:
-                        try:
-                            cwd = json.loads(mc).get("cwd", ".")
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-                    results.append({
-                        "session_id": sid,
-                        "cwd": cwd,
-                        "model": row.get("model") or "",
-                        "history_len": row.get("message_count") or 0,
-                    })
-            except Exception:
-                logger.debug("Failed to list ACP sessions from DB", exc_info=True)
+        for sid, row in persisted_rows.items():
+            if sid in seen_ids:
+                continue
+            message_count = int(row.get("message_count") or 0)
+            if message_count <= 0:
+                continue
+            # Extract cwd from model_config JSON.
+            session_cwd = "."
+            mc = row.get("model_config")
+            if mc:
+                try:
+                    session_cwd = json.loads(mc).get("cwd", ".")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if normalized_cwd and _normalize_cwd_for_compare(session_cwd) != normalized_cwd:
+                continue
+            results.append({
+                "session_id": sid,
+                "cwd": session_cwd,
+                "model": row.get("model") or "",
+                "history_len": message_count,
+                "title": _build_session_title(row.get("title"), row.get("preview"), session_cwd),
+                "updated_at": _format_updated_at(row.get("last_active") or row.get("started_at")),
+            })
 
+        results.sort(key=lambda item: _updated_at_sort_key(item.get("updated_at")), reverse=True)
         return results
 
     def update_cwd(self, session_id: str, cwd: str) -> Optional[SessionState]:
@@ -444,9 +555,18 @@ class SessionManager:
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
+        configured_mcp_servers = [
+            name
+            for name, cfg in (config.get("mcp_servers") or {}).items()
+            if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
+        ]
+
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": ["hermes-acp"],
+            "enabled_toolsets": _expand_acp_enabled_toolsets(
+                ["hermes-acp"],
+                mcp_server_names=configured_mcp_servers,
+            ),
             "quiet_mode": True,
             "session_id": session_id,
             "model": model or default_model,

@@ -32,7 +32,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from hermes_cli.config import load_config
+from hermes_cli.config import cfg_get, load_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 
@@ -54,7 +54,15 @@ def get_camofox_url() -> str:
 
 
 def is_camofox_mode() -> bool:
-    """True when Camofox backend is configured."""
+    """True when Camofox backend is configured and no CDP override is active.
+
+    When the user has explicitly connected to a live Chrome instance via
+    ``/browser connect`` (which sets ``BROWSER_CDP_URL``), the CDP connection
+    takes priority over Camofox so the browser tools operate on the real
+    browser instead of being silently routed to the Camofox backend.
+    """
+    if os.getenv("BROWSER_CDP_URL", "").strip():
+        return False
     return bool(get_camofox_url())
 
 
@@ -535,11 +543,13 @@ def camofox_vision(question: str, annotate: bool = False,
         )
 
         try:
-            from hermes_cli.config import load_config
             _cfg = load_config()
-            _vision_timeout = int(_cfg.get("auxiliary", {}).get("vision", {}).get("timeout", 120))
+            _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
+            _vision_timeout = float(_vision_cfg.get("timeout", 120))
+            _vision_temperature = float(_vision_cfg.get("temperature", 0.1))
         except Exception:
-            _vision_timeout = 120
+            _vision_timeout = 120.0
+            _vision_temperature = 0.1
 
         response = call_llm(
             messages=[{
@@ -555,6 +565,7 @@ def camofox_vision(question: str, annotate: bool = False,
                 ],
             }],
             task="vision",
+            temperature=_vision_temperature,
             timeout=_vision_timeout,
         )
         analysis = (response.choices[0].message.content or "").strip() if response.choices else ""

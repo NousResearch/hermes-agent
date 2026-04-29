@@ -75,7 +75,7 @@ def _redact(text: str) -> str:
 def check_bluebubbles_requirements() -> bool:
     try:
         import aiohttp  # noqa: F401
-        import httpx as _httpx  # noqa: F401
+        import httpx  # noqa: F401
     except ImportError:
         return False
     return True
@@ -99,6 +99,7 @@ def _normalize_server_url(raw: str) -> str:
 
 class BlueBubblesAdapter(BasePlatformAdapter):
     platform = Platform.BLUEBUBBLES
+    SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH
 
     def __init__(self, config: PlatformConfig):
@@ -224,6 +225,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             host = "localhost"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
+    @property
+    def _webhook_register_url(self) -> str:
+        """Webhook URL registered with BlueBubbles, including the password as
+        a query param so inbound webhook POSTs carry credentials.
+
+        BlueBubbles posts events to the exact URL registered via
+        ``/api/v1/webhook``. Its webhook registration API does not support
+        custom headers, so embedding the password in the URL is the only
+        way to authenticate inbound webhooks without disabling auth.
+        """
+        base = self._webhook_url
+        if self.password:
+            return f"{base}?password={quote(self.password, safe='')}"
+        return base
+
     async def _find_registered_webhooks(self, url: str) -> list:
         """Return list of BB webhook entries matching *url*."""
         try:
@@ -245,7 +261,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not self.client:
             return False
 
-        webhook_url = self._webhook_url
+        webhook_url = self._webhook_register_url
 
         # Crash resilience — reuse an existing registration if present
         existing = await self._find_registered_webhooks(webhook_url)
@@ -257,7 +273,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message", "message"],
+            "events": ["new-message", "updated-message"],
         }
 
         try:
@@ -292,7 +308,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not self.client:
             return False
 
-        webhook_url = self._webhook_url
+        webhook_url = self._webhook_register_url
         removed = False
 
         try:
@@ -376,6 +392,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Text sending
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def truncate_message(content: str, max_length: int = MAX_TEXT_LENGTH) -> List[str]:
+        # Use the base splitter but skip pagination indicators — iMessage
+        # bubbles flow naturally without "(1/3)" suffixes.
+        chunks = BasePlatformAdapter.truncate_message(content, max_length)
+        return [re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks]
+
     async def send(
         self,
         chat_id: str,
@@ -383,10 +406,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        text = strip_markdown(content or "")
+        text = self.format_message(content)
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
-        chunks = self.truncate_message(text, max_length=self.MAX_MESSAGE_LENGTH)
+        # Split on paragraph breaks first (double newlines) so each thought
+        # becomes its own iMessage bubble, then truncate any that are still
+        # too long.
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
+        chunks: List[str] = []
+        for para in (paragraphs or [text]):
+            if len(para) <= self.MAX_MESSAGE_LENGTH:
+                chunks.append(para)
+            else:
+                chunks.extend(self.truncate_message(para, max_length=self.MAX_MESSAGE_LENGTH))
         last = SendResult(success=True)
         for chunk in chunks:
             guid = await self._resolve_chat_guid(chat_id)
@@ -835,6 +867,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload.get("chat_guid"),
             payload.get("guid"),
         )
+        # Fallback: BlueBubbles v1.9+ webhook payloads omit top-level chatGuid;
+        # the chat GUID is nested under data.chats[0].guid instead.
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
         chat_identifier = self._value(
             record.get("chatIdentifier"),
             record.get("identifier"),

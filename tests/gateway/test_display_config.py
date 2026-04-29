@@ -186,11 +186,17 @@ class TestPlatformDefaults:
             assert resolve_display_setting({}, plat, "tool_progress") == "all", plat
 
     def test_medium_tier_platforms(self):
-        """Slack, Mattermost, Matrix default to 'new' tool progress."""
+        """Mattermost, Matrix, Feishu, WhatsApp default to 'new' tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("slack", "mattermost", "matrix", "feishu", "whatsapp"):
+        for plat in ("mattermost", "matrix", "feishu", "whatsapp"):
             assert resolve_display_setting({}, plat, "tool_progress") == "new", plat
+
+    def test_slack_defaults_tool_progress_off(self):
+        """Slack defaults to quiet tool progress (permanent chat noise otherwise)."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "slack", "tool_progress") == "off"
 
     def test_low_tier_platforms(self):
         """Signal, BlueBubbles, etc. default to 'off' tool progress."""
@@ -241,7 +247,7 @@ class TestConfigMigration:
                 },
             },
         }
-        config_path.write_text(yaml.dump(config))
+        config_path.write_text(yaml.dump(config), encoding="utf-8")
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # Re-import to pick up the new HERMES_HOME
@@ -251,7 +257,7 @@ class TestConfigMigration:
 
         result = cfg_mod.migrate_config(interactive=False, quiet=True)
         # Re-read config
-        updated = yaml.safe_load(config_path.read_text())
+        updated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         platforms = updated.get("display", {}).get("platforms", {})
         assert platforms.get("signal", {}).get("tool_progress") == "off"
         assert platforms.get("telegram", {}).get("tool_progress") == "all"
@@ -268,7 +274,7 @@ class TestConfigMigration:
                 "platforms": {"telegram": {"tool_progress": "verbose"}},
             },
         }
-        config_path.write_text(yaml.dump(config))
+        config_path.write_text(yaml.dump(config), encoding="utf-8")
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
@@ -276,7 +282,7 @@ class TestConfigMigration:
         importlib.reload(cfg_mod)
 
         cfg_mod.migrate_config(interactive=False, quiet=True)
-        updated = yaml.safe_load(config_path.read_text())
+        updated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         # Existing "verbose" should NOT be overwritten by legacy "off"
         assert updated["display"]["platforms"]["telegram"]["tool_progress"] == "verbose"
 
@@ -296,6 +302,15 @@ class TestStreamingPerPlatform:
         # Telegram has no streaming override in defaults → None
         result = resolve_display_setting(config, "telegram", "streaming")
         assert result is None  # caller should check global StreamingConfig
+
+    def test_global_display_streaming_is_cli_only(self):
+        """display.streaming must not act as a gateway streaming override."""
+        from gateway.display_config import resolve_display_setting
+
+        for value in (True, False):
+            config = {"display": {"streaming": value}}
+            assert resolve_display_setting(config, "telegram", "streaming") is None
+            assert resolve_display_setting(config, "discord", "streaming") is None
 
     def test_explicit_false_disables(self):
         """Explicit False disables streaming for that platform."""

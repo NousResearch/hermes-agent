@@ -23,13 +23,21 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       banner_dim: "#B8860B"               # Dim/muted text (separators, labels)
       banner_text: "#FFF8DC"              # Body text (tool names, skill names)
       ui_accent: "#FFBF00"               # General UI accent
-      ui_label: "#4dd0e1"                # UI labels
+      ui_label: "#DAA520"                # UI labels (warm gold; teal clashed w/ default banner gold)
       ui_ok: "#4caf50"                   # Success indicators
       ui_error: "#ef5350"                # Error indicators
       ui_warn: "#ffa726"                 # Warning indicators
       prompt: "#FFF8DC"                  # Prompt text color
       input_rule: "#CD7F32"              # Input area horizontal rule
       response_border: "#FFD700"         # Response box border (ANSI)
+      status_bar_bg: "#1a1a2e"           # Status bar background
+      status_bar_text: "#C0C0C0"         # Status bar default text
+      status_bar_strong: "#FFD700"       # Status bar highlighted text
+      status_bar_dim: "#8B8682"          # Status bar separators/muted text
+      status_bar_good: "#8FBC8F"         # Healthy context usage
+      status_bar_warn: "#FFD700"         # Warning context usage
+      status_bar_bad: "#FF8C00"          # High context usage
+      status_bar_critical: "#FF6B6B"     # Critical context usage
       session_label: "#DAA520"           # Session label color
       session_border: "#8B8682"          # Session ID dim color
       status_bar_bg: "#1a1a2e"          # TUI status/usage bar background
@@ -60,7 +68,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       welcome: "Welcome message"          # Shown at CLI startup
       goodbye: "Goodbye! ⚕"              # Shown on exit
       response_label: " ⚕ Hermes "       # Response box header label
-      prompt_symbol: "❯ "                # Input prompt symbol
+      prompt_symbol: "❯"                 # Input prompt symbol (bare token; renderers add trailing space)
       help_header: "(^_^)? Commands"      # /help header text
 
     # Tool prefix: character for tool output lines (default: ┊)
@@ -163,13 +171,14 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "banner_dim": "#B8860B",
             "banner_text": "#FFF8DC",
             "ui_accent": "#FFBF00",
-            "ui_label": "#4dd0e1",
+            "ui_label": "#DAA520",
             "ui_ok": "#4caf50",
             "ui_error": "#ef5350",
             "ui_warn": "#ffa726",
             "prompt": "#FFF8DC",
             "input_rule": "#CD7F32",
             "response_border": "#FFD700",
+            "status_bar_bg": "#1a1a2e",
             "session_label": "#DAA520",
             "session_border": "#8B8682",
         },
@@ -181,7 +190,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Hermes ",
-            "prompt_symbol": "❯ ",
+            "prompt_symbol": "❯",
             "help_header": "(^_^)? Available Commands",
         },
         "tool_prefix": "┊",
@@ -203,6 +212,14 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#F1E6CF",
             "input_rule": "#9F1C1C",
             "response_border": "#C7A96B",
+            "status_bar_bg": "#2A1212",
+            "status_bar_text": "#F1E6CF",
+            "status_bar_strong": "#C7A96B",
+            "status_bar_dim": "#6E584B",
+            "status_bar_good": "#7BC96F",
+            "status_bar_warn": "#C7A96B",
+            "status_bar_bad": "#DD4A3A",
+            "status_bar_critical": "#EF5350",
             "session_label": "#C7A96B",
             "session_border": "#6E584B",
         },
@@ -225,7 +242,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Ares Agent! Type your message or /help for commands.",
             "goodbye": "Farewell, warrior! ⚔",
             "response_label": " ⚔ Ares ",
-            "prompt_symbol": "⚔ ❯ ",
+            "prompt_symbol": "⚔",
             "help_header": "(⚔) Available Commands",
         },
         "tool_prefix": "╎",
@@ -267,6 +284,14 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#c9d1d9",
             "input_rule": "#444444",
             "response_border": "#aaaaaa",
+            "status_bar_bg": "#1F1F1F",
+            "status_bar_text": "#C9D1D9",
+            "status_bar_strong": "#E6EDF3",
+            "status_bar_dim": "#777777",
+            "status_bar_good": "#B5B5B5",
+            "status_bar_warn": "#AAAAAA",
+            "status_bar_bad": "#D0D0D0",
+            "status_bar_critical": "#F0F0F0",
             "session_label": "#888888",
             "session_border": "#555555",
         },
@@ -276,7 +301,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Hermes ",
-            "prompt_symbol": "❯ ",
+            "prompt_symbol": "❯",
             "help_header": "[?] Available Commands",
         },
         "tool_prefix": "┊",
@@ -298,6 +323,14 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#c9d1d9",
             "input_rule": "#4169e1",
             "response_border": "#7eb8f6",
+            "status_bar_bg": "#151C2F",
+            "status_bar_text": "#C9D1D9",
+            "status_bar_strong": "#7EB8F6",
+            "status_bar_dim": "#4B5563",
+            "status_bar_good": "#63D0A6",
+            "status_bar_warn": "#E6A855",
+            "status_bar_bad": "#F7A072",
+            "status_bar_critical": "#FF7A7A",
             "session_label": "#7eb8f6",
             "session_border": "#4b5563",
         },
@@ -307,7 +340,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Hermes ",
-            "prompt_symbol": "❯ ",
+            "prompt_symbol": "❯",
             "help_header": "(^_^)? Available Commands",
         },
         "tool_prefix": "┊",
@@ -344,7 +377,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Hermes ",
-            "prompt_symbol": "❯ ",
+            "prompt_symbol": "❯",
             "help_header": "[?] Available Commands",
         },
         "tool_prefix": "│",
@@ -381,7 +414,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
             "goodbye": "Goodbye! \u2695",
             "response_label": " \u2695 Hermes ",
-            "prompt_symbol": "\u276f ",
+            "prompt_symbol": "\u276f",
             "help_header": "(^_^)? Available Commands",
         },
         "tool_prefix": "\u250a",
@@ -403,6 +436,14 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#EAF7FF",
             "input_rule": "#2A6FB9",
             "response_border": "#5DB8F5",
+            "status_bar_bg": "#0F2440",
+            "status_bar_text": "#EAF7FF",
+            "status_bar_strong": "#A9DFFF",
+            "status_bar_dim": "#496884",
+            "status_bar_good": "#6ED7B0",
+            "status_bar_warn": "#5DB8F5",
+            "status_bar_bad": "#2A6FB9",
+            "status_bar_critical": "#D94F4F",
             "session_label": "#A9DFFF",
             "session_border": "#496884",
         },
@@ -426,7 +467,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Poseidon Agent! Type your message or /help for commands.",
             "goodbye": "Fair winds! Ψ",
             "response_label": " Ψ Poseidon ",
-            "prompt_symbol": "Ψ ❯ ",
+            "prompt_symbol": "Ψ",
             "help_header": "(Ψ) Available Commands",
         },
         "tool_prefix": "│",
@@ -467,6 +508,14 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#F5F5F5",
             "input_rule": "#656565",
             "response_border": "#B7B7B7",
+            "status_bar_bg": "#202020",
+            "status_bar_text": "#D3D3D3",
+            "status_bar_strong": "#F5F5F5",
+            "status_bar_dim": "#656565",
+            "status_bar_good": "#B7B7B7",
+            "status_bar_warn": "#D3D3D3",
+            "status_bar_bad": "#E7E7E7",
+            "status_bar_critical": "#F5F5F5",
             "session_label": "#919191",
             "session_border": "#656565",
         },
@@ -490,7 +539,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Sisyphus Agent! Type your message or /help for commands.",
             "goodbye": "The boulder waits. ◉",
             "response_label": " ◉ Sisyphus ",
-            "prompt_symbol": "◉ ❯ ",
+            "prompt_symbol": "◉",
             "help_header": "(◉) Available Commands",
         },
         "tool_prefix": "│",
@@ -532,6 +581,14 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "prompt": "#FFF0D4",
             "input_rule": "#C75B1D",
             "response_border": "#F29C38",
+            "status_bar_bg": "#2B160E",
+            "status_bar_text": "#FFF0D4",
+            "status_bar_strong": "#FFD39A",
+            "status_bar_dim": "#6C4724",
+            "status_bar_good": "#6BCB77",
+            "status_bar_warn": "#F29C38",
+            "status_bar_bad": "#E2832B",
+            "status_bar_critical": "#EF5350",
             "session_label": "#FFD39A",
             "session_border": "#6C4724",
         },
@@ -555,7 +612,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "welcome": "Welcome to Charizard Agent! Type your message or /help for commands.",
             "goodbye": "Flame out! ✦",
             "response_label": " ✦ Charizard ",
-            "prompt_symbol": "✦ ❯ ",
+            "prompt_symbol": "✦",
             "help_header": "(✦) Available Commands",
         },
         "tool_prefix": "│",
@@ -708,7 +765,9 @@ def init_skin_from_config(config: dict) -> None:
 
     Call this once during CLI init with the loaded config dict.
     """
-    display = config.get("display", {})
+    display = config.get("display") or {}
+    if not isinstance(display, dict):
+        display = {}
     skin_name = display.get("skin", "default")
     if isinstance(skin_name, str) and skin_name.strip():
         set_active_skin(skin_name.strip())
@@ -721,12 +780,21 @@ def init_skin_from_config(config: dict) -> None:
 # =============================================================================
 
 
-def get_active_prompt_symbol(fallback: str = "❯ ") -> str:
-    """Get the interactive prompt symbol from the active skin."""
+def get_active_prompt_symbol(fallback: str = "❯") -> str:
+    """Return the interactive prompt symbol with a single trailing space.
+
+    Skins store ``prompt_symbol`` as a bare token (no spaces). The trailing
+    space is appended here so callers can drop it straight into a rendered
+    prompt without hand-rolling whitespace.
+    """
     try:
-        return get_active_skin().get_branding("prompt_symbol", fallback)
+        raw = get_active_skin().get_branding("prompt_symbol", fallback)
     except Exception:
-        return fallback
+        raw = fallback
+
+    cleaned = (raw or fallback).strip()
+
+    return f"{cleaned or fallback.strip()} "
 
 
 
@@ -768,6 +836,13 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     warn = skin.get_color("ui_warn", "#FF8C00")
     error = skin.get_color("ui_error", "#FF6B6B")
     status_bg = skin.get_color("status_bar_bg", "#1a1a2e")
+    status_text = skin.get_color("status_bar_text", text)
+    status_strong = skin.get_color("status_bar_strong", title)
+    status_dim = skin.get_color("status_bar_dim", dim)
+    status_good = skin.get_color("status_bar_good", skin.get_color("ui_ok", "#8FBC8F"))
+    status_warn = skin.get_color("status_bar_warn", warn)
+    status_bad = skin.get_color("status_bar_bad", skin.get_color("banner_accent", warn))
+    status_critical = skin.get_color("status_bar_critical", error)
     voice_bg = skin.get_color("voice_status_bg", status_bg)
     menu_bg = skin.get_color("completion_menu_bg", "#1a1a2e")
     menu_current_bg = skin.get_color("completion_menu_current_bg", "#333355")
@@ -780,13 +855,13 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "prompt": prompt,
         "prompt-working": f"{dim} italic",
         "hint": f"{dim} italic",
-        "status-bar": f"bg:{status_bg} {text}",
-        "status-bar-strong": f"bg:{status_bg} {title} bold",
-        "status-bar-dim": f"bg:{status_bg} {dim}",
-        "status-bar-good": f"bg:{status_bg} {skin.get_color('ui_ok', '#8FBC8F')} bold",
-        "status-bar-warn": f"bg:{status_bg} {warn} bold",
-        "status-bar-bad": f"bg:{status_bg} {skin.get_color('banner_accent', warn)} bold",
-        "status-bar-critical": f"bg:{status_bg} {error} bold",
+        "status-bar": f"bg:{status_bg} {status_text}",
+        "status-bar-strong": f"bg:{status_bg} {status_strong} bold",
+        "status-bar-dim": f"bg:{status_bg} {status_dim}",
+        "status-bar-good": f"bg:{status_bg} {status_good} bold",
+        "status-bar-warn": f"bg:{status_bg} {status_warn} bold",
+        "status-bar-bad": f"bg:{status_bg} {status_bad} bold",
+        "status-bar-critical": f"bg:{status_bg} {status_critical} bold",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
         "completion-menu": f"bg:{menu_bg} {text}",

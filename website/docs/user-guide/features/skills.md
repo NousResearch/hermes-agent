@@ -32,7 +32,7 @@ Every installed skill is automatically available as a slash command:
 /excalidraw
 ```
 
-The bundled `plan` skill is a good example of a skill-backed slash command with custom behavior. Running `/plan [request]` tells Hermes to inspect context if needed, write a markdown implementation plan instead of executing the task, and save the result under `.hermes/plans/` relative to the active workspace/backend working directory.
+The bundled `plan` skill is a good example. Running `/plan [request]` loads the skill's instructions, telling Hermes to inspect context if needed, write a markdown implementation plan instead of executing the task, and save the result under `.hermes/plans/` relative to the active workspace/backend working directory.
 
 You can also interact with skills through natural conversation:
 
@@ -155,10 +155,10 @@ Skills can also declare non-secret config settings (paths, preferences) stored i
 metadata:
   hermes:
     config:
-      - key: wiki.path
-        description: Path to the wiki directory
-        default: "~/wiki"
-        prompt: Wiki directory path
+      - key: myplugin.path
+        description: Path to the plugin data directory
+        default: "~/myplugin-data"
+        prompt: Plugin data directory path
 ```
 
 Settings are stored under `skills.config` in your config.yaml. `hermes config migrate` prompts for unconfigured settings, and `hermes config show` displays them. When a skill loads, its resolved config values are injected into the context so the agent knows the configured values automatically.
@@ -273,11 +273,15 @@ hermes skills install openai/skills/k8s           # Install with security scan
 hermes skills install official/security/1password
 hermes skills install skills-sh/vercel-labs/json-render/json-render-react --force
 hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mintlify
+hermes skills install https://sharethis.chat/SKILL.md              # Direct URL (single-file SKILL.md)
+hermes skills install https://example.com/SKILL.md --name my-skill # Override name when frontmatter has none
 hermes skills list --source hub                   # List hub-installed skills
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
 hermes skills audit                               # Re-scan all hub skills for security
 hermes skills uninstall k8s                       # Remove a hub skill
+hermes skills reset google-workspace              # Un-stick a bundled skill from "user-modified" (see below)
+hermes skills reset google-workspace --restore    # Also restore the bundled version, deleting your local edits
 hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
@@ -290,6 +294,7 @@ hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 | `official` | `official/security/1password` | Optional skills shipped with Hermes. |
 | `skills-sh` | `skills-sh/vercel-labs/agent-skills/vercel-react-best-practices` | Searchable via `hermes skills search <query> --source skills-sh`. Hermes resolves alias-style skills when the skills.sh slug differs from the repo folder. |
 | `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | Skills served directly from `/.well-known/skills/index.json` on a website. Search using the site or docs URL. |
+| `url` | `https://sharethis.chat/SKILL.md` | Direct HTTP(S) URL to a single-file `SKILL.md`. Name resolution: frontmatter → URL slug → interactive prompt → `--name` flag. |
 | `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |
 | `clawhub`, `lobehub`, `claude-marketplace` | Source-specific identifiers | Community or marketplace integrations. |
 
@@ -382,6 +387,35 @@ Hermes can search and convert agent entries from LobeHub's public catalog into i
 - Backing repo: [lobehub/lobe-chat-agents](https://github.com/lobehub/lobe-chat-agents)
 - Hermes source id: `lobehub`
 
+#### 8. Direct URL (`url`)
+
+Install a single-file `SKILL.md` directly from any HTTP(S) URL — useful when an author hosts a skill on their own site (no hub listing, no GitHub path to type). Hermes fetches the URL, parses the YAML frontmatter, security-scans it, and installs.
+
+- Hermes source id: `url`
+- Identifier: the URL itself (no prefix needed)
+- Scope: **single-file `SKILL.md`** only. Multi-file skills with `references/` or `scripts/` need a manifest and should be published via one of the other sources above.
+
+```bash
+hermes skills install https://sharethis.chat/SKILL.md
+hermes skills install https://example.com/my-skill/SKILL.md --category productivity
+```
+
+Name resolution, in order:
+1. `name:` field in the SKILL.md YAML frontmatter (recommended — every well-formed skill has one).
+2. Parent directory name from the URL path (e.g. `.../my-skill/SKILL.md` → `my-skill`, or `.../my-skill.md` → `my-skill`), when it's a valid identifier (`^[a-z][a-z0-9_-]*$`).
+3. Interactive prompt on a terminal with a TTY.
+4. On non-interactive surfaces (the `/skills install` slash command inside the TUI, gateway platforms, scripts), a clean error pointing at the `--name` override.
+
+```bash
+# Frontmatter has no name and the URL slug is unhelpful — supply one:
+hermes skills install https://example.com/SKILL.md --name sharethis-chat
+
+# Or inside a chat session:
+/skills install https://example.com/SKILL.md --name sharethis-chat
+```
+
+Trust level is always `community` — the same security scan runs as for every other source. The URL is stored as the install identifier, so `hermes skills update` re-fetches from the same URL automatically when you want to refresh.
+
 ### Security scanning and `--force`
 
 All hub-installed skills go through a **security scanner** that checks for data exfiltration, prompt injection, destructive commands, supply-chain signals, and other threats.
@@ -430,6 +464,43 @@ This uses the stored source identifier plus the current upstream bundle content 
 Skills hub operations use the GitHub API, which has a rate limit of 60 requests/hour for unauthenticated users. If you see rate-limit errors during install or search, set `GITHUB_TOKEN` in your `.env` file to increase the limit to 5,000 requests/hour. The error message includes an actionable hint when this happens.
 :::
 
+## Bundled skill updates (`hermes skills reset`)
+
+Hermes ships with a set of bundled skills in `skills/` inside the repo. On install and on every `hermes update`, a sync pass copies those into `~/.hermes/skills/` and records a manifest at `~/.hermes/skills/.bundled_manifest` mapping each skill name to the content hash at the time it was synced (the **origin hash**).
+
+On each sync, Hermes recomputes the hash of your local copy and compares it to the origin hash:
+
+- **Unchanged** → safe to pull upstream changes, copy the new bundled version in, record the new origin hash.
+- **Changed** → treated as **user-modified** and skipped forever, so your edits never get stomped.
+
+The protection is good, but it has one sharp edge. If you edit a bundled skill and then later want to abandon your changes and go back to the bundled version by just copy-pasting from `~/.hermes/hermes-agent/skills/`, the manifest still holds the *old* origin hash from whenever the last successful sync ran. Your fresh copy-paste contents (current bundled hash) won't match that stale origin hash, so sync keeps flagging it as user-modified.
+
+`hermes skills reset` is the escape hatch:
+
+```bash
+# Safe: clears the manifest entry for this skill. Your current copy is preserved,
+# but the next sync re-baselines against it so future updates work normally.
+hermes skills reset google-workspace
+
+# Full restore: also deletes your local copy and re-copies the current bundled
+# version. Use this when you want the pristine upstream skill back.
+hermes skills reset google-workspace --restore
+
+# Non-interactive (e.g. in scripts or TUI mode) — skip the --restore confirmation.
+hermes skills reset google-workspace --restore --yes
+```
+
+The same command works in chat as a slash command:
+
+```text
+/skills reset google-workspace
+/skills reset google-workspace --restore
+```
+
+:::note Profiles
+Each profile has its own `.bundled_manifest` under its own `HERMES_HOME`, so `hermes -p coder skills reset <name>` only affects that profile.
+:::
+
 ### Slash commands (inside chat)
 
 All the same commands work with `/skills`:
@@ -442,6 +513,7 @@ All the same commands work with `/skills`:
 /skills install openai/skills/skill-creator --force
 /skills check
 /skills update
+/skills reset google-workspace
 /skills list
 ```
 

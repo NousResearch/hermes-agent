@@ -10073,7 +10073,41 @@ class GatewayRunner:
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
                 return
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
+            # Handle tool.completed: update last matching progress line
+            if event_type == "tool.completed" and tool_name:
+                def _collapse(text):
+                    return " ".join(text.split())
+
+                is_error = kwargs.get("is_error", False)
+                duration = kwargs.get("duration")
+                result_preview = preview  # result snippet passed from run_agent
+
+                # Build a short completion suffix for the progress line
+                _status = "✗" if is_error else "✓"
+                _dur = f" {duration:.1f}s" if duration else ""
+                _suffix = f" {_status}{_dur}"
+
+                # If we have a short result, append it for context.
+                # Errors already carry ✗ in the suffix; skip the snippet to
+                # keep the line tight (full error text lives in the reply).
+                _result_snippet = ""
+                if result_preview and not is_error:
+                    # Try to extract a meaningful one-liner from JSON results
+                    try:
+                        _data = json.loads(result_preview)
+                        if isinstance(_data, dict) and _data.get("output"):
+                            _output = _collapse(str(_data["output"]))
+                            _result_snippet = f": {_output[:50]}" if len(_output) <= 50 else f": {_output[:47]}..."
+                    except (ValueError, TypeError):
+                        # Non-JSON result — use first line if short
+                        _first = _collapse(result_preview)
+                        if len(_first) <= 60:
+                            _result_snippet = f": {_first}"
+
+                progress_queue.put(("__completed__", tool_name, _suffix + _result_snippet))
+                return
+
+            # Only act on tool.started events (ignore reasoning.available, etc.)
             if event_type not in ("tool.started",):
                 return
 
@@ -10187,6 +10221,28 @@ class GatewayRunner:
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
+            def _apply_completed(lines, completed_tool, completion_suffix):
+                # Match the started-line for `completed_tool` precisely so a
+                # short tool name (e.g. "ls") doesn't collide with substrings
+                # in other lines (e.g. "tools"). Started lines always render
+                # as "{emoji} {tool_name}" followed by "(", ":", "." or EOL.
+                pattern = re.compile(
+                    r"(?:^|\s)" + re.escape(completed_tool) + r"(?=[({:.\s]|$)"
+                )
+                for idx in range(len(lines) - 1, -1, -1):
+                    line = lines[idx]
+                    if "✓" in line or "✗" in line:
+                        continue
+                    if pattern.search(line):
+                        lines[idx] = line + completion_suffix
+                        return
+                # No matching started line; append a standalone completion.
+                from agent.display import get_tool_emoji
+                lines.append(
+                    f"{get_tool_emoji(completed_tool, default='⚙️')} "
+                    f"{completed_tool}{completion_suffix}"
+                )
+
             while True:
                 try:
                     if not _run_still_current():
@@ -10221,6 +10277,10 @@ class GatewayRunner:
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
+                    elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__completed__":
+                        _, completed_tool, completion_suffix = raw
+                        _apply_completed(progress_lines, completed_tool, completion_suffix)
+                        msg = progress_lines[-1] if progress_lines else str(raw)
                     else:
                         msg = raw
                         progress_lines.append(msg)
@@ -10290,6 +10350,9 @@ class GatewayRunner:
                                 _, base_msg, count = raw
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                            elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__completed__":
+                                _, completed_tool, completion_suffix = raw
+                                _apply_completed(progress_lines, completed_tool, completion_suffix)
                             else:
                                 progress_lines.append(raw)
                         except Exception:

@@ -4662,15 +4662,15 @@ class HermesCLI:
         else:
             print("  Recent sessions:")
         print()
-        print(f"  {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        print(f"  {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
-        for session in sessions:
-            title = (session.get("title") or "—")[:30]
+        print(f"  {'#':<3} {'Title':<30} {'Preview':<40} {'Last Active':<13} {'ID'}")
+        print(f"  {'─' * 3} {'─' * 30} {'─' * 40} {'─' * 13} {'─' * 24}")
+        for i, session in enumerate(sessions, start=1):
+            title = (session.get("title") or "—")[:28]
             preview = (session.get("preview") or "")[:38]
             last_active = _relative_time(session.get("last_active"))
-            print(f"  {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            print(f"  {i:<3} {title:<30} {preview:<40} {last_active:<13} {session['id']}")
         print()
-        print("  Use /resume <session id or title> to continue where you left off.")
+        print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue where you left off.")
         print()
         return True
 
@@ -4846,6 +4846,26 @@ class HermesCLI:
         if not self._session_db:
             _cprint("  Session database not available.")
             return
+
+        # Resolve position number (1 = most recent, 2 = second most recent, etc.)
+        if target.isdigit():
+            position = int(target)
+            resolved_id = self._session_db.resolve_session_by_position(
+                position, limit=100
+            )
+            if not resolved_id:
+                total = len(self._session_db.list_sessions_rich(limit=100))
+                if total == 0:
+                    _cprint("  No recent sessions found.")
+                    _cprint("  Use /history or `hermes sessions list` to see available sessions.")
+                    return
+                _cprint(
+                    f"  Position {position} is out of range. "
+                    f"You have {total} recent session{'s' if total != 1 else ''} (1–{total})."
+                )
+                _cprint("  Use /resume with no target to see the list.")
+                return
+            target = resolved_id
 
         # Resolve title or ID
         from hermes_cli.main import _resolve_session_by_name_or_id

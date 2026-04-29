@@ -87,7 +87,10 @@ class TestHandleResumeCommand:
         result = await runner._handle_resume_command(event)
         assert "Research" in result
         assert "Coding" in result
-        assert "Named Sessions" in result
+        assert "Recent Sessions" in result
+        # Verify numbered format
+        assert "`1.`" in result
+        assert "`2.`" in result
         db.close()
 
     @pytest.mark.asyncio
@@ -100,8 +103,10 @@ class TestHandleResumeCommand:
         event = _make_event(text="/resume")
         runner = _make_runner(session_db=db, event=event)
         result = await runner._handle_resume_command(event)
-        assert "No named sessions" in result
-        assert "/title" in result
+        # Sessions without titles still appear in the numbered list
+        assert "Recent Sessions" in result
+        assert "`1.`" in result
+        assert "—" in result  # Untitled session shown as em-dash
         db.close()
 
     @pytest.mark.asyncio

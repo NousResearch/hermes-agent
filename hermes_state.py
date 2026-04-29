@@ -889,6 +889,24 @@ class SessionDB:
 
         return f"{base} #{max_num + 1}"
 
+    def resolve_session_by_position(
+        self, position: int, source: str = None, limit: int = 100,
+    ) -> Optional[str]:
+        """Resolve position N (1-based, most recent first) to a session ID.
+
+        Position 1 = the most recent session overall (across all sources),
+        position 2 = second most recent, etc.
+        Returns None if position is out of range.
+
+        The ``source`` and ``limit`` parameters are passed through to
+        :meth:`list_sessions_rich` which already excludes the current
+        session and sorts by ``last_active`` descending.
+        """
+        sessions = self.list_sessions_rich(source=source, limit=limit)
+        if 1 <= position <= len(sessions):
+            return sessions[position - 1]["id"]
+        return None
+
     def get_compression_tip(self, session_id: str) -> Optional[str]:
         """Walk the compression-continuation chain forward and return the tip.
 

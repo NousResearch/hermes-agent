@@ -409,7 +409,8 @@ class TestSanitizeEnvLines:
         """Merge works even with blank lines between fragment and key."""
         lines = ["G\n", "\n", "LM_API_KEY=b2d3fc.example.key\n"]
         result = _sanitize_env_lines(lines)
-        assert result == ["\n", "GLM_API_KEY=b2d3fc.example.key\n"]
+        # Blank line is consumed during merge (not preserved)
+        assert result == ["GLM_API_KEY=b2d3fc.example.key\n"]
 
 
 class TestOptionalEnvVarsRegistry:

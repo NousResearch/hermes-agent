@@ -222,6 +222,27 @@ class TestNonStringContent:
             "api_mode": "codex_responses",
         }
 
+    def test_summary_prompt_prioritizes_latest_user_message_over_stale_active_task(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "ok"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        c._previous_summary = "## Active Task\nUser asked: 'old task'"
+
+        messages = [
+            {"role": "assistant", "content": "Finished the old thing."},
+            {"role": "user", "content": "Actually check the gateway logs now."},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert "latest user message after the summary takes precedence over any stale older task" in prompt
+        assert "Actually check the gateway logs now." in prompt
+
 
 class TestSummaryFailureCooldown:
     def test_summary_failure_enters_cooldown_and_skips_retry(self):

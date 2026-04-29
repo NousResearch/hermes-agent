@@ -199,6 +199,21 @@ TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.
 # Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
+OPENAI_TASK_FOCUS_GUIDANCE = (
+    "# Task focus and first-step planning\n"
+    "<task_focus>\n"
+    "- Prioritize the user's CURRENT active task over older context when they conflict.\n"
+    "- Treat the most recent unresolved user request as the source of truth for what to do next.\n"
+    "- If a compaction or summary mentions prior tasks, use it as background context only; the latest user message overrides stale active-task text.\n"
+    "</task_focus>\n"
+    "\n"
+    "<first_step_planning>\n"
+    "- Before making a heavy sequence of tool calls, briefly decide what the best FIRST step is.\n"
+    "- Prefer the cheapest clarifying lookup that can collapse the search space: session_search for prior-conversation recall, search_files for locating candidate files, read_file for inspecting a known file, terminal for live system state.\n"
+    "- Do not start with broad or redundant exploration if a narrower lookup can determine the next move.\n"
+    "</first_step_planning>"
+)
+
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"

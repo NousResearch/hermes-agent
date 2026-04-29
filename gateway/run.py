@@ -4219,6 +4219,9 @@ class GatewayRunner:
         if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
 
+        if canonical == "reload-skills":
+            return await self._handle_reload_skills_command(event)
+
         if canonical == "approve":
             return await self._handle_approve_command(event)
 
@@ -8207,6 +8210,58 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("MCP reload failed: %s", e)
             return f"❌ MCP reload failed: {e}"
+
+    async def _handle_reload_skills_command(self, event: MessageEvent) -> str:
+        """Handle /reload-skills — re-scan skills dir and clear prompt cache."""
+        loop = asyncio.get_running_loop()
+        try:
+            from agent.skill_commands import reload_skills
+
+            result = await loop.run_in_executor(None, reload_skills)
+            added = result.get("added", [])
+            removed = result.get("removed", [])
+            total = result.get("total", 0)
+
+            lines = ["🔄 **Skills Reloaded**\n"]
+            if added:
+                lines.append(f"➕ Added: {', '.join(added)}")
+            if removed:
+                lines.append(f"➖ Removed: {', '.join(removed)}")
+            if not added and not removed:
+                lines.append("No changes detected.")
+            lines.append(f"\n📚 {total} skill(s) available")
+
+            # Inject a session-history note so the model sees the new skill
+            # list on its next turn. Appended after all existing messages
+            # to preserve prompt-cache for the prefix.
+            change_parts = []
+            if added:
+                change_parts.append(f"Added skills: {', '.join(added)}")
+            if removed:
+                change_parts.append(f"Removed skills: {', '.join(removed)}")
+            if change_parts:
+                change_detail = ". ".join(change_parts) + ". "
+                reload_msg = {
+                    "role": "user",
+                    "content": (
+                        f"[IMPORTANT: Skills have been reloaded. {change_detail}"
+                        f"{total} skill(s) now available. Use skills_list to "
+                        f"see the updated catalog.]"
+                    ),
+                }
+                try:
+                    session_entry = self.session_store.get_or_create_session(event.source)
+                    self.session_store.append_to_transcript(
+                        session_entry.session_id, reload_msg
+                    )
+                except Exception:
+                    pass  # Best-effort; don't fail the reload over a transcript write
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.warning("Skills reload failed: %s", e)
+            return f"❌ Skills reload failed: {e}"
 
     # ------------------------------------------------------------------
     # /approve & /deny — explicit dangerous-command approval

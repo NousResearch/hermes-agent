@@ -1755,9 +1755,11 @@ class AIAgent:
 
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10
+        self._skill_review_extra = ""
         try:
             skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+            self._skill_review_extra = str(skills_config.get("extra_review_prompt", ""))
         except Exception:
             pass
 
@@ -3470,6 +3472,8 @@ class AIAgent:
             prompt = self._MEMORY_REVIEW_PROMPT
         else:
             prompt = self._SKILL_REVIEW_PROMPT
+        if review_skills and self._skill_review_extra:
+            prompt = prompt + "\n\n" + self._skill_review_extra
 
         def _run_review():
             import contextlib

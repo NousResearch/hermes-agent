@@ -26,6 +26,9 @@ class TestMemorySchema:
         assert "temporary task state" in description
         assert ">80%" not in description
 
+    def test_schema_exposes_documented_read_action(self):
+        assert "read" in MEMORY_SCHEMA["parameters"]["properties"]["action"]["enum"]
+
 
 # =========================================================================
 # Security scanning
@@ -131,6 +134,11 @@ class TestMemoryStoreAdd:
         assert result["success"] is False
         assert "Blocked" in result["error"]
 
+    def test_add_delimiter_sequence_rejected(self, store):
+        result = store.add("memory", f"first{ENTRY_DELIMITER}second")
+        assert result["success"] is False
+        assert "delimiter" in result["error"].lower()
+
 
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):
@@ -201,7 +209,10 @@ class TestMemoryStorePersistence:
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
         # Write file with duplicates
         mem_file = tmp_path / "MEMORY.md"
-        mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry")
+        mem_file.write_text(
+            "duplicate entry\n§\nduplicate entry\n§\nunique entry",
+            encoding="utf-8",
+        )
 
         store = MemoryStore()
         store.load_from_disk()
@@ -247,6 +258,15 @@ class TestMemoryToolDispatcher:
     def test_add_via_tool(self, store):
         result = json.loads(memory_tool(action="add", target="memory", content="via tool", store=store))
         assert result["success"] is True
+
+    def test_read_via_tool_returns_live_state(self, store):
+        store.add("memory", "fact visible to read")
+
+        result = json.loads(memory_tool(action="read", target="memory", store=store))
+
+        assert result["success"] is True
+        assert result["entries"] == ["fact visible to read"]
+        assert result["entry_count"] == 1
 
     def test_replace_requires_old_text(self, store):
         result = json.loads(memory_tool(action="replace", content="new", store=store))

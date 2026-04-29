@@ -91,6 +91,10 @@ _INVISIBLE_CHARS = {
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    if ENTRY_DELIMITER in normalized:
+        return "Blocked: content contains the internal memory entry delimiter."
+
     # Check invisible unicode
     for char in _INVISIBLE_CHARS:
         if char in content:
@@ -358,6 +362,12 @@ class MemoryStore:
 
         return self._success_response(target, "Entry removed.")
 
+    def read(self, target: str) -> Dict[str, Any]:
+        """Return the current live entries for a target without mutating them."""
+        with self._file_lock(self._path_for(target)):
+            self._reload_target(target)
+            return self._success_response(target, "Entries read.")
+
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
         Return the frozen snapshot for system prompt injection.
@@ -497,8 +507,11 @@ def memory_tool(
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
+    elif action == "read":
+        result = store.read(target)
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, read", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -534,7 +547,7 @@ MEMORY_SCHEMA = {
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
+        "remove (delete -- old_text identifies it), read (list current live entries).\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -542,7 +555,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "read"],
                 "description": "The action to perform."
             },
             "target": {

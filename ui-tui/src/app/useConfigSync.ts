@@ -63,6 +63,19 @@ export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
   return INDICATOR_STYLE_SET.has(v) ? v : DEFAULT_INDICATOR_STYLE
 }
 
+const FALSEY_MOUSE = new Set(['0', 'false', 'no', 'off'])
+const hasOwn = (obj: object, key: PropertyKey) => Object.prototype.hasOwnProperty.call(obj, key)
+
+export const normalizeMouseTracking = (display: { mouse_tracking?: unknown; tui_mouse?: unknown }): boolean => {
+  const raw = hasOwn(display, 'mouse_tracking') ? display.mouse_tracking : display.tui_mouse
+
+  if (raw === false || raw === 0) {
+    return false
+  }
+
+  return typeof raw === 'string' ? !FALSEY_MOUSE.has(raw.trim().toLowerCase()) : true
+}
+
 const MTIME_POLL_MS = 5000
 
 const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
@@ -88,7 +101,7 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
     detailsModeCommandOverride: false,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
-    mouseTracking: d.tui_mouse !== false,
+    mouseTracking: normalizeMouseTracking(d),
     sections: resolveSections(d.sections),
     showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,

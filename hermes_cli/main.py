@@ -114,6 +114,12 @@ def _apply_profile_override() -> None:
             consume = 1
             break
 
+    # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it.
+    # This lets child processes (relaunch, subprocess) inherit the parent's
+    # profile choice without having to pass --profile again.
+    if profile_name is None and os.environ.get("HERMES_HOME"):
+        return
+
     # 2. If no flag, check active_profile in the hermes root
     if profile_name is None:
         try:
@@ -9807,15 +9813,8 @@ Examples:
 
             # Launch hermes --resume <id> by replacing the current process
             print(f"Resuming session: {selected_id}")
-            hermes_bin = shutil.which("hermes")
-            if hermes_bin:
-                os.execvp(hermes_bin, ["hermes", "--resume", selected_id])
-            else:
-                # Fallback: re-invoke via python -m
-                os.execvp(
-                    sys.executable,
-                    [sys.executable, "-m", "hermes_cli.main", "--resume", selected_id],
-                )
+            from hermes_cli.relaunch import relaunch
+            relaunch(["--resume", selected_id])
             return  # won't reach here after execvp
 
         elif action == "stats":

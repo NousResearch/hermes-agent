@@ -485,6 +485,40 @@ class TestSkillManageDispatcher:
         result = json.loads(raw)
         assert result["success"] is True
 
+    def test_create_records_negative_claim_metadata(self, tmp_path, monkeypatch):
+        import tools.skill_usage as usage
+        monkeypatch.setattr(usage, "_skills_dir", lambda: tmp_path)
+        content = VALID_SKILL_CONTENT + "\nNote: `foo` command is unavailable on CI.\n"
+
+        with _skill_dir(tmp_path):
+            raw = skill_manage(action="create", name="test-skill", content=content)
+
+        result = json.loads(raw)
+        rec = usage.get_record("test-skill")
+        assert result["success"] is True
+        assert rec["negative_claim_status"] == "active"
+        assert rec["negative_claim_summary"] == "`foo` command is unavailable on CI."
+        assert rec["negative_claims"][0]["subject"] == "foo"
+
+    def test_patch_records_new_negative_claim_metadata(self, tmp_path, monkeypatch):
+        import tools.skill_usage as usage
+        monkeypatch.setattr(usage, "_skills_dir", lambda: tmp_path)
+
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(
+                action="patch",
+                name="test-skill",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the thing.\n\nWarning: bar command unavailable in old containers.",
+            )
+
+        result = json.loads(raw)
+        rec = usage.get_record("test-skill")
+        assert result["success"] is True
+        assert rec["negative_claim_summary"] == "Warning: bar command unavailable in old containers."
+        assert rec["negative_claims"][0]["subject"] == "bar"
+
 
 class TestSecurityScanGate:
     """_security_scan_skill is gated by skills.guard_agent_created config flag."""

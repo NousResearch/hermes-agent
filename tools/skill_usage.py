@@ -22,9 +22,11 @@ Lifecycle states:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -184,6 +186,7 @@ def _empty_record() -> Dict[str, Any]:
         "negative_claim_revalidation_due_at": None,
         "negative_claim_summary": None,
         "negative_claim_status": None,
+        "negative_claims": [],
     }
 
 
@@ -319,6 +322,54 @@ def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
     return _ensure_aware(dt)
 
 
+_NEGATIVE_COMMAND_PATTERNS = (
+    re.compile(r"(?:`([^`]+)`|\b([A-Za-z0-9_.+-]+)\b)\s+command\s+(?:is\s+)?unavailable[^.\n]*(?:[.])?", re.I),
+    re.compile(r"command\s+(?:`([^`]+)`|\b([A-Za-z0-9_.+-]+)\b)\s+(?:is\s+)?unavailable[^.\n]*(?:[.])?", re.I),
+    re.compile(r"(?:`([^`]+)`|\b([A-Za-z0-9_.+-]+)\b)\s+(?:is\s+)?not\s+(?:installed|available|found)[^.\n]*(?:[.])?", re.I),
+)
+
+
+def _claim_id(kind: str, subject: str, text: str) -> str:
+    basis = f"{kind}\0{subject.lower()}\0{text.strip().lower()}"
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def extract_negative_claims_from_text(text: str) -> List[Dict[str, Any]]:
+    """Extract deterministic negative/environment-dependent claims from text.
+
+    This first-pass detector intentionally recognizes only high-confidence
+    command-availability claims. Unknown or ambiguous text is left for manual
+    review rather than guessed.
+    """
+    claims: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    source = text or ""
+    for pat in _NEGATIVE_COMMAND_PATTERNS:
+        for match in pat.finditer(source):
+            subject = next((g for g in match.groups() if g), "").strip()
+            if not subject or subject.lower() in {"the", "a", "an", "this", "that", "is"}:
+                continue
+            line_start = source.rfind("\n", 0, match.start()) + 1
+            line_end = source.find("\n", match.end())
+            if line_end == -1:
+                line_end = len(source)
+            claim_text = source[line_start:line_end].strip()
+            if claim_text.lower().startswith("note:"):
+                claim_text = claim_text.split(":", 1)[1].strip()
+            claim_text = claim_text.rstrip(".") + "." if claim_text else claim_text
+            cid = _claim_id("command_unavailable", subject, claim_text)
+            if cid in seen:
+                continue
+            seen.add(cid)
+            claims.append({
+                "id": cid,
+                "kind": "command_unavailable",
+                "subject": subject,
+                "text": claim_text,
+            })
+    return claims
+
+
 def mark_negative_claim(
     skill_name: str,
     summary: str,
@@ -326,26 +377,42 @@ def mark_negative_claim(
     ttl_days: Optional[int] = None,
     now: Optional[datetime] = None,
 ) -> None:
-    """Record that a skill contains a negative / environment-dependent claim.
-
-    The sidecar stores coarse per-skill metadata for the first lifecycle pass.
-    Future revisions can expand this to a per-claim list without rewriting
-    SKILL.md on every use.
-    """
+    """Record that a skill contains a negative / environment-dependent claim."""
     when = _ensure_aware(now)
     try:
         ttl = int(ttl_days) if ttl_days is not None else None
     except (TypeError, ValueError):
         ttl = None
     due = (when + timedelta(days=ttl)).isoformat() if ttl is not None else None
+    clean_summary = str(summary or "").strip() or None
+    extracted = extract_negative_claims_from_text(clean_summary or "")
+    if not extracted and clean_summary:
+        cid = _claim_id("other", "", clean_summary)
+        extracted = [{"id": cid, "kind": "other", "subject": "", "text": clean_summary}]
 
     def _apply(rec: Dict[str, Any]) -> None:
-        rec["negative_claim_summary"] = str(summary or "").strip() or None
+        rec["negative_claim_summary"] = clean_summary
         rec["negative_claim_confidence"] = confidence
         rec["negative_claim_ttl_days"] = ttl
         rec["negative_claim_last_revalidated_at"] = None
         rec["negative_claim_revalidation_due_at"] = due
         rec["negative_claim_status"] = "active"
+        existing = rec.get("negative_claims") if isinstance(rec.get("negative_claims"), list) else []
+        by_id = {str(c.get("id")): c for c in existing if isinstance(c, dict) and c.get("id")}
+        for claim in extracted:
+            cid = str(claim.get("id") or "")
+            if not cid:
+                continue
+            by_id[cid] = {
+                **by_id.get(cid, {}),
+                **claim,
+                "confidence": confidence,
+                "ttl_days": ttl,
+                "status": "active",
+                "last_revalidated_at": None,
+                "next_revalidate_at": due,
+            }
+        rec["negative_claims"] = list(by_id.values())
 
     _mutate(skill_name, _apply)
 

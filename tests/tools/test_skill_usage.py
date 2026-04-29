@@ -83,6 +83,7 @@ def test_get_record_missing_returns_empty_record(skills_home):
     assert rec["negative_claim_revalidation_due_at"] is None
     assert rec["negative_claim_summary"] is None
     assert rec["negative_claim_status"] is None
+    assert rec["negative_claims"] == []
 
 
 def test_get_record_backfills_missing_keys(skills_home):
@@ -148,6 +149,37 @@ def test_bumps_do_not_corrupt_other_skills(skills_home):
 # ---------------------------------------------------------------------------
 # Negative / environment-dependent claim metadata
 # ---------------------------------------------------------------------------
+
+def test_extract_negative_claims_from_text_detects_command_claims(skills_home):
+    from tools.skill_usage import extract_negative_claims_from_text
+
+    claims = extract_negative_claims_from_text(
+        "If setup fails, note that `foo` command is unavailable on CI.\n"
+        "The browser tool works normally."
+    )
+
+    assert len(claims) == 1
+    assert claims[0]["kind"] == "command_unavailable"
+    assert claims[0]["subject"] == "foo"
+    assert "foo" in claims[0]["text"]
+    assert claims[0]["id"]
+
+
+def test_mark_negative_claim_stores_per_claim_list_without_duplicates(skills_home):
+    from datetime import datetime, timezone
+    from tools.skill_usage import get_record, mark_negative_claim
+
+    now = datetime(2026, 4, 29, 12, 0, tzinfo=timezone.utc)
+    mark_negative_claim("cmd-skill", "foo command unavailable", confidence=0.8, ttl_days=7, now=now)
+    mark_negative_claim("cmd-skill", "foo command unavailable", confidence=0.8, ttl_days=7, now=now)
+
+    rec = get_record("cmd-skill")
+    assert len(rec["negative_claims"]) == 1
+    claim = rec["negative_claims"][0]
+    assert claim["kind"] == "command_unavailable"
+    assert claim["status"] == "active"
+    assert claim["next_revalidate_at"] == "2026-05-06T12:00:00+00:00"
+
 
 def test_mark_negative_claim_records_summary_confidence_and_due_time(skills_home):
     from datetime import datetime, timezone

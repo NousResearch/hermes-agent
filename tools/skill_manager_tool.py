@@ -72,6 +72,32 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
+def _record_negative_claims_from_text(skill_name: str, text: str) -> None:
+    """Best-effort curator telemetry for negative/environment-dependent claims."""
+    if not text:
+        return
+    try:
+        from hermes_cli.config import load_config
+        from tools.skill_usage import extract_negative_claims_from_text, mark_negative_claim
+        claims = extract_negative_claims_from_text(text)
+        if not claims:
+            return
+        try:
+            ttl_days = int(cfg_get(load_config(), "curator", "negative_claim_ttl_days", default=30))
+        except Exception:
+            ttl_days = 30
+        # Record each extracted claim; mark_negative_claim deduplicates by claim id.
+        for claim in claims:
+            mark_negative_claim(
+                skill_name,
+                claim.get("text", ""),
+                confidence=0.8,
+                ttl_days=ttl_days,
+            )
+    except Exception:
+        logger.debug("Failed to record negative claim metadata for %s", skill_name, exc_info=True)
+
+
 def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     """Scan a skill directory after write. Returns error string if blocked, else None.
 
@@ -712,6 +738,21 @@ def skill_manage(
                 forget(name)
         except Exception:
             pass
+        # Negative/environment-dependent claim telemetry. Best-effort and
+        # sidecar-only: never rewrite SKILL.md content or fail the user action.
+        try:
+            if action in ("create", "edit"):
+                _record_negative_claims_from_text(name, content or "")
+            elif action == "patch":
+                existing = _find_skill(name)
+                if existing:
+                    target = existing["path"] / (file_path or "SKILL.md")
+                    if target.exists() and target.is_file():
+                        _record_negative_claims_from_text(name, target.read_text(encoding="utf-8"))
+            elif action == "write_file":
+                _record_negative_claims_from_text(name, file_content or "")
+        except Exception:
+            logger.debug("Negative claim telemetry failed for %s", name, exc_info=True)
 
     return json.dumps(result, ensure_ascii=False)
 

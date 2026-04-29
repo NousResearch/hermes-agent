@@ -913,6 +913,8 @@ _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:please\s+)?restart\s+hermes[.!?\s]*$", re.IGNORECASE),
 )
 
+_PLAINTEXT_GATEWAY_STOP_PATTERN = re.compile(r"^stop[.!?\s]*$", re.IGNORECASE)
+
 
 def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
     """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
@@ -922,8 +924,10 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
     currently running agent and leave the gateway stuck in ``draining`` while it
     waits for that same agent to finish.
 
-    Scope is intentionally narrow: DM text messages only, exact restart-style
-    phrases only. Group chats keep natural-language semantics.
+    Scope is intentionally narrow: DM text messages only. ``stop`` is exact
+    (apart from whitespace/punctuation/case) so normal sentences like ``don't
+    stop`` or ``stop after this`` remain user input and are not treated as an
+    interrupt. Group chats keep natural-language semantics.
     """
     try:
         if event is None or event.message_type != MessageType.TEXT:
@@ -933,6 +937,9 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
             return
         source = getattr(event, "source", None)
         if getattr(source, "chat_type", None) != "dm":
+            return
+        if _PLAINTEXT_GATEWAY_STOP_PATTERN.match(text):
+            event.text = "/stop"
             return
         for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS:
             if pattern.match(text):
@@ -2311,11 +2318,16 @@ class BasePlatformAdapter(ABC):
                 merge_pending_message_event(self._pending_messages, session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
-            # Default behavior for non-photo follow-ups: interrupt the running agent
-            logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)
-            self._pending_messages[session_key] = event
-            # Signal the interrupt (the processing task checks this)
-            self._active_sessions[session_key].set()
+            # Default behavior for follow-ups: queue behind the running agent.
+            # Explicit session-control commands such as /stop still bypass above;
+            # ordinary extra messages should not interrupt long tool runs.
+            logger.debug("[%s] New message while session %s is active — queueing without interrupt", self.name, session_key)
+            merge_pending_message_event(
+                self._pending_messages,
+                session_key,
+                event,
+                merge_text=event.message_type == MessageType.TEXT,
+            )
             return  # Don't process now - will be handled after current task finishes
         
         # Mark session as active BEFORE spawning background task to close

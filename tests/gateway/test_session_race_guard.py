@@ -14,7 +14,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, merge_pending_message_event
+from gateway.platforms.base import (
+    MessageEvent,
+    MessageType,
+    coerce_plaintext_gateway_command,
+    merge_pending_message_event,
+)
 from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
 from gateway.session import SessionSource, build_session_key
 
@@ -265,6 +270,63 @@ async def test_recent_telegram_followups_append_in_pending_queue():
     fake_agent.interrupt.assert_not_called()
     adapter = runner.adapters[Platform.TELEGRAM]
     assert adapter._pending_messages[session_key].text == "part one\npart two"
+
+
+@pytest.mark.asyncio
+async def test_default_busy_policy_queues_later_followup_without_interrupt():
+    """Default policy should queue follow-ups, not interrupt active work."""
+    runner = _make_runner()
+    event = _make_event(text="later follow-up")
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 99}
+    runner._running_agents[session_key] = fake_agent
+    import time as _time
+    runner._running_agents_ts[session_key] = _time.time() - 99
+
+    result = await runner._handle_message(event)
+
+    assert result is None
+    fake_agent.interrupt.assert_not_called()
+    adapter = runner.adapters[Platform.TELEGRAM]
+    assert adapter._pending_messages[session_key].text == "later follow-up"
+
+
+@pytest.mark.asyncio
+async def test_configured_interrupt_mode_still_interrupts_running_agent():
+    """Explicit interrupt mode remains available for users who opt into it."""
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    event = _make_event(text="interrupting follow-up")
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 99}
+    runner._running_agents[session_key] = fake_agent
+
+    result = await runner._handle_message(event)
+
+    assert result is None
+    fake_agent.interrupt.assert_called_once_with("interrupting follow-up")
+    assert runner._pending_messages[session_key] == "interrupting follow-up"
+
+
+def test_plaintext_stop_dm_is_exact_interrupt_command():
+    stop_event = _make_event(text="  Stop!  ")
+    coerce_plaintext_gateway_command(stop_event)
+    assert stop_event.text == "/stop"
+
+    stop_after_event = _make_event(text="stop after this")
+    coerce_plaintext_gateway_command(stop_after_event)
+    assert stop_after_event.text == "stop after this"
+
+    group_source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="g1", chat_type="group", user_id="u1"
+    )
+    group_event = MessageEvent(text="stop", message_type=MessageType.TEXT, source=group_source)
+    coerce_plaintext_gateway_command(group_event)
+    assert group_event.text == "stop"
 
 
 # ------------------------------------------------------------------

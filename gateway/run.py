@@ -784,7 +784,7 @@ class GatewayRunner:
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
-    _busy_input_mode: str = "interrupt"
+    _busy_input_mode: str = "queue"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -1677,7 +1677,7 @@ class GatewayRunner:
 
     @staticmethod
     def _load_busy_input_mode() -> str:
-        """Load gateway drain-time busy-input behavior from config/env."""
+        """Load active-session follow-up behavior from config/env."""
         mode = os.getenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "").strip().lower()
         if not mode:
             try:
@@ -1693,7 +1693,9 @@ class GatewayRunner:
             return "queue"
         if mode == "steer":
             return "steer"
-        return "interrupt"
+        if mode == "interrupt":
+            return "interrupt"
+        return "queue"
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:

@@ -121,6 +121,12 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
 
+    def test_excludes_browser_cdp_profile(self):
+        """Live browser profiles contain sockets and locked SQLite DBs."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("browser-cdp-profile/SingletonSocket"))
+        assert _should_exclude(Path("browser-cdp-profile/Default/History"))
+
     def test_excludes_sqlite_sidecars(self):
         """SQLite WAL/SHM/journal sidecars must not ship alongside the
         safe-copied .db — pairing a fresh snapshot with stale sidecar state
@@ -228,6 +234,16 @@ class TestBackup:
             names = zf.namelist()
             assert "skills/outside-link.txt" not in names
             assert all(zf.read(name) != b"outside secret\n" for name in names)
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="mkfifo unavailable")
+    def test_rejects_special_files(self, tmp_path):
+        """Backup file filter rejects FIFOs and other special files."""
+        from hermes_cli.backup import _is_backupable_file
+
+        fifo = tmp_path / "pipe"
+        os.mkfifo(fifo)
+
+        assert not _is_backupable_file(fifo)
 
 
 # ---------------------------------------------------------------------------

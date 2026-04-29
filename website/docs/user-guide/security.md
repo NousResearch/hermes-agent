@@ -470,7 +470,7 @@ See [Website Blocklist](/docs/user-guide/configuration#website-blocklist) in the
 
 ### SSRF Protection
 
-All URL-capable tools (web search, web extract, vision, browser) validate URLs before fetching them to prevent Server-Side Request Forgery (SSRF) attacks. Blocked addresses include:
+URL-capable tools validate URLs before fetching them to prevent Server-Side Request Forgery (SSRF) attacks. For browser navigation, SSRF checks are enforced for cloud/browser-provider backends and skipped for local browser backends, where the terminal tool already has equivalent host-network reachability. Blocked addresses include:
 
 - **Private networks** (RFC 1918): `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
 - **Loopback**: `127.0.0.0/8`, `::1`
@@ -479,7 +479,7 @@ All URL-capable tools (web search, web extract, vision, browser) validate URLs b
 - **Cloud metadata hostnames**: `metadata.google.internal`, `metadata.goog`
 - **Reserved, multicast, and unspecified addresses**
 
-SSRF protection is always active and cannot be disabled. DNS failures are treated as blocked (fail-closed). Redirect chains are re-validated at each hop to prevent redirect-based bypasses.
+For web and media-fetching tools, SSRF protection is always active. For browser navigation, cloud/browser-provider backends enforce SSRF by default; local browser backends skip it, and cloud mode can be relaxed with `browser.allow_private_urls: true`. DNS failures are treated as blocked (fail-closed). Redirect chains are re-validated at each hop to prevent redirect-based bypasses.
 
 ### Tirith Pre-Exec Security Scanning
 

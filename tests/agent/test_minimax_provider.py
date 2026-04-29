@@ -308,10 +308,16 @@ class TestMinimaxPreserveDots:
         from agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name("MiniMax-M2.7", preserve_dots=True) == "MiniMax-M2.7"
 
-    def test_normalize_converts_without_preserve(self):
+    def test_normalize_preserves_dots_for_non_claude_without_preserve_flag(self):
         from agent.anthropic_adapter import normalize_model_name
-        # Without preserve_dots, dots become hyphens (broken for MiniMax)
-        assert normalize_model_name("MiniMax-M2.7", preserve_dots=False) == "MiniMax-M2-7"
+        # Even without ``preserve_dots=True``, non-Claude IDs (no
+        # ``claude`` substring) survive intact: the Anthropic-specific
+        # dot→hyphen rewrite is gated on Claude shape.  The explicit
+        # ``preserve_dots=True`` flag remains the documented contract for
+        # MiniMax callers, but a missing flag no longer corrupts the
+        # model ID into ``MiniMax-M2-7`` (which MiniMax 404s).  See
+        # #17171 / #16417 / #13061.
+        assert normalize_model_name("MiniMax-M2.7", preserve_dots=False) == "MiniMax-M2.7"
 
 
 class TestMinimaxSwitchModelCredentialGuard:

@@ -513,6 +513,80 @@ class TestNormalizeModelName:
         assert normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
 
 
+class TestNormalizeModelNameNonClaudeInvariant:
+    """The dot→hyphen rewrite is Anthropic-specific: OpenRouter form
+    ``claude-opus-4.6`` must become ``claude-opus-4-6`` for the Anthropic
+    Messages API.  But the rewrite must NOT corrupt non-Claude vendor IDs
+    that travel through ``normalize_model_name`` — typically because a
+    misconfigured caller routes a non-Anthropic model through the
+    Anthropic adapter (e.g. webui ``resolve_model_provider`` failing to
+    infer ``openai-codex`` from a ``gpt-*`` model name and falling back
+    to the default Anthropic provider).
+
+    Regression coverage for #17171, #16417, #13061, #7421.
+    """
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            # #17171 — OpenAI Codex; the reporter's exact ID
+            "gpt-5.4",
+            # #16417 — custom anthropic_messages providers
+            "glm-4.7",
+            "qwen3.5-plus",
+            # #13061 — zenmux + custom anthropic_messages
+            "z-ai/glm-5.1",
+            # #7421 — opencode-zen
+            "minimax-m2.5-free",
+            # OpenRouter-style namespaced non-Claude IDs
+            "openai/gpt-5.4",
+            "google/gemini-2.5-pro",
+            # Bare non-Claude with version dots
+            "gemini-2.5-pro",
+            "deepseek-v3.1",
+        ],
+    )
+    def test_non_claude_model_ids_preserve_dots(self, model_id):
+        """Non-Claude models routed through normalize_model_name with the
+        default ``preserve_dots=False`` must retain their dots verbatim."""
+        assert normalize_model_name(model_id) == model_id
+
+    def test_negative_claude_dotted_still_mangled(self):
+        """Genuine Claude IDs with dots still get the Anthropic-form
+        rewrite — the invariant only narrows mangling to Claude shapes,
+        it does not disable mangling entirely."""
+        assert normalize_model_name("claude-opus-4.6") == "claude-opus-4-6"
+        assert normalize_model_name("claude-sonnet-4.5") == "claude-sonnet-4-5"
+        # OpenRouter-prefixed Claude — prefix stripped, then mangled.
+        assert normalize_model_name("anthropic/claude-opus-4.6") == "claude-opus-4-6"
+        # Mixed-case Claude name — case-insensitive Claude detection.
+        assert normalize_model_name("Claude-Opus-4.6") == "Claude-Opus-4-6"
+
+    def test_repro_17171_default_anthropic_provider_with_gpt_model(self):
+        """The reporter's repro: webui falls back to default ``anthropic``
+        provider for ``gpt-5.4`` (no provider hint, no Codex-from-name
+        inference), and the request reaches the Anthropic Messages API
+        with ``model='gpt-5-4'`` instead of the user-supplied
+        ``gpt-5.4``.  After the fix, the model ID survives intact so the
+        downstream 404 (if any) at least names the model the user typed.
+        """
+        assert normalize_model_name("gpt-5.4") == "gpt-5.4"
+        # And the same string survives with the OpenRouter-style prefix
+        # stripped — confirming the prefix-strip path also benefits.
+        assert normalize_model_name("anthropic/gpt-5.4") == "gpt-5.4"
+
+    def test_preserve_dots_true_remains_authoritative_for_non_claude(self):
+        """``preserve_dots=True`` short-circuits before the Claude-shape
+        check — provider-explicit allowlist behavior is unchanged."""
+        assert normalize_model_name("qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
+        # And remains the only safe path for non-Claude IDs that *do*
+        # contain the substring ``claude`` anywhere (hypothetical and
+        # rare, but the explicit flag still wins).
+        assert normalize_model_name(
+            "claude-but-actually-qwen-3.5", preserve_dots=True
+        ) == "claude-but-actually-qwen-3.5"
+
+
 # ---------------------------------------------------------------------------
 # Tool conversion
 # ---------------------------------------------------------------------------

@@ -1102,15 +1102,32 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     - Preserves Bedrock model IDs (``anthropic.claude-opus-4-7``) and
       regional inference profiles (``us.anthropic.claude-*``) whose dots
       are namespace separators, not version separators.
+    - Preserves dots in non-Claude model IDs (e.g. ``gpt-5.4``,
+      ``glm-4.7``, ``z-ai/glm-5.1``, ``minimax-m2.5-free``). The dot→hyphen
+      rewrite is an Anthropic-specific quirk (OpenRouter ``4.6`` →
+      Anthropic ``4-6``) and must not corrupt model IDs from other
+      vendors that legitimately use dots as version separators.  See
+      issues #17171, #16417, #13061, #7421.
     """
     lower = model.lower()
     if lower.startswith("anthropic/"):
         model = model[len("anthropic/"):]
+        lower = model.lower()
     if not preserve_dots:
         # Bedrock model IDs use dots as namespace separators
         # (e.g. "anthropic.claude-opus-4-7", "us.anthropic.claude-*").
         # These must not be converted to hyphens.  See issue #12295.
         if _is_bedrock_model_id(model):
+            return model
+        # The dot→hyphen rewrite is the Anthropic Messages API's own quirk:
+        # claude-opus-4.6 (OpenRouter form) → claude-opus-4-6 (Anthropic
+        # form).  Only Claude IDs should be subject to it.  Routing a
+        # non-Claude model (e.g. gpt-5.4, glm-4.7) through this code path
+        # — typically via misconfigured provider resolution that defaults
+        # to "anthropic" — would otherwise rewrite a perfectly valid
+        # vendor ID into a non-existent one (gpt-5-4) and produce a 404
+        # whose error text refers to a name the user never typed.
+        if "claude" not in lower:
             return model
         # OpenRouter uses dots for version separators (claude-opus-4.6),
         # Anthropic uses hyphens (claude-opus-4-6). Convert dots to hyphens.

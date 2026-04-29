@@ -2,8 +2,14 @@
 # ComfyUI Setup — Install, launch, and verify using the official comfy-cli.
 # Usage: bash scripts/comfyui_setup.sh [--nvidia|--amd|--m-series|--cpu]
 #
+# If no flag is passed, runs hardware_check.py to detect the right one
+# automatically, and refuses to install locally when the verdict is "cloud"
+# (no usable GPU, too little VRAM, Intel Mac, etc.) — pointing the user
+# at Comfy Cloud instead.
+#
 # Prerequisites: Python 3.10+, pip
 # What it does:
+#   0. Hardware check (skipped if a flag was passed explicitly)
 #   1. Installs comfy-cli (if not present)
 #   2. Disables analytics tracking
 #   3. Installs ComfyUI + ComfyUI-Manager
@@ -12,7 +18,55 @@
 
 set -euo pipefail
 
-GPU_FLAG="${1:---nvidia}"  # Default to NVIDIA
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HARDWARE_CHECK="$SCRIPT_DIR/hardware_check.py"
+
+# Step 0: Hardware check (auto-detect GPU flag when none was provided)
+if [ $# -ge 1 ]; then
+    GPU_FLAG="$1"
+    echo "==> GPU flag: $GPU_FLAG (user-supplied, skipping hardware check)"
+else
+    if [ ! -f "$HARDWARE_CHECK" ]; then
+        echo "==> hardware_check.py not found, defaulting to --nvidia"
+        GPU_FLAG="--nvidia"
+    else
+        echo "==> Running hardware check..."
+        set +e
+        HW_JSON="$(python3 "$HARDWARE_CHECK" --json)"
+        HW_EXIT=$?
+        set -e
+        echo "$HW_JSON"
+        echo ""
+
+        VERDICT="$(echo "$HW_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("verdict",""))')"
+        FLAG="$(echo "$HW_JSON"   | python3 -c 'import sys,json; print(json.load(sys.stdin).get("comfy_cli_flag") or "")')"
+
+        if [ "$VERDICT" = "cloud" ]; then
+            echo ""
+            echo "==> Hardware check: this machine is not suitable for local ComfyUI."
+            echo "    Recommended: Comfy Cloud — https://platform.comfy.org"
+            echo ""
+            echo "    If you want to override and install anyway, re-run with an"
+            echo "    explicit flag: bash $0 --nvidia|--amd|--m-series|--cpu"
+            exit 2
+        fi
+
+        if [ -z "$FLAG" ]; then
+            echo "==> Hardware check couldn't pick a comfy-cli flag. Defaulting to --nvidia."
+            echo "    (For Intel Arc or unsupported hardware, use the manual install path.)"
+            GPU_FLAG="--nvidia"
+        else
+            GPU_FLAG="$FLAG"
+        fi
+
+        if [ "$VERDICT" = "marginal" ]; then
+            echo "==> Hardware check: verdict is MARGINAL."
+            echo "    SD1.5 should work; SDXL/Flux may be slow or OOM."
+            echo "    Consider Comfy Cloud for heavier workflows: https://platform.comfy.org"
+            echo ""
+        fi
+    fi
+fi
 
 echo "==> ComfyUI Setup"
 echo "    GPU flag: $GPU_FLAG"

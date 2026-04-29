@@ -11,13 +11,13 @@ import { InputEvent } from '../events/input-event.js'
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js'
 import {
   INITIAL_STATE,
-  parseMultipleKeypresses,
   type ParsedInput,
   type ParsedKey,
-  type ParsedMouse
+  type ParsedMouse,
+  parseMultipleKeypresses
 } from '../parse-keypress.js'
 import reconciler from '../reconciler.js'
-import { finishSelection, hasSelection, startSelection, type SelectionState } from '../selection.js'
+import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js'
 import { TerminalQuerier, xtversion } from '../terminal-querier.js'
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js'

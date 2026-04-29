@@ -46,7 +46,11 @@ class StubAdapter(BasePlatformAdapter):
     async def send_draft_message(self, chat_id, draft_id, content):
         if not self._draft_supported:
             raise NotImplementedError("draft not supported")
-        self.drafts.append((chat_id, draft_id, content))
+        # Strip cursor like the real Telegram adapter does
+        draft_text = content
+        if draft_text.endswith(" ▉"):
+            draft_text = draft_text[:-2]
+        self.drafts.append((chat_id, draft_id, draft_text))
         if self._draft_results:
             return SendResult(success=self._draft_results.pop(0))
         return SendResult(success=True)
@@ -103,6 +107,25 @@ class TestDraftTransportResolution:
 class TestDraftStreamingEndToEnd:
     """Verify draft transport delivers tokens via send_draft_message."""
 
+    async def _run_streaming(self, adapter, consumer, deltas, interval=0.06):
+        """Run consumer in background, feed deltas progressively, then finish.
+
+        Real streaming sends tokens one at a time; this simulates that by
+        starting ``run()`` as a background task and feeding deltas with
+        short delays so they arrive in separate batches.
+
+        ``interval`` must exceed ``run()``'s internal ``sleep(0.05)`` so
+        the consumer has time to drain the queue between deltas; default
+        0.06 works.
+        """
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)  # let run() finish its first empty-queue pass
+        for d in deltas:
+            consumer.on_delta(d)
+            await asyncio.sleep(interval)
+        consumer.finish()
+        await task
+
     @pytest.mark.asyncio
     async def test_draft_transport_used_for_dm(self):
         adapter = StubAdapter(draft_supported=True)
@@ -113,15 +136,16 @@ class TestDraftStreamingEndToEnd:
             metadata={"chat_type": "dm"},
         )
 
-        consumer.on_delta("Hel")
-        consumer.on_delta("lo")
-        consumer.finish()
-        await consumer.run()
+        await self._run_streaming(adapter, consumer, ["Hel", "lo"])
 
-        # Draft mode should use send_draft_message, not send or edit
+        # Draft mode should use send_draft_message for intermediate tokens
         assert len(adapter.drafts) >= 1
-        # Final text should be "Hello" (cursor stripped)
-        assert adapter.drafts[-1][2] == "Hello"
+        # Last draft text should be "Hello" (cursor stripped)
+        last_draft_text = adapter.drafts[-1][2]
+        assert last_draft_text == "Hello"
+        # No intermediate real messages (only the final dismissal)
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0][1] == "Hello"
         # Consumer sends real message to dismiss draft immediately
         assert consumer.final_response_sent is True
 
@@ -145,7 +169,9 @@ class TestDraftStreamingEndToEnd:
         assert len(adapter.sent) == 1
 
     @pytest.mark.asyncio
-    async def test_draft_failure_falls_back_to_edit(self):
+    async def test_draft_failure_skips_update_stays_in_draft_mode(self):
+        """When a draft send fails, the consumer skips that update but stays
+        in draft mode and sends the real message on stream end."""
         adapter = StubAdapter(draft_supported=True, draft_results=[False])
         consumer = GatewayStreamConsumer(
             adapter=adapter,
@@ -154,11 +180,12 @@ class TestDraftStreamingEndToEnd:
             metadata={"chat_type": "dm"},
         )
 
-        consumer.on_delta("fallback")
-        consumer.finish()
-        await consumer.run()
+        await self._run_streaming(adapter, consumer, ["fallback"])
 
-        # Draft was attempted but failed (returned success=False)
+        # Draft was attempted (returned success=False) but still recorded
         assert len(adapter.drafts) >= 1
-        # Consumer still sends real message to dismiss draft (best-effort)
+        # Consumer still sends real message on stream end (best-effort)
+        assert len(adapter.sent) == 1
         assert consumer.final_response_sent is True
+        # Consumer stays in draft mode (doesn't fall back to edit path)
+        assert consumer._draft_mode is True

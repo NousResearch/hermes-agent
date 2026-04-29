@@ -868,11 +868,13 @@ def run_doctor(args):
     # Vercel Sandbox (if using vercel_sandbox backend)
     if terminal_env == "vercel_sandbox":
         runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
-        if runtime in {"node24", "node22", "python3.13"}:
+        from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
+        if runtime in _SUPPORTED_VERCEL_RUNTIMES:
             check_ok("Vercel runtime", f"({runtime})")
         else:
-            check_fail("Vercel runtime unsupported", f"({runtime}; use node24, node22, or python3.13)")
-            issues.append("Set TERMINAL_VERCEL_RUNTIME to node24, node22, or python3.13")
+            supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
+            check_fail("Vercel runtime unsupported", f"({runtime}; use {supported})")
+            issues.append(f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}")
 
         disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
         if disk in ("", "0", "51200"):

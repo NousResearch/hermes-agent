@@ -4,6 +4,7 @@ import pytest
 
 from acp_adapter.tools import (
     TOOL_KIND_MAP,
+    _render_todo_markdown,
     build_tool_complete,
     build_tool_start,
     build_tool_title,
@@ -274,3 +275,107 @@ class TestExtractLocations:
         args = {"command": "echo hi"}
         locs = extract_locations(args)
         assert locs == []
+
+
+# ---------------------------------------------------------------------------
+# todo tool rendering
+# ---------------------------------------------------------------------------
+
+
+class TestTodoRendering:
+    def test_todo_in_kind_map(self):
+        assert TOOL_KIND_MAP.get("todo") == "think"
+
+    def test_title_read_when_no_todos(self):
+        assert build_tool_title("todo", {}) == "todo: read list"
+
+    def test_title_uses_in_progress_item(self):
+        todos = [
+            {"id": "1", "content": "done thing", "status": "completed"},
+            {"id": "2", "content": "active task", "status": "in_progress"},
+            {"id": "3", "content": "later", "status": "pending"},
+        ]
+        assert build_tool_title("todo", {"todos": todos}) == "todo: active task"
+
+    def test_title_falls_back_to_count(self):
+        todos = [
+            {"id": "1", "content": "a", "status": "pending"},
+            {"id": "2", "content": "b", "status": "pending"},
+        ]
+        assert build_tool_title("todo", {"todos": todos}) == "todo: update (2 items)"
+
+    def test_render_empty(self):
+        assert _render_todo_markdown([]) == "_(empty todo list)_"
+
+    def test_render_all_statuses(self):
+        out = _render_todo_markdown([
+            {"id": "a", "content": "shipped", "status": "completed"},
+            {"id": "b", "content": "writing", "status": "in_progress"},
+            {"id": "c", "content": "next", "status": "pending"},
+            {"id": "d", "content": "abandoned", "status": "cancelled"},
+        ])
+        assert "**Todos**" in out
+        assert "- [x] ~~shipped~~" in out
+        assert "- [ ] **writing** ▶" in out
+        assert "- [ ] next" in out
+        assert "- [x] ~~abandoned~~ _(cancelled)_" in out
+
+    def test_render_merge_header(self):
+        out = _render_todo_markdown(
+            [{"id": "x", "content": "y", "status": "pending"}], merge=True
+        )
+        assert out.startswith("**Todos** _(merge)_")
+
+    def test_build_tool_start_renders_markdown(self):
+        todos = [{"id": "1", "content": "do it", "status": "in_progress"}]
+        ev = build_tool_start("tc-test", "todo", {"todos": todos})
+        # Walk into ACP content blocks and confirm checklist markdown landed there.
+        text_blocks = []
+
+        def _collect(obj):
+            if isinstance(obj, dict):
+                if obj.get("type") == "text" and "text" in obj:
+                    text_blocks.append(obj["text"])
+                for v in obj.values():
+                    _collect(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _collect(item)
+            elif hasattr(obj, "model_dump"):
+                _collect(obj.model_dump())
+            elif hasattr(obj, "__dict__"):
+                _collect(vars(obj))
+
+        _collect(ev)
+        joined = "\n".join(text_blocks)
+        assert "- [ ] **do it** ▶" in joined
+        assert '"todos"' not in joined  # not the JSON fallback
+
+    def test_build_tool_complete_parses_json_result(self):
+        # The todo tool returns a JSON array as its tool result string.
+        import json as _json
+        result = _json.dumps([
+            {"id": "1", "content": "alpha", "status": "completed"},
+            {"id": "2", "content": "beta", "status": "in_progress"},
+        ])
+        ev = build_tool_complete("tc-test", "todo", result=result)
+        text_blocks = []
+
+        def _collect(obj):
+            if isinstance(obj, dict):
+                if obj.get("type") == "text" and "text" in obj:
+                    text_blocks.append(obj["text"])
+                for v in obj.values():
+                    _collect(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _collect(item)
+            elif hasattr(obj, "model_dump"):
+                _collect(obj.model_dump())
+            elif hasattr(obj, "__dict__"):
+                _collect(vars(obj))
+
+        _collect(ev)
+        joined = "\n".join(text_blocks)
+        assert "- [x] ~~alpha~~" in joined
+        assert "- [ ] **beta** ▶" in joined

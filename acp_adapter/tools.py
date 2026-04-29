@@ -41,6 +41,8 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "browser_press": "execute",
     "browser_back": "execute",
     "browser_get_images": "read",
+    # Planning / task tracking
+    "todo": "think",
     # Agent internals
     "delegate_task": "execute",
     "vision_analyze": "read",
@@ -94,7 +96,50 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
         return "execute code"
     if tool_name == "vision_analyze":
         return f"analyze image: {args.get('question', '?')[:50]}"
+    if tool_name == "todo":
+        todos = args.get("todos") or []
+        if not todos:
+            return "todo: read list"
+        in_progress = next(
+            (t.get("content", "") for t in todos if str(t.get("status", "")).lower() == "in_progress"),
+            None,
+        )
+        if in_progress:
+            label = in_progress[:57] + "..." if len(in_progress) > 60 else in_progress
+            return f"todo: {label}"
+        return f"todo: update ({len(todos)} item{'s' if len(todos) != 1 else ''})"
     return tool_name
+
+
+def _render_todo_markdown(todos: List[Dict[str, Any]], merge: bool = False) -> str:
+    """Render a todo list as a GFM checklist with status icons.
+
+    Status mapping (renders well in Zed/VS Code/JetBrains ACP clients):
+      - completed   -> [x] ~~text~~
+      - in_progress -> [ ] **text** ▶
+      - cancelled   -> [x] ~~text~~ (cancelled)
+      - pending     -> [ ] text
+    """
+    if not todos:
+        return "_(empty todo list)_"
+
+    lines: List[str] = []
+    for item in todos:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status", "pending")).strip().lower()
+        content = str(item.get("content", "")).strip() or "_(no description)_"
+        if status == "completed":
+            lines.append(f"- [x] ~~{content}~~")
+        elif status == "in_progress":
+            lines.append(f"- [ ] **{content}** ▶")
+        elif status == "cancelled":
+            lines.append(f"- [x] ~~{content}~~ _(cancelled)_")
+        else:
+            lines.append(f"- [ ] {content}")
+
+    header = "**Todos** _(merge)_" if merge else "**Todos**"
+    return header + "\n" + "\n".join(lines)
 
 
 def _build_patch_mode_content(patch_text: str) -> List[Any]:
@@ -258,6 +303,28 @@ def _build_tool_complete_content(
         except Exception:
             pass
 
+    if tool_name == "todo":
+        # The todo tool returns the full current list as JSON.
+        # Re-render as a markdown checklist so ACP clients show a live list,
+        # not a raw JSON blob.
+        try:
+            parsed = json.loads(result) if result else None
+            todos: List[Dict[str, Any]] = []
+            if isinstance(parsed, list):
+                todos = parsed
+            elif isinstance(parsed, dict):
+                # Common shapes: {"todos": [...]}, {"items": [...]}, {"list": [...]}
+                for key in ("todos", "items", "list"):
+                    if isinstance(parsed.get(key), list):
+                        todos = parsed[key]
+                        break
+            if todos:
+                markdown = _render_todo_markdown(todos)
+                return [acp.tool_content(acp.text_block(markdown))]
+        except (ValueError, TypeError):
+            pass
+        # Fall through to plain text if parsing fails
+
     return [acp.tool_content(acp.text_block(display_result))]
 
 
@@ -320,6 +387,16 @@ def build_tool_start(
         pattern = arguments.get("pattern", "")
         target = arguments.get("target", "content")
         content = [acp.tool_content(acp.text_block(f"Searching for '{pattern}' ({target})"))]
+        return acp.start_tool_call(
+            tool_call_id, title, kind=kind, content=content, locations=locations,
+            raw_input=arguments,
+        )
+
+    if tool_name == "todo":
+        todos = arguments.get("todos") or []
+        merge = bool(arguments.get("merge", False))
+        markdown = _render_todo_markdown(todos, merge=merge)
+        content = [acp.tool_content(acp.text_block(markdown))]
         return acp.start_tool_call(
             tool_call_id, title, kind=kind, content=content, locations=locations,
             raw_input=arguments,

@@ -64,9 +64,11 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   }
 
   const section = (title: string, data: Record<string, string[]>, max = 8, overflowLabel = 'more…') => {
+    const skeletonRows = title === 'Tools' ? ['browser', 'terminal', 'file'] : ['apple', 'creative', 'software-development']
     const entries = Object.entries(data).sort()
     const shown = entries.slice(0, max)
     const overflow = entries.length - max
+    const skeleton = info.lazy && entries.length === 0
 
     return (
       <Box flexDirection="column" marginTop={1}>
@@ -74,12 +76,19 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
           Available {title}
         </Text>
 
-        {shown.map(([k, vs]) => (
-          <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
-          </Text>
-        ))}
+        {skeleton
+          ? skeletonRows.map(k => (
+              <Text dimColor key={k} wrap="truncate">
+                <Text color={t.color.muted}>{k}: </Text>
+                <Text color={t.color.text}>━━━━━━━━━━━━━━</Text>
+              </Text>
+            ))
+          : shown.map(([k, vs]) => (
+              <Text key={k} wrap="truncate">
+                <Text color={t.color.muted}>{strip(k)}: </Text>
+                <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+              </Text>
+            ))}
 
         {overflow > 0 && (
           <Text color={t.color.muted}>

@@ -141,6 +141,7 @@ _SLASH_WORKER_TIMEOUT_S = max(
 _LONG_HANDLERS = frozenset(
     {
         "cli.exec",
+        "prompt.submit",
         "session.branch",
         "session.resume",
         "shell.exec",
@@ -464,6 +465,117 @@ def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     return _err(rid, 5032, err) if err else None
 
 
+def _start_agent_build(sid: str, session: dict) -> None:
+    """Start building the real AIAgent for a TUI session, once.
+
+    Classic `hermes` shows the prompt before constructing AIAgent; the TUI used
+    to eagerly build it during session.create, making startup feel blocked on
+    tool discovery/model metadata even though the composer was visible.  Keep
+    the shell responsive by deferring this work until the first prompt (or any
+    command that actually needs the agent), while retaining the same ready/error
+    event contract for the frontend.
+    """
+    ready = session.get("agent_ready")
+    if ready is None:
+        return
+    if ready.is_set() or session.get("agent_build_started"):
+        return
+    session["agent_build_started"] = True
+    key = session["session_key"]
+
+    def _build() -> None:
+        current = _sessions.get(sid)
+        if current is None:
+            ready.set()
+            return
+
+        worker = None
+        notify_registered = False
+        try:
+            tokens = _set_session_context(key)
+            try:
+                agent = _make_agent(sid, key)
+            finally:
+                _clear_session_context(tokens)
+
+            db = _get_db()
+            if db is not None:
+                db.create_session(key, source="tui", model=_resolve_model())
+                pending_title = (current.get("pending_title") or "").strip()
+                if pending_title:
+                    try:
+                        title_applied = db.set_session_title(key, pending_title)
+                        if title_applied:
+                            current["pending_title"] = None
+                        else:
+                            existing_row = db.get_session(key)
+                            existing_title = ((existing_row or {}).get("title") or "").strip()
+                            if existing_title == pending_title:
+                                current["pending_title"] = None
+                            else:
+                                logger.info(
+                                    "Pending title still queued for session %s (wanted=%r, current=%r)",
+                                    sid,
+                                    pending_title,
+                                    existing_title,
+                                )
+                    except ValueError as e:
+                        current["pending_title"] = None
+                        logger.info("Dropping pending title for session %s: %s", sid, e)
+                    except Exception:
+                        logger.warning("Failed to apply pending title for session %s", sid, exc_info=True)
+            current["agent"] = agent
+
+            try:
+                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                current["slash_worker"] = worker
+            except Exception:
+                pass
+
+            try:
+                from tools.approval import (
+                    register_gateway_notify,
+                    load_permanent_allowlist,
+                )
+                register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+                notify_registered = True
+                load_permanent_allowlist()
+            except Exception:
+                pass
+
+            _wire_callbacks(sid)
+            _notify_session_boundary("on_session_reset", key)
+
+            info = _session_info(agent)
+            warn = _probe_credentials(agent)
+            if warn:
+                info["credential_warning"] = warn
+            cfg_warn = _probe_config_health(_load_cfg())
+            if cfg_warn:
+                info["config_warning"] = cfg_warn
+                logger.warning(cfg_warn)
+            _emit("session.info", sid, info)
+        except Exception as e:
+            current["agent_error"] = str(e)
+            _emit("error", sid, {"message": f"agent init failed: {e}"})
+        finally:
+            if _sessions.get(sid) is not current:
+                if worker is not None:
+                    try:
+                        worker.close()
+                    except Exception:
+                        pass
+                if notify_registered:
+                    try:
+                        from tools.approval import unregister_gateway_notify
+                        unregister_gateway_notify(key)
+                    except Exception:
+                        pass
+            ready.set()
+
+    threading.Thread(target=_build, daemon=True).start()
+
+
 def _sess_nowait(params, rid):
     s = _sessions.get(params.get("session_id") or "")
     return (s, None) if s else (None, _err(rid, 4001, "session not found"))
@@ -471,7 +583,10 @@ def _sess_nowait(params, rid):
 
 def _sess(params, rid):
     s, err = _sess_nowait(params, rid)
-    return (None, err) if err else (s, _wait_agent(s, rid))
+    if err:
+        return (None, err)
+    _start_agent_build(params.get("session_id") or "", s)
+    return (s, _wait_agent(s, rid))
 
 
 def _normalize_completion_path(path_part: str) -> str:
@@ -1611,130 +1726,6 @@ def _(rid, params: dict) -> dict:
         "transport": current_transport() or _stdio_transport,
     }
 
-    def _build() -> None:
-        session = _sessions.get(sid)
-        if session is None:
-            # session.close ran before the build thread got scheduled.
-            ready.set()
-            return
-
-        # Track what we allocate so we can clean up if session.close
-        # races us to the finish line.  session.close pops _sessions[sid]
-        # unconditionally and tries to close the slash_worker it finds;
-        # if _build is still mid-construction when close runs, close
-        # finds slash_worker=None / notify unregistered and returns
-        # cleanly — leaving us, the build thread, to later install the
-        # worker + notify on an orphaned session dict.  The finally
-        # block below detects the orphan and cleans up instead of
-        # leaking a subprocess and a global notify registration.
-        worker = None
-        notify_registered = False
-        try:
-            tokens = _set_session_context(key)
-            try:
-                agent = _make_agent(sid, key)
-            finally:
-                _clear_session_context(tokens)
-
-            db = _get_db()
-            if db is not None:
-                db.create_session(key, source="tui", model=_resolve_model())
-                pending_title = (session.get("pending_title") or "").strip()
-                if pending_title:
-                    try:
-                        title_applied = db.set_session_title(key, pending_title)
-                        if title_applied:
-                            session["pending_title"] = None
-                        else:
-                            existing_row = db.get_session(key)
-                            existing_title = (
-                                (existing_row or {}).get("title") or ""
-                            ).strip()
-                            if existing_title == pending_title:
-                                session["pending_title"] = None
-                            else:
-                                logger.info(
-                                    "Pending title still queued for session %s (wanted=%r, current=%r)",
-                                    sid,
-                                    pending_title,
-                                    existing_title,
-                                )
-                    except ValueError as e:
-                        # Queued title can become invalid/duplicate between queue time
-                        # and DB row creation. Drop the queue and log the reason so
-                        # future /title reads don't surface a stuck pending value.
-                        session["pending_title"] = None
-                        logger.info(
-                            "Dropping pending title for session %s: %s",
-                            sid,
-                            e,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Failed to apply pending title for session %s",
-                            sid,
-                            exc_info=True,
-                        )
-            session["agent"] = agent
-
-            try:
-                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
-                session["slash_worker"] = worker
-            except Exception:
-                pass
-
-            try:
-                from tools.approval import (
-                    register_gateway_notify,
-                    load_permanent_allowlist,
-                )
-
-                register_gateway_notify(
-                    key, lambda data: _emit("approval.request", sid, data)
-                )
-                notify_registered = True
-                load_permanent_allowlist()
-            except Exception:
-                pass
-
-            _wire_callbacks(sid)
-            _notify_session_boundary("on_session_reset", key)
-
-            info = _session_info(agent)
-            warn = _probe_credentials(agent)
-            if warn:
-                info["credential_warning"] = warn
-            cfg_warn = _probe_config_health(_load_cfg())
-            if cfg_warn:
-                info["config_warning"] = cfg_warn
-                logger.warning(cfg_warn)
-            _emit("session.info", sid, info)
-        except Exception as e:
-            session["agent_error"] = str(e)
-            _emit("error", sid, {"message": f"agent init failed: {e}"})
-        finally:
-            # Orphan check: if session.close raced us and popped
-            # _sessions[sid] while we were building, the dict we just
-            # populated is unreachable.  Clean up the subprocess and
-            # the global notify registration ourselves — session.close
-            # couldn't see them at the time it ran.
-            if _sessions.get(sid) is not session:
-                if worker is not None:
-                    try:
-                        worker.close()
-                    except Exception:
-                        pass
-                if notify_registered:
-                    try:
-                        from tools.approval import unregister_gateway_notify
-
-                        unregister_gateway_notify(key)
-                    except Exception:
-                        pass
-            ready.set()
-
-    threading.Thread(target=_build, daemon=True).start()
-
     return _ok(
         rid,
         {
@@ -1744,6 +1735,7 @@ def _(rid, params: dict) -> dict:
                 "tools": {},
                 "skills": {},
                 "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
+                "lazy": True,
             },
         },
     )

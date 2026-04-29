@@ -323,6 +323,12 @@ _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
+# Guard so the OpenRouter metadata pre-warm thread is only spawned once per
+# process, not once per AIAgent instantiation.  Without this, long-running
+# gateway processes leak one OS thread per incoming message and eventually
+# exhaust the system thread limit (RuntimeError: can't start new thread).
+_openrouter_prewarm_done = threading.Event()
+
 # Patterns that indicate a terminal command may modify/delete files.
 _DESTRUCTIVE_PATTERNS = re.compile(
     r"""(?:^|\s|&&|\|\||;|`)(?:
@@ -1107,10 +1113,17 @@ class AIAgent:
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
         # HTTP request on the first API response when pricing is estimated.
-        if self.provider == "openrouter" or self._is_openrouter_url():
+        # Use a process-level Event so this thread is only spawned once — a new
+        # AIAgent is created for every gateway request, so without the guard
+        # each message leaks one OS thread and the process eventually exhausts
+        # the system thread limit (RuntimeError: can't start new thread).
+        if (self.provider == "openrouter" or self._is_openrouter_url()) and \
+                not _openrouter_prewarm_done.is_set():
+            _openrouter_prewarm_done.set()
             threading.Thread(
-                target=lambda: fetch_model_metadata(),
+                target=fetch_model_metadata,
                 daemon=True,
+                name="openrouter-prewarm",
             ).start()
 
         self.tool_progress_callback = tool_progress_callback

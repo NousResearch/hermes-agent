@@ -262,6 +262,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.minimax.io/anthropic",
         api_key_env_vars=("MINIMAX_API_KEY",),
         base_url_env_var="MINIMAX_BASE_URL",
+        extra={
+            # MiniMax serves its own M2.x family through the native
+            # Anthropic protocol and documents explicit cache_control
+            # support. https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache
+            "anthropic_cache": True,
+            "anthropic_cache_hosts": ("api.minimax.io",),
+        },
     ),
     "minimax-oauth": ProviderConfig(
         id="minimax-oauth",
@@ -305,6 +312,10 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.minimaxi.com/anthropic",
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
+        extra={
+            "anthropic_cache": True,
+            "anthropic_cache_hosts": ("api.minimaxi.com",),
+        },
     ),
     "deepseek": ProviderConfig(
         id="deepseek",

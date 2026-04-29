@@ -1212,6 +1212,23 @@ class AIAgent:
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         self._force_ascii_payload = False
         
+        # Operator opt-in for Anthropic-protocol gateways that document
+        # cache_control for their own model families. Read once here so
+        # the policy lookup is cheap and consistent across switch_model
+        # / fallback activation. (issue #17332)
+        self._anthropic_cache_user_hosts_cached = ()
+        try:
+            from hermes_cli.config import load_config as _load_acuh_cfg
+            _acuh_cfg = _load_acuh_cfg().get("agent", {}) or {}
+            _hosts_raw = _acuh_cfg.get("anthropic_cache_hosts")
+            if isinstance(_hosts_raw, (list, tuple)):
+                self._anthropic_cache_user_hosts_cached = tuple(
+                    h.strip().lower() for h in _hosts_raw
+                    if isinstance(h, str) and h.strip()
+                )
+        except Exception:
+            pass
+
         # Anthropic prompt caching: auto-enabled for Claude models on native
         # Anthropic, OpenRouter, and third-party gateways that speak the
         # Anthropic protocol (``api_mode == 'anthropic_messages'``). Reduces
@@ -2889,11 +2906,17 @@ class AIAgent:
             OpenAI-wire proxies expect the looser layout).
 
         Third-party providers using the native Anthropic transport
-        (``api_mode == 'anthropic_messages'`` + Claude-named model) get
-        caching with the native layout so they benefit from the same
-        cost reduction as direct Anthropic callers, provided their
-        gateway implements the Anthropic cache_control contract
-        (MiniMax, Zhipu GLM, LiteLLM's Anthropic proxy mode all do).
+        (``api_mode == 'anthropic_messages'``) get caching with the
+        native layout in two cases:
+          * Claude-named model — the gateway is presumed to forward
+            ``cache_control`` to upstream Anthropic (LiteLLM proxy
+            mode, Zhipu GLM Anthropic-compat, etc.).
+          * Provider/host registered as ``anthropic_cache``-capable in
+            ``ProviderConfig.extra`` or in the user's
+            ``agent.anthropic_cache_hosts`` config list. This is how
+            providers serving their own model families through the
+            Anthropic protocol (MiniMax M2.x, future entrants) opt in.
+            See ``agent.anthropic_cache_capability``. (issue #17332)
 
         Qwen / Alibaba-family models on OpenCode, OpenCode Go, and direct
         Alibaba (DashScope) also honour Anthropic-style ``cache_control``
@@ -2925,23 +2948,29 @@ class AIAgent:
             # Third-party Anthropic-compatible gateway.
             return True, True
 
-        # MiniMax on its Anthropic-compatible endpoint serves its own
-        # model family (MiniMax-M2.7, M2.5, M2.1, M2) with documented
-        # cache_control support (0.1× read pricing, 5-minute TTL).  The
-        # blanket is_claude gate above excludes these — opt them in
-        # explicitly via provider id or host match so users on
-        # provider=minimax / minimax-cn (or custom endpoints pointing at
-        # api.minimax.io/anthropic / api.minimaxi.com/anthropic) get the
-        # same cost reduction as Claude traffic.
-        # Docs: https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache
+        # Capability-registry branch (#17332): provider declared
+        # ``anthropic_cache`` support in ProviderConfig.extra, or its
+        # hostname matches a registered/user-configured entry. Covers
+        # MiniMax-M2.7 etc. (replacing the hardcoded provider/host check
+        # introduced by #17333) and any future Anthropic-protocol gateway
+        # that documents cache_control for its own models, without
+        # forcing a code patch per provider.
         if is_anthropic_wire:
-            is_minimax_provider = provider_lower in {"minimax", "minimax-cn"}
-            is_minimax_host = (
-                base_url_host_matches(eff_base_url, "api.minimax.io")
-                or base_url_host_matches(eff_base_url, "api.minimaxi.com")
-            )
-            if is_minimax_provider or is_minimax_host:
-                return True, True
+            try:
+                from agent.anthropic_cache_capability import (
+                    provider_supports_anthropic_cache,
+                )
+                _user_hosts = self._anthropic_cache_user_hosts()
+                if provider_supports_anthropic_cache(
+                    eff_provider,
+                    eff_base_url,
+                    user_configured_hosts=_user_hosts,
+                ):
+                    return True, True
+            except Exception as exc:
+                logger.debug(
+                    "anthropic_cache capability lookup failed: %s", exc
+                )
 
         # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
         # transport that accepts Anthropic-style cache_control markers and
@@ -2959,6 +2988,20 @@ class AIAgent:
             return True, False
 
         return False, False
+
+    def _anthropic_cache_user_hosts(self):
+        """Return the operator-configured Anthropic-cache host opt-in list.
+
+        Reads ``agent.anthropic_cache_hosts`` from the loaded config (set
+        by ``__init__`` on ``self._anthropic_cache_user_hosts_cached``).
+        Returns an empty tuple when the key is missing or malformed; we
+        never want a typo'd list to silently *disable* caching, only to
+        not *enable* it for unlisted hosts. (issue #17332)
+        """
+        cached = getattr(self, "_anthropic_cache_user_hosts_cached", None)
+        if cached is not None:
+            return cached
+        return ()
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:

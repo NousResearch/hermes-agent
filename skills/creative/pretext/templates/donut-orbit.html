@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no" />
+<title>DONUT.pretext — orbit</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: #07070a;
+    color: #e6e2d6;
+    font-family: "JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    -webkit-font-smoothing: antialiased;
+  }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  .hud {
+    position: fixed; top: 14px; left: 18px; z-index: 10;
+    font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: #c8b98a; opacity: 0.72; mix-blend-mode: screen;
+    pointer-events: none;
+  }
+  .hud .k { color: #e6e2d6; }
+  .hud .dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: #c8b98a; margin: 0 8px; vertical-align: middle;
+    box-shadow: 0 0 8px #c8b98a;
+  }
+  .hud2 {
+    position: fixed; bottom: 14px; right: 18px; z-index: 10;
+    font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: #6b6456; opacity: 0.8;
+    pointer-events: none;
+  }
+  .corpus {
+    position: fixed; bottom: 18px; left: 18px; z-index: 10;
+    max-width: 320px; font-size: 10px; line-height: 1.45;
+    color: #8c8166; opacity: 0.55; mix-blend-mode: screen;
+    pointer-events: none;
+    font-family: "Iowan Old Style", "Georgia", serif;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hud">
+  <span class="k">DONUT.pretext</span> <span class="dot"></span>
+  drag · orbit <span class="dot"></span>
+  scroll · zoom <span class="dot"></span>
+  <span id="fps">—</span> fps
+</div>
+<div class="hud2">measured · not monospaced · <a style="color:#6b6456" href="https://github.com/chenglou/pretext">@chenglou/pretext</a></div>
+<div class="corpus" id="corpus"></div>
+
+<script type="module">
+// -------- pretext via ESM CDN (keeps this a single self-contained file) ----
+import {
+  prepareWithSegments,
+  layoutWithLines,
+  walkLineRanges,
+  measureLineStats,
+} from "https://esm.sh/@chenglou/pretext@0.0.6";
+
+// -------- CORPUS ------------------------------------------------------------
+// A long, readable string. The donut's "luminance pixels" are real graphemes
+// from this text, sampled in reading order. Change at will.
+const CORPUS = `
+I have crawled through everything there is about how browsers measure text.
+For thirty years we asked the DOM. The DOM answered, at the cost of a reflow.
+Now we measure ourselves. Each glyph has a width. Each line has a break.
+Each break is a choice. And choices, stacked, become shapes.
+A donut, for instance, is just a choice about where light should land.
+We replace the light with letters. We replace the letters with meaning.
+We spin the meaning. We watch it wrap. We notice, for the first time,
+that typography was always a kind of orbit — a slow rotation of glyphs
+around the empty center of the thing you were trying to say.
+Pretext does not render. It measures. It returns numbers.
+But numbers, given width and height and a little trigonometry,
+conspire to draw a torus out of prose. AGI 春天到了. بدأت الرحلة 🚀.
+Line by line, the sentence becomes a surface. The surface becomes a solid.
+The solid is a donut and the donut is a log and the log says: we are here.
+`.trim().replace(/\s+/g, " ");
+
+document.getElementById("corpus").textContent = CORPUS;
+
+// -------- CANVAS ------------------------------------------------------------
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d", { alpha: false });
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+addEventListener("resize", resize);
+resize();
+
+// -------- PRETEXT LAYOUT ---------------------------------------------------
+// We lay the corpus out once at a reference column width, then sample
+// graphemes from the resulting line-stream in reading order. Pretext gives us
+// per-line width + per-grapheme width for free via layoutWithLines.
+const FONT = '600 13px "JetBrains Mono", ui-monospace, monospace';
+const prepared = prepareWithSegments(CORPUS, FONT);
+
+// Grab a flat list of graphemes by walking a narrow layout. We only need them
+// for their characters; positions are computed live from the donut math.
+const { lines } = layoutWithLines(prepared, 260, 16);
+const GLYPHS = [];
+for (const line of lines) {
+  // line.text comes as the reading-order materialised line. We split into
+  // graphemes via Intl.Segmenter so emoji / combining marks stay intact.
+  const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  for (const { segment } of seg.segment(line.text)) {
+    if (segment !== " ") GLYPHS.push(segment);
+  }
+  GLYPHS.push(" "); // preserve word gaps so the donut has visible "spaces"
+}
+
+// Also compute a maxLineWidth so we know the corpus' natural shrink-wrap,
+// just to prove we touched the stats API. (We display it in the HUD briefly.)
+const { maxLineWidth } = measureLineStats(prepared, 260);
+console.log("pretext maxLineWidth @260px:", maxLineWidth);
+
+// -------- SLOANE DONUT MATH -------------------------------------------------
+// Classic torus of major radius R1 around minor radius R2, lit by a fixed
+// light direction. We sample in (theta, phi) and project with perspective.
+// Luminance L ∈ [-√2, √2]; we remap to [0,1] and use it as:
+//   - opacity of the character
+//   - choice of glyph from the ASCII ramp (optional — we prefer corpus glyphs)
+const R1 = 1.0;   // donut tube radius
+const R2 = 2.0;   // donut ring radius
+const K2 = 5;     // camera distance
+// theta/phi step density — looser = more readable glyphs, denser = more donut.
+const THETA_STEPS = 90;
+const PHI_STEPS = 280;
+
+// Orbit state
+const orbit = {
+  yaw: 0.6,     // rotation around Y (mouse X drag)
+  pitch: -0.4,  // rotation around X (mouse Y drag)
+  zoom: 1.0,    // radius scale
+  autoYaw: 0.35, // rad/sec when idle
+  autoPitch: 0.17,
+  dragging: false,
+  idleSince: performance.now(),
+};
+
+// Mouse / touch
+function onDown(x, y) { orbit.dragging = true; orbit.lastX = x; orbit.lastY = y; }
+function onMove(x, y) {
+  if (!orbit.dragging) return;
+  const dx = x - orbit.lastX, dy = y - orbit.lastY;
+  orbit.yaw += dx * 0.008;
+  orbit.pitch += dy * 0.008;
+  orbit.pitch = Math.max(-Math.PI / 2 + 0.05, Math.min(Math.PI / 2 - 0.05, orbit.pitch));
+  orbit.lastX = x; orbit.lastY = y;
+  orbit.idleSince = performance.now();
+}
+function onUp() { orbit.dragging = false; orbit.idleSince = performance.now(); }
+canvas.addEventListener("mousedown", e => onDown(e.clientX, e.clientY));
+addEventListener("mousemove", e => onMove(e.clientX, e.clientY));
+addEventListener("mouseup", onUp);
+canvas.addEventListener("touchstart", e => { const t = e.touches[0]; onDown(t.clientX, t.clientY); }, { passive: true });
+canvas.addEventListener("touchmove",  e => { const t = e.touches[0]; onMove(t.clientX, t.clientY); }, { passive: true });
+canvas.addEventListener("touchend",   onUp);
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  orbit.zoom *= Math.exp(-e.deltaY * 0.0012);
+  orbit.zoom = Math.max(0.5, Math.min(2.6, orbit.zoom));
+  orbit.idleSince = performance.now();
+}, { passive: false });
+
+// -------- RENDER ------------------------------------------------------------
+let frame = 0;
+let fpsEma = 60, lastT = performance.now();
+const fpsEl = document.getElementById("fps");
+
+function frameLoop(t) {
+  const dt = Math.min(0.05, (t - lastT) / 1000);
+  lastT = t;
+  fpsEma = fpsEma * 0.92 + (1 / Math.max(dt, 1e-3)) * 0.08;
+  if ((frame++ & 31) === 0) fpsEl.textContent = fpsEma.toFixed(0);
+
+  // idle auto-orbit (like OrbitControls autoRotate)
+  const idleFor = (t - orbit.idleSince) / 1000;
+  if (!orbit.dragging && idleFor > 1.2) {
+    orbit.yaw += orbit.autoYaw * dt;
+    orbit.pitch = -0.35 + Math.sin(t * 0.00015) * 0.25;
+  }
+
+  // --- clear with a subtle vignette ---
+  const grad = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.7);
+  grad.addColorStop(0, "#0b0b11");
+  grad.addColorStop(1, "#050507");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // --- donut ---
+  const cx = W / 2, cy = H / 2;
+  const K1 = Math.min(W, H) * 0.32 * orbit.zoom; // on-screen scale
+
+  const cy_ = Math.cos(orbit.yaw), sy_ = Math.sin(orbit.yaw);
+  const cp_ = Math.cos(orbit.pitch), sp_ = Math.sin(orbit.pitch);
+  const spin = t * 0.0004; // slow intrinsic spin so static pose still lives
+
+  // Sort-by-depth is expensive for thousands of glyphs; we instead use a
+  // z-buffer (1/z closer to camera wins) keyed by screen cell. Cell size
+  // depends on font size.
+  const CELL = 9; // px bucket
+  const cols = Math.ceil(W / CELL), rows = Math.ceil(H / CELL);
+  const zbuf = new Float32Array(cols * rows);
+  const chbuf = new Array(cols * rows);
+  const lumbuf = new Float32Array(cols * rows);
+
+  let glyphIdx = 0;
+  for (let j = 0; j < PHI_STEPS; j++) {
+    const phi = (j / PHI_STEPS) * Math.PI * 2;
+    const cphi = Math.cos(phi), sphi = Math.sin(phi);
+    for (let i = 0; i < THETA_STEPS; i++) {
+      const theta = (i / THETA_STEPS) * Math.PI * 2 + spin;
+      const ct = Math.cos(theta), st = Math.sin(theta);
+
+      // Torus point (pre-rotation)
+      const circleX = R2 + R1 * ct;
+      const circleY = R1 * st;
+
+      // apply spin-around-Y for a little life, then pitch, then yaw
+      const x0 =  circleX * cphi;
+      const y0 =  circleY;
+      const z0 = -circleX * sphi;
+
+      // pitch (rotate around X)
+      const x1 = x0;
+      const y1 = y0 * cp_ - z0 * sp_;
+      const z1 = y0 * sp_ + z0 * cp_;
+
+      // yaw (rotate around Y)
+      const x2 = x1 * cy_ + z1 * sy_;
+      const y2 = y1;
+      const z2 = -x1 * sy_ + z1 * cy_;
+
+      const z = z2 + K2;
+      if (z <= 0.1) continue;
+      const ooz = 1 / z;
+
+      const sx = cx + K1 * x2 * ooz;
+      const sy = cy - K1 * y2 * ooz;
+
+      // --- luminance: surface normal • light dir ---
+      // Normal on torus surface (in pre-rotated frame) = (cphi*ct, st, -sphi*ct)
+      const nx0 =  cphi * ct;
+      const ny0 =  st;
+      const nz0 = -sphi * ct;
+      // Apply same pitch/yaw to the normal
+      const nx1 = nx0;
+      const ny1 = ny0 * cp_ - nz0 * sp_;
+      const nz1 = ny0 * sp_ + nz0 * cp_;
+      const nx2 = nx1 * cy_ + nz1 * sy_;
+      const ny2 = ny1;
+      const nz2 = -nx1 * sy_ + nz1 * cy_;
+
+      // Light: upper-right, slightly forward
+      const lx = 0.577, ly = -0.577, lz = -0.577;
+      const L = nx2 * lx + ny2 * ly + nz2 * lz; // ∈ [-1,1]-ish
+
+      if (L <= 0.02) { glyphIdx = (glyphIdx + 1) % GLYPHS.length; continue; }
+
+      // screen bucket (z-buffer)
+      const ci = Math.floor(sx / CELL);
+      const ri = Math.floor(sy / CELL);
+      if (ci < 0 || ci >= cols || ri < 0 || ri >= rows) { glyphIdx = (glyphIdx + 1) % GLYPHS.length; continue; }
+      const idx = ri * cols + ci;
+      if (ooz > zbuf[idx]) {
+        zbuf[idx] = ooz;
+        const g = GLYPHS[glyphIdx];
+        chbuf[idx] = g === " " ? "·" : g; // visible placeholder for spaces
+        lumbuf[idx] = L;
+      }
+      glyphIdx = (glyphIdx + 1) % GLYPHS.length;
+    }
+  }
+
+  // --- draw glyphs ---
+  ctx.font = FONT;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const i = r * cols + c;
+      const ch = chbuf[i];
+      if (!ch) continue;
+      const L = lumbuf[i];
+      const shade = Math.max(0, Math.min(1, L * 1.15));
+      // warm core → cool rim: depth (1/z) biases hue
+      const depth = zbuf[i];
+      const depthN = Math.min(1, Math.max(0, (depth - 0.18) / 0.16));
+      // color: vintage amber CRT, darker in shadow
+      const hue = 38 + (1 - depthN) * -18; // 38 amber → 20 warmer-red at far
+      const sat = 20 + shade * 40;
+      const lit = 10 + shade * 62;
+      ctx.fillStyle = `hsl(${hue} ${sat}% ${lit}%)`;
+      ctx.globalAlpha = 0.25 + shade * 0.75;
+      ctx.fillText(ch, c * CELL + CELL / 2, r * CELL + CELL / 2);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // subtle scanline
+  ctx.globalCompositeOperation = "overlay";
+  ctx.fillStyle = "rgba(0,0,0,0.04)";
+  for (let y = 0; y < H; y += 3) ctx.fillRect(0, y, W, 1);
+  ctx.globalCompositeOperation = "source-over";
+
+  requestAnimationFrame(frameLoop);
+}
+requestAnimationFrame(frameLoop);
+</script>
+</body>
+</html>

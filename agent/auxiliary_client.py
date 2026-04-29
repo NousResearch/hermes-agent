@@ -150,13 +150,20 @@ _PROVIDER_ALIASES = {
 
 def _normalize_aux_provider(provider: Optional[str]) -> str:
     normalized = (provider or "auto").strip().lower()
-    if normalized.startswith("custom:"):
+    # Preserve custom: prefix to avoid shadowing user-defined providers
+    # that may have names like "codex" that match built-in provider aliases
+    was_custom = normalized.startswith("custom:")
+    if was_custom:
         suffix = normalized.split(":", 1)[1].strip()
         if not suffix:
             return "custom"
         normalized = suffix
-    if normalized == "codex":
-        return "openai-codex"
+    # Only apply built-in aliases if NOT a custom provider
+    # This prevents user-defined custom providers like "codex" from
+    # being rewritten to "openai-codex", which breaks auxiliary paths
+    if not was_custom:
+        if normalized == "codex":
+            return "openai-codex"
     if normalized == "main":
         # Resolve to the user's actual main provider so named custom providers
         # and non-aggregator providers (DeepSeek, Alibaba, etc.) work correctly.

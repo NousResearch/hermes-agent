@@ -161,7 +161,7 @@ from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
-from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
@@ -192,6 +192,24 @@ from agent.trajectory import (
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
 from hermes_cli.config import cfg_get
 
+
+
+def _build_context_engine_usage_dict(canonical_usage: CanonicalUsage) -> dict[str, int]:
+    """Build the usage payload passed to context engines.
+
+    Keep the legacy token keys while also exposing canonical cache buckets for
+    engines that can make better policy decisions with them.
+    """
+    return {
+        "prompt_tokens": canonical_usage.prompt_tokens,
+        "completion_tokens": canonical_usage.output_tokens,
+        "total_tokens": canonical_usage.total_tokens,
+        "input_tokens": canonical_usage.input_tokens,
+        "output_tokens": canonical_usage.output_tokens,
+        "cache_read_tokens": canonical_usage.cache_read_tokens,
+        "cache_write_tokens": canonical_usage.cache_write_tokens,
+        "reasoning_tokens": canonical_usage.reasoning_tokens,
+    }
 
 
 class _SafeWriter:
@@ -13166,11 +13184,7 @@ class AIAgent:
                         prompt_tokens = canonical_usage.prompt_tokens
                         completion_tokens = canonical_usage.output_tokens
                         total_tokens = canonical_usage.total_tokens
-                        usage_dict = {
-                            "prompt_tokens": prompt_tokens,
-                            "completion_tokens": completion_tokens,
-                            "total_tokens": total_tokens,
-                        }
+                        usage_dict = _build_context_engine_usage_dict(canonical_usage)
                         self.context_compressor.update_from_response(usage_dict)
 
                         # Cache discovered context length after successful call.

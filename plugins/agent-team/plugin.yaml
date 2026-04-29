@@ -1,0 +1,5 @@
+name: agent-team
+version: 0.1.0
+description: "PoC slash command for coordinating multiple Hermes subagents as a small agent team."
+author: "linqixin1003"
+kind: standalone

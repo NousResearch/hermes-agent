@@ -901,6 +901,9 @@ class TestProfileRestoration:
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # Keep host-specific aliases (e.g. ~/.local/bin/coder) from leaking
+        # into check_alias_collision() during import wrapper restoration.
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
         # Mock the wrapper dir to be inside tmp_path
         wrapper_dir = tmp_path / ".local" / "bin"
@@ -937,6 +940,7 @@ class TestProfileRestoration:
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
         wrapper_dir = tmp_path / ".local" / "bin"
         wrapper_dir.mkdir(parents=True)
@@ -963,6 +967,7 @@ class TestProfileRestoration:
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
         zip_path = tmp_path / "backup.zip"
         self._make_backup_zip(zip_path, {
@@ -1362,10 +1367,16 @@ class TestRunPreUpdateBackup:
         monkeypatch.setenv("HERMES_HOME", str(root))
         # Make Path.home() point at tmp_path for anything that uses it
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        # Bust caches for hermes_cli.config + hermes_constants so they pick up HERMES_HOME
-        for mod in list(__import__("sys").modules.keys()):
-            if mod.startswith("hermes_cli.config") or mod == "hermes_constants":
-                del __import__("sys").modules[mod]
+        # Bust config/env detection caches without replacing module objects.
+        # Replacing modules in sys.modules breaks tests that imported
+        # `load_config` directly (stale function globals).
+        from hermes_cli import config as _cfg_mod
+        _cfg_mod._LOAD_CONFIG_CACHE.clear()
+        _cfg_mod._RAW_CONFIG_CACHE.clear()
+        _cfg_mod._LAST_EXPANDED_CONFIG_BY_PATH.clear()
+        import hermes_constants as _hc_mod
+        _hc_mod._wsl_detected = None
+        _hc_mod._container_detected = None
         return root
 
     def test_backup_flag_creates_backup(self, hermes_home, capsys):
@@ -1412,10 +1423,10 @@ class TestRunPreUpdateBackup:
             "_config_version": 22,
             "updates": {"pre_update_backup": True},
         }))
-        import sys as _sys
-        for mod in list(_sys.modules.keys()):
-            if mod.startswith("hermes_cli.config"):
-                del _sys.modules[mod]
+        from hermes_cli import config as _cfg_mod
+        _cfg_mod._LOAD_CONFIG_CACHE.clear()
+        _cfg_mod._RAW_CONFIG_CACHE.clear()
+        _cfg_mod._LAST_EXPANDED_CONFIG_BY_PATH.clear()
 
         from hermes_cli.main import _run_pre_update_backup
         _run_pre_update_backup(Namespace(no_backup=False, backup=False))
@@ -1434,10 +1445,10 @@ class TestRunPreUpdateBackup:
             "updates": {"pre_update_backup": False},
         }))
         # Ensure config module re-reads
-        import sys as _sys
-        for mod in list(_sys.modules.keys()):
-            if mod.startswith("hermes_cli.config"):
-                del _sys.modules[mod]
+        from hermes_cli import config as _cfg_mod
+        _cfg_mod._LOAD_CONFIG_CACHE.clear()
+        _cfg_mod._RAW_CONFIG_CACHE.clear()
+        _cfg_mod._LAST_EXPANDED_CONFIG_BY_PATH.clear()
 
         from hermes_cli.main import _run_pre_update_backup
         _run_pre_update_backup(Namespace(no_backup=False, backup=False))
@@ -1453,10 +1464,10 @@ class TestRunPreUpdateBackup:
             "_config_version": 22,
             "updates": {"pre_update_backup": True},
         }))
-        import sys as _sys
-        for mod in list(_sys.modules.keys()):
-            if mod.startswith("hermes_cli.config"):
-                del _sys.modules[mod]
+        from hermes_cli import config as _cfg_mod
+        _cfg_mod._LOAD_CONFIG_CACHE.clear()
+        _cfg_mod._RAW_CONFIG_CACHE.clear()
+        _cfg_mod._LAST_EXPANDED_CONFIG_BY_PATH.clear()
 
         from hermes_cli.main import _run_pre_update_backup
         _run_pre_update_backup(Namespace(no_backup=True, backup=False))

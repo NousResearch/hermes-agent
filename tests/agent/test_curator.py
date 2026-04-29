@@ -359,13 +359,19 @@ def test_state_atomic_write_no_tmp_leftovers(curator_env):
 def test_curator_review_prompt_has_invariants():
     """Core invariants must be in the review prompt text."""
     from agent.curator import CURATOR_REVIEW_PROMPT
-    assert "MUST NOT" in CURATOR_REVIEW_PROMPT
+    assert "MUST NOT" in CURATOR_REVIEW_PROMPT or "DO NOT" in CURATOR_REVIEW_PROMPT
     assert "bundled" in CURATOR_REVIEW_PROMPT.lower()
     assert "delete" in CURATOR_REVIEW_PROMPT.lower()
     assert "pinned" in CURATOR_REVIEW_PROMPT.lower()
-    # Must mention the decisions the reviewer can make
-    for verb in ("keep", "patch", "archive", "consolidate"):
+    # Must describe the actions the reviewer can take. The exact vocabulary
+    # has tightened over time (the umbrella-first prompt drops 'keep' as a
+    # first-class decision verb, since passive keep-everything is the
+    # failure mode the prompt is trying to avoid), but the core merge /
+    # archive / patch trio must remain callable.
+    for verb in ("patch", "archive"):
         assert verb in CURATOR_REVIEW_PROMPT.lower()
+    # Must mention consolidation (possibly via "merge" or "consolidat")
+    assert "consolidat" in CURATOR_REVIEW_PROMPT.lower() or "merge" in CURATOR_REVIEW_PROMPT.lower()
 
 
 def test_curator_review_prompt_points_at_existing_tools_only():
@@ -398,6 +404,44 @@ def test_curator_does_not_instruct_model_to_pin():
     assert not any(l.strip().startswith("pin ") for l in lines), (
         f"Found a pin action line in:\n{decision_block}"
     )
+
+
+def test_curator_review_prompt_is_umbrella_first():
+    """The curator prompt must push umbrella-building / class-level thinking,
+    not pair-level 'are these two the same?' analysis."""
+    from agent.curator import CURATOR_REVIEW_PROMPT
+    lower = CURATOR_REVIEW_PROMPT.lower()
+    # Must frame the task as active umbrella-building, not a passive audit.
+    assert "umbrella" in lower, (
+        "must use UMBRELLA framing — the class-first abstraction the curator "
+        "is designed to produce"
+    )
+    # Must tell the reviewer not to stop at pair-level distinctness.
+    assert "class" in lower, "must reference class-level thinking"
+    # Must cover the three consolidation methods explicitly
+    assert "references/" in CURATOR_REVIEW_PROMPT, (
+        "must name references/ as a demotion target for session-specific content"
+    )
+    # templates/ and scripts/ make the umbrella a real class-level skill
+    assert "templates/" in CURATOR_REVIEW_PROMPT
+    assert "scripts/" in CURATOR_REVIEW_PROMPT
+    # Must say the counter argument: usage=0 is not a reason to skip
+    assert "use_count" in CURATOR_REVIEW_PROMPT or "counter" in lower, (
+        "must pre-empt the 'usage counters are zero, I can't judge' bailout"
+    )
+
+
+def test_curator_review_prompt_offers_support_file_actions():
+    """Support-file demotion (references/templates/scripts) must be one of
+    the three consolidation methods, alongside merge-into-existing and
+    create-new-umbrella."""
+    from agent.curator import CURATOR_REVIEW_PROMPT
+    # skill_manage action=write_file is how references/ are added to an
+    # existing skill — this is the create-adjacent action the curator needs
+    # to demote narrow siblings without touching their SKILL.md.
+    assert "write_file" in CURATOR_REVIEW_PROMPT
+    # Must offer creating a brand-new umbrella when no existing one fits
+    assert "action=create" in CURATOR_REVIEW_PROMPT or "create a new umbrella" in CURATOR_REVIEW_PROMPT.lower()
 
 
 

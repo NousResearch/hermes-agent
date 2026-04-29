@@ -192,6 +192,43 @@ class TestDefaultContextLengths:
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
 
+    def test_deepseek_v4_models_1m_context(self):
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        expected_keys = {
+            "deepseek-v4-pro": 1_000_000,
+            "deepseek-v4-flash": 1_000_000,
+            "deepseek-chat": 1_000_000,
+            "deepseek-reasoner": 1_000_000,
+        }
+        for key, value in expected_keys.items():
+            assert key in DEFAULT_CONTEXT_LENGTHS, f"{key} missing"
+            assert DEFAULT_CONTEXT_LENGTHS[key] == value, (
+                f"{key} should be {value}, got {DEFAULT_CONTEXT_LENGTHS[key]}"
+            )
+
+        # Longest-first substring matching must resolve both the bare V4
+        # ids (native DeepSeek) and the vendor-prefixed forms (OpenRouter
+        # / Nous Portal) to 1M without probing down to the legacy 128K
+        # ``deepseek`` substring fallback.
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            cases = [
+                ("deepseek-v4-pro", 1_000_000),
+                ("deepseek-v4-flash", 1_000_000),
+                ("deepseek/deepseek-v4-pro", 1_000_000),
+                ("deepseek/deepseek-v4-flash", 1_000_000),
+                ("deepseek-chat", 1_000_000),
+                ("deepseek-reasoner", 1_000_000),
+            ]
+            for model_id, expected_ctx in cases:
+                actual = get_model_context_length(model_id)
+                assert actual == expected_ctx, (
+                    f"{model_id}: expected {expected_ctx}, got {actual}"
+                )
+
     def test_all_values_positive(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
             assert value > 0, f"{key} has non-positive context length"
@@ -303,7 +340,9 @@ class TestCodexOAuthContextLength:
         from agent.model_metadata import get_model_context_length
 
         # OpenRouter — should hit its own catalog path first; when mocked
-        # empty, falls through to hardcoded DEFAULT_CONTEXT_LENGTHS (400k).
+        # empty, falls through to hardcoded DEFAULT_CONTEXT_LENGTHS (1.05M,
+        # matching the real direct-API value — Codex OAuth's 272k cap is
+        # provider-specific and must not leak here).
         with patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
@@ -314,7 +353,7 @@ class TestCodexOAuthContextLength:
                 api_key="",
                 provider="openrouter",
             )
-        assert ctx == 400_000, (
+        assert ctx == 1_050_000, (
             f"Non-Codex gpt-5.5 resolved to {ctx}; Codex 272k override "
             "leaked outside openai-codex provider"
         )
@@ -459,9 +498,10 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_api_missing_context_length_key(self, mock_fetch):
-        """Model in API but without context_length → defaults to 128000."""
+        """Model in API but without context_length → defaults to the top
+        probe tier (currently 256K)."""
         mock_fetch.return_value = {"test/model": {"name": "Test"}}
-        assert get_model_context_length("test/model") == 128000
+        assert get_model_context_length("test/model") == CONTEXT_PROBE_TIERS[0]
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_cache_takes_priority_over_api(self, mock_fetch, tmp_path):
@@ -814,14 +854,17 @@ class TestContextProbeTiers:
         for i in range(len(CONTEXT_PROBE_TIERS) - 1):
             assert CONTEXT_PROBE_TIERS[i] > CONTEXT_PROBE_TIERS[i + 1]
 
-    def test_first_tier_is_128k(self):
-        assert CONTEXT_PROBE_TIERS[0] == 128_000
+    def test_first_tier_is_256k(self):
+        assert CONTEXT_PROBE_TIERS[0] == 256_000
 
     def test_last_tier_is_8k(self):
         assert CONTEXT_PROBE_TIERS[-1] == 8_000
 
 
 class TestGetNextProbeTier:
+    def test_from_256k(self):
+        assert get_next_probe_tier(256_000) == 128_000
+
     def test_from_128k(self):
         assert get_next_probe_tier(128_000) == 64_000
 
@@ -841,8 +884,8 @@ class TestGetNextProbeTier:
         assert get_next_probe_tier(100_000) == 64_000
 
     def test_above_max_tier(self):
-        """Value above 128K should return 128K."""
-        assert get_next_probe_tier(500_000) == 128_000
+        """Value above 256K should return 256K."""
+        assert get_next_probe_tier(500_000) == 256_000
 
     def test_zero_returns_none(self):
         assert get_next_probe_tier(0) is None

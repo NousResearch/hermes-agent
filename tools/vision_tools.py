@@ -56,9 +56,9 @@ def _resolve_download_timeout() -> float:
         except ValueError:
             pass
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import cfg_get, load_config
         cfg = load_config()
-        val = cfg.get("auxiliary", {}).get("vision", {}).get("download_timeout")
+        val = cfg_get(cfg, "auxiliary", "vision", "download_timeout")
         if val is not None:
             return float(val)
     except Exception:
@@ -555,9 +555,9 @@ async def vision_analyze_tool(
         vision_timeout = 120.0
         vision_temperature = 0.1
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.config import cfg_get, load_config
             _cfg = load_config()
-            _vision_cfg = _cfg.get("auxiliary", {}).get("vision", {})
+            _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
             _vt = _vision_cfg.get("timeout")
             if _vt is not None:
                 vision_timeout = float(_vt)
@@ -754,7 +754,15 @@ from tools.registry import registry, tool_error
 
 VISION_ANALYZE_SCHEMA = {
     "name": "vision_analyze",
-    "description": "Analyze images using AI vision. Provides a comprehensive description and answers a specific question about the image content.",
+    "description": (
+        "Inspect an image from a URL, file path, or tool output when you need "
+        "closer detail than what's visible in the conversation. If the user's "
+        "image is already attached to the conversation and you can see it, "
+        "just answer directly — only call this tool for images referenced by "
+        "URL/path, images returned inside other tool results (browser "
+        "screenshots, search thumbnails), or when you need a deeper look at "
+        "a specific region the main model's vision may have missed."
+    ),
     "parameters": {
         "type": "object",
         "properties": {

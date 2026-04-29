@@ -56,8 +56,12 @@ _SENSITIVE_BODY_KEYS = frozenset({
 })
 
 # Snapshot at import time so runtime env mutations (e.g. LLM-generated
-# `export HERMES_REDACT_SECRETS=false`) cannot disable redaction mid-session.
-_REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "").lower() not in ("0", "false", "no", "off")
+# `export HERMES_REDACT_SECRETS=true`) cannot enable/disable redaction
+# mid-session.  OFF by default — user must opt in via
+# `security.redact_secrets: true` in config.yaml (bridged to this env var
+# in hermes_cli/main.py and gateway/run.py) or `HERMES_REDACT_SECRETS=true`
+# in ~/.hermes/.env.
+_REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "").lower() in ("1", "true", "yes", "on")
 
 # Known API key prefixes -- match the prefix + contiguous token chars
 _PREFIX_PATTERNS = [
@@ -180,11 +184,59 @@ _PREFIX_RE = re.compile(
 )
 
 
+def mask_secret(
+    value: str,
+    *,
+    head: int = 4,
+    tail: int = 4,
+    floor: int = 12,
+    placeholder: str = "***",
+    empty: str = "",
+) -> str:
+    """Mask a secret for display, preserving ``head`` and ``tail`` characters.
+
+    Canonical helper for display-time redaction across Hermes — used by
+    ``hermes config``, ``hermes status``, ``hermes dump``, and anywhere
+    a secret needs to be shown truncated for debuggability while still
+    keeping the bulk hidden.
+
+    Args:
+        value:       The secret to mask. ``None``/empty returns ``empty``.
+        head:        Leading characters to preserve. Default 4.
+        tail:        Trailing characters to preserve. Default 4.
+        floor:       Values shorter than ``head + tail + floor_margin`` are
+                     fully masked (returns ``placeholder``). Default 12 —
+                     matches the existing config/status/dump convention.
+        placeholder: Value returned for too-short inputs. Default ``"***"``.
+        empty:       Value returned when ``value`` is falsy (None, ""). The
+                     caller can override this to e.g. ``color("(not set)",
+                     Colors.DIM)`` for user-facing display.
+
+    Examples:
+        >>> mask_secret("sk-proj-abcdef1234567890")
+        'sk-p...7890'
+        >>> mask_secret("short")                         # fully masked
+        '***'
+        >>> mask_secret("")                              # empty default
+        ''
+        >>> mask_secret("", empty="(not set)")           # empty override
+        '(not set)'
+        >>> mask_secret("long-token", head=6, tail=4, floor=18)
+        '***'
+    """
+    if not value:
+        return empty
+    if len(value) < floor:
+        return placeholder
+    return f"{value[:head]}...{value[-tail:]}"
+
+
 def _mask_token(token: str) -> str:
-    """Mask a token, preserving prefix for long tokens."""
-    if len(token) < 18:
+    """Mask a log token — conservative 18-char floor, preserves 6 prefix / 4 suffix."""
+    # Empty input: historically this returned "***" rather than "". Preserve.
+    if not token:
         return "***"
-    return f"{token[:6]}...{token[-4:]}"
+    return mask_secret(token, head=6, tail=4, floor=18)
 
 
 def _redact_query_string(query: str) -> str:
@@ -257,7 +309,7 @@ def redact_sensitive_text(text: str) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
-    Disabled when security.redact_secrets is false in config.yaml.
+    Disabled by default — enable via security.redact_secrets: true in config.yaml.
     """
     if text is None:
         return None

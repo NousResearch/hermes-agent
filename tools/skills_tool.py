@@ -77,6 +77,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Tuple
 
 from tools.registry import registry, tool_error
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -535,7 +536,7 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         skills_cfg = config.get("skills", {})
         resolved_platform = platform or os.getenv("HERMES_PLATFORM") or _get_session_platform()
         if resolved_platform:
-            platform_disabled = skills_cfg.get("platform_disabled", {}).get(resolved_platform)
+            platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
             if platform_disabled is not None:
                 return name in platform_disabled
         return name in skills_cfg.get("disabled", [])
@@ -1480,13 +1481,32 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
+def _skill_view_with_bump(args, **kw):
+    """Invoke skill_view, then bump view_count on success. Best-effort: a
+    telemetry failure never breaks the tool call."""
+    name = args.get("name", "")
+    result = skill_view(
+        name, file_path=args.get("file_path"), task_id=kw.get("task_id")
+    )
+    try:
+        parsed = json.loads(result)
+        if isinstance(parsed, dict) and parsed.get("success"):
+            # Use the resolved skill name from the payload when present —
+            # qualified forms ("plugin:skill") return with the canonical name.
+            resolved = parsed.get("name") or name
+            if resolved:
+                from tools.skill_usage import bump_view
+                bump_view(str(resolved))
+    except Exception:
+        pass
+    return result
+
+
 registry.register(
     name="skill_view",
     toolset="skills",
     schema=SKILL_VIEW_SCHEMA,
-    handler=lambda args, **kw: skill_view(
-        args.get("name", ""), file_path=args.get("file_path"), task_id=kw.get("task_id")
-    ),
+    handler=_skill_view_with_bump,
     check_fn=check_skills_requirements,
     emoji="📚",
 )

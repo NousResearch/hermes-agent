@@ -1,14 +1,25 @@
-import { useEffect, useLayoutEffect, useState, useCallback, useRef } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useState,
+  useCallback,
+  useRef,
+} from "react";
 import { FileText, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
+import {
+  Badge,
+  Button,
+  FilterGroup,
+  Segmented,
+  Spinner,
+  Switch,
+} from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { FilterGroup, Segmented } from "@/components/ui/segmented";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { PluginSlot } from "@/plugins";
 
 const FILES = ["agent", "errors", "gateway"] as const;
 const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
@@ -72,10 +83,8 @@ export default function LogsPage() {
   useLayoutEffect(() => {
     setAfterTitle(
       <span className="flex items-center gap-2">
-        {loading && (
-          <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-        )}
-        <Badge variant="secondary" className="text-[10px]">
+        {loading && <Spinner className="shrink-0 text-base text-primary" />}
+        <Badge tone="secondary" className="text-[10px]">
           {file} · {level} · {component}
         </Badge>
       </span>,
@@ -92,7 +101,7 @@ export default function LogsPage() {
             {t.logs.autoRefresh}
           </Label>
           {autoRefresh && (
-            <Badge variant="success" className="text-[10px]">
+            <Badge tone="success" className="text-[10px]">
               <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
               {t.common.live}
             </Badge>
@@ -100,13 +109,12 @@ export default function LogsPage() {
         </div>
         <Button
           type="button"
-          variant="outline"
           size="sm"
+          outlined
           onClick={fetchLogs}
           disabled={loading}
-          className="h-7 text-xs"
+          prefix={loading ? <Spinner /> : <RefreshCw />}
         >
-          <RefreshCw className="mr-1 h-3 w-3" />
           {t.common.refresh}
         </Button>
       </div>,
@@ -141,18 +149,26 @@ export default function LogsPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* ═══════════════ Filter toolbar ═══════════════ */}
+      <PluginSlot name="logs:top" />
       <div
         role="toolbar"
         aria-label={t.logs.title}
         className="flex flex-wrap items-center gap-x-6 gap-y-2"
       >
         <FilterGroup label={t.logs.file}>
-          <Segmented value={file} onChange={setFile} options={toOptions(FILES)} />
+          <Segmented
+            value={file}
+            onChange={setFile}
+            options={toOptions(FILES)}
+          />
         </FilterGroup>
 
         <FilterGroup label={t.logs.level}>
-          <Segmented value={level} onChange={setLevel} options={toOptions(LEVELS)} />
+          <Segmented
+            value={level}
+            onChange={setLevel}
+            options={toOptions(LEVELS)}
+          />
         </FilterGroup>
 
         <FilterGroup label={t.logs.component}>
@@ -177,7 +193,6 @@ export default function LogsPage() {
         </FilterGroup>
       </div>
 
-      {/* ═══════════════ Log viewer ═══════════════ */}
       <Card>
         <CardHeader className="py-3 px-4">
           <CardTitle className="text-sm flex items-center gap-2">
@@ -215,6 +230,7 @@ export default function LogsPage() {
           </div>
         </CardContent>
       </Card>
+      <PluginSlot name="logs:bottom" />
     </div>
   );
 }

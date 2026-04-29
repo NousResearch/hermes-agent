@@ -88,13 +88,13 @@ class TestCopyReasoningContentForApi:
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert api_msg.get("reasoning_content") == ""
 
-    def test_deepseek_assistant_no_tool_call_left_alone(self) -> None:
-        """Plain assistant turns without tool_calls don't get padded."""
+    def test_deepseek_assistant_no_tool_call_gets_padded(self) -> None:
+        """DeepSeek thinking mode pads ALL assistant turns, even without tool_calls."""
         agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
         source = {"role": "assistant", "content": "hello"}
         api_msg: dict = {}
         agent._copy_reasoning_content_for_api(source, api_msg)
-        assert "reasoning_content" not in api_msg
+        assert api_msg.get("reasoning_content") == ""
 
     def test_deepseek_explicit_reasoning_content_preserved(self) -> None:
         """When reasoning_content is already set, it's copied verbatim."""
@@ -109,16 +109,58 @@ class TestCopyReasoningContentForApi:
         assert api_msg["reasoning_content"] == "<think>real chain of thought</think>"
 
     def test_deepseek_reasoning_field_promoted(self) -> None:
-        """When only 'reasoning' is set, it gets promoted to reasoning_content."""
+        """When only 'reasoning' is set (no tool_calls), it gets promoted to reasoning_content.
+
+        On DeepSeek/Kimi, tool-call turns with 'reasoning' but no
+        'reasoning_content' are treated as cross-provider poisoned history
+        (#15748) and padded with "" instead of promoted. Same-provider
+        DeepSeek tool-call turns always have reasoning_content pinned at
+        creation time by _build_assistant_message, so the (reasoning-set,
+        reasoning_content-absent, tool_calls-present) shape is unreachable
+        from same-provider history.
+        """
         agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
         source = {
             "role": "assistant",
+            "content": "",
             "reasoning": "thought trace",
-            "tool_calls": [{"id": "c1", "function": {"name": "terminal"}}],
         }
         api_msg: dict = {}
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert api_msg["reasoning_content"] == "thought trace"
+
+    def test_deepseek_poisoned_cross_provider_history_padded(self) -> None:
+        """Cross-provider tool-call turn (#15748): MiniMax reasoning leaks
+        to DeepSeek/Kimi request.
+
+        If the source turn has tool_calls AND a 'reasoning' field but NO
+        'reasoning_content' key, it's from a prior provider (the DeepSeek
+        build path always pins reasoning_content="" at creation). Inject
+        "" instead of forwarding the prior provider's chain of thought.
+        """
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
+        source = {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "MiniMax chain of thought from a prior turn",
+            "tool_calls": [{"id": "c1", "function": {"name": "terminal"}}],
+        }
+        api_msg: dict = {}
+        agent._copy_reasoning_content_for_api(source, api_msg)
+        assert api_msg["reasoning_content"] == ""
+
+    def test_kimi_poisoned_cross_provider_history_padded(self) -> None:
+        """Kimi path of #15748 — same rule as DeepSeek."""
+        agent = _make_agent(provider="kimi-coding", model="kimi-k2.5")
+        source = {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "DeepSeek chain of thought from a prior turn",
+            "tool_calls": [{"id": "c1", "function": {"name": "terminal"}}],
+        }
+        api_msg: dict = {}
+        agent._copy_reasoning_content_for_api(source, api_msg)
+        assert api_msg["reasoning_content"] == ""
 
     def test_kimi_path_still_works(self) -> None:
         """Existing Kimi detection still pads reasoning_content."""

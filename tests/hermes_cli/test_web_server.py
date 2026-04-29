@@ -1678,6 +1678,45 @@ class TestDashboardPluginManifestExtensions:
         entry = next(p for p in plugins if p["name"] == "mixed-slots")
         assert entry["slots"] == ["sidebar", "header-right"]
 
+    def test_page_scoped_slots_preserved(self, tmp_path, monkeypatch):
+        """Page-scoped slot names (e.g. ``sessions:top``) round-trip through
+        the manifest loader untouched.  The backend has no allowlist — the
+        frontend ``<PluginSlot name="...">`` placements decide what actually
+        renders — but the loader must not mangle colons in slot names."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "page-slots", {
+            "name": "page-slots",
+            "label": "Page Slots",
+            "tab": {"path": "/page-slots", "hidden": True},
+            "slots": [
+                "sessions:top",
+                "analytics:bottom",
+                "logs:top",
+                "skills:bottom",
+                "config:top",
+                "env:bottom",
+                "docs:top",
+                "cron:bottom",
+                "chat:top",
+            ],
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        entry = next(p for p in plugins if p["name"] == "page-slots")
+        assert entry["slots"] == [
+            "sessions:top",
+            "analytics:bottom",
+            "logs:top",
+            "skills:bottom",
+            "config:top",
+            "env:bottom",
+            "docs:top",
+            "cron:bottom",
+            "chat:top",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # /api/pty WebSocket — terminal bridge for the dashboard "Chat" tab.

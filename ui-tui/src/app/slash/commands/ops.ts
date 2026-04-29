@@ -1,5 +1,12 @@
 import type {
+  BrowserManageResponse,
   DelegationPauseResponse,
+  ProcessStopResponse,
+  ReloadEnvResponse,
+  ReloadMcpResponse,
+  RollbackDiffResponse,
+  RollbackListResponse,
+  RollbackRestoreResponse,
   SlashExecResponse,
   SpawnTreeListResponse,
   SpawnTreeLoadResponse,
@@ -50,6 +57,202 @@ interface SkillsBrowseResponse {
 }
 
 export const opsCommands: SlashCommand[] = [
+  {
+    help: 'stop background processes',
+    name: 'stop',
+    run: (_arg, ctx) => {
+      ctx.gateway
+        .rpc<ProcessStopResponse>('process.stop', {})
+        .then(
+          ctx.guarded<ProcessStopResponse>(r => {
+            const killed = Number(r.killed ?? 0)
+            const noun = killed === 1 ? 'process' : 'processes'
+            ctx.transcript.sys(`stopped ${killed} background ${noun}`)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    aliases: ['reload_mcp'],
+    help: 'reload MCP servers in the live session',
+    name: 'reload-mcp',
+    run: (_arg, ctx) => {
+      ctx.gateway
+        .rpc<ReloadMcpResponse>('reload.mcp', { session_id: ctx.sid })
+        .then(
+          ctx.guarded<ReloadMcpResponse>(r => {
+            ctx.transcript.sys(r.status === 'reloaded' ? 'MCP servers reloaded' : 'reload complete')
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 're-read ~/.hermes/.env into the running gateway (CLI parity)',
+    name: 'reload',
+    run: (_arg, ctx) => {
+      ctx.gateway
+        .rpc<ReloadEnvResponse>('reload.env', {})
+        .then(
+          ctx.guarded<ReloadEnvResponse>(r => {
+            const n = Number(r.updated ?? 0)
+            const noun = n === 1 ? 'var' : 'vars'
+
+            ctx.transcript.sys(`reloaded .env (${n} ${noun} updated)`)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'manage browser CDP connection [connect|disconnect|status]',
+    name: 'browser',
+    run: (arg, ctx) => {
+      const [rawAction = 'status', ...rest] = arg.trim().split(/\s+/).filter(Boolean)
+      const action = rawAction.toLowerCase()
+
+      if (!['connect', 'disconnect', 'status'].includes(action)) {
+        return ctx.transcript.sys(
+          'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
+        )
+      }
+
+      const sid = ctx.sid ?? null
+      const url = action === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
+
+      if (url) {
+        ctx.transcript.sys(`checking Chrome remote debugging at ${url}...`)
+      }
+
+      ctx.gateway
+        .rpc<BrowserManageResponse>('browser.manage', { action, session_id: sid, ...(url && { url }) })
+        .then(
+          ctx.guarded<BrowserManageResponse>(r => {
+            // Without a session we can't subscribe to streamed
+            // browser.progress events, so flush the bundled list.
+            if (!sid) {
+              r.messages?.forEach(message => ctx.transcript.sys(message))
+            }
+
+            if (action === 'status') {
+              return ctx.transcript.sys(
+                r.connected
+                  ? `browser connected: ${r.url || '(url unavailable)'}`
+                  : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
+              )
+            }
+
+            if (action === 'disconnect') {
+              return ctx.transcript.sys('browser disconnected')
+            }
+
+            if (r.connected) {
+              ctx.transcript.sys('Browser connected to live Chrome via CDP')
+              ctx.transcript.sys(`Endpoint: ${r.url || '(url unavailable)'}`)
+              ctx.transcript.sys('next browser tool call will use this CDP endpoint')
+            }
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'list, diff, or restore checkpoints',
+    name: 'rollback',
+    run: (arg, ctx) => {
+      if (!ctx.sid) {
+        return ctx.transcript.sys('no active session — nothing to rollback')
+      }
+
+      const trimmed = arg.trim()
+      const [first = '', ...rest] = trimmed.split(/\s+/).filter(Boolean)
+      const lower = first.toLowerCase()
+
+      if (!trimmed || lower === 'list' || lower === 'ls') {
+        return ctx.gateway
+          .rpc<RollbackListResponse>('rollback.list', { session_id: ctx.sid })
+          .then(
+            ctx.guarded<RollbackListResponse>(r => {
+              if (!r.enabled) {
+                return ctx.transcript.sys('checkpoints are not enabled')
+              }
+
+              const checkpoints = r.checkpoints ?? []
+
+              if (!checkpoints.length) {
+                return ctx.transcript.sys('no checkpoints found')
+              }
+
+              ctx.transcript.panel('Rollback checkpoints', [
+                {
+                  rows: checkpoints.map((c, idx) => [
+                    `${idx + 1}. ${c.hash.slice(0, 10)}`,
+                    [c.timestamp, c.message].filter(Boolean).join(' · ') || '(no metadata)'
+                  ])
+                }
+              ])
+            })
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      if (lower === 'diff') {
+        const hash = rest[0]
+
+        if (!hash) {
+          return ctx.transcript.sys('usage: /rollback diff <checkpoint>')
+        }
+
+        return ctx.gateway
+          .rpc<RollbackDiffResponse>('rollback.diff', { hash, session_id: ctx.sid })
+          .then(
+            ctx.guarded<RollbackDiffResponse>(r => {
+              const body = (r.rendered || r.diff || '').trim()
+
+              if (!body && !r.stat) {
+                return ctx.transcript.sys('no changes since this checkpoint')
+              }
+
+              const text = [r.stat || '', body].filter(Boolean).join('\n\n')
+              ctx.transcript.page(text, 'Rollback diff')
+            })
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      const hash = first
+      const filePath = rest.join(' ').trim()
+
+      return ctx.gateway
+        .rpc<RollbackRestoreResponse>('rollback.restore', {
+          ...(filePath ? { file_path: filePath } : {}),
+          hash,
+          session_id: ctx.sid
+        })
+        .then(
+          ctx.guarded<RollbackRestoreResponse>(r => {
+            if (!r.success) {
+              return ctx.transcript.sys(`rollback failed: ${r.error || r.message || 'unknown error'}`)
+            }
+
+            const target = filePath || 'workspace'
+            const detail = r.reason || r.message || r.restored_to || 'restored'
+            ctx.transcript.sys(`rollback restored ${target}: ${detail}`)
+
+            if ((r.history_removed ?? 0) > 0) {
+              ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))
+            }
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
   {
     aliases: ['tasks'],
     help: 'open the spawn-tree dashboard (live audit + kill/pause controls)',
@@ -220,7 +423,7 @@ export const opsCommands: SlashCommand[] = [
       const [sub, ...rest] = text.split(/\s+/)
       const query = rest.join(' ').trim()
       const { rpc } = ctx.gateway
-      const { page, panel, sys } = ctx.transcript
+      const { panel, sys } = ctx.transcript
 
       if (sub === 'list') {
         rpc<SkillsListResponse>('skills.manage', { action: 'list' })

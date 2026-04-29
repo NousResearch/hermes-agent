@@ -335,6 +335,10 @@ class BaseEnvironment(ABC):
         instead of running with ``bash -l``.
         """
         # Full capture: env vars, functions (filtered), aliases, shell options.
+        # Restore configured cwd after login shell profile scripts, which may
+        # change the working directory (e.g. bashrc `cd ~`).  Without this,
+        # pwd -P captures the profile's directory, not terminal.cwd.
+        _quoted_cwd = shlex.quote(self.cwd)
         bootstrap = (
             f"export -p > {self._snapshot_path}\n"
             f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
@@ -342,6 +346,7 @@ class BaseEnvironment(ABC):
             f"echo 'shopt -s expand_aliases' >> {self._snapshot_path}\n"
             f"echo 'set +e' >> {self._snapshot_path}\n"
             f"echo 'set +u' >> {self._snapshot_path}\n"
+            f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
             f"pwd -P > {self._cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )
@@ -386,9 +391,16 @@ class BaseEnvironment(ABC):
 
         parts = []
 
-        # Source snapshot (env vars from previous commands)
+        # Source snapshot (env vars from previous commands).
+        # Redirect stdout to /dev/null: on macOS (bash 3.2 and certain
+        # Homebrew bash builds) sourcing a file containing ``declare -x``
+        # can emit the declarations to stdout, leaking ~60 lines of env
+        # vars into every tool response (issue #15459).  Linux bash is
+        # silent here, but the redirect is harmless.
         if self._snapshot_ready:
-            parts.append(f"source {self._snapshot_path} 2>/dev/null || true")
+            parts.append(
+                f"source {self._snapshot_path} >/dev/null 2>&1 || true"
+            )
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.

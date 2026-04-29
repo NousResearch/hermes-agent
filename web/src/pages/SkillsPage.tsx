@@ -20,11 +20,12 @@ import type { SkillInfo, ToolsetInfo } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge, Button, ListItem, Spinner, Switch } from "@nous-research/ui";
+import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { PluginSlot } from "@/plugins";
 
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
@@ -206,13 +207,15 @@ export default function SkillsPage() {
           onChange={(e) => setSearch(e.target.value)}
         />
         {search && (
-          <button
-            type="button"
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          <Button
+            ghost
+            size="xs"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             onClick={() => setSearch("")}
+            aria-label={t.common.clear}
           >
-            <X className="h-3 w-3" />
-          </button>
+            <X />
+          </Button>
         )}
       </div>,
     );
@@ -220,15 +223,7 @@ export default function SkillsPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [
-    enabledCount,
-    loading,
-    search,
-    setAfterTitle,
-    setEnd,
-    skills.length,
-    t,
-  ]);
+  }, [enabledCount, loading, search, setAfterTitle, setEnd, skills.length, t]);
 
   const filteredToolsets = useMemo(() => {
     return toolsets.filter(
@@ -244,22 +239,18 @@ export default function SkillsPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <Spinner className="text-2xl text-primary" />
       </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-4">
+      <PluginSlot name="skills:top" />
       <Toast toast={toast} />
 
-      {/* ═══════════════ Filter panel + Content ═══════════════ */}
       <div className="flex flex-col sm:flex-row sm:items-start gap-4">
-        {/* ---- Filter panel ---- */}
-        <aside
-          aria-label={t.skills.title}
-          className="sm:w-56 sm:shrink-0"
-        >
+        <aside aria-label={t.skills.title} className="sm:w-56 sm:shrink-0">
           <div className="sm:sticky sm:top-0">
             <div
               className={`
@@ -267,7 +258,6 @@ export default function SkillsPage() {
                 border border-border bg-muted/20
               `}
             >
-              {/* Filter heading */}
               <div className="hidden sm:flex items-center gap-2 px-3 py-2 border-b border-border">
                 <Filter className="h-3 w-3 text-muted-foreground" />
                 <span className="font-mondwest text-[0.65rem] tracking-[0.12em] uppercase text-muted-foreground">
@@ -275,7 +265,6 @@ export default function SkillsPage() {
                 </span>
               </div>
 
-              {/* View switch (Skills / Toolsets) */}
               <div className="flex sm:flex-col gap-1 overflow-x-auto sm:overflow-x-visible scrollbar-none p-2">
                 <PanelItem
                   icon={Package}
@@ -298,58 +287,48 @@ export default function SkillsPage() {
                 />
               </div>
 
-              {/* Category sub-filters (only for Skills view) */}
-              {view === "skills" && !isSearching && allCategories.length > 0 && (
-                <div className="hidden sm:flex flex-col border-t border-border">
-                  <div className="px-3 pt-2 pb-1 font-mondwest text-[0.6rem] tracking-[0.12em] uppercase text-muted-foreground/70">
-                    {t.skills.categories}
-                  </div>
-                  <div className="flex flex-col p-2 pt-1 gap-px max-h-[calc(100vh-340px)] overflow-y-auto">
-                    {allCategories.map(({ key, name, count }) => {
-                      const isActive = activeCategory === key;
+              {view === "skills" &&
+                !isSearching &&
+                allCategories.length > 0 && (
+                  <div className="hidden sm:flex flex-col border-t border-border">
+                    <div className="px-3 pt-2 pb-1 font-mondwest text-[0.6rem] tracking-[0.12em] uppercase text-muted-foreground/70">
+                      {t.skills.categories}
+                    </div>
+                    <div className="flex flex-col p-2 pt-1 gap-px max-h-[calc(100vh-340px)] overflow-y-auto">
+                      {allCategories.map(({ key, name, count }) => {
+                        const isActive = activeCategory === key;
 
-                      return (
-                        <button
-                          key={key}
-                          type="button"
-                          onClick={() =>
-                            setActiveCategory(isActive ? null : key)
-                          }
-                          className={`
-                            group flex items-center gap-2 px-2 py-1
-                            rounded-sm text-left text-[11px] cursor-pointer
-                            transition-colors
-                            ${
-                              isActive
-                                ? "bg-foreground/10 text-foreground"
-                                : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
+                        return (
+                          <ListItem
+                            key={key}
+                            active={isActive}
+                            onClick={() =>
+                              setActiveCategory(isActive ? null : key)
                             }
-                          `}
-                        >
-                          <span className="flex-1 truncate">{name}</span>
-                          <span
-                            className={`text-[10px] tabular-nums ${
-                              isActive
-                                ? "text-foreground/60"
-                                : "text-muted-foreground/50"
-                            }`}
+                            className="rounded-sm px-2 py-1 text-[11px]"
                           >
-                            {count}
-                          </span>
-                        </button>
-                      );
-                    })}
+                            <span className="flex-1 truncate">{name}</span>
+                            <span
+                              className={`text-[10px] tabular-nums ${
+                                isActive
+                                  ? "text-foreground/60"
+                                  : "text-muted-foreground/50"
+                              }`}
+                            >
+                              {count}
+                            </span>
+                          </ListItem>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
             </div>
           </div>
         </aside>
 
-        {/* ---- Content ---- */}
         <div className="flex-1 min-w-0">
           {isSearching ? (
-            /* Search results */
             <Card>
               <CardHeader className="py-3 px-4">
                 <div className="flex items-center justify-between">
@@ -357,7 +336,7 @@ export default function SkillsPage() {
                     <Search className="h-4 w-4" />
                     {t.skills.title}
                   </CardTitle>
-                  <Badge variant="secondary" className="text-[10px]">
+                  <Badge tone="secondary" className="text-[10px]">
                     {t.skills.resultCount
                       .replace("{count}", String(searchMatchedSkills.length))
                       .replace(
@@ -401,7 +380,7 @@ export default function SkillsPage() {
                         )
                       : t.skills.all}
                   </CardTitle>
-                  <Badge variant="secondary" className="text-[10px]">
+                  <Badge tone="secondary" className="text-[10px]">
                     {t.skills.skillCount
                       .replace("{count}", String(activeSkills.length))
                       .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
@@ -458,7 +437,7 @@ export default function SkillsPage() {
                                   {labelText}
                                 </span>
                                 <Badge
-                                  variant={ts.enabled ? "success" : "outline"}
+                                  tone={ts.enabled ? "success" : "outline"}
                                   className="text-[10px]"
                                 >
                                   {ts.enabled
@@ -479,7 +458,7 @@ export default function SkillsPage() {
                                   {ts.tools.map((tool) => (
                                     <Badge
                                       key={tool}
-                                      variant="secondary"
+                                      tone="secondary"
                                       className="text-[10px] font-mono"
                                     >
                                       {tool}
@@ -509,6 +488,7 @@ export default function SkillsPage() {
           )}
         </div>
       </div>
+      <PluginSlot name="skills:bottom" />
     </div>
   );
 }
@@ -548,24 +528,18 @@ function SkillRow({
 
 function PanelItem({ active, icon: Icon, label, onClick }: PanelItemProps) {
   return (
-    <button
-      type="button"
+    <ListItem
+      active={active}
       onClick={onClick}
-      className={`
-        group flex items-center gap-2 px-2.5 py-1.5
-        font-mondwest text-[0.7rem] tracking-[0.08em] uppercase
-        rounded-sm text-left cursor-pointer whitespace-nowrap
-        transition-colors
-        ${
-          active
-            ? "bg-foreground/90 text-background"
-            : "text-muted-foreground hover:text-foreground hover:bg-foreground/10"
-        }
-      `}
+      className={cn(
+        "rounded-sm whitespace-nowrap px-2.5 py-1.5",
+        "font-mondwest text-[0.7rem] tracking-[0.08em] uppercase",
+        active && "bg-foreground/90 text-background hover:text-background",
+      )}
     >
       <Icon className="h-3.5 w-3.5 shrink-0" />
       <span className="flex-1 truncate">{label}</span>
-    </button>
+    </ListItem>
   );
 }
 

@@ -1,9 +1,11 @@
 """Tests for CLI browser CDP auto-launch helpers."""
 
 import os
+import subprocess
 from unittest.mock import patch
 
 from cli import HermesCLI
+from hermes_cli.browser_connect import manual_chrome_debug_command
 
 
 def _assert_chrome_debug_cmd(cmd, expected_chrome, expected_port):
@@ -26,13 +28,19 @@ class TestChromeDebugLaunch:
             captured["kwargs"] = kwargs
             return object()
 
-        with patch("cli.shutil.which", side_effect=lambda name: r"C:\Chrome\chrome.exe" if name == "chrome.exe" else None), \
-             patch("cli.os.path.isfile", side_effect=lambda path: path == r"C:\Chrome\chrome.exe"), \
+        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: r"C:\Chrome\chrome.exe" if name == "chrome.exe" else None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == r"C:\Chrome\chrome.exe"), \
              patch("subprocess.Popen", side_effect=fake_popen):
             assert HermesCLI._try_launch_chrome_debug(9333, "Windows") is True
 
         _assert_chrome_debug_cmd(captured["cmd"], r"C:\Chrome\chrome.exe", 9333)
-        assert captured["kwargs"]["start_new_session"] is True
+        # Windows uses creationflags (POSIX-only start_new_session would raise).
+        assert "start_new_session" not in captured["kwargs"]
+        flags = captured["kwargs"].get("creationflags", 0)
+        expected = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+        assert flags == expected
 
     def test_windows_launch_falls_back_to_common_install_dirs(self, monkeypatch):
         captured = {}
@@ -49,9 +57,45 @@ class TestChromeDebugLaunch:
         monkeypatch.delenv("ProgramFiles(x86)", raising=False)
         monkeypatch.delenv("LOCALAPPDATA", raising=False)
 
-        with patch("cli.shutil.which", return_value=None), \
-             patch("cli.os.path.isfile", side_effect=lambda path: path == installed), \
+        with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == installed), \
              patch("subprocess.Popen", side_effect=fake_popen):
             assert HermesCLI._try_launch_chrome_debug(9222, "Windows") is True
 
         _assert_chrome_debug_cmd(captured["cmd"], installed, 9222)
+
+    def test_manual_command_uses_detected_linux_browser(self):
+        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: "/usr/bin/chromium" if name == "chromium" else None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == "/usr/bin/chromium"):
+            command = manual_chrome_debug_command(9222, "Linux")
+
+        assert command is not None
+        assert command.startswith("/usr/bin/chromium --remote-debugging-port=9222")
+
+    def test_manual_command_uses_wsl_windows_chrome_when_available(self):
+        chrome = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
+
+        with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == chrome):
+            command = manual_chrome_debug_command(9222, "Linux")
+
+        assert command is not None
+        # Linux/WSL uses POSIX shell quoting (single quotes around paths with spaces).
+        assert command.startswith(f"'{chrome}' --remote-debugging-port=9222")
+
+    def test_manual_command_uses_windows_quoting_on_windows(self):
+        chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: chrome if name == "chrome.exe" else None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == chrome):
+            command = manual_chrome_debug_command(9222, "Windows")
+
+        assert command is not None
+        # Windows uses cmd.exe-compatible quoting via subprocess.list2cmdline.
+        assert command.startswith(f'"{chrome}" --remote-debugging-port=9222')
+        assert "'" not in command
+
+    def test_manual_command_returns_none_when_linux_browser_missing(self):
+        with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", return_value=False):
+            assert manual_chrome_debug_command(9222, "Linux") is None

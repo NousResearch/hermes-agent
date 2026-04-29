@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest'
 
+import { toTranscriptMessages } from '../domain/messages.js'
 import { upsert } from '../lib/messages.js'
+
+describe('toTranscriptMessages', () => {
+  it('preserves assistant tool-call rows so resume does not drop prior turns', () => {
+    const rows = [
+      { role: 'user', text: 'first prompt' },
+      { role: 'tool', context: 'repo', name: 'search_files', text: 'ignored raw result' },
+      { role: 'assistant', text: 'first answer' },
+      { role: 'user', text: 'second prompt' }
+    ]
+
+    expect(toTranscriptMessages(rows).map(msg => [msg.role, msg.text])).toEqual([
+      ['user', 'first prompt'],
+      ['assistant', 'first answer'],
+      ['user', 'second prompt']
+    ])
+    expect(toTranscriptMessages(rows)[1]?.tools?.[0]).toContain('Search Files')
+  })
+})
 
 describe('upsert', () => {
   it('appends when last role differs', () => {

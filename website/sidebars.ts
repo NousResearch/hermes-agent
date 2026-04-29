@@ -81,7 +81,7 @@ const sidebars: SidebarsConfig = {
           label: 'Management',
           items: [
             'user-guide/features/web-dashboard',
-            'user-guide/features/dashboard-plugins',
+            'user-guide/features/extending-the-dashboard',
           ],
         },
         {
@@ -144,6 +144,7 @@ const sidebars: SidebarsConfig = {
                 'user-guide/skills/bundled/creative/creative-pixel-art',
                 'user-guide/skills/bundled/creative/creative-popular-web-designs',
                 'user-guide/skills/bundled/creative/creative-songwriting-and-ai-music',
+                'user-guide/skills/bundled/creative/creative-touchdesigner-mcp',
               ],
             },
             {
@@ -352,7 +353,6 @@ const sidebars: SidebarsConfig = {
                 'user-guide/skills/optional/creative/creative-blender-mcp',
                 'user-guide/skills/optional/creative/creative-concept-diagrams',
                 'user-guide/skills/optional/creative/creative-meme-generation',
-                'user-guide/skills/optional/creative/creative-touchdesigner-mcp',
               ],
             },
             {
@@ -511,6 +511,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/weixin',
         'user-guide/messaging/bluebubbles',
         'user-guide/messaging/qqbot',
+        'user-guide/messaging/yuanbao',
         'user-guide/messaging/open-webui',
         'user-guide/messaging/webhooks',
       ],
@@ -554,6 +555,7 @@ const sidebars: SidebarsConfig = {
         'guides/webhook-github-pr-review',
         'guides/migrate-from-openclaw',
         'guides/aws-bedrock',
+        'guides/azure-foundry',
       ],
     },
     {
@@ -612,6 +614,7 @@ const sidebars: SidebarsConfig = {
         'reference/tools-reference',
         'reference/toolsets-reference',
         'reference/mcp-config-reference',
+        'reference/model-catalog',
         'reference/skills-catalog',
         'reference/optional-skills-catalog',
         'reference/faq',

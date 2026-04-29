@@ -259,6 +259,20 @@ class TestGlobalAllowPrivateUrls:
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _global_allow_private_urls() is True
 
+    def test_config_security_string_false_stays_disabled(self, monkeypatch):
+        """Quoted false must not opt out of SSRF protection."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"security": {"allow_private_urls": "false"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
+
+    def test_config_browser_string_false_stays_disabled(self, monkeypatch):
+        """Legacy browser.allow_private_urls also normalises quoted false."""
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        cfg = {"browser": {"allow_private_urls": "false"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _global_allow_private_urls() is False
+
     def test_config_security_takes_precedence_over_browser(self, monkeypatch):
         """security section is checked before browser section."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)

@@ -234,7 +234,7 @@ class TestCronModeInteractions:
             assert result["approved"]
 
     def test_yolo_overrides_cron_deny(self, monkeypatch):
-        """--yolo still works even if cron_mode=deny."""
+        """--yolo still bypasses cron_mode=deny for dangerous (non-hardline) commands."""
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.setenv("HERMES_YOLO_MODE", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
@@ -242,7 +242,9 @@ class TestCronModeInteractions:
 
         from unittest.mock import patch as mock_patch
         with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
-            result = check_dangerous_command("rm -rf /", "local")
+            # Use a dangerous-but-not-hardline command — `rm -rf /` is now
+            # hardline-blocked regardless of yolo (see test_hardline_blocklist.py).
+            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
             assert result["approved"]
 
     def test_non_cron_non_interactive_still_auto_approves(self, monkeypatch):

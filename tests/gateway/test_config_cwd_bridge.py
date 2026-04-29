@@ -41,6 +41,10 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
                 # TERMINAL_CWD.  Mirrors the fix in gateway/run.py.
                 if cfg_key == "cwd" and str(val) in (".", "auto", "cwd"):
                     continue
+                # Expand shell tilde so subprocess.Popen never receives a literal
+                # "~/" which the kernel rejects.
+                if cfg_key == "cwd" and isinstance(val, str):
+                    val = os.path.expanduser(val)
                 if isinstance(val, list):
                     env[env_var] = json.dumps(val)
                 else:
@@ -55,6 +59,8 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
         if alias_env not in env:
             alias_val = cfg.get(alias_key)
             if isinstance(alias_val, str) and alias_val.strip():
+                if alias_key == "cwd":
+                    alias_val = os.path.expanduser(alias_val)
                 env[alias_env] = alias_val.strip()
 
     # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
@@ -205,3 +211,32 @@ class TestNestedTerminalCwdPlaceholderSkip:
         assert result["TERMINAL_ENV"] == "docker"
         assert result["TERMINAL_TIMEOUT"] == "300"
         assert result["TERMINAL_CWD"] == "/from/env"
+
+
+class TestTildeExpansion:
+    """terminal.cwd values containing shell tilde must be expanded.
+
+    subprocess.Popen does not expand shell syntax, so a literal "~/"
+    causes FileNotFoundError.  Regression test for commit 3c42064e.
+    """
+
+    def test_terminal_cwd_tilde_expanded(self):
+        """terminal.cwd: '~/projects' should expand to /home/<user>/projects."""
+        cfg = {"terminal": {"cwd": "~/projects"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_CWD"] == os.path.expanduser("~/projects")
+
+    def test_top_level_cwd_tilde_expanded(self):
+        """top-level cwd: '~/' should expand to user's home directory."""
+        cfg = {"cwd": "~/"}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_CWD"] == os.path.expanduser("~/")
+
+    def test_tilde_with_nested_precedence(self):
+        """Nested terminal.cwd should win over top-level, both expanded."""
+        cfg = {
+            "cwd": "~/top",
+            "terminal": {"cwd": "~/nested"},
+        }
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_CWD"] == os.path.expanduser("~/nested")

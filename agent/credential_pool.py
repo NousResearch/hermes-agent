@@ -7,13 +7,13 @@ import random
 import threading
 import time
 import uuid
-import os
 import re
 from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
+from hermes_cli.config import get_env_value
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -455,6 +455,70 @@ class CredentialPool:
             logger.debug("Failed to sync from credentials file: %s", exc)
         return entry
 
+    def _sync_codex_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
+        """Sync a Codex device_code pool entry from auth.json if tokens differ.
+
+        When a Codex OAuth access token expires (or the ChatGPT account hits
+        its 5h/weekly quota), the pool entry gets marked ``STATUS_EXHAUSTED``
+        with a ``last_error_reset_at`` that can be many hours in the future.
+        Meanwhile the user may run ``hermes model`` / ``hermes auth`` which
+        performs a fresh device-code login and writes new tokens to
+        ``auth.json`` under ``_auth_store_lock``.  Without this sync the pool
+        entry stays frozen until ``last_error_reset_at`` elapses — even
+        though fresh credentials are sitting on disk — and every request
+        fails with "no available entries (all exhausted or empty)".
+
+        Mirrors the Nous/Anthropic resync paths above.  Only applies to
+        device_code-sourced entries; env/API-key-sourced entries have no
+        auth.json shadow to sync from.
+        """
+        if self.provider != "openai-codex" or entry.source != "device_code":
+            return entry
+        try:
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                state = _load_provider_state(auth_store, "openai-codex")
+            if not isinstance(state, dict):
+                return entry
+            tokens = state.get("tokens")
+            if not isinstance(tokens, dict):
+                return entry
+            store_access = tokens.get("access_token", "")
+            store_refresh = tokens.get("refresh_token", "")
+            # Adopt auth.json tokens when either side differs.  Codex refresh
+            # tokens are single-use too, so a fresh refresh_token from
+            # another process means our entry's pair is consumed/stale.
+            entry_access = entry.access_token or ""
+            entry_refresh = entry.refresh_token or ""
+            if store_access and (
+                store_access != entry_access
+                or (store_refresh and store_refresh != entry_refresh)
+            ):
+                logger.debug(
+                    "Pool entry %s: syncing Codex tokens from auth.json "
+                    "(refreshed by another process)",
+                    entry.id,
+                )
+                field_updates: Dict[str, Any] = {
+                    "access_token": store_access,
+                    "refresh_token": store_refresh or entry.refresh_token,
+                    "last_status": None,
+                    "last_status_at": None,
+                    "last_error_code": None,
+                    "last_error_reason": None,
+                    "last_error_message": None,
+                    "last_error_reset_at": None,
+                }
+                if state.get("last_refresh"):
+                    field_updates["last_refresh"] = state["last_refresh"]
+                updated = replace(entry, **field_updates)
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
+        except Exception as exc:
+            logger.debug("Failed to sync Codex entry from auth.json: %s", exc)
+        return entry
+
     def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Nous pool entry from auth.json if tokens differ.
 
@@ -784,6 +848,18 @@ class CredentialPool:
                     and entry.source == "device_code"
                     and entry.last_status == STATUS_EXHAUSTED):
                 synced = self._sync_nous_entry_from_auth_store(entry)
+                if synced is not entry:
+                    entry = synced
+                    cleared_any = True
+            # For openai-codex entries, same pattern: the user may have
+            # re-authed via `hermes model` / `hermes auth` after a 429/401,
+            # leaving fresh tokens on disk while the pool entry is still
+            # frozen behind last_error_reset_at (can be hours in the
+            # future for ChatGPT weekly windows).
+            if (self.provider == "openai-codex"
+                    and entry.source == "device_code"
+                    and entry.last_status == STATUS_EXHAUSTED):
+                synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
@@ -1273,7 +1349,8 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         def _is_source_suppressed(_p, _s):  # type: ignore[misc]
             return False
     if provider == "openrouter":
-        token = os.getenv("OPENROUTER_API_KEY", "").strip()
+        # Check both os.environ and ~/.hermes/.env file
+        token = (get_env_value("OPENROUTER_API_KEY") or "").strip()
         if token:
             source = "env:OPENROUTER_API_KEY"
             if _is_source_suppressed(provider, source):
@@ -1299,7 +1376,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
 
     env_url = ""
     if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
+        env_url = (get_env_value(pconfig.base_url_env_var) or "").strip().rstrip("/")
 
     env_vars = list(pconfig.api_key_env_vars)
     if provider == "anthropic":
@@ -1310,7 +1387,8 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         ]
 
     for env_var in env_vars:
-        token = os.getenv(env_var, "").strip()
+        # Check both os.environ and ~/.hermes/.env file
+        token = (get_env_value(env_var) or "").strip()
         if not token:
             continue
         source = f"env:{env_var}"

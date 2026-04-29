@@ -131,6 +131,7 @@ def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
 
 # Import config helpers
 from hermes_cli.config import (
+    cfg_get,
     DEFAULT_CONFIG,
     get_hermes_home,
     get_config_path,
@@ -441,7 +442,7 @@ def _print_setup_summary(config: dict, hermes_home):
             tool_status.append(("Image Generation", False, "FAL_KEY or OPENAI_API_KEY"))
 
     # TTS — show configured provider
-    tts_provider = config.get("tts", {}).get("provider", "edge")
+    tts_provider = cfg_get(config, "tts", "provider", default="edge")
     if subscription_features.tts.managed_by_nous:
         tool_status.append(("Text-to-Speech (OpenAI via Nous subscription)", True, None))
     elif tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
@@ -480,7 +481,7 @@ def _print_setup_summary(config: dict, hermes_home):
 
     if subscription_features.modal.managed_by_nous:
         tool_status.append(("Modal Execution (Nous subscription)", True, None))
-    elif config.get("terminal", {}).get("backend") == "modal":
+    elif cfg_get(config, "terminal", "backend") == "modal":
         if subscription_features.modal.direct_override:
             tool_status.append(("Modal Execution (direct Modal)", True, None))
         else:
@@ -711,8 +712,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     _m = config.get("model")
     if isinstance(_m, dict):
         selected_provider = _m.get("provider")
-
-    nous_subscription_selected = selected_provider == "nous"
 
     # ── Same-provider fallback & rotation setup (full setup only) ──
     if not quick and _supports_same_provider_pool_setup(selected_provider):
@@ -1181,7 +1180,7 @@ def setup_terminal_backend(config: dict):
     print_info(f"   Guide: {_DOCS_BASE}/developer-guide/environments")
     print()
 
-    current_backend = config.get("terminal", {}).get("backend", "local")
+    current_backend = cfg_get(config, "terminal", "backend", default="local")
     is_linux = _platform.system() == "Linux"
 
     # Build backend choices with descriptions
@@ -1230,7 +1229,7 @@ def setup_terminal_backend(config: dict):
         print_info(
             "  the agent starts. CLI mode always starts in the current directory."
         )
-        current_cwd = config.get("terminal", {}).get("cwd", "")
+        current_cwd = cfg_get(config, "terminal", "cwd", default="")
         cwd = prompt("  Messaging working directory", current_cwd or str(Path.home()))
         if cwd:
             config["terminal"]["cwd"] = cwd
@@ -1261,9 +1260,7 @@ def setup_terminal_backend(config: dict):
             print_info(f"Docker found: {docker_bin}")
 
         # Docker image
-        current_image = config.get("terminal", {}).get(
-            "docker_image", "nikolaik/python-nodejs:python3.11-nodejs20"
-        )
+        current_image = cfg_get(config, "terminal", "docker_image", default="nikolaik/python-nodejs:python3.11-nodejs20")
         image = prompt("  Docker image", current_image)
         config["terminal"]["docker_image"] = image
         save_env_value("TERMINAL_DOCKER_IMAGE", image)
@@ -1283,9 +1280,7 @@ def setup_terminal_backend(config: dict):
         else:
             print_info(f"Found: {sing_bin}")
 
-        current_image = config.get("terminal", {}).get(
-            "singularity_image", "docker://nikolaik/python-nodejs:python3.11-nodejs20"
-        )
+        current_image = cfg_get(config, "terminal", "singularity_image", default="docker://nikolaik/python-nodejs:python3.11-nodejs20")
         image = prompt("  Container image", current_image)
         config["terminal"]["singularity_image"] = image
         save_env_value("TERMINAL_SINGULARITY_IMAGE", image)
@@ -1304,7 +1299,7 @@ def setup_terminal_backend(config: dict):
             get_nous_subscription_features(config).nous_auth_present
             and is_managed_tool_gateway_ready("modal")
         )
-        modal_mode = normalize_modal_mode(config.get("terminal", {}).get("modal_mode"))
+        modal_mode = normalize_modal_mode(cfg_get(config, "terminal", "modal_mode"))
         use_managed_modal = False
         if managed_modal_available:
             modal_choices = [
@@ -1441,9 +1436,7 @@ def setup_terminal_backend(config: dict):
                 print_success("    Configured")
 
         # Daytona image
-        current_image = config.get("terminal", {}).get(
-            "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
-        )
+        current_image = cfg_get(config, "terminal", "daytona_image", default="nikolaik/python-nodejs:python3.11-nodejs20")
         image = prompt("  Sandbox image", current_image)
         config["terminal"]["daytona_image"] = image
         save_env_value("TERMINAL_DAYTONA_IMAGE", image)
@@ -1547,7 +1540,7 @@ def setup_agent_settings(config: dict):
 
     # ── Max Iterations ──
     current_max = get_env_value("HERMES_MAX_ITERATIONS") or str(
-        config.get("agent", {}).get("max_turns", 90)
+        cfg_get(config, "agent", "max_turns", default=90)
     )
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
@@ -1575,7 +1568,7 @@ def setup_agent_settings(config: dict):
     print_info("  all     — Show every tool call with a short preview")
     print_info("  verbose — Full args, results, and debug logs")
 
-    current_mode = config.get("display", {}).get("tool_progress", "all")
+    current_mode = cfg_get(config, "display", "tool_progress", default="all")
     mode = prompt("Tool progress mode", current_mode)
     if mode.lower() in ("off", "new", "all", "verbose"):
         if "display" not in config:
@@ -1595,7 +1588,7 @@ def setup_agent_settings(config: dict):
 
     config.setdefault("compression", {})["enabled"] = True
 
-    current_threshold = config.get("compression", {}).get("threshold", 0.50)
+    current_threshold = cfg_get(config, "compression", "threshold", default=0.50)
     threshold_str = prompt("Compression threshold (0.5-0.95)", str(current_threshold))
     try:
         threshold = float(threshold_str)
@@ -1856,27 +1849,32 @@ def _setup_slack():
     if existing:
         print_info("Slack: already configured")
         if not prompt_yes_no("Reconfigure Slack?", False):
+            # Even without reconfiguring, offer to refresh the manifest so
+            # new commands (e.g. /btw, /stop, ...) get registered in Slack.
+            if prompt_yes_no(
+                "Regenerate the Slack app manifest with the latest command "
+                "list? (recommended after `hermes update`)",
+                True,
+            ):
+                _write_slack_manifest_and_instruct()
             return
 
     print_info("Steps to create a Slack app:")
-    print_info("   1. Go to https://api.slack.com/apps → Create New App (from scratch)")
+    print_info("   1. Go to https://api.slack.com/apps → Create New App")
+    print_info("      Pick 'From an app manifest' — we'll generate one for you below.")
     print_info("   2. Enable Socket Mode: Settings → Socket Mode → Enable")
     print_info("      • Create an App-Level Token with 'connections:write' scope")
-    print_info("   3. Add Bot Token Scopes: Features → OAuth & Permissions")
-    print_info("      Required scopes: chat:write, app_mentions:read,")
-    print_info("      channels:history, channels:read, im:history,")
-    print_info("      im:read, im:write, users:read, files:read, files:write")
-    print_info("      Optional for private channels: groups:history")
-    print_info("   4. Subscribe to Events: Features → Event Subscriptions → Enable")
-    print_info("      Required events: message.im, message.channels, app_mention")
-    print_info("      Optional for private channels: message.groups")
-    print_warning("   ⚠ Without message.channels the bot will ONLY work in DMs,")
-    print_warning("     not public channels.")
-    print_info("   5. Install to Workspace: Settings → Install App")
-    print_info("   6. Reinstall the app after any scope or event changes")
-    print_info("   7. After installing, invite the bot to channels: /invite @YourBot")
+    print_info("   3. Install to Workspace: Settings → Install App")
+    print_info("   4. After installing, invite the bot to channels: /invite @YourBot")
     print()
     print_info("   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack/")
+    print()
+
+    # Generate and write manifest up-front so the user can paste it into
+    # the "Create from manifest" flow instead of clicking through scopes /
+    # events / slash commands one at a time.
+    _write_slack_manifest_and_instruct()
+
     print()
     bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
     if not bot_token:
@@ -1900,6 +1898,49 @@ def _setup_slack():
     else:
         print_warning("⚠️  No Slack allowlist set - unpaired users will be denied by default.")
         print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
+
+
+def _write_slack_manifest_and_instruct():
+    """Generate the Slack manifest, write it under HERMES_HOME, and print
+    paste-into-Slack instructions.
+
+    Exposed as its own helper so both the initial setup flow and the
+    "reconfigure? → no" branch can refresh the manifest without the user
+    re-entering tokens. Failures are non-fatal — if the manifest write
+    fails for any reason, we print a warning and skip rather than abort
+    the whole Slack setup.
+    """
+    try:
+        from hermes_cli.slack_cli import _build_full_manifest
+        from hermes_constants import get_hermes_home
+
+        manifest = _build_full_manifest(
+            bot_name="Hermes",
+            bot_description="Your Hermes agent on Slack",
+        )
+        target = Path(get_hermes_home()) / "slack-manifest.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        target.write_text(
+            _json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        print_success(f"Slack app manifest written to: {target}")
+        print_info(
+            "   Paste it into https://api.slack.com/apps → your app → Features "
+            "→ App Manifest → Edit, then Save.  Slack will prompt to "
+            "reinstall if scopes or slash commands changed."
+        )
+        print_info(
+            "   Re-run `hermes slack manifest --write` anytime to refresh after "
+            "Hermes adds new commands."
+        )
+    except Exception as exc:  # pragma: no cover - best-effort UX helper
+        print_warning(f"Couldn't write Slack manifest: {exc}")
+        print_info(
+            "   You can generate it manually later with: "
+            "hermes slack manifest --write"
+        )
 
 
 def _setup_matrix():
@@ -2085,6 +2126,12 @@ def _setup_feishu():
     _gateway_setup_feishu()
 
 
+def _setup_yuanbao():
+    """Configure Yuanbao via gateway setup."""
+    from hermes_cli.gateway import _setup_yuanbao as _gateway_setup_yuanbao
+    _gateway_setup_yuanbao()
+
+
 def _setup_wecom():
     """Configure WeCom (Enterprise WeChat) via gateway setup."""
     from hermes_cli.gateway import _setup_wecom as _gateway_setup_wecom
@@ -2229,6 +2276,7 @@ _GATEWAY_PLATFORMS = [
     ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
     ("DingTalk", "DINGTALK_CLIENT_ID", _setup_dingtalk),
     ("Feishu / Lark", "FEISHU_APP_ID", _setup_feishu),
+    ("Yuanbao", "YUANBAO_APP_ID", _setup_yuanbao),
     ("WeCom (Enterprise WeChat)", "WECOM_BOT_ID", _setup_wecom),
     ("WeCom Callback (Self-Built App)", "WECOM_CALLBACK_CORP_ID", _setup_wecom_callback),
     ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
@@ -2548,11 +2596,11 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return "configured"
 
     elif section_key == "terminal":
-        backend = config.get("terminal", {}).get("backend", "local")
+        backend = cfg_get(config, "terminal", "backend", default="local")
         return f"backend: {backend}"
 
     elif section_key == "agent":
-        max_turns = config.get("agent", {}).get("max_turns", 90)
+        max_turns = cfg_get(config, "agent", "max_turns", default=90)
         return f"max turns: {max_turns}"
 
     elif section_key == "gateway":
@@ -2863,17 +2911,6 @@ SETUP_SECTIONS = [
     ("agent", "Agent Settings", setup_agent_settings),
 ]
 
-# The returning-user menu intentionally omits standalone TTS because model setup
-# already includes TTS selection and tools setup covers the rest of the provider
-# configuration. Keep this list in the same order as the visible menu entries.
-RETURNING_USER_MENU_SECTION_KEYS = [
-    "model",
-    "terminal",
-    "gateway",
-    "tools",
-    "agent",
-]
-
 
 def run_setup_wizard(args):
     """Run the interactive setup wizard.
@@ -2897,6 +2934,9 @@ def run_setup_wizard(args):
     if reset_requested:
         save_config(copy.deepcopy(DEFAULT_CONFIG))
         print_success("Configuration reset to defaults.")
+
+    reconfigure_requested = bool(getattr(args, "reconfigure", False))
+    quick_requested = bool(getattr(args, "quick", False))
 
     config = load_config()
     hermes_home = get_hermes_home()
@@ -2989,49 +3029,35 @@ def run_setup_wizard(args):
     migration_ran = False
 
     if is_existing:
-        # ── Returning User Menu ──
-        print()
-        print_header("Welcome Back!")
-        print_success("You already have Hermes configured.")
-        print()
-
-        menu_choices = [
-            "Quick Setup - configure missing items only",
-            "Full Setup - reconfigure everything",
-            "Model & Provider",
-            "Terminal Backend",
-            "Messaging Platforms (Gateway)",
-            "Tools",
-            "Agent Settings",
-            "Exit",
-        ]
-        choice = prompt_choice("What would you like to do?", menu_choices, 0)
-
-        if choice == 0:
-            # Quick setup
+        # Existing install — default is the full-wizard reconfigure flow.
+        # Every prompt shows the current value as its default, so pressing
+        # Enter keeps it.  Opt into `--quick` for the narrow "just fill in
+        # missing items" flow (useful after a partial OpenClaw migration
+        # or when a required API key got cleared).
+        if quick_requested:
             _run_quick_setup(config, hermes_home)
             return
-        elif choice == 1:
-            # Full setup — fall through to run all sections
-            pass
-        elif choice == 7:
-            print_info("Exiting. Run 'hermes setup' again when ready.")
-            return
-        elif 2 <= choice <= 6:
-            # Individual section — map by key, not by position.
-            # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
-            # so positional indexing (choice - 2) would dispatch the wrong section.
-            section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 2]
-            section = next((s for s in SETUP_SECTIONS if s[0] == section_key), None)
-            if section:
-                _, label, func = section
-                func(config)
-                save_config(config)
-                _print_setup_summary(config, hermes_home)
-            return
+
+        print()
+        print_header("Reconfigure")
+        print_success("You already have Hermes configured.")
+        print_info("Running the full wizard — each prompt shows your current value.")
+        print_info("Press Enter to keep it, or type a new value to change it.")
+        print_info("")
+        print_info("Tip: jump straight to a section with 'hermes setup model|terminal|")
+        print_info("     gateway|tools|agent', or fill only missing items with --quick.")
+        # Fall through to the "Full Setup — run all sections" block below.
+        # --reconfigure is now the default on existing installs; the flag
+        # is preserved for backwards compatibility but is a no-op here.
     else:
         # ── First-Time Setup ──
         print()
+
+        # --reconfigure / --quick on a fresh install are meaningless — fall
+        # through to the normal first-time flow.
+        if reconfigure_requested or quick_requested:
+            print_info("No existing configuration found — running first-time setup.")
+            print()
 
         # Offer OpenClaw migration before configuration begins
         migration_ran = _offer_openclaw_migration(hermes_home)

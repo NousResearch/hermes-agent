@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Clock, Pause, Play, Plus, Trash2, Zap } from "lucide-react";
-import { H2 } from "@nous-research/ui";
+import { Badge, Button, H2, Select, SelectOption, Spinner } from "@nous-research/ui";
 import { api } from "@/lib/api";
 import type { CronJob } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -8,12 +8,10 @@ import { useToast } from "@/hooks/useToast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectOption } from "@/components/ui/select";
 import { useI18n } from "@/i18n";
+import { PluginSlot } from "@/plugins";
 
 function formatTime(iso?: string | null): string {
   if (!iso) return "—";
@@ -21,7 +19,7 @@ function formatTime(iso?: string | null): string {
   return d.toLocaleString();
 }
 
-const STATUS_VARIANT: Record<string, "success" | "warning" | "destructive"> = {
+const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
   enabled: "success",
   scheduled: "success",
   paused: "warning",
@@ -138,7 +136,7 @@ export default function CronPage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <Spinner className="text-2xl text-primary" />
       </div>
     );
   }
@@ -149,6 +147,7 @@ export default function CronPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <PluginSlot name="cron:top" />
       <Toast toast={toast} />
 
       <DeleteConfirmDialog
@@ -164,7 +163,6 @@ export default function CronPage() {
         loading={jobDelete.isDeleting}
       />
 
-      {/* Create new job form */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
@@ -235,9 +233,9 @@ export default function CronPage() {
                 <Button
                   onClick={handleCreate}
                   disabled={creating}
+                  prefix={<Plus />}
                   className="w-full"
                 >
-                  <Plus className="h-3 w-3" />
                   {creating ? t.common.creating : t.common.create}
                 </Button>
               </div>
@@ -246,7 +244,6 @@ export default function CronPage() {
         </CardContent>
       </Card>
 
-      {/* Jobs list */}
       <div className="flex flex-col gap-3">
         <H2
           variant="sm"
@@ -267,7 +264,6 @@ export default function CronPage() {
         {jobs.map((job) => (
           <Card key={job.id}>
             <CardContent className="flex items-center gap-4 py-4">
-              {/* Info */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
                   <span className="font-medium text-sm truncate">
@@ -275,11 +271,11 @@ export default function CronPage() {
                       job.prompt.slice(0, 60) +
                         (job.prompt.length > 60 ? "..." : "")}
                   </span>
-                  <Badge variant={STATUS_VARIANT[job.state] ?? "secondary"}>
+                  <Badge tone={STATUS_TONE[job.state] ?? "secondary"}>
                     {job.state}
                   </Badge>
                   {job.deliver && job.deliver !== "local" && (
-                    <Badge variant="outline">{job.deliver}</Badge>
+                    <Badge tone="outline">{job.deliver}</Badge>
                   )}
                 </div>
                 {job.name && (
@@ -304,48 +300,49 @@ export default function CronPage() {
                 )}
               </div>
 
-              {/* Actions */}
               <div className="flex items-center gap-1 shrink-0">
                 <Button
-                  variant="ghost"
+                  ghost
                   size="icon"
                   title={job.state === "paused" ? t.cron.resume : t.cron.pause}
                   aria-label={
                     job.state === "paused" ? t.cron.resume : t.cron.pause
                   }
                   onClick={() => handlePauseResume(job)}
+                  className={
+                    job.state === "paused" ? "text-success" : "text-warning"
+                  }
                 >
-                  {job.state === "paused" ? (
-                    <Play className="h-4 w-4 text-success" />
-                  ) : (
-                    <Pause className="h-4 w-4 text-warning" />
-                  )}
+                  {job.state === "paused" ? <Play /> : <Pause />}
                 </Button>
 
                 <Button
-                  variant="ghost"
+                  ghost
                   size="icon"
                   title={t.cron.triggerNow}
                   aria-label={t.cron.triggerNow}
                   onClick={() => handleTrigger(job)}
                 >
-                  <Zap className="h-4 w-4" />
+                  <Zap />
                 </Button>
 
                 <Button
-                  variant="ghost"
+                  ghost
+                  destructive
                   size="icon"
                   title={t.common.delete}
                   aria-label={t.common.delete}
                   onClick={() => jobDelete.requestDelete(job.id)}
                 >
-                  <Trash2 className="h-4 w-4 text-destructive" />
+                  <Trash2 />
                 </Button>
               </div>
             </CardContent>
           </Card>
         ))}
       </div>
+
+      <PluginSlot name="cron:bottom" />
     </div>
   );
 }

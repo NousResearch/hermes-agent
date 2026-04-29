@@ -4,7 +4,7 @@ import pytest
 from types import SimpleNamespace
 
 from agent.transports import get_transport
-from agent.transports.types import NormalizedResponse, ToolCall
+from agent.transports.types import NormalizedResponse
 
 
 @pytest.fixture
@@ -33,15 +33,18 @@ class TestChatCompletionsBasic:
     def test_convert_messages_strips_codex_fields(self, transport):
         msgs = [
             {"role": "assistant", "content": "ok", "codex_reasoning_items": [{"id": "rs_1"}],
+             "codex_message_items": [{"id": "msg_1", "type": "message"}],
              "tool_calls": [{"id": "call_1", "call_id": "call_1", "response_item_id": "fc_1",
                             "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
         ]
         result = transport.convert_messages(msgs)
         assert "codex_reasoning_items" not in result[0]
+        assert "codex_message_items" not in result[0]
         assert "call_id" not in result[0]["tool_calls"][0]
         assert "response_item_id" not in result[0]["tool_calls"][0]
         # Original list untouched (deepcopy-on-demand)
         assert "codex_reasoning_items" in msgs[0]
+        assert "codex_message_items" in msgs[0]
 
 
 class TestChatCompletionsBuildKwargs:
@@ -118,6 +121,90 @@ class TestChatCompletionsBuildKwargs:
             reasoning_config={"effort": "none"},
         )
         assert kw["extra_body"]["think"] is False
+
+    def test_gemini_without_explicit_reasoning_config_keeps_existing_behavior(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+        )
+        assert "thinking_config" not in kw.get("extra_body", {})
+
+    def test_gemini_flash_reasoning_maps_to_thinking_config(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+            "thinkingLevel": "high",
+        }
+
+    def test_gemini_25_reasoning_only_enables_visible_thoughts(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-2.5-flash",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+        }
+
+    def test_gemini_pro_reasoning_clamps_to_supported_levels(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="google/gemini-3.1-pro-preview",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+            "thinkingLevel": "low",
+        }
+
+    def test_gemini_disabled_reasoning_hides_thoughts(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": False},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": False,
+        }
+
+    def test_gemini_xhigh_clamps_to_high(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert kw["extra_body"]["thinking_config"]["thinkingLevel"] == "high"
+
+    def test_gemini_flash_minimal_clamps_to_low(self, transport):
+        # Gemini 3 Flash documents low/medium/high; "minimal" isn't accepted,
+        # so clamp it down to "low" rather than forwarding it verbatim.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": True, "effort": "minimal"},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+            "thinkingLevel": "low",
+        }
 
     def test_max_tokens_with_fn(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
@@ -287,6 +374,80 @@ class TestChatCompletionsKimi:
         )
         # The parameters dict is passed through untouched (no synthetic type)
         assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
+
+
+class TestChatCompletionsLmStudioReasoning:
+    """LM Studio publishes per-model reasoning ``allowed_options``. When the
+    user requests an effort the model can't honor (e.g. ``high`` on a
+    toggle-style ``["off","on"]`` model), the transport omits
+    ``reasoning_effort`` so LM Studio falls back to the model's default —
+    silently downgrading "high" to "low" would mislead the user.
+    """
+
+    def test_omits_effort_when_high_not_allowed_toggle(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "high"},
+            lmstudio_reasoning_options=["off", "on"],
+        )
+        assert "reasoning_effort" not in kw
+
+    def test_omits_effort_when_high_not_allowed_minimal_low(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "high"},
+            lmstudio_reasoning_options=["off", "minimal", "low"],
+        )
+        assert "reasoning_effort" not in kw
+
+    def test_passes_through_when_effort_allowed(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "high"},
+            lmstudio_reasoning_options=["off", "low", "medium", "high"],
+        )
+        assert kw["reasoning_effort"] == "high"
+
+    def test_passes_through_aliased_on_for_toggle(self, transport):
+        # User has reasoning enabled at the default "medium"; toggle model
+        # publishes ["off","on"] which aliases to {"none","medium"}, so the
+        # default request is honorable and gets sent.
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "medium"},
+            lmstudio_reasoning_options=["off", "on"],
+        )
+        assert kw["reasoning_effort"] == "medium"
+
+    def test_disabled_keeps_none_when_off_allowed(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"enabled": False},
+            lmstudio_reasoning_options=["off", "on"],
+        )
+        assert kw["reasoning_effort"] == "none"
+
+    def test_no_options_falls_back_to_legacy_behavior(self, transport):
+        # When the probe failed or returned nothing, allowed_options is unknown;
+        # send whatever the user picked rather than blocking the request.
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "high"},
+            lmstudio_reasoning_options=None,
+        )
+        assert kw["reasoning_effort"] == "high"
 
 
 class TestChatCompletionsValidate:

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { cursorLayout, offsetFromPosition } from '../components/textInput.js'
+import { offsetFromPosition } from '../components/textInput.js'
+import { cursorLayout, inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
 
 describe('cursorLayout — char-wrap parity with wrap-ansi', () => {
   it('places cursor mid-line at its column', () => {
@@ -32,6 +33,20 @@ describe('cursorLayout — char-wrap parity with wrap-ansi', () => {
 
   it('does not wrap when cursor is before the right edge', () => {
     expect(cursorLayout('abcdefg', 7, 8)).toEqual({ column: 7, line: 0 })
+  })
+})
+
+describe('input metrics helpers', () => {
+  it('computes visual height from the wrapped cursor line', () => {
+    expect(inputVisualHeight('abcdefgh', 8)).toBe(2)
+    expect(inputVisualHeight('one\ntwo', 40)).toBe(2)
+  })
+
+  it('reserves gutters on wide panes without starving narrow composer width', () => {
+    expect(stableComposerColumns(100, 3)).toBe(93)
+    expect(stableComposerColumns(100, 5)).toBe(91)
+    expect(stableComposerColumns(10, 3)).toBe(5)
+    expect(stableComposerColumns(6, 3)).toBe(1)
   })
 })
 

@@ -177,8 +177,8 @@ async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook):
     its reset policy (idle timeout, scheduled reset), it must fire
     ``on_session_finalize`` so plugin providers get the same final-pass
     extraction opportunity they'd get from /new or CLI shutdown.  Before
-    the fix, the expiry path flushed memories and evicted the agent but
-    silently skipped the hook.
+    the fix, the expiry path evicted the agent but silently skipped the
+    hook.
     """
     from datetime import datetime, timedelta
 
@@ -200,7 +200,7 @@ async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook):
         platform=Platform.TELEGRAM,
         chat_type="dm",
     )
-    expired_entry.memory_flushed = False
+    expired_entry.expiry_finalized = False
 
     runner.session_store = MagicMock()
     runner.session_store._ensure_loaded = MagicMock()
@@ -211,24 +211,24 @@ async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook):
     runner.session_store._lock.__exit__ = MagicMock(return_value=None)
     runner.session_store._save = MagicMock()
 
-    runner._async_flush_memories = AsyncMock()
     runner._evict_cached_agent = MagicMock()
     runner._cleanup_agent_resources = MagicMock()
     runner._sweep_idle_cached_agents = MagicMock(return_value=0)
 
     # The watcher starts with `await asyncio.sleep(60)` and loops while
-    # `self._running`. Patch sleep so the 60s initial delay is instant, then
-    # flip `_running` false inside the flush call so the loop exits cleanly
-    # after one pass.
+    # `self._running`.  Patch sleep so the 60s initial delay is instant, and
+    # make the expiry hook invocation flip `_running` false so the loop
+    # exits cleanly after one pass.
     _orig_sleep = __import__("asyncio").sleep
 
     async def _fast_sleep(_):
         await _orig_sleep(0)
 
-    async def _flush_and_stop(session_id, key):
-        runner._running = False  # terminate the loop after this iteration
+    def _hook_and_stop(*a, **kw):
+        runner._running = False
+        return None
 
-    runner._async_flush_memories = AsyncMock(side_effect=_flush_and_stop)
+    mock_invoke_hook.side_effect = _hook_and_stop
 
     with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
         await runner._session_expiry_watcher(interval=0)

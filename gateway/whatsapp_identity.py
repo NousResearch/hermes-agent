@@ -31,7 +31,16 @@ Hermes' own session keys.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from typing import Set
+
+logger = logging.getLogger(__name__)
+
+# WhatsApp JIDs are numeric (or plus-prefixed numeric) with optional
+# ``@``, ``.`` and ``:`` separators. ``\w`` is pinned to ASCII so
+# full-width digits / Unicode word chars can't sneak through.
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9@.+\-]+$")
 
 from hermes_constants import get_hermes_home
 
@@ -81,6 +90,16 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
         current = queue.pop(0)
         if not current or current in resolved:
             continue
+        # Defense-in-depth: reject identifiers that could sneak path
+        # separators / traversal segments into the ``lid-mapping-{current}``
+        # filename below. The hardcoded ``lid-mapping-`` prefix already
+        # prevents escape via pathlib's component split (an attacker can't
+        # create ``lid-mapping-..`` as a real directory in session_dir), but
+        # this keeps the identifier space to the characters WhatsApp JIDs
+        # actually use and avoids depending on that filesystem-layout
+        # invariant.
+        if not _SAFE_IDENTIFIER_RE.match(current):
+            continue
 
         resolved.add(current)
         for suffix in ("", "_reverse"):
@@ -91,7 +110,8 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
                 mapped = normalize_whatsapp_identifier(
                     json.loads(mapping_path.read_text(encoding="utf-8"))
                 )
-            except Exception:
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.debug("whatsapp_identity: failed to read %s: %s", mapping_path, exc)
                 continue
             if mapped and mapped not in resolved:
                 queue.append(mapped)

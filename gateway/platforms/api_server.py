@@ -2406,7 +2406,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
                         status=400,
                     )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+                msg_entry = dict(entry)
+                msg_entry["role"] = str(entry["role"])
+                msg_entry["content"] = str(entry["content"])
+                conversation_history.append(msg_entry)
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
@@ -2432,7 +2435,10 @@ class APIServerAdapter(BasePlatformAdapter):
                             part.get("text", "") for part in content
                             if isinstance(part, dict) and part.get("type") == "text"
                         )
-                    conversation_history.append({"role": msg["role"], "content": str(content)})
+                    msg_entry = dict(msg)
+                    msg_entry["role"] = msg["role"]
+                    msg_entry["content"] = str(content)
+                    conversation_history.append(msg_entry)
 
         session_id = body.get("session_id") or stored_session_id or run_id
         ephemeral_system_prompt = instructions

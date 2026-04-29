@@ -109,16 +109,28 @@ MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
 
-def _is_local_skill(skill_path: Path) -> bool:
-    """Check if a skill path is within the local SKILLS_DIR.
-
-    Skills found in external_dirs are read-only from the agent's perspective.
+def _containing_skills_root(skill_path: Path) -> Path:
+    """Return the skills root directory (local or external_dirs entry) that
+    contains ``skill_path``.  Falls back to the local ``SKILLS_DIR`` if no
+    match is found (defensive — callers should have located the skill via
+    ``_find_skill`` first).
     """
+    from agent.skill_utils import get_all_skills_dirs
+
     try:
-        skill_path.resolve().relative_to(SKILLS_DIR.resolve())
-        return True
-    except ValueError:
-        return False
+        resolved = skill_path.resolve()
+    except OSError:
+        resolved = skill_path
+
+    for root in get_all_skills_dirs():
+        try:
+            resolved.relative_to(root.resolve())
+            return root
+        except (ValueError, OSError):
+            continue
+    return SKILLS_DIR
+
+
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
 
@@ -397,9 +409,6 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
-    if not _is_local_skill(existing["path"]):
-        return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be modified. Copy it to your local skills directory first."}
-
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
@@ -439,9 +448,6 @@ def _patch_skill(
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
-
-    if not _is_local_skill(existing["path"]):
-        return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be modified. Copy it to your local skills directory first."}
 
     skill_dir = existing["path"]
 
@@ -522,15 +528,13 @@ def _delete_skill(name: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
-    if not _is_local_skill(existing["path"]):
-        return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be deleted."}
-
     skill_dir = existing["path"]
+    skills_root = _containing_skills_root(skill_dir)
     shutil.rmtree(skill_dir)
 
-    # Clean up empty category directories (don't remove SKILLS_DIR itself)
+    # Clean up empty category directories (don't remove the skills root itself)
     parent = skill_dir.parent
-    if parent != SKILLS_DIR and parent.exists() and not any(parent.iterdir()):
+    if parent != skills_root and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
 
     return {
@@ -567,9 +571,6 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
-    if not _is_local_skill(existing["path"]):
-        return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be modified. Copy it to your local skills directory first."}
-
     target, err = _resolve_skill_target(existing["path"], file_path)
     if err:
         return {"success": False, "error": err}
@@ -603,9 +604,6 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
-
-    if not _is_local_skill(existing["path"]):
-        return {"success": False, "error": f"Skill '{name}' is in an external directory and cannot be modified."}
 
     skill_dir = existing["path"]
 

@@ -214,4 +214,4 @@ class TestConfigOverrides:
         import importlib
         import hermes_cli.dingtalk_auth as mod
         importlib.reload(mod)
-        assert mod.REGISTRATION_SOURCE == "openClaw"
+        assert mod.REGISTRATION_SOURCE == "DING_DWS_CLAW"

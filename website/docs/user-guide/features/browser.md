@@ -125,12 +125,58 @@ your LAN through the public path).
 [Camofox](https://github.com/jo-inc/camofox-browser) is a self-hosted Node.js server wrapping Camoufox (a Firefox fork with C++ fingerprint spoofing). It provides local anti-detection browsing without cloud dependencies.
 
 ```bash
-# Install and run
-git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser
-npm install && npm start   # downloads Camoufox (~300MB) on first run
+# Clone the Camofox browser server first
+git clone https://github.com/jo-inc/camofox-browser
+cd camofox-browser
 
-# Or via Docker
-docker run -d --network host -e CAMOFOX_PORT=9377 jo-inc/camofox-browser
+# Build and start with Docker using the default container settings
+# (auto-detects arch: aarch64 on M1/M2, x86_64 on Intel)
+make up
+
+# Stop and remove the default container
+make down
+
+# Force a clean rebuild (for example, after upgrading VERSION/RELEASE)
+make reset
+
+# Just download binaries without building
+make fetch
+
+# Override arch or version explicitly
+make up ARCH=x86_64
+make up VERSION=135.0.1 RELEASE=beta.24
+```
+
+`make up` starts the default container immediately. If you want custom runtime settings such as a larger Node heap, VNC, or a persistent profile directory, build the image first and then run it yourself:
+
+```bash
+# Build the image without starting the default container
+make build
+
+# Start with persistence, VNC live view, and a larger Node heap
+mkdir -p ~/.camofox-docker
+docker run -d \
+  --name camofox-browser \
+  --restart unless-stopped \
+  -p 9377:9377 \
+  -p 6080:6080 \
+  -p 5901:5900 \
+  -e CAMOFOX_PORT=9377 \
+  -e ENABLE_VNC=1 \
+  -e VNC_BIND=0.0.0.0 \
+  -e VNC_RESOLUTION=1920x1080 \
+  -e MAX_OLD_SPACE_SIZE=2048 \
+  -v ~/.camofox-docker:/root/.camofox \
+  camofox-browser:135.0.1-aarch64
+```
+
+With VNC enabled, the browser runs in headed mode and can be watched live in your browser at `http://localhost:6080` (noVNC). You can also connect a native VNC client to `localhost:5901`.
+
+If you already ran `make up`, stop and remove that default container before starting the custom one:
+
+```bash
+make down
+# then run the custom docker run command above
 ```
 
 Then set in `~/.hermes/.env`:

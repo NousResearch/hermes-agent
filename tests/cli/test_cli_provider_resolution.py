@@ -230,6 +230,34 @@ def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):
     assert shell.requested_provider == "custom"
 
 
+def test_cli_model_alias_with_explicit_provider(monkeypatch):
+    cli = _import_cli()
+    from hermes_cli.model_switch import DirectAlias
+    import hermes_cli.model_switch as ms
+
+    monkeypatch.setattr(
+        ms,
+        "DIRECT_ALIASES",
+        {
+            "kimi26-cloud": DirectAlias(
+                "kimi-k2.6:cloud",
+                "ollama-cloud",
+                "https://ollama.com/v1",
+            )
+        },
+    )
+    shell = cli.HermesCLI(
+        model="kimi26-cloud",
+        provider="ollama-cloud",
+        compact=True,
+        max_turns=1,
+    )
+
+    assert shell.model == "kimi-k2.6:cloud"
+    assert shell.requested_provider == "ollama-cloud"
+    assert shell._explicit_base_url == "https://ollama.com/v1"
+
+
 def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
     """When provider resolves to openai-codex and no model was explicitly
     chosen, the global config default (e.g. anthropic/claude-opus-4.6) must

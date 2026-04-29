@@ -101,11 +101,21 @@ def resolve_modal_backend_state(
 
 
 def resolve_openai_audio_api_key() -> str:
-    """Prefer the voice-tools key, but fall back to the normal OpenAI key."""
-    return (
-        os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
-        or os.getenv("OPENAI_API_KEY", "")
-    ).strip()
+    """Prefer the voice-tools key, but fall back to the normal OpenAI key.
+
+    Consults os.environ first (covers direct hermes launches where dotenv
+    may not yet be loaded), then falls back to get_env_value for CLI paths
+    that read from ~/.hermes/.env (see issue #17140).
+    """
+    value = os.getenv("VOICE_TOOLS_OPENAI_KEY") or os.getenv("OPENAI_API_KEY") or ""
+    if value:
+        return value.strip()
+    # CLI paths: .env may not be loaded into os.environ yet
+    try:
+        from hermes_cli.config import get_env_value
+        return (get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY") or "").strip()
+    except Exception:
+        return ""
 
 
 def prefers_gateway(config_section: str) -> bool:

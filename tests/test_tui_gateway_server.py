@@ -67,6 +67,11 @@ def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
 
 def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
 
     assert server._load_enabled_toolsets() == ["web"]
     assert "nope" in capsys.readouterr().err
@@ -95,6 +100,11 @@ def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
 
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
 
     import hermes_cli.config as config_mod
 
@@ -107,12 +117,18 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
 
     assert server._load_enabled_toolsets() == ["memory"]
     err = capsys.readouterr().err
+    assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
     assert "using configured CLI toolsets" in err
 
 
 def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
 
     import hermes_cli.config as config_mod
 
@@ -124,6 +140,11 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
 
 def test_load_enabled_toolsets_warns_when_config_fallback_fails(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
 
     import hermes_cli.config as config_mod
 
@@ -154,6 +175,29 @@ def test_load_enabled_toolsets_all_env_warns_about_ignored_extra_entries(monkeyp
 
     assert server._load_enabled_toolsets() is None
     assert "ignoring additional entries: nope" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web,mcp-off,nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    )
+
+    assert server._load_enabled_toolsets() == ["web"]
+    err = capsys.readouterr().err
+    assert "ignoring unknown HERMES_TUI_TOOLSETS entries: nope" in err
+    assert "ignoring disabled MCP servers" in err
+    assert "mcp-off" in err
 
 
 def test_history_to_messages_preserves_tool_calls_for_resume_display():

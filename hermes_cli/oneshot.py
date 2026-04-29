@@ -83,6 +83,7 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
         return None, None
 
     mcp_names: set[str] = set()
+    mcp_disabled: set[str] = set()
     if unresolved:
         try:
             from hermes_cli.config import read_raw_config
@@ -90,21 +91,29 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
 
             cfg = read_raw_config()
             mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
-            mcp_names = {
-                str(name)
-                for name, server_cfg in mcp_servers.items()
-                if isinstance(server_cfg, dict)
-                and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
-            }
+            for name, server_cfg in mcp_servers.items():
+                if not isinstance(server_cfg, dict):
+                    continue
+                if _parse_enabled_flag(server_cfg.get("enabled", True), default=True):
+                    mcp_names.add(str(name))
+                else:
+                    mcp_disabled.add(str(name))
         except Exception:
             mcp_names = set()
+            mcp_disabled = set()
 
     mcp_valid = [name for name in unresolved if name in mcp_names]
-    invalid = [name for name in unresolved if name not in mcp_names]
+    disabled = [name for name in unresolved if name in mcp_disabled]
+    unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
     valid = built_in + mcp_valid
 
-    if invalid:
-        sys.stderr.write(f"hermes -z: ignoring unknown --toolsets entries: {', '.join(invalid)}\n")
+    if unknown:
+        sys.stderr.write(f"hermes -z: ignoring unknown --toolsets entries: {', '.join(unknown)}\n")
+    if disabled:
+        sys.stderr.write(
+            "hermes -z: ignoring disabled MCP servers (set enabled: true in config.yaml to use): "
+            f"{', '.join(disabled)}\n"
+        )
 
     if not valid:
         return None, "hermes -z: --toolsets did not contain any valid toolsets.\n"

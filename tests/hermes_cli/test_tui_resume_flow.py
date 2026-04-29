@@ -192,7 +192,16 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
     assert captured == {"prompt": "hello", "model": None, "provider": None, "toolsets": "web,terminal"}
 
 
-def test_oneshot_rejects_invalid_only_toolsets(capsys):
+def _stub_plugin_discovery(monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+
+def test_oneshot_rejects_invalid_only_toolsets(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
     from hermes_cli.oneshot import run_oneshot
 
     assert run_oneshot("hello", toolsets="nope") == 2
@@ -201,7 +210,8 @@ def test_oneshot_rejects_invalid_only_toolsets(capsys):
     assert "did not contain any valid toolsets" in err
 
 
-def test_oneshot_filters_invalid_toolsets_before_redirect(capsys):
+def test_oneshot_filters_invalid_toolsets_before_redirect(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
     from hermes_cli.oneshot import _validate_explicit_toolsets
 
     valid, error = _validate_explicit_toolsets("web,nope")
@@ -220,7 +230,8 @@ def test_oneshot_all_toolsets_means_all_not_configured_cli():
     assert error is None
 
 
-def test_oneshot_all_toolsets_warns_about_ignored_extra_entries(capsys):
+def test_oneshot_all_toolsets_warns_about_ignored_extra_entries(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
     from hermes_cli.oneshot import _validate_explicit_toolsets
 
     valid, error = _validate_explicit_toolsets("all,nope")
@@ -255,6 +266,7 @@ def test_oneshot_accepts_plugin_toolset_after_discovery(monkeypatch):
 
 
 def test_oneshot_rejects_disabled_mcp_toolset(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
     import hermes_cli.config as config_mod
 
     from hermes_cli.oneshot import _validate_explicit_toolsets
@@ -269,7 +281,31 @@ def test_oneshot_rejects_disabled_mcp_toolset(monkeypatch, capsys):
 
     assert valid is None
     assert error == "hermes -z: --toolsets did not contain any valid toolsets.\n"
-    assert "mcp-off" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "ignoring disabled MCP servers" in err
+    assert "mcp-off" in err
+
+
+def test_oneshot_distinguishes_disabled_mcp_from_unknown(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.config as config_mod
+
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    )
+
+    valid, error = _validate_explicit_toolsets("web,mcp-off,nope")
+
+    assert valid == ["web"]
+    assert error is None
+    err = capsys.readouterr().err
+    assert "ignoring unknown --toolsets entries: nope" in err
+    assert "ignoring disabled MCP servers" in err
+    assert "mcp-off" in err
 
 
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):

@@ -903,28 +903,41 @@ def _load_enabled_toolsets() -> list[str] | None:
         if not unresolved:
             return built_in
 
+        mcp_names: set[str] = set()
+        mcp_disabled: set[str] = set()
         try:
             from hermes_cli.config import read_raw_config
             from hermes_cli.tools_config import _parse_enabled_flag
 
             raw_cfg = read_raw_config()
             mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
-            mcp_names = {
-                str(name)
-                for name, server_cfg in mcp_servers.items()
-                if isinstance(server_cfg, dict)
-                and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
-            }
+            for name, server_cfg in mcp_servers.items():
+                if not isinstance(server_cfg, dict):
+                    continue
+                if _parse_enabled_flag(server_cfg.get("enabled", True), default=True):
+                    mcp_names.add(str(name))
+                else:
+                    mcp_disabled.add(str(name))
         except Exception:
             mcp_names = set()
+            mcp_disabled = set()
 
         mcp_valid = [name for name in unresolved if name in mcp_names]
-        invalid = [name for name in unresolved if name not in mcp_names]
+        disabled = [name for name in unresolved if name in mcp_disabled]
+        unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
         valid = built_in + mcp_valid
 
-        if invalid:
+        if unknown:
             print(
-                f"[tui] ignoring unknown HERMES_TUI_TOOLSETS entries: {', '.join(invalid)}",
+                f"[tui] ignoring unknown HERMES_TUI_TOOLSETS entries: {', '.join(unknown)}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if disabled:
+            print(
+                "[tui] ignoring disabled MCP servers in HERMES_TUI_TOOLSETS "
+                "(set enabled: true in config.yaml to use): "
+                f"{', '.join(disabled)}",
                 file=sys.stderr,
                 flush=True,
             )

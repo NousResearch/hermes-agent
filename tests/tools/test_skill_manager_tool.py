@@ -714,3 +714,114 @@ class TestExternalSkillMutations:
         assert (local / "fresh-skill" / "SKILL.md").exists()
         assert not (external / "fresh-skill").exists()
 
+
+
+# ---------------------------------------------------------------------------
+# Pinned-skill guard — skill_manage refuses all writes to pinned skills.
+# The user unpins via `hermes curator unpin <name>`.
+# ---------------------------------------------------------------------------
+
+class TestPinnedGuard:
+    """Every mutation action must refuse when the skill is pinned."""
+
+    @staticmethod
+    def _pin(name: str):
+        """Return a patch context that marks *name* as pinned in skill_usage."""
+        def _fake_get_record(skill_name, _name=name):
+            return {"pinned": True} if skill_name == _name else {"pinned": False}
+        return patch("tools.skill_usage.get_record", side_effect=_fake_get_record)
+
+    def test_edit_refuses_pinned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._pin("my-skill"):
+                result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        assert "hermes curator unpin my-skill" in result["error"]
+        # Original content preserved
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "A test skill" in content
+
+    def test_patch_refuses_pinned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._pin("my-skill"):
+                result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.")
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        assert "hermes curator unpin my-skill" in result["error"]
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "Do the thing." in content  # unchanged
+
+    def test_patch_supporting_file_refuses_pinned(self, tmp_path):
+        """Pin covers supporting files too, not just SKILL.md."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "references/api.md", "original")
+            with self._pin("my-skill"):
+                result = _patch_skill(
+                    "my-skill", "original", "modified",
+                    file_path="references/api.md",
+                )
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        assert (tmp_path / "my-skill" / "references" / "api.md").read_text() == "original"
+
+    def test_delete_refuses_pinned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._pin("my-skill"):
+                result = _delete_skill("my-skill")
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        # Skill still exists
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
+    def test_write_file_refuses_pinned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._pin("my-skill"):
+                result = _write_file("my-skill", "references/api.md", "content")
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        assert not (tmp_path / "my-skill" / "references" / "api.md").exists()
+
+    def test_remove_file_refuses_pinned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "references/api.md", "content")
+            with self._pin("my-skill"):
+                result = _remove_file("my-skill", "references/api.md")
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        # File still there
+        assert (tmp_path / "my-skill" / "references" / "api.md").exists()
+
+    def test_unpinned_skills_still_editable(self, tmp_path):
+        """Sanity check: the guard doesn't fire for unpinned skills.
+
+        Only the specifically-pinned skill is refused; a sibling skill must
+        still be freely editable.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("pinned-one", VALID_SKILL_CONTENT)
+            _create_skill("free-one", VALID_SKILL_CONTENT)
+            with self._pin("pinned-one"):
+                blocked = _edit_skill("pinned-one", VALID_SKILL_CONTENT_2)
+                allowed = _edit_skill("free-one", VALID_SKILL_CONTENT_2)
+        assert blocked["success"] is False
+        assert allowed["success"] is True
+
+    def test_broken_sidecar_fails_open(self, tmp_path):
+        """If skill_usage.get_record raises, we allow the write through.
+
+        Rationale: a corrupted telemetry file shouldn't lock the agent out
+        of skills it would otherwise be allowed to touch.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with patch("tools.skill_usage.get_record",
+                       side_effect=RuntimeError("sidecar broken")):
+                result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True

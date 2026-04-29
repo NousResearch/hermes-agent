@@ -140,6 +140,7 @@ _SLASH_WORKER_TIMEOUT_S = max(
 # response writes are safe.
 _LONG_HANDLERS = frozenset(
     {
+        "browser.manage",
         "cli.exec",
         "session.branch",
         "session.resume",
@@ -4753,10 +4754,23 @@ def _resolve_browser_cdp_url() -> str:
 
 
 def _is_default_local_cdp(parsed) -> bool:
+    """Match the discovery-style local default; never the concrete WS form.
+
+    A user-supplied ``ws://127.0.0.1:9222/devtools/browser/<id>`` is a
+    real, connectable endpoint — collapsing it to bare ``http://...:9222``
+    would strip the path and break the connect.
+    """
+    try:
+        port = parsed.port or 80
+    except ValueError:
+        return False
+
+    discovery_path = parsed.path in {"", "/", "/json", "/json/version"}
     return (
         parsed.scheme in {"http", "ws"}
         and parsed.hostname in {"127.0.0.1", "localhost"}
-        and (parsed.port or 80) == 9222
+        and port == 9222
+        and discovery_path
     )
 
 
@@ -4838,12 +4852,19 @@ def _browser_connect(rid, params: dict) -> dict:
     parsed = urlparse(url if "://" in url else f"http://{url}")
     if parsed.scheme not in {"http", "https", "ws", "wss"}:
         return _err(rid, 4015, f"unsupported browser url: {url}")
+    if not parsed.hostname:
+        return _err(rid, 4015, f"missing host in browser url: {url}")
+    try:
+        port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
+    except ValueError:
+        return _err(rid, 4015, f"invalid port in browser url: {url}")
 
     # Always normalize default-local to 127.0.0.1:9222 so downstream
     # comparisons + messaging match what we'll actually persist.
     if _is_default_local_cdp(parsed):
         url = DEFAULT_BROWSER_CDP_URL
         parsed = urlparse(url)
+        port = parsed.port or 9222
 
     try:
         # ws[s]://.../devtools/browser/<id> endpoints (hosted CDP
@@ -4852,9 +4873,6 @@ def _browser_connect(rid, params: dict) -> dict:
         if parsed.scheme in {"ws", "wss"} and parsed.path.startswith("/devtools/browser/"):
             import socket
 
-            if not parsed.hostname:
-                return _err(rid, 4015, f"missing host in browser url: {url}")
-            port = parsed.port or (443 if parsed.scheme == "wss" else 80)
             try:
                 with socket.create_connection((parsed.hostname, port), timeout=2.0):
                     pass
@@ -4868,7 +4886,6 @@ def _browser_connect(rid, params: dict) -> dict:
                 import platform
                 from hermes_cli.browser_connect import try_launch_chrome_debug
 
-                port = parsed.port or 9222
                 announce("Chrome isn't running with remote debugging — attempting to launch...")
 
                 if try_launch_chrome_debug(port, platform.system()):
@@ -4887,7 +4904,7 @@ def _browser_connect(rid, params: dict) -> dict:
             elif not ok:
                 return _err(rid, 5031, f"could not reach browser CDP at {url}")
             elif _is_default_local_cdp(parsed):
-                announce(f"Chrome is already listening on port {parsed.port or 9222}")
+                announce(f"Chrome is already listening on port {port}")
 
         normalized = _normalize_cdp_url(parsed)
 

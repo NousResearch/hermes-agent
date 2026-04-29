@@ -2419,6 +2419,46 @@ class APIServerAdapter(BasePlatformAdapter):
                 if instructions is None:
                     instructions = stored.get("instructions")
 
+        # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
+        # When provided, the FULL history (including tool messages) is loaded from
+        # state.db instead of from the request body.  This mirrors the behavior of
+        # the /v1/chat/completions endpoint and fixes the issue where web-ui clients
+        # that only send user/assistant messages lose tool-calling context across turns.
+        #
+        # Security: same gate as /v1/chat/completions — requires API key auth.
+        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        if provided_session_id:
+            if not self._api_key:
+                logger.warning(
+                    "Session continuation via X-Hermes-Session-Id rejected on /v1/runs: "
+                    "no API key configured.  Set API_SERVER_KEY to enable "
+                    "session continuity."
+                )
+                return web.json_response(
+                    _openai_error(
+                        "Session continuation requires API key authentication. "
+                        "Configure API_SERVER_KEY to enable this feature."
+                    ),
+                    status=403,
+                )
+            # Sanitize: reject control characters that could enable header injection.
+            if re.search(r'[\r\n\x00]', provided_session_id):
+                return web.json_response(
+                    _openai_error("Invalid session ID"), status=400,
+                )
+            session_id = provided_session_id
+            stored_session_id = session_id
+            try:
+                db = self._ensure_session_db()
+                if db is not None:
+                    conversation_history = db.get_messages_as_conversation(session_id)
+                    logger.debug(
+                        "Loaded %d messages from session %s via X-Hermes-Session-Id",
+                        len(conversation_history), session_id,
+                    )
+            except Exception as e:
+                logger.warning("Failed to load session history for %s: %s", session_id, e)
+
         # When input is a multi-message array, extract all but the last
         # message as conversation history (the last becomes user_message).
         # Only fires when no explicit history was provided.
@@ -2434,7 +2474,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
-        session_id = body.get("session_id") or stored_session_id or run_id
+        session_id = session_id if provided_session_id else (body.get("session_id") or stored_session_id or run_id)
         ephemeral_system_prompt = instructions
 
         async def _run_and_close():

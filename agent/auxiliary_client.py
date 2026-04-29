@@ -317,9 +317,18 @@ def _to_openai_base_url(base_url: str) -> str:
     completions.  The auxiliary client uses the OpenAI SDK, so it must hit the
     ``/v1`` surface.  Passing the raw ``inference_base_url`` causes requests to
     land on ``/anthropic/chat/completions`` — a 404.
+
+    However, MiniMax's Anthropic-compatible endpoint is ``/anthropic/v1`` — a
+    fixed two-segment path.  Stripping ``/anthropic`` and replacing it with
+    ``/v1`` would produce ``/v1`` (wrong), so we preserve ``/anthropic/v1``
+    unchanged.  Only URLs ending in exactly ``/anthropic`` (no ``/v1`` suffix)
+    are rewritten.
     """
     url = str(base_url or "").strip().rstrip("/")
-    if url.endswith("/anthropic"):
+    # Only rewrite when the URL ends exactly with /anthropic (not /anthropic/v1).
+    # MiniMax uses /anthropic/v1/messages as its Anthropic Messages endpoint;
+    # stripping /anthropic would produce /v1/messages → 404.
+    if url.endswith("/anthropic") and not url.endswith("/anthropic/v1"):
         rewritten = url[: -len("/anthropic")] + "/v1"
         logger.debug("Auxiliary client: rewrote base URL %s → %s", url, rewritten)
         return rewritten

@@ -26,12 +26,15 @@ def check_mark(ok: bool) -> str:
     return color("✗", Colors.RED)
 
 def redact_key(key: str) -> str:
-    """Redact an API key for display."""
-    if not key:
-        return "(not set)"
-    if len(key) < 12:
-        return "***"
-    return key[:4] + "..." + key[-4:]
+    """Redact an API key for display.
+
+    Thin wrapper over :func:`agent.redact.mask_secret`. Preserves the
+    "(not set)" placeholder in dim color to match ``hermes config``'s
+    output (previously this variant was missing the DIM color —
+    consolidated via PR that also introduced ``mask_secret``).
+    """
+    from agent.redact import mask_secret
+    return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
 def _format_iso_timestamp(value) -> str:

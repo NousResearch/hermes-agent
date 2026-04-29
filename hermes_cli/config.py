@@ -4013,12 +4013,13 @@ def get_env_value(key: str) -> Optional[str]:
 # =============================================================================
 
 def redact_key(key: str) -> str:
-    """Redact an API key for display."""
-    if not key:
-        return color("(not set)", Colors.DIM)
-    if len(key) < 12:
-        return "***"
-    return key[:4] + "..." + key[-4:]
+    """Redact an API key for display.
+
+    Thin wrapper over :func:`agent.redact.mask_secret` — preserves the
+    "(not set)" placeholder in dim color for the empty case.
+    """
+    from agent.redact import mask_secret
+    return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
 def show_config():

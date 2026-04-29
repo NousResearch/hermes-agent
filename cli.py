@@ -6569,6 +6569,19 @@ class HermesCLI:
             connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
             cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
             parsed_cdp = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
+            try:
+                _port = parsed_cdp.port or (443 if parsed_cdp.scheme in {"https", "wss"} else 80)
+            except ValueError:
+                print()
+                print(f"   ⚠ Invalid port in browser url: {cdp_url}")
+                print()
+                return
+            if not parsed_cdp.hostname:
+                print()
+                print(f"   ⚠ Missing host in browser url: {cdp_url}")
+                print()
+                return
+            _host = parsed_cdp.hostname
             if parsed_cdp.path.startswith("/devtools/browser/"):
                 cdp_url = parsed_cdp.geturl()
             else:
@@ -6587,10 +6600,6 @@ class HermesCLI:
                 pass
 
             print()
-
-            # Extract port for connectivity checks
-            _host = parsed_cdp.hostname or "127.0.0.1"
-            _port = parsed_cdp.port or (443 if parsed_cdp.scheme in {"https", "wss"} else 80)
 
             # Check if Chrome is already listening on the debug port
             import socket

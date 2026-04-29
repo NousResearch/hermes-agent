@@ -1312,11 +1312,22 @@ class TestSchemaInit:
         assert "sessions" in tables
         assert "messages" in tables
         assert "schema_version" in tables
+        assert "code_workspaces" in tables
+        assert "code_sessions" in tables
+        assert "code_events" in tables
 
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 11
+        assert version == 12
+
+    def test_code_mode_status(self, db):
+        status = db.code_mode_status()
+        assert status["mode"] == "enabled"
+        assert status["schema_version"] == 12
+        assert status["workspace_count"] == 0
+        assert status["session_count"] == 0
+        assert status["event_count"] == 0
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1372,12 +1383,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v9
+        # Open with SessionDB — should migrate to the current schema
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == 12
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -2481,7 +2492,6 @@ class TestFTS5ToolCallMigration:
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 11
+            assert version == 12
         finally:
             session_db.close()
-

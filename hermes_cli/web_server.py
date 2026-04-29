@@ -101,6 +101,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/status",
+    "/api/code/status",
     "/api/config/defaults",
     "/api/config/schema",
     "/api/model/info",
@@ -592,6 +593,124 @@ async def get_status():
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
     }
+
+
+def _code_limit(value: int, default: int = 50, maximum: int = 200) -> int:
+    try:
+        value = int(value)
+    except Exception:
+        value = default
+    return max(1, min(value, maximum))
+
+
+def _code_offset(value: int) -> int:
+    try:
+        value = int(value)
+    except Exception:
+        value = 0
+    return max(0, value)
+
+
+@app.get("/api/code/status")
+async def get_code_status():
+    """Read-only Code Mode readiness endpoint.
+
+    This endpoint is public so the CLI can detect whether the dashboard backend
+    is reachable without knowing the dashboard session token.
+    """
+    try:
+        from hermes_state import SCHEMA_VERSION, SessionDB
+
+        db = SessionDB()
+        try:
+            status = db.code_mode_status()
+        finally:
+            db.close()
+        return {
+            "mode": "code_mode",
+            "ready": status.get("mode") == "enabled",
+            "schema_version": status.get("schema_version") or SCHEMA_VERSION,
+            "state": status,
+            "workspace_path": os.getcwd(),
+            "web_url": None,
+        }
+    except Exception as exc:
+        _log.exception("GET /api/code/status failed")
+        return {
+            "mode": "code_mode",
+            "ready": False,
+            "schema_version": None,
+            "state": {"mode": "unavailable", "error": str(exc)},
+            "workspace_path": os.getcwd(),
+            "web_url": None,
+        }
+
+
+@app.get("/api/code/workspaces")
+async def get_code_workspaces(owner: str | None = None, q: str = "", limit: int = 50, offset: int = 0):
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            workspaces = db.list_code_workspaces(
+                owner=owner,
+                q=q or "",
+                limit=_code_limit(limit),
+                offset=_code_offset(offset),
+            )
+            return {"workspaces": workspaces, "limit": _code_limit(limit), "offset": _code_offset(offset)}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/code/workspaces failed")
+        raise HTTPException(status_code=500, detail="Code Mode workspaces unavailable")
+
+
+@app.get("/api/code/sessions")
+async def get_code_sessions(workspace_id: str | None = None, limit: int = 50, offset: int = 0):
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            sessions = db.list_code_sessions(
+                workspace_id=workspace_id,
+                limit=_code_limit(limit),
+                offset=_code_offset(offset),
+            )
+            return {"sessions": sessions, "limit": _code_limit(limit), "offset": _code_offset(offset)}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/code/sessions failed")
+        raise HTTPException(status_code=500, detail="Code Mode sessions unavailable")
+
+
+@app.get("/api/code/events")
+async def get_code_events(
+    workspace_id: str | None = None,
+    session_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            events = db.list_code_events(
+                workspace_id=workspace_id,
+                session_id=session_id,
+                limit=_code_limit(limit),
+                offset=_code_offset(offset),
+            )
+            return {"events": events, "limit": _code_limit(limit), "offset": _code_offset(offset)}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/code/events failed")
+        raise HTTPException(status_code=500, detail="Code Mode events unavailable")
 
 
 # ---------------------------------------------------------------------------

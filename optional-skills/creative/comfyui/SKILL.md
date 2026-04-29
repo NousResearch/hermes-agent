@@ -83,23 +83,8 @@ command -v comfy >/dev/null 2>&1 && echo "comfy-cli: installed"
 curl -s http://127.0.0.1:8188/system_stats 2>/dev/null && echo "server: running"
 ```
 
-### Local Setup (from scratch)
-
-```bash
-pip install comfy-cli
-comfy --skip-prompt tracking disable
-comfy install                          # downloads ComfyUI + Manager
-comfy launch --background              # starts server on :8188
-```
-
-### Cloud Setup (no local GPU)
-
-No installation needed. Get an API key at https://platform.comfy.org/login.
-
-```bash
-export COMFY_CLOUD_API_KEY="comfyui-xxxxxxxxxxxx"
-# All execution uses https://cloud.comfy.org as base URL
-```
+If nothing is installed, go to **Setup & Onboarding** below.
+If the server is already running, skip to **Core Workflow**.
 
 ## Core Workflow
 
@@ -189,62 +174,281 @@ Show images to the user via `vision_analyze` or return the file path directly.
 
 ## Setup & Onboarding
 
-### 1. Install ComfyUI
+When a user asks to set up ComfyUI, walk them through the path that fits their situation.
+Ask what hardware they have and whether they want local or cloud.
+
+**Official docs:** https://docs.comfy.org/installation
+**CLI docs:** https://docs.comfy.org/comfy-cli/getting-started
+**Cloud docs:** https://docs.comfy.org/get_started/cloud
+
+### Choosing an Installation Path
+
+| Situation | Recommended Path |
+|-----------|-----------------|
+| No GPU / just want to try it | **Comfy Cloud** (zero setup) |
+| Windows + NVIDIA GPU + non-technical | **ComfyUI Desktop** (one-click installer) |
+| Windows + NVIDIA GPU + technical | **Portable build** or **comfy-cli** |
+| Linux + any GPU | **comfy-cli** (easiest) or manual install |
+| macOS + Apple Silicon | **ComfyUI Desktop** (macOS) or **comfy-cli** |
+| Headless / server / CI | **comfy-cli** |
+
+---
+
+### Path A: Comfy Cloud (No Local Install)
+
+For users without a capable GPU or who want zero setup.
+Powered by RTX 6000 Pro GPUs, all models pre-installed.
+
+**Docs:** https://docs.comfy.org/get_started/cloud
+
+1. Go to https://comfy.org/cloud and sign up
+2. Get an API key at https://platform.comfy.org/login
+   - Click `+ New` in API Keys section → Generate
+   - Save immediately (only visible once)
+3. Set the key:
+   ```bash
+   export COMFY_CLOUD_API_KEY="comfyui-xxxxxxxxxxxx"
+   ```
+4. Run workflows via the script or web UI:
+   ```bash
+   python3 scripts/run_workflow.py \
+     --workflow workflow_api.json \
+     --args '{"prompt": "a cat"}' \
+     --host https://cloud.comfy.org \
+     --api-key "$COMFY_CLOUD_API_KEY" \
+     --output-dir ./outputs
+   ```
+
+**Pricing:** https://www.comfy.org/cloud/pricing
+Subscription required. Concurrent limits: Free/Standard: 1 job, Creator: 3, Pro: 5.
+
+---
+
+### Path B: ComfyUI Desktop (Windows/macOS)
+
+One-click installer for non-technical users. Currently Beta.
+
+**Docs:** https://docs.comfy.org/installation/desktop
+
+- **Windows (NVIDIA):** https://download.comfy.org/windows/nsis/x64
+- **macOS (Apple Silicon):** Available from https://comfy.org (download page)
+
+Steps:
+1. Download and run installer
+2. Select GPU type (NVIDIA recommended, or CPU mode)
+3. Choose install location (SSD recommended, ~15GB needed)
+4. Optionally migrate from existing ComfyUI Portable install
+5. Desktop launches automatically — web UI opens in browser
+
+Desktop manages its own Python environment. For CLI access to the bundled env:
+```bash
+cd <install_dir>/ComfyUI
+.venv/Scripts/activate   # Windows
+# or use the built-in terminal in the Desktop UI
+```
+
+**Limitations:** Desktop uses stable releases (may lag behind latest).
+Linux not supported for Desktop — use comfy-cli or manual install.
+
+---
+
+### Path C: ComfyUI Portable (Windows Only)
+
+Standalone package with embedded Python. Extract and run. No install.
+
+**Docs:** https://docs.comfy.org/installation/comfyui_portable_windows
+
+1. Download from https://github.com/comfyanonymous/ComfyUI/releases
+   - Standard: Python 3.13 + CUDA 13.0 (modern NVIDIA GPUs)
+   - Alt: PyTorch CUDA 12.6 + Python 3.12 (NVIDIA 10 series and older)
+   - AMD (experimental)
+2. Extract with 7-Zip
+3. Run `run_nvidia_gpu.bat` (or `run_cpu.bat`)
+4. Wait for "To see the GUI go to: http://127.0.0.1:8188"
+
+Update: run `update/update_comfyui.bat` (latest commit) or
+`update/update_comfyui_stable.bat` (latest stable release).
+
+---
+
+### Path D: comfy-cli (All Platforms — Recommended for Agents)
+
+The official CLI is the best path for headless/automated setups.
+
+**Docs:** https://docs.comfy.org/comfy-cli/getting-started
+**Repo:** https://github.com/Comfy-Org/comfy-cli
+
+#### Prerequisites
+- Python 3.10+ (3.13 recommended)
+- pip (or conda/uv)
+- GPU drivers installed (CUDA for NVIDIA, ROCm for AMD)
+
+#### Install comfy-cli
 
 ```bash
 pip install comfy-cli
-comfy --skip-prompt tracking disable   # disable analytics
-comfy install                          # interactive: picks GPU backend
+# or
+uvx --from comfy-cli comfy --help
 ```
 
-For non-interactive install:
+Disable analytics (avoids interactive prompt):
 ```bash
-comfy install --nvidia                 # NVIDIA GPU
-comfy install --amd                    # AMD GPU (ROCm)
-comfy install --m-series               # Apple Silicon
-comfy install --cpu                    # CPU only
+comfy --skip-prompt tracking disable
 ```
 
-See https://docs.comfy.org/installation for full options.
-If user asks for help, read the docs and assist them.
-
-### 2. Launch Server
+#### Install ComfyUI
 
 ```bash
-comfy launch --background              # starts on 127.0.0.1:8188
-comfy launch -- --listen 0.0.0.0       # listen on all interfaces
+# Interactive (prompts for GPU type)
+comfy install
+
+# Non-interactive variants:
+comfy --skip-prompt install --nvidia              # NVIDIA (CUDA)
+comfy --skip-prompt install --amd                 # AMD (ROCm, Linux)
+comfy --skip-prompt install --m-series            # Apple Silicon (MPS)
+comfy --skip-prompt install --cpu                 # CPU only (slow)
+
+# With faster dependency resolution:
+comfy --skip-prompt install --nvidia --fast-deps
+```
+
+Default location: `~/comfy/ComfyUI` (Linux), `~/Documents/comfy/ComfyUI` (macOS/Win).
+Override with: `comfy --workspace /custom/path install`
+
+#### Launch Server
+
+```bash
+comfy launch --background              # background daemon on :8188
+comfy launch                           # foreground (see logs)
+comfy launch -- --listen 0.0.0.0       # accessible on LAN
 comfy launch -- --port 8190            # custom port
+comfy launch -- --lowvram              # low VRAM mode (6GB cards)
 ```
 
-Verify:
+Verify server is running:
 ```bash
 curl -s http://127.0.0.1:8188/system_stats | python3 -m json.tool
 ```
 
-### 3. Install Custom Nodes
-
+Stop background server:
 ```bash
-comfy node install comfyui-impact-pack
-comfy node install comfyui-animatediff-evolved
-comfy node update all                  # update everything
+comfy stop
 ```
 
-### 4. Download Models
+---
+
+### Path E: Manual Install (Advanced / All Hardware)
+
+For full control or unsupported hardware (Ascend NPU, Cambricon MLU, Intel Arc).
+
+**Docs:** https://docs.comfy.org/installation/manual_install
+**GitHub:** https://github.com/comfyanonymous/ComfyUI
 
 ```bash
-# From CivitAI
-comfy model download --url "https://civitai.com/api/download/models/128713" \
-  --relative-path models/checkpoints
+# 1. Create environment
+conda create -n comfyenv python=3.13
+conda activate comfyenv
 
-# From HuggingFace
-comfy model download --url "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors" \
-  --relative-path models/checkpoints
+# 2. Clone
+git clone https://github.com/comfyanonymous/ComfyUI.git
+cd ComfyUI
+
+# 3. Install PyTorch (pick your hardware)
+# NVIDIA:
+pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu130
+# AMD (ROCm 6.4):
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.4
+# Apple Silicon:
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cpu
+# Intel Arc:
+pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/xpu
+# CPU only:
+pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cpu
+
+# 4. Install ComfyUI deps
+pip install -r requirements.txt
+
+# 5. Run
+python main.py
+# With options: python main.py --listen 0.0.0.0 --port 8188
 ```
 
-### 5. Verify Everything
+---
+
+### Post-Install: Download Models
+
+ComfyUI needs at least one checkpoint model to generate images.
+
+**Using comfy-cli:**
+```bash
+# SDXL (general purpose, ~6.5GB)
+comfy model download \
+  --url "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors" \
+  --relative-path models/checkpoints
+
+# SD 1.5 (lighter, ~4GB, good for low VRAM)
+comfy model download \
+  --url "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors" \
+  --relative-path models/checkpoints
+
+# From CivitAI (may need API token):
+comfy model download \
+  --url "https://civitai.com/api/download/models/128713" \
+  --relative-path models/checkpoints \
+  --set-civitai-api-token "YOUR_TOKEN"
+
+# LoRA adapters:
+comfy model download --url "<URL>" --relative-path models/loras
+```
+
+**Manual download:** Place `.safetensors` / `.ckpt` files directly into the
+`ComfyUI/models/checkpoints/` directory (or `loras/`, `vae/`, etc.).
+
+List installed models:
+```bash
+comfy model list
+```
+
+---
+
+### Post-Install: Install Custom Nodes
+
+Custom nodes extend ComfyUI's capabilities (upscaling, video, ControlNet, etc.).
 
 ```bash
+comfy node install comfyui-impact-pack           # popular utility pack
+comfy node install comfyui-animatediff-evolved    # video generation
+comfy node install comfyui-controlnet-aux         # ControlNet preprocessors
+comfy node install comfyui-essentials             # common helpers
+comfy node update all                            # update all nodes
+```
+
+Check what's installed:
+```bash
+comfy node show installed
+```
+
+Install deps for a specific workflow:
+```bash
+comfy node install-deps --workflow=workflow_api.json
+```
+
+---
+
+### Post-Install: Verify Setup
+
+```bash
+# Check server is responsive
+curl -s http://127.0.0.1:8188/system_stats | python3 -m json.tool
+
+# Check a workflow's dependencies
 python3 scripts/check_deps.py workflow_api.json --host 127.0.0.1 --port 8188
+
+# Test a generation
+python3 scripts/run_workflow.py \
+  --workflow workflow_api.json \
+  --args '{"prompt": "test image, high quality"}' \
+  --output-dir ./test-outputs
 ```
 
 ## Image Upload (img2img / Inpainting)

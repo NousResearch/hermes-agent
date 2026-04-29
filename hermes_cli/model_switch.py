@@ -22,6 +22,10 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+import json
+import urllib.request
+import urllib.error
 from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
 
@@ -900,6 +904,65 @@ def switch_model(
 
 
 # ---------------------------------------------------------------------------
+# Endpoint model probing cache (module-level, 5-min TTL)
+# ---------------------------------------------------------------------------
+
+_endpoint_probe_cache: dict = {}          # key: (base_url, api_key_prefix) -> (timestamp, [model_ids])
+_ENDPOINT_PROBE_CACHE_TTL = 300           # 5 minutes
+
+
+def _probe_endpoint_models(base_url: str, api_key: str = "") -> list[str]:
+    """Probe an OpenAI-compatible /models endpoint for available model IDs.
+
+    Returns a list of model ID strings, or empty list on failure.
+    Results are cached per (base_url, api_key_prefix) for 5 minutes.
+    """
+    if not base_url:
+        return []
+
+    url = base_url.rstrip("/") + "/models"
+    cache_key = (url, api_key[:12] if api_key else "")
+
+    now = time.time()
+    cached = _endpoint_probe_cache.get(cache_key)
+    if cached is not None:
+        ts, model_ids = cached
+        if now - ts < _ENDPOINT_PROBE_CACHE_TTL:
+            return model_ids
+
+    try:
+        req = urllib.request.Request(url)
+        if api_key:
+            req.add_header("Authorization", f"Bearer {api_key}")
+        req.add_header("Accept", "application/json")
+
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        _endpoint_probe_cache[cache_key] = (now, [])
+        return []
+
+    # Parse the response: OpenAI format has {"data": [{"id": "model-name"}, ...]}
+    model_ids = []
+    if isinstance(data, dict):
+        items = data.get("data", [])
+        if not items:
+            items = data.get("models", [])
+        for m in items:
+            if isinstance(m, dict):
+                mid = m.get("id", "")
+            elif isinstance(m, str):
+                mid = m
+            else:
+                continue
+            if mid:
+                model_ids.append(mid)
+
+    _endpoint_probe_cache[cache_key] = (now, model_ids)
+    return model_ids
+
+
+# ---------------------------------------------------------------------------
 # Authenticated providers listing (for /model no-args display)
 # ---------------------------------------------------------------------------
 
@@ -1327,6 +1390,22 @@ def list_authenticated_providers(
                 for m in cfg_models:
                     if m and m not in groups[group_key]["models"]:
                         groups[group_key]["models"].append(m)
+
+        # --- Probe endpoint for dynamic model list ---
+        # When the /models endpoint is reachable, use its response as the
+        # authoritative model list (zero-maintenance, always in sync).
+        # Config models serve only as fallback when the endpoint is unreachable.
+        for group_key, grp in groups.items():
+            api_url = grp.get("api_url", "")
+            api_key = group_key[1] if len(group_key) > 1 else ""
+            if api_url and api_key:
+                try:
+                    probed = _probe_endpoint_models(api_url, api_key)
+                    if probed:
+                        # Dynamic probe succeeded — use API results as authoritative
+                        grp["models"] = probed
+                except Exception:
+                    pass  # never let probing break the picker
 
         _section4_emitted_slugs: set = set()
         for grp in groups.values():

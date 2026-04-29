@@ -4289,7 +4289,6 @@ class AIAgent:
                         api_key=_parent_runtime.get("api_key") or None,
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
-                        enabled_toolsets=["memory", "skills"],
                     )
                     review_agent._memory_write_origin = "background_review"
                     review_agent._memory_write_context = "background_review"
@@ -4306,11 +4305,50 @@ class AIAgent:
                     # _vprint and leak past the stdout redirect (they go via
                     # _print_fn/status_callback, which bypass sys.stdout).
                     review_agent.suppress_status_output = True
+                    # Inherit the parent's cached system prompt verbatim so
+                    # the review fork's outbound HTTP request hits the same
+                    # Anthropic/OpenRouter prefix cache the parent warmed.
+                    # Without this, the fork rebuilds the system prompt from
+                    # scratch (fresh _hermes_now() timestamp, fresh
+                    # session_id, narrower toolset → different skills_prompt)
+                    # and the byte-exact prefix-cache key misses. See
+                    # issue #25322 and PR #17276 for the full analysis +
+                    # measured impact (~26% end-to-end cost reduction on
+                    # Sonnet 4.5).
+                    review_agent._cached_system_prompt = self._cached_system_prompt
 
-                    review_agent.run_conversation(
-                        user_message=prompt,
-                        conversation_history=messages_snapshot,
+                    from model_tools import get_tool_definitions
+                    from hermes_cli.plugins import (
+                        set_thread_tool_whitelist,
+                        clear_thread_tool_whitelist,
                     )
+
+                    review_whitelist = {
+                        t["function"]["name"]
+                        for t in get_tool_definitions(
+                            enabled_toolsets=["memory", "skills"],
+                            quiet_mode=True,
+                        )
+                    }
+                    set_thread_tool_whitelist(
+                        review_whitelist,
+                        deny_msg_fmt=(
+                            "Background review denied non-whitelisted tool: "
+                            "{tool_name}. Only memory/skill tools are allowed."
+                        ),
+                    )
+                    try:
+                        review_agent.run_conversation(
+                            user_message=(
+                                prompt
+                                + "\n\nYou can only call memory and skill "
+                                "management tools. Other tools will be denied "
+                                "at runtime — do not attempt them."
+                            ),
+                            conversation_history=messages_snapshot,
+                        )
+                    finally:
+                        clear_thread_tool_whitelist()
 
                 # Scan the review agent's messages for successful tool actions
                 # and surface a compact summary to the user. Tool messages

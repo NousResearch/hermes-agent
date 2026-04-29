@@ -1,8 +1,10 @@
 """Tests for the local command TTS provider in tools.tts_tool."""
 
 import json
+import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -75,12 +77,12 @@ def test_get_local_tts_command_template_prefers_config_over_env(monkeypatch):
     assert _get_local_tts_command_template(config) == "config-command {text_path}"
 
 
-def test_get_local_tts_command_template_falls_back_to_env(monkeypatch):
+def test_get_local_tts_command_template_ignores_env(monkeypatch):
     monkeypatch.setenv("HERMES_LOCAL_TTS_COMMAND", "env-command {text_path}")
 
     from tools.tts_tool import _get_local_tts_command_template
 
-    assert _get_local_tts_command_template({}) == "env-command {text_path}"
+    assert _get_local_tts_command_template({}) is None
 
 
 def test_get_local_tts_command_template_returns_none_when_missing():
@@ -135,6 +137,55 @@ def test_generate_local_command_tts_supports_template_placeholders(tmp_path):
     )
 
 
+def test_generate_local_command_tts_supports_quoted_placeholders_with_spaces(tmp_path):
+    from tools.tts_tool import _generate_local_command_tts
+
+    script = _write_synth_script(tmp_path)
+    output_dir = tmp_path / "audio with spaces"
+    output_path = output_dir / "speech file.mp3"
+    config = {
+        "local_command": {
+            "command": (
+                f"{sys.executable} {script} "
+                '--input "{text_path}" --output "{output_path}" '
+                '--format {format} --voice "{voice}"'
+            ),
+            "voice": "Ava Bell",
+        }
+    }
+
+    _generate_local_command_tts("hello", str(output_path), config)
+
+    assert output_path.read_text(encoding="utf-8") == (
+        "AUDIO:hello|format=mp3|voice=Ava Bell|model=|speed="
+    )
+
+
+def test_unquoted_local_tts_placeholder_uses_windows_quotes_for_spaces(monkeypatch):
+    from tools.tts_tool import _quote_local_tts_placeholder
+
+    monkeypatch.setattr("tools.tts_tool.os.name", "nt")
+
+    assert _quote_local_tts_placeholder(r"C:\Users\Jane Doe\speech.mp3", None) == (
+        r'"C:\Users\Jane Doe\speech.mp3"'
+    )
+
+
+def test_generate_local_command_tts_preserves_literal_braces_in_command(tmp_path):
+    from tools.tts_tool import _generate_local_command_tts
+
+    output_path = tmp_path / "speech.mp3"
+    config = {
+        "local_command": {
+            "command": "printf '%s' '${HOME}' > {output_path}",
+        }
+    }
+
+    _generate_local_command_tts("hello", str(output_path), config)
+
+    assert output_path.read_text(encoding="utf-8") == "${HOME}"
+
+
 def test_generate_local_command_tts_output_path_suffix_overrides_config_format(tmp_path):
     from tools.tts_tool import _generate_local_command_tts
 
@@ -172,32 +223,49 @@ def test_generate_local_command_tts_missing_command_raises_value_error(tmp_path)
         _generate_local_command_tts("hello", str(tmp_path / "speech.mp3"), {})
 
 
-def test_generate_local_command_tts_invalid_placeholder_raises_value_error(tmp_path):
+def test_generate_local_command_tts_preserves_unknown_braced_tokens(tmp_path):
     from tools.tts_tool import _generate_local_command_tts
 
-    config = {"local_command": {"command": "fake-tts {missing_placeholder}"}}
+    output_path = tmp_path / "speech.mp3"
+    config = {
+        "local_command": {
+            "command": "printf '%s' '{missing_placeholder}' > {output_path}",
+        }
+    }
 
-    with pytest.raises(ValueError, match="missing placeholder"):
-        _generate_local_command_tts("hello", str(tmp_path / "speech.mp3"), config)
+    _generate_local_command_tts("hello", str(output_path), config)
+
+    assert output_path.read_text(encoding="utf-8") == "{missing_placeholder}"
 
 
-@pytest.mark.parametrize(
-    "command_template",
-    [
-        "fake-tts --input {text_path",
-        "fake-tts --input {}",
-    ],
-)
-def test_generate_local_command_tts_invalid_template_raises_value_error(
-    tmp_path,
-    command_template,
-):
+def test_generate_local_command_tts_preserves_json_braces_in_command(tmp_path):
     from tools.tts_tool import _generate_local_command_tts
 
-    config = {"local_command": {"command": command_template}}
+    output_path = tmp_path / "speech.mp3"
+    config = {
+        "local_command": {
+            "command": "printf '%s' '{\"engine\":\"fake\"}' > {output_path}",
+        }
+    }
 
-    with pytest.raises(ValueError, match="invalid template"):
-        _generate_local_command_tts("hello", str(tmp_path / "speech.mp3"), config)
+    _generate_local_command_tts("hello", str(output_path), config)
+
+    assert output_path.read_text(encoding="utf-8") == '{"engine":"fake"}'
+
+
+def test_generate_local_command_tts_unescapes_format_style_literal_braces(tmp_path):
+    from tools.tts_tool import _generate_local_command_tts
+
+    output_path = tmp_path / "speech.mp3"
+    config = {
+        "local_command": {
+            "command": "printf '%s' '{{\"engine\":\"fake\"}}' > {output_path}",
+        }
+    }
+
+    _generate_local_command_tts("hello", str(output_path), config)
+
+    assert output_path.read_text(encoding="utf-8") == '{"engine":"fake"}'
 
 
 def test_generate_local_command_tts_command_failure_includes_stderr(tmp_path):
@@ -224,11 +292,59 @@ def test_generate_local_command_tts_timeout_mentions_timed_out(tmp_path):
     config = {"local_command": {"command": "fake-tts --input {text_path} --output {output_path}"}}
 
     with patch(
-        "tools.tts_tool.subprocess.run",
+        "tools.tts_tool._run_local_tts_command",
         side_effect=subprocess.TimeoutExpired("tts", 1),
     ):
         with pytest.raises(RuntimeError, match="timed out"):
             _generate_local_command_tts("hello", str(tmp_path / "speech.mp3"), config)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process group behavior")
+def test_generate_local_command_tts_timeout_kills_child_process_tree(tmp_path):
+    from tools.tts_tool import _generate_local_command_tts
+
+    marker_path = tmp_path / "child-survived.txt"
+    output_path = tmp_path / "speech.mp3"
+    child_script = tmp_path / "child_writer.py"
+    child_script.write_text(
+        """
+import pathlib
+import sys
+import time
+
+time.sleep(0.6)
+pathlib.Path(sys.argv[1]).write_text("alive", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    spawner_script = tmp_path / "spawn_child.py"
+    spawner_script.write_text(
+        f"""
+import subprocess
+import sys
+import time
+
+subprocess.Popen([sys.executable, {str(child_script)!r}, sys.argv[1]])
+time.sleep(5)
+""",
+        encoding="utf-8",
+    )
+    command = " ".join(
+        shlex.quote(part)
+        for part in (sys.executable, str(spawner_script), str(marker_path))
+    )
+    config = {
+        "local_command": {
+            "command": command,
+            "timeout": 0.2,
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        _generate_local_command_tts("hello", str(output_path), config)
+
+    time.sleep(1.0)
+    assert not marker_path.exists()
 
 
 def test_generate_local_command_tts_empty_output_raises_runtime_error(tmp_path):
@@ -236,6 +352,25 @@ def test_generate_local_command_tts_empty_output_raises_runtime_error(tmp_path):
 
     script = _write_synth_script(tmp_path, write_output=False)
     output_path = tmp_path / "speech.mp3"
+    config = {
+        "local_command": {
+            "command": (
+                f"{sys.executable} {script} "
+                "--input {{text_path}} --output {{output_path}}"
+            )
+        }
+    }
+
+    with pytest.raises(RuntimeError, match="produced no output"):
+        _generate_local_command_tts("hello", str(output_path), config)
+
+
+def test_generate_local_command_tts_does_not_reuse_existing_output(tmp_path):
+    from tools.tts_tool import _generate_local_command_tts
+
+    script = _write_synth_script(tmp_path, write_output=False)
+    output_path = tmp_path / "speech.mp3"
+    output_path.write_bytes(b"OLD AUDIO")
     config = {
         "local_command": {
             "command": (
@@ -282,7 +417,7 @@ def test_text_to_speech_tool_routes_local_command_and_returns_json_shape(monkeyp
     }
 
 
-def test_text_to_speech_tool_local_command_ogg_format_without_voice_compatible_stays_attachment(
+def test_text_to_speech_tool_local_command_ogg_format_without_voice_compatible_preserves_config_format(
     monkeypatch,
     tmp_path,
 ):
@@ -311,13 +446,13 @@ def test_text_to_speech_tool_local_command_ogg_format_without_voice_compatible_s
     result = json.loads(text_to_speech_tool("hello"))
 
     assert result["success"] is True
-    assert result["file_path"].endswith(".mp3")
-    assert calls["output_path"].endswith(".mp3")
+    assert result["file_path"].endswith(".ogg")
+    assert calls["output_path"].endswith(".ogg")
     assert result["media_tag"] == f"MEDIA:{result['file_path']}"
     assert result["voice_compatible"] is False
 
 
-def test_text_to_speech_tool_local_command_explicit_ogg_path_without_voice_compatible_uses_attachment_extension(
+def test_text_to_speech_tool_local_command_explicit_ogg_path_without_voice_compatible_preserves_path(
     monkeypatch,
     tmp_path,
 ):
@@ -342,8 +477,8 @@ def test_text_to_speech_tool_local_command_explicit_ogg_path_without_voice_compa
     result = json.loads(text_to_speech_tool("hello", output_path=str(requested_path)))
 
     assert result["success"] is True
-    assert result["file_path"] == str(tmp_path / "speech.mp3")
-    assert calls["output_path"] == str(tmp_path / "speech.mp3")
+    assert result["file_path"] == str(requested_path)
+    assert calls["output_path"] == str(requested_path)
     assert result["media_tag"] == f"MEDIA:{result['file_path']}"
     assert result["voice_compatible"] is False
 

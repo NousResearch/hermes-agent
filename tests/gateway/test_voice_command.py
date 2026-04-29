@@ -434,6 +434,74 @@ class TestSendVoiceReply:
         assert call_args.kwargs.get("chat_id") == "123"
 
     @pytest.mark.asyncio
+    async def test_local_command_telegram_voice_reply_preserves_configured_attachment_format(self, runner):
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        mock_adapter.send_document = AsyncMock()
+        event = _make_event()
+        runner.adapters[event.source.platform] = mock_adapter
+        captured = {}
+
+        def fake_tts(*, text, output_path):
+            captured["output_path"] = output_path
+            return json.dumps({
+                "success": True,
+                "file_path": output_path,
+                "voice_compatible": False,
+            })
+
+        config = {
+            "provider": "local_command",
+            "local_command": {"command": "fake", "output_format": "wav"},
+        }
+
+        with patch("tools.tts_tool._load_tts_config", return_value=config), \
+             patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, "Hello world")
+
+        assert captured["output_path"].endswith(".wav")
+        mock_adapter.send_document.assert_called_once()
+        mock_adapter.send_voice.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_local_command_telegram_ogg_without_voice_compatible_sends_document(self, runner):
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        mock_adapter.send_document = AsyncMock()
+        event = _make_event()
+        runner.adapters[event.source.platform] = mock_adapter
+        captured = {}
+
+        def fake_tts(*, text, output_path):
+            captured["output_path"] = output_path
+            return json.dumps({
+                "success": True,
+                "file_path": output_path,
+                "voice_compatible": False,
+            })
+
+        config = {
+            "provider": "local_command",
+            "local_command": {"command": "fake", "output_format": "ogg"},
+        }
+
+        with patch("tools.tts_tool._load_tts_config", return_value=config), \
+             patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, "Hello world")
+
+        assert captured["output_path"].endswith(".ogg")
+        mock_adapter.send_document.assert_called_once()
+        mock_adapter.send_voice.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_empty_text_after_strip_skips(self, runner):
         event = _make_event()
 

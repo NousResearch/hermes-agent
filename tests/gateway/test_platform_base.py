@@ -323,6 +323,12 @@ class TestExtractMedia:
         assert "Here" in cleaned
         assert "After" in cleaned
 
+    def test_media_tag_supports_unquoted_flac_paths_with_spaces(self):
+        content = "MEDIA:/tmp/Jane Doe/speech.flac"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/Jane Doe/speech.flac", False)]
+        assert cleaned == ""
+
 
 # ---------------------------------------------------------------------------
 # truncate_message

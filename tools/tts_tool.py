@@ -35,6 +35,7 @@ import queue
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -113,7 +114,6 @@ DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
-LOCAL_TTS_COMMAND_ENV = "HERMES_LOCAL_TTS_COMMAND"
 DEFAULT_LOCAL_TTS_TIMEOUT_SECONDS = 120
 DEFAULT_LOCAL_TTS_OUTPUT_FORMAT = "mp3"
 LOCAL_TTS_OUTPUT_FORMATS = {"mp3", "wav", "ogg", "flac"}
@@ -240,15 +240,11 @@ def _get_provider_config(tts_config: Dict[str, Any], provider: str) -> Dict[str,
 
 
 def _get_local_tts_command_template(tts_config: Dict[str, Any]) -> Optional[str]:
-    """Return local_command command template from config, then environment."""
+    """Return local_command command template from profile-aware config."""
     local_config = _get_provider_config(tts_config, "local_command")
     configured = local_config.get("command")
     if isinstance(configured, str) and configured.strip():
         return configured
-
-    env_command = os.getenv(LOCAL_TTS_COMMAND_ENV)
-    if isinstance(env_command, str) and env_command.strip():
-        return env_command
     return None
 
 
@@ -306,16 +302,175 @@ def _is_local_tts_voice_compatible(tts_config: Dict[str, Any]) -> bool:
 
 
 def _local_tts_attachment_output_path(path: Path, tts_config: Dict[str, Any]) -> Path:
-    """Avoid voice-message extensions unless local_command explicitly opts in."""
-    if _is_local_tts_voice_compatible(tts_config):
-        return path
-    if path.suffix.lower() not in {".ogg", ".opus"}:
-        return path
+    """Return the caller-specified local_command output path unchanged."""
+    return path
 
+
+def _local_tts_configured_output_path(path: Path, tts_config: Dict[str, Any]) -> Path:
+    """Return an internal local_command output path that follows config format."""
     output_format = _get_local_tts_output_format(tts_config)
-    if output_format in {"ogg", "opus"}:
-        output_format = DEFAULT_LOCAL_TTS_OUTPUT_FORMAT
     return path.with_suffix(f".{output_format}")
+
+
+def _render_local_tts_command_template(
+    command_template: str,
+    placeholders: Dict[str, str],
+) -> str:
+    """Replace supported placeholders while preserving literal shell braces."""
+    names = "|".join(re.escape(name) for name in placeholders)
+    pattern = re.compile(
+        rf"(?<!\$)(?:\{{\{{(?P<double>{names})\}}\}}|\{{(?P<single>{names})\}})"
+    )
+    replacements: list[tuple[str, str]] = []
+
+    def replace_match(match: re.Match[str]) -> str:
+        name = match.group("double") or match.group("single")
+        token = f"__HERMES_TTS_PLACEHOLDER_{len(replacements)}__"
+        replacements.append((
+            token,
+            _quote_local_tts_placeholder(
+                placeholders[name],
+                _local_tts_shell_quote_context(command_template, match.start()),
+            ),
+        ))
+        return token
+
+    rendered = pattern.sub(replace_match, command_template)
+    rendered = rendered.replace("{{", "{").replace("}}", "}")
+    for token, value in replacements:
+        rendered = rendered.replace(token, value)
+    return rendered
+
+
+def _quote_local_tts_placeholder(value: str, quote_context: Optional[str]) -> str:
+    """Quote a placeholder value for its position in a shell command template."""
+    if quote_context == "'":
+        return value.replace("'", r"'\''")
+    if quote_context == '"':
+        return (
+            value
+            .replace("\\", "\\\\")
+            .replace('"', r'\"')
+            .replace("$", r"\$")
+            .replace("`", r"\`")
+        )
+    if os.name == "nt":
+        return subprocess.list2cmdline([value])
+    return shlex.quote(value)
+
+
+def _terminate_local_tts_process_tree(proc: subprocess.Popen) -> None:
+    """Best-effort termination for a local_command TTS shell and its children."""
+    if proc.poll() is not None:
+        return
+
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+        except Exception:
+            proc.kill()
+        return
+
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except Exception:
+        proc.terminate()
+
+    try:
+        proc.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except Exception:
+        proc.kill()
+
+
+def _run_local_tts_command(command: str, timeout: float) -> subprocess.CompletedProcess:
+    """Run a local_command TTS command with process-tree timeout cleanup."""
+    popen_kwargs: Dict[str, Any] = {
+        "shell": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(command, **popen_kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _terminate_local_tts_process_tree(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=1)
+        except Exception:
+            stdout = getattr(exc, "output", None)
+            stderr = getattr(exc, "stderr", None)
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout,
+            output=stdout,
+            stderr=stderr,
+        ) from exc
+
+    if proc.returncode:
+        raise subprocess.CalledProcessError(
+            proc.returncode,
+            command,
+            output=stdout,
+            stderr=stderr,
+        )
+    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+
+
+def _local_tts_shell_quote_context(command_template: str, position: int) -> Optional[str]:
+    """Return the shell quote character active before position, if any."""
+    quote: Optional[str] = None
+    escaped = False
+    i = 0
+    while i < position:
+        char = command_template[i]
+        if quote == "'":
+            if char == "'":
+                quote = None
+        elif quote == '"':
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quote = None
+        else:
+            if char == "'":
+                quote = "'"
+            elif char == '"':
+                quote = '"'
+            elif char == "\\":
+                i += 1
+        i += 1
+    return quote
+
+
+def local_tts_gateway_output_path(output_path: str, platform: Optional[Any] = None) -> str:
+    """Adjust gateway-generated temp output paths for local_command TTS."""
+    tts_config = _load_tts_config()
+    if _get_provider(tts_config) != "local_command":
+        return output_path
+    return str(_local_tts_configured_output_path(Path(output_path), tts_config))
 
 
 def _generate_local_command_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -327,6 +482,8 @@ def _generate_local_command_tts(text: str, output_path: str, tts_config: Dict[st
     local_config = _get_provider_config(tts_config, "local_command")
     output = Path(output_path).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        output.unlink()
     timeout = _get_local_tts_timeout(tts_config)
     output_format = _get_local_tts_output_format(tts_config, str(output))
     speed = local_config.get("speed", tts_config.get("speed", ""))
@@ -336,41 +493,18 @@ def _generate_local_command_tts(text: str, output_path: str, tts_config: Dict[st
         text_path.write_text(text, encoding="utf-8")
 
         placeholders = {
-            "input_path": shlex.quote(str(text_path)),
-            "text_path": shlex.quote(str(text_path)),
-            "output_path": shlex.quote(str(output)),
-            "format": shlex.quote(output_format),
-            "voice": shlex.quote(str(local_config.get("voice", ""))),
-            "model": shlex.quote(str(local_config.get("model", ""))),
-            "speed": shlex.quote(str(speed)),
+            "input_path": str(text_path),
+            "text_path": str(text_path),
+            "output_path": str(output),
+            "format": output_format,
+            "voice": str(local_config.get("voice", "")),
+            "model": str(local_config.get("model", "")),
+            "speed": str(speed),
         }
-        template = command_template
-        for placeholder_name in placeholders:
-            template = template.replace(
-                f"{{{{{placeholder_name}}}}}",
-                f"{{{placeholder_name}}}",
-            )
-        try:
-            command = template.format(**placeholders)
-        except KeyError as exc:
-            missing = exc.args[0]
-            raise ValueError(
-                f"tts.local_command.command missing placeholder: {missing}"
-            ) from exc
-        except (ValueError, IndexError) as exc:
-            raise ValueError(
-                f"tts.local_command.command invalid template: {exc}"
-            ) from exc
+        command = _render_local_tts_command_template(command_template, placeholders)
 
         try:
-            subprocess.run(
-                command,
-                shell=True,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            _run_local_tts_command(command, timeout)
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(
                 f"local_command TTS command timed out after {timeout:g} seconds"
@@ -1138,10 +1272,10 @@ def text_to_speech_tool(
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
         if provider == "local_command":
-            output_format = _get_local_tts_output_format(tts_config)
-            if output_format == "ogg" and not _is_local_tts_voice_compatible(tts_config):
-                output_format = DEFAULT_LOCAL_TTS_OUTPUT_FORMAT
-            file_path = out_dir / f"tts_{timestamp}.{output_format}"
+            file_path = _local_tts_configured_output_path(
+                out_dir / f"tts_{timestamp}.mp3",
+                tts_config,
+            )
         elif want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:

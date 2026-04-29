@@ -23,6 +23,27 @@ from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
+_AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
+_TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
+_TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+
+
+def _platform_name(platform) -> str:
+    value = getattr(platform, "value", platform)
+    return str(value or "").lower()
+
+
+def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
+    """Return True when a media file should use the platform audio sender."""
+    normalized_ext = (ext or "").lower()
+    if normalized_ext not in _AUDIO_EXTS:
+        return False
+    if _platform_name(platform) == "telegram":
+        if normalized_ext in _TELEGRAM_VOICE_EXTS:
+            return is_voice
+        return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
+    return True
+
 
 def utf16_len(s: str) -> int:
     """Count UTF-16 code units in *s*.
@@ -1640,7 +1661,7 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -2433,6 +2454,7 @@ class BasePlatformAdapter(ABC):
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
+                _tts_voice_compatible = True
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
@@ -2449,17 +2471,32 @@ class BasePlatformAdapter(ABC):
                             )
                             tts_data = _json.loads(tts_result_str)
                             _tts_path = tts_data.get("file_path")
+                            _tts_voice_compatible = bool(
+                                tts_data.get("voice_compatible", True)
+                            )
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
                 # Play TTS audio before text (voice-first experience)
                 if _tts_path and Path(_tts_path).exists():
                     try:
-                        await self.play_tts(
-                            chat_id=event.source.chat_id,
-                            audio_path=_tts_path,
-                            metadata=_thread_metadata,
-                        )
+                        tts_ext = Path(_tts_path).suffix.lower()
+                        if should_send_media_as_audio(
+                            self.platform,
+                            tts_ext,
+                            is_voice=_tts_voice_compatible,
+                        ):
+                            await self.play_tts(
+                                chat_id=event.source.chat_id,
+                                audio_path=_tts_path,
+                                metadata=_thread_metadata,
+                            )
+                        else:
+                            await self.send_document(
+                                chat_id=event.source.chat_id,
+                                file_path=_tts_path,
+                                metadata=_thread_metadata,
+                            )
                     finally:
                         try:
                             os.remove(_tts_path)
@@ -2514,7 +2551,6 @@ class BasePlatformAdapter(ABC):
                         logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
 
                 # Send extracted media files — route by file type
-                _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'}
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
@@ -2523,7 +2559,7 @@ class BasePlatformAdapter(ABC):
                         await asyncio.sleep(human_delay)
                     try:
                         ext = Path(media_path).suffix.lower()
-                        if ext in _AUDIO_EXTS:
+                        if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                             media_result = await self.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,

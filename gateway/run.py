@@ -6880,7 +6880,11 @@ class GatewayRunner:
         audio_path = None
         actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.tts_tool import (
+                local_tts_gateway_output_path,
+                text_to_speech_tool,
+                _strip_markdown_for_tts,
+            )
 
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
@@ -6891,6 +6895,10 @@ class GatewayRunner:
             audio_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
                 f"tts_reply_{_uuid.uuid4().hex[:12]}.mp3",
+            )
+            audio_path = local_tts_gateway_output_path(
+                audio_path,
+                platform=event.source.platform,
             )
             os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
@@ -6906,6 +6914,8 @@ class GatewayRunner:
                 return
 
             adapter = self.adapters.get(event.source.platform)
+            audio_ext = Path(actual_path).suffix.lower()
+            is_voice_compatible = bool(result.get("voice_compatible", True))
 
             # If connected to a voice channel, play there instead of sending a file
             guild_id = self._get_guild_id(event)
@@ -6914,15 +6924,26 @@ class GatewayRunner:
                     and hasattr(adapter, "is_in_voice_channel")
                     and adapter.is_in_voice_channel(guild_id)):
                 await adapter.play_in_voice_channel(guild_id, actual_path)
-            elif adapter and hasattr(adapter, "send_voice"):
+            elif adapter:
                 send_kwargs: Dict[str, Any] = {
                     "chat_id": event.source.chat_id,
-                    "audio_path": actual_path,
                     "reply_to": event.message_id,
                 }
                 if event.source.thread_id:
                     send_kwargs["metadata"] = {"thread_id": event.source.thread_id}
-                await adapter.send_voice(**send_kwargs)
+                from gateway.platforms.base import should_send_media_as_audio
+
+                if (
+                    hasattr(adapter, "send_voice")
+                    and should_send_media_as_audio(
+                        event.source.platform,
+                        audio_ext,
+                        is_voice=is_voice_compatible,
+                    )
+                ):
+                    await adapter.send_voice(audio_path=actual_path, **send_kwargs)
+                elif hasattr(adapter, "send_document"):
+                    await adapter.send_document(file_path=actual_path, **send_kwargs)
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
         finally:
@@ -6953,14 +6974,15 @@ class GatewayRunner:
 
             _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
 
-            _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'}
+            from gateway.platforms.base import should_send_media_as_audio
+
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
             for media_path, is_voice in media_files:
                 try:
                     ext = Path(media_path).suffix.lower()
-                    if ext in _AUDIO_EXTS:
+                    if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
                         await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,

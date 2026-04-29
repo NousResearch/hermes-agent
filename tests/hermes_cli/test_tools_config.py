@@ -505,6 +505,25 @@ def test_local_command_tts_provider_without_command_falls_back_to_edge(monkeypat
     assert config["tts"]["provider"] == "edge"
 
 
+def test_local_command_tts_provider_ignores_env_command(monkeypatch):
+    config = {}
+    provider = next(
+        provider
+        for provider in TOOL_CATEGORIES["tts"]["providers"]
+        if provider.get("tts_provider") == "local_command"
+    )
+    monkeypatch.setenv(
+        "HERMES_LOCAL_TTS_COMMAND",
+        "env-tts --input {input_path} --output {output_path}",
+    )
+    monkeypatch.setattr("hermes_cli.tools_config._prompt", lambda *args, **kwargs: "")
+
+    _configure_provider(provider, config)
+
+    assert config["tts"]["provider"] == "edge"
+    assert "command" not in config["tts"].get("local_command", {})
+
+
 def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
     monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)

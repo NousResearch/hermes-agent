@@ -97,6 +97,31 @@ def test_setup_tts_provider_lists_local_command(monkeypatch):
     assert any("Local Command" in choice for choice in seen["choices"])
 
 
+def test_setup_tts_provider_requires_configured_local_command(monkeypatch):
+    config = {"tts": {"provider": "edge"}}
+
+    def fake_prompt_choice(question, choices, default=0, description=None):
+        assert question == "Select TTS provider:"
+        return next(i for i, choice in enumerate(choices) if "Local Command" in choice)
+
+    monkeypatch.setenv(
+        "HERMES_LOCAL_TTS_COMMAND",
+        "env-tts --input {input_path} --output {output_path}",
+    )
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda _config: types.SimpleNamespace(nous_auth_present=False),
+    )
+
+    setup_mod._setup_tts_provider(config)
+
+    assert config["tts"]["provider"] == "edge"
+    assert "command" not in config["tts"].get("local_command", {})
+
+
 def test_setup_syncs_openrouter_from_disk(tmp_path, monkeypatch):
     """When select_provider_and_model saves OpenRouter config to disk,
     the wizard's config dict picks it up."""

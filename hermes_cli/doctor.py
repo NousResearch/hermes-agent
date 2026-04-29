@@ -57,6 +57,7 @@ _PROVIDER_ENV_HINTS = (
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
     "XIAOMI_API_KEY",
+    "TOKENHUB_API_KEY",
 )
 
 
@@ -292,15 +293,23 @@ def run_doctor(args):
 
             known_providers: set = set()
             try:
-                from hermes_cli.auth import PROVIDER_REGISTRY
+                from hermes_cli.auth import (
+                    PROVIDER_REGISTRY,
+                    resolve_provider as _resolve_auth_provider,
+                )
                 known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto"}
             except Exception:
+                _resolve_auth_provider = None
                 pass
             try:
                 from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
-                from hermes_cli.providers import resolve_provider_full as _resolve_provider_full
+                from hermes_cli.providers import (
+                    normalize_provider as _normalize_catalog_provider,
+                    resolve_provider_full as _resolve_provider_full,
+                )
             except Exception:
                 _compatible_custom_providers = None
+                _normalize_catalog_provider = None
                 _resolve_provider_full = None
 
             custom_providers = []
@@ -320,17 +329,43 @@ def run_doctor(args):
                 if name:
                     known_providers.add("custom:" + name.lower().replace(" ", "-"))
 
-            canonical_provider = provider
+            valid_provider_ids = set(known_providers)
+            provider_ids_to_accept = {provider} if provider else set()
+            if _normalize_catalog_provider is not None:
+                for known_provider in known_providers:
+                    try:
+                        valid_provider_ids.add(_normalize_catalog_provider(known_provider))
+                    except Exception:
+                        continue
+
+            runtime_provider = provider
+            if (
+                provider
+                and _resolve_auth_provider is not None
+                and provider not in ("auto", "custom")
+            ):
+                try:
+                    runtime_provider = _resolve_auth_provider(provider)
+                    provider_ids_to_accept.add(runtime_provider)
+                except Exception:
+                    runtime_provider = provider
+
+            catalog_provider = provider
             if (
                 provider
                 and _resolve_provider_full is not None
                 and provider not in ("auto", "custom")
             ):
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
-                canonical_provider = provider_def.id if provider_def is not None else None
+                catalog_provider = provider_def.id if provider_def is not None else None
+                if catalog_provider is not None:
+                    provider_ids_to_accept.add(catalog_provider)
 
             if provider and provider != "auto":
-                if canonical_provider is None or (known_providers and canonical_provider not in known_providers):
+                if catalog_provider is None or (
+                    known_providers
+                    and not (provider_ids_to_accept & valid_provider_ids)
+                ):
                     known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
                     check_fail(
                         f"model.provider '{provider_raw}' is not a recognised provider",
@@ -343,7 +378,24 @@ def run_doctor(args):
                     )
 
             # Warn if model is set to a provider-prefixed name on a provider that doesn't use them
-            if default_model and "/" in default_model and canonical_provider and canonical_provider not in ("openrouter", "custom", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "nous"):
+            provider_for_policy = runtime_provider or catalog_provider
+            providers_accepting_vendor_slugs = {
+                "openrouter",
+                "custom",
+                "auto",
+                "ai-gateway",
+                "kilocode",
+                "opencode-zen",
+                "huggingface",
+                "lmstudio",
+                "nous",
+            }
+            if (
+                default_model
+                and "/" in default_model
+                and provider_for_policy
+                and provider_for_policy not in providers_accepting_vendor_slugs
+            ):
                 check_warn(
                     f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
                     "(vendor-prefixed slugs belong to aggregators like openrouter)",
@@ -359,20 +411,24 @@ def run_doctor(args):
             # own env-var checks elsewhere in doctor, and get_auth_status()
             # returns a bare {logged_in: False} for anything it doesn't
             # explicitly dispatch, which would produce false positives.
-            if canonical_provider and canonical_provider not in ("auto", "custom", "openrouter"):
+            if runtime_provider and runtime_provider not in ("auto", "custom", "openrouter"):
                 try:
                     from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
-                    pconfig = PROVIDER_REGISTRY.get(canonical_provider)
+                    pconfig = PROVIDER_REGISTRY.get(runtime_provider)
                     if pconfig and getattr(pconfig, "auth_type", "") == "api_key":
-                        status = get_auth_status(canonical_provider) or {}
-                        configured = bool(status.get("configured") or status.get("logged_in") or status.get("api_key"))
+                        status = get_auth_status(runtime_provider) or {}
+                        configured = bool(
+                            status.get("configured")
+                            or status.get("logged_in")
+                            or status.get("api_key")
+                        )
                         if not configured:
                             check_fail(
-                                f"model.provider '{canonical_provider}' is set but no API key is configured",
+                                f"model.provider '{runtime_provider}' is set but no API key is configured",
                                 "(check ~/.hermes/.env or run 'hermes setup')",
                             )
                             issues.append(
-                                f"No credentials found for provider '{canonical_provider}'. "
+                                f"No credentials found for provider '{runtime_provider}'. "
                                 f"Run 'hermes setup' or set the provider's API key in {_DHH}/.env, "
                                 f"or switch providers with 'hermes config set model.provider <name>'"
                             )
@@ -516,7 +572,14 @@ def run_doctor(args):
     if shutil.which("codex"):
         check_ok("codex CLI")
     else:
-        check_warn("codex CLI not found", "(required for openai-codex login)")
+        # Native OAuth uses Hermes' own device-code flow — the Codex CLI is
+        # only needed if you want to import existing tokens from
+        # ~/.codex/auth.json.  Downgrade to info so users running
+        # `hermes auth openai-codex` aren't told they're missing something.
+        check_info(
+            "codex CLI not installed "
+            "(optional — only required to import tokens from an existing Codex CLI login)"
+        )
 
     # =========================================================================
     # Check: Directory structure

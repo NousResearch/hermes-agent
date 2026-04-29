@@ -52,19 +52,13 @@ class HookRegistry:
         return list(self._loaded_hooks)
 
     def _register_builtin_hooks(self) -> None:
-        """Register built-in hooks that are always active."""
-        try:
-            from gateway.builtin_hooks.boot_md import handle as boot_md_handle
+        """Register built-in hooks that are always active.
 
-            self._handlers.setdefault("gateway:startup", []).append(boot_md_handle)
-            self._loaded_hooks.append({
-                "name": "boot-md",
-                "description": "Run ~/.hermes/BOOT.md on gateway startup",
-                "events": ["gateway:startup"],
-                "path": "(builtin)",
-            })
-        except Exception as e:
-            print(f"[hooks] Could not load built-in boot-md hook: {e}", flush=True)
+        Currently empty — no shipped built-in hooks. Kept as the extension
+        point for future always-on gateway hooks so they drop in without
+        re-plumbing discover_and_load().
+        """
+        return
 
     def discover_and_load(self) -> None:
         """

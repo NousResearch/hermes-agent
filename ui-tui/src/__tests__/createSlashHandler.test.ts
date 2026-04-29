@@ -195,7 +195,8 @@ describe('createSlashHandler', () => {
     ['/reload-mcp', 'reload.mcp', { session_id: null }],
     ['/stop', 'process.stop', {}],
     ['/fast status', 'config.get', { key: 'fast', session_id: null }],
-    ['/busy status', 'config.get', { key: 'busy' }]
+    ['/busy status', 'config.get', { key: 'busy' }],
+    ['/indicator', 'config.get', { key: 'indicator' }]
   ])('routes %s through native RPC (no slash worker)', (command, method, params) => {
     const rpc = vi.fn(() => Promise.resolve({}))
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
@@ -213,6 +214,24 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/rollback')).toBe(true)
     expect(rpc).toHaveBeenCalledWith('rollback.list', { session_id: 'sid-abc' })
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('hot-swaps the live indicator when /indicator <style> succeeds', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ value: 'emoji' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/indicator emoji')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('config.set', { key: 'indicator', value: 'emoji' })
+    await vi.waitFor(() => expect(getUiState().indicatorStyle).toBe('emoji'))
+  })
+
+  it('rejects unknown indicator styles before hitting the gateway', () => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/indicator sparkle')).toBe(true)
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /indicator [ascii|emoji|kaomoji|unicode]')
   })
 
   it('drops stale slash.exec output after a newer slash', async () => {
@@ -296,6 +315,45 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/h')).toBe(true)
     expect(ctx.transcript.panel).toHaveBeenCalledWith(expect.any(String), expect.any(Array))
+  })
+
+  it('lets exact catalog commands win over longer prefix matches', async () => {
+    const ctx = buildCtx({
+      local: {
+        catalog: {
+          canon: {
+            '/status': '/status',
+            '/statusbar': '/statusbar'
+          }
+        }
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/status')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+        command: 'status',
+        session_id: null
+      })
+    })
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('ambiguous command'))
+  })
+
+  it('keeps ambiguous prefix handling when there is no exact catalog match', () => {
+    const ctx = buildCtx({
+      local: {
+        catalog: {
+          canon: {
+            '/status': '/status',
+            '/statusbar': '/statusbar'
+          }
+        }
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/stat')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('ambiguous command: /status, /statusbar')
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
   it('falls through to command.dispatch for skill commands and sends the message', async () => {

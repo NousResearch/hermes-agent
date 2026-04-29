@@ -41,12 +41,47 @@ import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
-from openai import OpenAI
+# NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
+# SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
+# that imports the SDK on first call/isinstance check. This preserves:
+#   (a) the single in-module `OpenAI(**client_kwargs)` call site at
+#       _create_openai_client, and
+#   (b) `patch("run_agent.OpenAI", ...)` test patterns used by ~28 test files.
 import fire
 from datetime import datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+
+
+_OPENAI_CLS_CACHE: Optional[type] = None
+
+
+def _load_openai_cls() -> type:
+    """Import and cache ``openai.OpenAI``."""
+    global _OPENAI_CLS_CACHE
+    if _OPENAI_CLS_CACHE is None:
+        from openai import OpenAI as _cls
+        _OPENAI_CLS_CACHE = _cls
+    return _OPENAI_CLS_CACHE
+
+
+class _OpenAIProxy:
+    """Module-level proxy that looks like ``openai.OpenAI`` but imports lazily."""
+
+    __slots__ = ()
+
+    def __call__(self, *args, **kwargs):
+        return _load_openai_cls()(*args, **kwargs)
+
+    def __instancecheck__(self, obj):
+        return isinstance(obj, _load_openai_cls())
+
+    def __repr__(self):
+        return "<lazy openai.OpenAI proxy>"
+
+
+OpenAI = _OpenAIProxy()
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -394,90 +429,6 @@ _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
 
 
-def _is_multimodal_tool_result(value: Any) -> bool:
-    """True if the value is a multimodal tool result envelope.
-
-    Multimodal handlers (e.g. tools/computer_use) return a dict with
-    `_multimodal=True`, a `content` key holding OpenAI-style content
-    parts, and an optional `text_summary` for string-only fallbacks.
-    """
-    return (
-        isinstance(value, dict)
-        and value.get("_multimodal") is True
-        and isinstance(value.get("content"), list)
-    )
-
-
-def _multimodal_text_summary(value: Any) -> str:
-    """Extract a plain text view of a multimodal tool result.
-
-    Used wherever downstream code needs a string — logging, previews,
-    persistence size heuristics, fall-back content for providers that
-    don't support multipart tool messages.
-    """
-    if _is_multimodal_tool_result(value):
-        if value.get("text_summary"):
-            return str(value["text_summary"])
-        parts = []
-        for p in value.get("content") or []:
-            if isinstance(p, dict) and p.get("type") == "text":
-                parts.append(str(p.get("text", "")))
-        if parts:
-            return "\n".join(parts)
-        return "[multimodal tool result]"
-    if isinstance(value, str):
-        return value
-    try:
-        import json as _json
-        return _json.dumps(value, default=str)
-    except Exception:
-        return str(value)
-
-
-def _append_subdir_hint_to_multimodal(value: Dict[str, Any], hint: str) -> None:
-    """Mutate a multimodal tool-result envelope to append a subdir hint.
-
-    The hint is added to the first text part so the model sees it; image
-    parts are left untouched. `text_summary` is also updated for
-    string-fallback callers.
-    """
-    if not _is_multimodal_tool_result(value):
-        return
-    parts = value.get("content") or []
-    for p in parts:
-        if isinstance(p, dict) and p.get("type") == "text":
-            p["text"] = str(p.get("text", "")) + hint
-            break
-    else:
-        parts.insert(0, {"type": "text", "text": hint})
-        value["content"] = parts
-    if isinstance(value.get("text_summary"), str):
-        value["text_summary"] = value["text_summary"] + hint
-
-
-def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip image blobs from a message for trajectory saving.
-
-    Returns a shallow copy with multimodal tool results replaced by their
-    text_summary, and image parts in content lists replaced by
-    `[screenshot]` placeholders. Keeps the message schema otherwise intact.
-    """
-    if not isinstance(msg, dict):
-        return msg
-    content = msg.get("content")
-    if _is_multimodal_tool_result(content):
-        return {**msg, "content": _multimodal_text_summary(content)}
-    if isinstance(content, list):
-        cleaned = []
-        for p in content:
-            if isinstance(p, dict) and p.get("type") in ("image", "image_url", "input_image"):
-                cleaned.append({"type": "text", "text": "[screenshot]"})
-            else:
-                cleaned.append(p)
-        return {**msg, "content": cleaned}
-    return msg
-
-
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD (replacement character).
 
@@ -804,54 +755,6 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
 def _sanitize_tools_non_ascii(tools: list) -> bool:
     """Strip non-ASCII characters from tool payloads in-place."""
     return _sanitize_structure_non_ascii(tools)
-
-
-def _strip_images_from_messages(messages: list) -> bool:
-    """Remove image_url content parts from all messages in-place.
-
-    Called when a server signals it does not support images (e.g.
-    "Only 'text' content type is supported.").  Mutates messages so the
-    next API call sends text only.
-
-    Preserves message alternation invariants:
-      * ``tool``-role messages whose content was entirely images are replaced
-        with a plaintext placeholder, NOT deleted — deleting them would leave
-        the paired ``tool_call_id`` on the prior assistant message unmatched,
-        which providers reject with HTTP 400.
-      * Non-tool messages whose content becomes empty are dropped.  In
-        practice this only hits synthetic image-only user messages appended
-        for attachment delivery; real user turns always include text.
-
-    Returns True if any image parts were removed.
-    """
-    found = False
-    to_delete = []
-    for i, msg in enumerate(messages):
-        if not isinstance(msg, dict):
-            continue
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        new_parts = []
-        for part in content:
-            if isinstance(part, dict) and part.get("type") in ("image_url", "image", "input_image"):
-                found = True
-            else:
-                new_parts.append(part)
-        if len(new_parts) < len(content):
-            if new_parts:
-                msg["content"] = new_parts
-            elif msg.get("role") == "tool":
-                # Preserve tool_call_id linkage — providers require every
-                # assistant tool_call to have a matching tool response.
-                msg["content"] = "[image content removed — server does not support images]"
-            else:
-                # Synthetic image-only user/assistant message with no text;
-                # safe to drop.
-                to_delete.append(i)
-    for i in reversed(to_delete):
-        del messages[i]
-    return found
 
 
 def _sanitize_structure_non_ascii(payload: Any) -> bool:
@@ -1923,9 +1826,6 @@ class AIAgent:
                 )
                 _config_context_length = None
 
-        # Store for reuse in switch_model (so config override persists across model switches)
-        self._config_context_length = _config_context_length
-
         # Resolve custom_providers list once for reuse below (startup
         # context-length override and plugin context-engine init).
         try:
@@ -1984,7 +1884,14 @@ class AIAgent:
                                             file=sys.stderr,
                                         )
                         break
-        
+
+        # Persist for reuse on switch_model / fallback activation. Must come
+        # AFTER the custom_providers branch so per-model overrides aren't lost.
+        self._config_context_length = _config_context_length
+
+        self._ensure_lmstudio_runtime_loaded(_config_context_length)
+
+
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting
         # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
@@ -2226,6 +2133,39 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
     
+    def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
+        """
+        Preload the LM Studio model with at least Hermes' minimum context.
+        """
+        if (self.provider or "").strip().lower() != "lmstudio":
+            return
+        try:
+            from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+            from hermes_cli.models import ensure_lmstudio_model_loaded
+            if config_context_length is None:
+                config_context_length = getattr(self, "_config_context_length", None)
+            target_ctx = max(config_context_length or 0, MINIMUM_CONTEXT_LENGTH)
+            loaded_ctx = ensure_lmstudio_model_loaded(
+                self.model, self.base_url, getattr(self, "api_key", ""), target_ctx,
+            )
+            if loaded_ctx:
+                # Push into the live compressor so the status bar reflects the
+                # real loaded ctx the moment the load resolves, instead of
+                # holding the previous model's value (or "ctx --") through the
+                # next render tick.
+                cc = getattr(self, "context_compressor", None)
+                if cc is not None:
+                    cc.update_model(
+                        model=self.model,
+                        context_length=loaded_ctx,
+                        base_url=self.base_url,
+                        api_key=getattr(self, "api_key", ""),
+                        provider=self.provider,
+                        api_mode=self.api_mode,
+                    )
+        except Exception as err:
+            logger.debug("LM Studio preload skipped: %s", err)
+
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Switch the model/provider in-place for a live agent.
 
@@ -2320,6 +2260,9 @@ class AIAgent:
                 model=new_model,
             )
         )
+
+        # ── LM Studio: preload before probing context length ──
+        self._ensure_lmstudio_runtime_loaded()
 
         # ── Update context compressor ──
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -2852,7 +2795,6 @@ class AIAgent:
         eff_api_mode = api_mode if api_mode is not None else (self.api_mode or "")
         eff_model = (model if model is not None else self.model) or ""
 
-        base_lower = eff_base_url.lower()
         model_lower = eff_model.lower()
         provider_lower = eff_provider.lower()
         is_claude = "claude" in model_lower
@@ -3606,20 +3548,6 @@ class AIAgent:
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
-                # Persist multimodal tool results as their text summary only —
-                # base64 images would bloat the session DB and aren't useful
-                # for cross-session replay.
-                if _is_multimodal_tool_result(content):
-                    content = _multimodal_text_summary(content)
-                elif isinstance(content, list):
-                    # List of OpenAI-style content parts: strip images, keep text.
-                    _txt = []
-                    for p in content:
-                        if isinstance(p, dict) and p.get("type") == "text":
-                            _txt.append(str(p.get("text", "")))
-                        elif isinstance(p, dict) and p.get("type") in ("image", "image_url", "input_image"):
-                            _txt.append("[screenshot]")
-                    content = "\n".join(_txt) if _txt else None
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
                     tool_calls_data = [
@@ -3713,10 +3641,6 @@ class AIAgent:
         Returns:
             List[Dict]: Messages in trajectory format
         """
-        # Normalize multimodal tool results — trajectories are text-only, so
-        # replace image-bearing tool messages with their text_summary to avoid
-        # embedding ~1MB base64 blobs into every saved trajectory.
-        messages = [_trajectory_normalize_msg(m) for m in messages]
         trajectory = []
         
         # Add system message with tool definitions
@@ -4733,12 +4657,6 @@ class AIAgent:
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
-        # Computer-use (macOS) — goes in as its own block rather than being
-        # merged into tool_guidance because the content is multi-paragraph.
-        if "computer_use" in self.valid_tool_names:
-            from agent.prompt_builder import COMPUTER_USE_GUIDANCE
-            prompt_parts.append(COMPUTER_USE_GUIDANCE)
-
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
             prompt_parts.append(nous_subscription_prompt)
@@ -4948,6 +4866,145 @@ class AIAgent:
                 len(missing_results),
             )
         return messages
+
+    @staticmethod
+    def _is_thinking_only_assistant(msg: Dict[str, Any]) -> bool:
+        """Return True if ``msg`` is an assistant turn whose only payload is reasoning.
+
+        "Thinking-only" means the model emitted reasoning (``reasoning`` or
+        ``reasoning_content``) but no visible text and no tool_calls. When sent
+        back to providers that convert reasoning into thinking blocks (native
+        Anthropic, OpenRouter Anthropic, third-party Anthropic-compatible
+        gateways), the resulting message has only thinking blocks — which
+        Anthropic rejects with HTTP 400 "The final block in an assistant
+        message cannot be `thinking`."
+
+        Symmetric with Claude Code's ``filterOrphanedThinkingOnlyMessages``
+        (src/utils/messages.ts). We drop the whole turn from the API copy
+        rather than fabricating stub text — the message log (UI transcript)
+        keeps the reasoning block; only the wire copy is cleaned.
+        """
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            return False
+        if msg.get("tool_calls"):
+            return False
+        # Does it have any actual output?
+        content = msg.get("content")
+        if isinstance(content, str):
+            if content.strip():
+                return False
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    if block:  # non-empty non-dict string etc.
+                        return False
+                    continue
+                btype = block.get("type")
+                if btype in ("thinking", "redacted_thinking"):
+                    continue
+                if btype == "text":
+                    text = block.get("text", "")
+                    if isinstance(text, str) and text.strip():
+                        return False
+                    continue
+                # tool_use, image, document, etc. — real payload
+                return False
+        elif content is not None and content != "":
+            return False
+        # Content is empty-ish. Is there reasoning to make it thinking-only?
+        reasoning = msg.get("reasoning_content") or msg.get("reasoning")
+        if isinstance(reasoning, str) and reasoning.strip():
+            return True
+        # reasoning_details list form
+        rd = msg.get("reasoning_details")
+        if isinstance(rd, list) and rd:
+            return True
+        return False
+
+    @staticmethod
+    def _drop_thinking_only_and_merge_users(
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Drop thinking-only assistant turns; merge any adjacent user messages left behind.
+
+        Runs on the per-call ``api_messages`` copy only. The stored
+        conversation history (``self.messages``) is never mutated, so the
+        user still sees the thinking block in the CLI/gateway transcript and
+        session persistence keeps the full trace. Only the wire copy sent to
+        the provider is cleaned.
+
+        Why drop-and-merge rather than inject stub text:
+        - Fabricating ``"."`` / ``"(continued)"`` text lies in the history
+          and makes future turns see model output the model didn't emit.
+        - Dropping the turn preserves honesty; merging adjacent user messages
+          preserves the provider's role-alternation invariant.
+        - This is the pattern used by Claude Code's ``normalizeMessagesForAPI``
+          (filterOrphanedThinkingOnlyMessages + mergeAdjacentUserMessages).
+        """
+        if not messages:
+            return messages
+
+        # Pass 1: drop thinking-only assistant turns.
+        kept = [m for m in messages if not AIAgent._is_thinking_only_assistant(m)]
+        dropped = len(messages) - len(kept)
+        if dropped == 0:
+            return messages
+
+        # Pass 2: merge any newly-adjacent user messages.
+        merged: List[Dict[str, Any]] = []
+        merges = 0
+        for m in kept:
+            prev = merged[-1] if merged else None
+            if (
+                prev is not None
+                and prev.get("role") == "user"
+                and m.get("role") == "user"
+            ):
+                prev_content = prev.get("content", "")
+                cur_content = m.get("content", "")
+                # Work on a copy of ``prev`` so the caller's input dicts are
+                # never mutated. ``_sanitize_api_messages`` upstream already
+                # hands us per-call copies, but staying pure here means we
+                # can be called safely from anywhere (tests, other loops).
+                prev_copy = dict(prev)
+                # Only string-content merge is meaningful for role-alternation
+                # purposes. If either side is a list (multimodal), append as a
+                # separate block rather than collapsing.
+                if isinstance(prev_content, str) and isinstance(cur_content, str):
+                    sep = "\n\n" if prev_content and cur_content else ""
+                    prev_copy["content"] = prev_content + sep + cur_content
+                elif isinstance(prev_content, list) and isinstance(cur_content, list):
+                    prev_copy["content"] = list(prev_content) + list(cur_content)
+                elif isinstance(prev_content, list) and isinstance(cur_content, str):
+                    if cur_content:
+                        prev_copy["content"] = list(prev_content) + [
+                            {"type": "text", "text": cur_content}
+                        ]
+                    else:
+                        prev_copy["content"] = list(prev_content)
+                elif isinstance(prev_content, str) and isinstance(cur_content, list):
+                    new_blocks: List[Dict[str, Any]] = []
+                    if prev_content:
+                        new_blocks.append({"type": "text", "text": prev_content})
+                    new_blocks.extend(cur_content)
+                    prev_copy["content"] = new_blocks
+                else:
+                    # Unknown content shape — fall back to appending separately
+                    # (violates alternation, but safer than raising in a hot path).
+                    merged.append(m)
+                    continue
+                merged[-1] = prev_copy
+                merges += 1
+            else:
+                merged.append(m)
+
+        logger.debug(
+            "Pre-call sanitizer: dropped %d thinking-only assistant turn(s), "
+            "merged %d adjacent user message(s)",
+            dropped,
+            merges,
+        )
+        return merged
 
     @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:
@@ -5261,6 +5318,8 @@ class AIAgent:
             keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""))
             if keepalive_http is not None:
                 client_kwargs["http_client"] = keepalive_http
+        # Uses the module-level `OpenAI` name, resolved lazily on first
+        # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",
@@ -7308,6 +7367,9 @@ class AIAgent:
                 )
             )
 
+            # LM Studio: preload before probing the fallback's context length.
+            self._ensure_lmstudio_runtime_loaded()
+
             # Update context compressor limits for the fallback model.
             # Without this, compression decisions use the primary model's
             # context window (e.g. 200K) instead of the fallback's (e.g. 32K),
@@ -8027,6 +8089,8 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
+        _is_tokenhub = base_url_host_matches(self._base_url_lower, "tokenhub.tencentmaas.com")
+        _is_lmstudio = (self.provider or "").strip().lower() == "lmstudio"
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -8098,6 +8162,8 @@ class AIAgent:
             is_github_models=_is_gh,
             is_nvidia_nim=_is_nvidia,
             is_kimi=_is_kimi,
+            is_tokenhub=_is_tokenhub,
+            is_lmstudio=_is_lmstudio,
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,
@@ -8108,7 +8174,9 @@ class AIAgent:
             omit_temperature=_omit_temp,
             supports_reasoning=self._supports_reasoning_extra_body(),
             github_reasoning_extra=self._github_models_reasoning_extra_body() if _is_gh else None,
+            lmstudio_reasoning_options=self._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
             anthropic_max_output=_ant_max,
+            provider_name=self.provider,
         )
 
     def _supports_reasoning_extra_body(self) -> bool:
@@ -8132,6 +8200,10 @@ class AIAgent:
                 return bool(github_model_reasoning_efforts(self.model))
             except Exception:
                 return False
+        if (self.provider or "").strip().lower() == "lmstudio":
+            opts = self._lmstudio_reasoning_options_cached()
+            # "off-only" (or absent) means no real reasoning capability.
+            return any(opt and opt != "off" for opt in opts)
         if "openrouter" not in self._base_url_lower:
             return False
         if "api.mistral.ai" in self._base_url_lower:
@@ -8145,8 +8217,56 @@ class AIAgent:
             "x-ai/",
             "google/gemini-2",
             "qwen/qwen3",
+            "tencent/hy3-preview",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
+
+    def _lmstudio_reasoning_options_cached(self) -> list[str]:
+        """Probe LM Studio's published reasoning ``allowed_options`` once per
+        (model, base_url). The list (e.g. ``["off","on"]`` or
+        ``["off","minimal","low"]``) is needed both for the supports-reasoning
+        gate and for clamping the emitted ``reasoning_effort`` so toggle-style
+        models don't 400 on ``high``. Cache is keyed on (model, base_url) so
+        ``/model`` swaps and base-URL changes don't reuse a stale list.
+        Non-empty results are cached permanently (model capabilities don't
+        change). Empty results (transient probe failure OR genuinely
+        non-reasoning model) are cached with a 60-second TTL to avoid an
+        HTTP round-trip on every turn while still retrying reasonably soon.
+        """
+        import time as _time
+
+        cache = getattr(self, "_lm_reasoning_opts_cache", None)
+        if cache is None:
+            cache = self._lm_reasoning_opts_cache = {}
+        key = (self.model, self.base_url)
+        cached = cache.get(key)
+        if cached is not None:
+            opts, ts = cached
+            # Non-empty → permanent. Empty → 60s TTL.
+            if opts or (_time.monotonic() - ts) < 60:
+                return opts
+        try:
+            from hermes_cli.models import lmstudio_model_reasoning_options
+            opts = lmstudio_model_reasoning_options(
+                self.model, self.base_url, getattr(self, "api_key", ""),
+            )
+        except Exception:
+            opts = []
+        cache[key] = (opts, _time.monotonic())
+        return opts
+
+    def _resolve_lmstudio_summary_reasoning_effort(self) -> Optional[str]:
+        """Resolve a safe top-level ``reasoning_effort`` for LM Studio.
+
+        The iteration-limit summary path calls ``chat.completions.create()``
+        directly, bypassing the transport. Share the helper so the two paths
+        can't drift on effort resolution and clamping.
+        """
+        from agent.lmstudio_reasoning import resolve_lmstudio_effort
+        return resolve_lmstudio_effort(
+            self.reasoning_config,
+            self._lmstudio_reasoning_options_cached(),
+        )
 
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
@@ -9154,8 +9274,7 @@ class AIAgent:
                 function_name, function_args, function_result, tool_duration, is_error = r
 
                 if is_error:
-                    _err_text = _multimodal_text_summary(function_result)
-                    result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
+                    result_preview = function_result[:200] if len(function_result) > 200 else function_result
                     logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
                 if self.tool_progress_callback:
@@ -9176,12 +9295,11 @@ class AIAgent:
                 cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
                 self._safe_print(f"  {cute_msg}")
             elif not self.quiet_mode:
-                _preview_str = _multimodal_text_summary(function_result)
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
-                    print(self._wrap_verbose("Result: ", _preview_str))
+                    print(self._wrap_verbose("Result: ", function_result))
                 else:
-                    response_preview = _preview_str[:self.log_prefix_chars] + "..." if len(_preview_str) > self.log_prefix_chars else _preview_str
+                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
             self._current_tool = None
@@ -9198,33 +9316,15 @@ class AIAgent:
                 tool_name=name,
                 tool_use_id=tc.id,
                 env=get_active_env(effective_task_id),
-            ) if not _is_multimodal_tool_result(function_result) else function_result
+            )
 
             subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
             if subdir_hints:
-                if _is_multimodal_tool_result(function_result):
-                    # Append the hint to the text summary part so the model
-                    # still sees it; don't touch the image blocks.
-                    _append_subdir_hint_to_multimodal(function_result, subdir_hints)
-                else:
-                    function_result += subdir_hints
+                function_result += subdir_hints
 
-            # Unwrap _multimodal dicts to an OpenAI-style content list so any
-            # vision-capable provider receives [{type:text},{type:image_url}]
-            # rather than a raw Python dict.  The Anthropic adapter already
-            # accepts content lists; vision-capable OpenAI-compatible servers
-            # (mlx-vlm, GPT-4o, …) accept image_url in tool messages natively.
-            # Text-only servers that reject images are handled by the adaptive
-            # _vision_supported recovery in the API retry loop.
-            # String results pass through unchanged.
-            _tool_content = (
-                function_result["content"]
-                if _is_multimodal_tool_result(function_result)
-                else function_result
-            )
             tool_msg = {
                 "role": "tool",
-                "content": _tool_content,
+                "content": function_result,
                 "tool_call_id": tc.id,
             }
             messages.append(tool_msg)
@@ -9540,15 +9640,9 @@ class AIAgent:
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
-            if isinstance(function_result, str):
-                result_preview = function_result if self.verbose_logging else (
-                    function_result[:200] if len(function_result) > 200 else function_result
-                )
-                _result_len = len(function_result)
-            else:
-                # Multimodal dict result (_multimodal=True) — not sliceable as string
-                result_preview = function_result
-                _result_len = len(str(function_result))
+            result_preview = function_result if self.verbose_logging else (
+                function_result[:200] if len(function_result) > 200 else function_result
+            )
 
             # Log tool errors to the persistent error log so [error] tags
             # in the UI always have a corresponding detailed entry on disk.
@@ -9556,7 +9650,7 @@ class AIAgent:
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
             else:
-                logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
+                logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(function_result))
 
             if self.tool_progress_callback:
                 try:
@@ -9572,8 +9666,7 @@ class AIAgent:
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
-                _log_result = _multimodal_text_summary(function_result)
-                logging.debug(f"Tool result ({len(_log_result)} chars): {_log_result}")
+                logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
 
             if self.tool_complete_callback:
                 try:
@@ -9586,26 +9679,16 @@ class AIAgent:
                 tool_name=function_name,
                 tool_use_id=tool_call.id,
                 env=get_active_env(effective_task_id),
-            ) if not _is_multimodal_tool_result(function_result) else function_result
+            )
 
             # Discover subdirectory context files from tool arguments
             subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
             if subdir_hints:
-                if _is_multimodal_tool_result(function_result):
-                    _append_subdir_hint_to_multimodal(function_result, subdir_hints)
-                else:
-                    function_result += subdir_hints
+                function_result += subdir_hints
 
-            # Unwrap _multimodal dicts to an OpenAI-style content list
-            # (see parallel path for rationale). String results pass through.
-            _tool_content = (
-                function_result["content"]
-                if _is_multimodal_tool_result(function_result)
-                else function_result
-            )
             tool_msg = {
                 "role": "tool",
-                "content": _tool_content,
+                "content": function_result,
                 "tool_call_id": tool_call.id
             }
             messages.append(tool_msg)
@@ -9621,8 +9704,7 @@ class AIAgent:
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
                     print(self._wrap_verbose("Result: ", function_result))
                 else:
-                    _fr_str = function_result if isinstance(function_result, str) else str(function_result)
-                    response_preview = _fr_str[:self.log_prefix_chars] + "..." if len(_fr_str) > self.log_prefix_chars else _fr_str
+                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
@@ -9651,6 +9733,7 @@ class AIAgent:
         # applied to sequential execution as well.
         if num_tools_seq > 0:
             self._apply_pending_steer_to_tool_results(messages, num_tools_seq)
+
 
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
@@ -9688,6 +9771,10 @@ class AIAgent:
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
+            # Same safety net as the main loop: drop thinking-only assistant
+            # turns so Anthropic-family providers don't 400 the summary call.
+            api_messages = self._drop_thinking_only_and_merge_users(api_messages)
+
             summary_extra_body = {}
             try:
                 from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP
@@ -9702,7 +9789,19 @@ class AIAgent:
             _omit_summary_temperature = _raw_summary_temp is _OMIT_TEMP
             _summary_temperature = None if _omit_summary_temperature else _raw_summary_temp
             _is_nous = "nousresearch" in self._base_url_lower
-            if self._supports_reasoning_extra_body():
+            # LM Studio uses top-level `reasoning_effort` (not extra_body.reasoning).
+            # Mirror ChatCompletionsTransport.build_kwargs() so the summary path
+            # — which calls chat.completions.create() directly without going
+            # through the transport — sends the same shape the transport does.
+            _is_lmstudio_summary = (
+                (self.provider or "").strip().lower() == "lmstudio"
+                and self._supports_reasoning_extra_body()
+            )
+            _lm_reasoning_effort: str | None = (
+                self._resolve_lmstudio_summary_reasoning_effort()
+                if _is_lmstudio_summary else None
+            )
+            if not _is_lmstudio_summary and self._supports_reasoning_extra_body():
                 if self.reasoning_config is not None:
                     summary_extra_body["reasoning"] = self.reasoning_config
                 else:
@@ -9729,6 +9828,8 @@ class AIAgent:
                     summary_kwargs["temperature"] = _summary_temperature
                 if self.max_tokens is not None:
                     summary_kwargs.update(self._max_tokens_param(self.max_tokens))
+                if _lm_reasoning_effort is not None:
+                    summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
 
                 # Include provider routing preferences
                 provider_preferences = {}
@@ -9753,7 +9854,7 @@ class AIAgent:
                                    is_oauth=self._is_anthropic_oauth,
                                    preserve_dots=self._anthropic_preserve_dots())
                     summary_response = self._anthropic_messages_create(_ant_kw)
-                    _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
+                    _summary_result = _tsum.normalize_response(summary_response)
                     final_response = (_summary_result.content or "").strip()
                 else:
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
@@ -9783,7 +9884,7 @@ class AIAgent:
                                     max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
                                     preserve_dots=self._anthropic_preserve_dots())
                     retry_response = self._anthropic_messages_create(_ant_kw2)
-                    _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=self._is_anthropic_oauth)
+                    _retry_result = _tretry.normalize_response(retry_response)
                     final_response = (_retry_result.content or "").strip()
                 else:
                     summary_kwargs = {
@@ -9794,6 +9895,8 @@ class AIAgent:
                         summary_kwargs["temperature"] = _summary_temperature
                     if self.max_tokens is not None:
                         summary_kwargs.update(self._max_tokens_param(self.max_tokens))
+                    if _lm_reasoning_effort is not None:
+                        summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
                     if summary_extra_body:
                         summary_kwargs["extra_body"] = summary_extra_body
 
@@ -9892,11 +9995,6 @@ class AIAgent:
         self._last_content_tools_all_housekeeping = False
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
-        # True until the server rejects an image_url content part with an error
-        # like "Only 'text' content type is supported."  Set to False on first
-        # rejection and kept False for the rest of the session so we never re-send
-        # images to a text-only endpoint.  Scoped per `_run()` call, not per instance.
-        self._vision_supported = True
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -10403,6 +10501,16 @@ class AIAgent:
             # manual message manipulation are always caught.
             api_messages = self._sanitize_api_messages(api_messages)
 
+            # Drop thinking-only assistant turns (reasoning but no visible
+            # output and no tool_calls) and merge any adjacent user messages
+            # left behind. Prevents Anthropic 400s ("The final block in an
+            # assistant message cannot be `thinking`.") and equivalent errors
+            # from third-party Anthropic-compatible gateways that can't replay
+            # a thinking-only turn. Runs on the per-call copy only — the
+            # stored conversation history keeps the reasoning block for the
+            # UI transcript and session persistence.
+            api_messages = self._drop_thinking_only_and_merge_users(api_messages)
+
             # Normalize message whitespace and tool-call JSON for consistent
             # prefix matching.  Ensures bit-perfect prefixes across turns,
             # which enables KV cache reuse on local inference servers
@@ -10597,6 +10705,16 @@ class AIAgent:
                     # attempt — switch to non-streaming for the rest of this
                     # session instead of re-failing every retry.
                     if getattr(self, "_disable_streaming", False):
+                        _use_streaming = False
+                    # CopilotACPClient communicates via subprocess stdio and
+                    # returns a plain SimpleNamespace — not an iterable
+                    # stream.  Mirror the ACP exclusion used for Responses
+                    # API upgrade (lines ~1083-1085).
+                    elif (
+                        self.provider == "copilot-acp"
+                        or str(self.base_url or "").lower().startswith("acp://copilot")
+                        or str(self.base_url or "").lower().startswith("acp+tcp://")
+                    ):
                         _use_streaming = False
                     elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for
@@ -10894,12 +11012,7 @@ class AIAgent:
                         # would have been appended in the non-truncated path.
                         _trunc_msg = None
                         _trunc_transport = self._get_transport()
-                        if self.api_mode == "anthropic_messages":
-                            _trunc_result = _trunc_transport.normalize_response(
-                                response, strip_tool_prefix=self._is_anthropic_oauth
-                            )
-                        else:
-                            _trunc_result = _trunc_transport.normalize_response(response)
+                        _trunc_result = _trunc_transport.normalize_response(response)
                         _trunc_msg = _trunc_result
 
                         _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
@@ -11376,68 +11489,6 @@ class AIAgent:
                                     force=True,
                                 )
                             continue
-
-                    # ── Image-rejection recovery ──────────────────────────────
-                    # Some providers (mlx-lm, text-only endpoints, text-only
-                    # fallbacks on multimodal models) reject any message that
-                    # contains image_url content with a 4xx error like
-                    # "Only 'text' content type is supported."  On first hit,
-                    # strip all images from the message list, mark the session
-                    # as vision-unsupported, and retry with text only.
-                    #
-                    # Detection is best-effort English phrase matching — a
-                    # locale-translated or heavily-reworded upstream error
-                    # will bypass this guard and fall through to the normal
-                    # error handler.  Expand the phrase list when new
-                    # provider wordings are observed in the wild.
-                    _err_body = ""
-                    try:
-                        _err_body = str(getattr(api_error, "body", None) or
-                                        getattr(api_error, "message", None) or
-                                        str(api_error))
-                    except Exception:
-                        pass
-                    _err_status = getattr(api_error, "status_code", None)
-                    _IMAGE_REJECTION_PHRASES = (
-                        "only 'text' content type is supported",
-                        "only text content type is supported",
-                        "image_url is not supported",
-                        "image content is not supported",
-                        "multimodal is not supported",
-                        "multimodal content is not supported",
-                        "multimodal input is not supported",
-                        "vision is not supported",
-                        "vision input is not supported",
-                        "does not support images",
-                        "does not support image input",
-                        "does not support multimodal",
-                        "does not support vision",
-                        "model does not support image",
-                    )
-                    _err_lower = _err_body.lower()
-                    _looks_like_image_rejection = any(
-                        p in _err_lower for p in _IMAGE_REJECTION_PHRASES
-                    )
-                    # 4xx-only gate: never interpret 5xx/timeout as "server
-                    # said no to images" — those are transient and must
-                    # route to the normal retry path.
-                    _status_ok = _err_status is None or (400 <= int(_err_status) < 500)
-                    if (
-                        getattr(self, "_vision_supported", True)
-                        and _looks_like_image_rejection
-                        and _status_ok
-                    ):
-                        self._vision_supported = False
-                        _imgs_removed = _strip_images_from_messages(messages)
-                        if isinstance(api_messages, list):
-                            _strip_images_from_messages(api_messages)
-                        self._vprint(
-                            f"{self.log_prefix}⚠️  Server rejected image content — "
-                            f"switching to text-only mode for this session"
-                            + (". Stripped images from history and retrying." if _imgs_removed else "."),
-                            force=True,
-                        )
-                        continue
 
                     status_code = getattr(api_error, "status_code", None)
                     error_context = self._extract_api_error_context(api_error)
@@ -12299,10 +12350,7 @@ class AIAgent:
 
             try:
                 _transport = self._get_transport()
-                _normalize_kwargs = {}
-                if self.api_mode == "anthropic_messages":
-                    _normalize_kwargs["strip_tool_prefix"] = self._is_anthropic_oauth
-                normalized = _transport.normalize_response(response, **_normalize_kwargs)
+                normalized = _transport.normalize_response(response)
                 assistant_message = normalized
                 finish_reason = normalized.finish_reason
                 

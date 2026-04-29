@@ -240,6 +240,117 @@ def test_resolve_runtime_provider_ai_gateway(monkeypatch):
     assert resolved["requested_provider"] == "ai-gateway"
 
 
+def test_resolve_runtime_provider_lmstudio_uses_token_when_present(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "lmstudio",
+            "base_url": "http://127.0.0.1:1234/v1",
+            "default": "publisher/model-a",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": "lmstudio",
+            "api_key": "lm-token",
+            "base_url": "http://127.0.0.1:1234/v1",
+            "source": "LM_API_KEY",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="lmstudio")
+
+    assert resolved["provider"] == "lmstudio"
+    assert resolved["api_key"] == "lm-token"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "http://127.0.0.1:1234/v1"
+
+
+def test_resolve_runtime_provider_lmstudio_honors_saved_base_url(monkeypatch):
+    """Pre-existing configs with `provider: lmstudio` + custom base_url must keep working.
+
+    Before this PR, `lmstudio` aliased to `custom`, so a user with a remote
+    LM Studio (e.g. lab box) could write `provider: "lmstudio"` plus
+    `base_url: "http://192.168.1.10:1234/v1"` and the custom path honored it.
+    Now that `lmstudio` is first-class with `inference_base_url=127.0.0.1`,
+    the saved `base_url` from `model_cfg` must still win — otherwise this
+    PR is a silent breaking change for those users.
+    """
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+    monkeypatch.delenv("LM_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "lmstudio",
+            "base_url": "http://192.168.1.10:1234/v1",
+            "default": "qwen/qwen3-coder-30b",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+    # Don't mock resolve_api_key_provider_credentials — exercise the real
+    # function so we test the end-to-end precedence between model_cfg and
+    # the pconfig default.
+
+    resolved = rp.resolve_runtime_provider(requested="lmstudio")
+
+    assert resolved["provider"] == "lmstudio"
+    assert resolved["api_mode"] == "chat_completions"
+    # The saved base_url must NOT be shadowed by the 127.0.0.1 default.
+    assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
+    # No-auth LM Studio: missing LM_API_KEY substitutes the placeholder.
+    assert resolved["api_key"] == "dummy-lm-api-key"
+
+
+def test_resolve_runtime_provider_lmstudio_saved_base_url_wins_over_env(monkeypatch):
+    """Saved model.base_url takes precedence over LM_BASE_URL env var.
+
+    This matches the established contract for all api_key providers: the
+    explicit config value (model.base_url) wins over the env-derived
+    default.  Users who saved a remote LM Studio URL must not have it
+    silently overridden by a stale shell variable.
+    """
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+    monkeypatch.setenv("LM_BASE_URL", "http://override.local:9999/v1")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "lmstudio",
+            "base_url": "http://192.168.1.10:1234/v1",
+            "default": "qwen/qwen3-coder-30b",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="lmstudio")
+
+    assert resolved["provider"] == "lmstudio"
+    assert resolved["api_mode"] == "chat_completions"
+    # Saved config base_url wins over env var (standard contract).
+    assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
+    assert resolved["api_key"] == "dummy-lm-api-key"
+
+
 def test_resolve_runtime_provider_ai_gateway_explicit_override_skips_pool(monkeypatch):
     def _unexpected_pool(provider):
         raise AssertionError(f"load_pool should not be called for {provider}")
@@ -1237,6 +1348,21 @@ def test_resolve_provider_openrouter_unchanged():
     assert resolve_provider("openrouter") == "openrouter"
 
 
+def test_resolve_provider_lmstudio_returns_lmstudio(monkeypatch):
+    """resolve_provider('lmstudio') must return 'lmstudio', not 'custom'.
+
+    Regression for the alias-map bug where 'lmstudio' was rewritten to
+    'custom' before the PROVIDER_REGISTRY lookup, bypassing the first-class
+    LM Studio provider entirely at runtime.
+    """
+    from hermes_cli.auth import resolve_provider
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert resolve_provider("lmstudio") == "lmstudio"
+    assert resolve_provider("lm-studio") == "lmstudio"
+    assert resolve_provider("lm_studio") == "lmstudio"
+
+
 def test_custom_provider_runtime_preserves_provider_name(monkeypatch):
     """resolve_runtime_provider with provider='custom' must return provider='custom'."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -1761,4 +1887,284 @@ class TestAzureFoundryResolution:
         resolved = rp.resolve_runtime_provider(requested="azure-foundry")
 
         assert resolved["api_mode"] == "codex_responses"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Azure Anthropic — honor user-specified env var hints (key_env / api_key_env)
+#
+# When the user points provider=anthropic at an Azure Foundry base URL, the
+# runtime resolver previously hardcoded `AZURE_ANTHROPIC_KEY` and
+# `ANTHROPIC_API_KEY` as the only env var sources.  This meant
+# `key_env: MY_CUSTOM_VAR` on the model config was silently ignored — and
+# the Azure Foundry docs that showed `api_key_env:` were broken as a result.
+#
+# These tests lock in the priority chain:
+#   1. model_cfg.key_env → os.getenv(value)
+#   2. model_cfg.api_key_env → os.getenv(value) (docs alias)
+#   3. model_cfg.api_key (inline value)
+#   4. AZURE_ANTHROPIC_KEY env var
+#   5. ANTHROPIC_API_KEY env var
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestAzureAnthropicEnvVarHint:
+    _AZURE_URL = "https://my-resource.services.ai.azure.com/anthropic"
+
+    def _cfg(self, **overrides):
+        base = {"provider": "anthropic", "base_url": self._AZURE_URL}
+        base.update(overrides)
+        return base
+
+    def test_key_env_hint_picks_custom_var(self, monkeypatch):
+        """model.key_env names a non-default env var → that var's value is used."""
+        monkeypatch.delenv("AZURE_ANTHROPIC_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("MY_CUSTOM_AZURE_KEY", "from-custom-var")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config",
+                            lambda: self._cfg(key_env="MY_CUSTOM_AZURE_KEY"))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+        assert resolved["api_key"] == "from-custom-var"
+        assert resolved["base_url"] == self._AZURE_URL
+
+    def test_api_key_env_alias_honored(self, monkeypatch):
+        """The `api_key_env` alias (used in azure-foundry docs) also works."""
+        monkeypatch.delenv("AZURE_ANTHROPIC_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("DOCS_VARIANT_KEY", "from-docs-alias")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config",
+                            lambda: self._cfg(api_key_env="DOCS_VARIANT_KEY"))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+        assert resolved["api_key"] == "from-docs-alias"
+
+    def test_key_env_beats_fallback_chain(self, monkeypatch):
+        """key_env takes priority over AZURE_ANTHROPIC_KEY / ANTHROPIC_API_KEY."""
+        monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "should-not-win")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "should-not-win-either")
+        monkeypatch.setenv("MY_PROVIDER_KEY", "winning-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config",
+                            lambda: self._cfg(key_env="MY_PROVIDER_KEY"))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+        assert resolved["api_key"] == "winning-key"
+
+    def test_inline_api_key_on_model_cfg(self, monkeypatch):
+        """model.api_key (inline value) works for single-config setups."""
+        monkeypatch.delenv("AZURE_ANTHROPIC_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config",
+                            lambda: self._cfg(api_key="inline-azure-key"))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+        assert resolved["api_key"] == "inline-azure-key"
+
+    def test_azure_anthropic_key_still_works_as_fallback(self, monkeypatch):
+        """Historical fixed-name env vars still resolve when no hint is set."""
+        monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "historical-key")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: self._cfg())
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+        assert resolved["api_key"] == "historical-key"
+
+    def test_key_env_points_at_unset_var_falls_through(self, monkeypatch):
+        """If key_env names an env var that isn't set, fall through to the
+        historical fixed names rather than failing outright."""
+        monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "fallback-works")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("UNSET_VAR", raising=False)
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config",
+                            lambda: self._cfg(key_env="UNSET_VAR"))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+        assert resolved["api_key"] == "fallback-works"
+
+    def test_no_key_anywhere_raises_helpful_error(self, monkeypatch):
+        """When nothing resolves, the error message mentions key_env as an option."""
+        monkeypatch.delenv("AZURE_ANTHROPIC_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: self._cfg())
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        with pytest.raises(rp.AuthError, match="key_env"):
+            rp.resolve_runtime_provider(requested="anthropic")
+
+    def test_non_azure_anthropic_path_ignores_key_env(self, monkeypatch):
+        """key_env is only consulted on Azure endpoints — non-Azure Anthropic
+        still goes through the regular resolve_anthropic_token chain."""
+        monkeypatch.setenv("MY_KEY", "custom-key-value")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",  # non-Azure
+            "key_env": "MY_KEY",
+        })
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        called = {"resolve_anthropic_token": False}
+        def _fake_resolve():
+            called["resolve_anthropic_token"] = True
+            return "token-from-resolver"
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.resolve_anthropic_token",
+            _fake_resolve,
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="anthropic")
+
+        # The normal chain runs — key_env is not consulted off-Azure.
+        assert called["resolve_anthropic_token"] is True
+        assert resolved["api_key"] == "token-from-resolver"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# custom_providers / providers normalizer — api_key_env alias for key_env
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class TestProviderEntryApiKeyEnvAlias:
+    """The `providers.<name>` and `custom_providers[i]` normalizer must accept
+    `api_key_env` as an alias for `key_env` so configs written against the
+    documented Azure Foundry YAML shape (or imported from other tools that
+    use `api_key_env`) resolve correctly."""
+
+    def test_snake_case_api_key_env_normalizes_to_key_env(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "vendor",
+            "base_url": "https://api.vendor.example.com/v1",
+            "api_key_env": "MY_VENDOR_KEY",
+        }
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+        assert normalized is not None
+        assert normalized.get("key_env") == "MY_VENDOR_KEY"
+
+    def test_camel_case_api_key_env_normalizes_to_key_env(self):
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "vendor",
+            "base_url": "https://api.vendor.example.com/v1",
+            "apiKeyEnv": "MY_VENDOR_KEY",
+        }
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+        assert normalized is not None
+        assert normalized.get("key_env") == "MY_VENDOR_KEY"
+
+    def test_key_env_wins_if_both_forms_present(self):
+        """If both key_env and api_key_env are set, the canonical key_env wins."""
+        from hermes_cli.config import _normalize_custom_provider_entry
+        entry = {
+            "name": "vendor",
+            "base_url": "https://api.vendor.example.com/v1",
+            "key_env": "CANONICAL",
+            "api_key_env": "ALIAS",
+        }
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+        assert normalized is not None
+        assert normalized.get("key_env") == "CANONICAL"
+
+    def test_valid_fields_set_lists_key_env(self):
+        """The _VALID_CUSTOM_PROVIDER_FIELDS documentation set must include
+        key_env so the set stays in sync with what the runtime actually reads."""
+        from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
+        assert "key_env" in _VALID_CUSTOM_PROVIDER_FIELDS
+# =============================================================================
+# Tencent TokenHub — API-key provider runtime resolution
+# =============================================================================
+
+class TestTencentTokenhubRuntimeResolution:
+    """Verify Tencent TokenHub resolves correctly through the generic
+    API-key provider path in resolve_runtime_provider."""
+
+    def test_resolves_with_env_key(self, monkeypatch):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "tencent-tokenhub")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.setenv("TOKENHUB_API_KEY", "test-tokenhub-key")
+        monkeypatch.delenv("TOKENHUB_BASE_URL", raising=False)
+
+        resolved = rp.resolve_runtime_provider(requested="tencent-tokenhub")
+
+        assert resolved["provider"] == "tencent-tokenhub"
+        assert resolved["api_mode"] == "chat_completions"
+        assert resolved["base_url"] == "https://tokenhub.tencentmaas.com/v1"
+        assert resolved["api_key"] == "test-tokenhub-key"
+        assert resolved["requested_provider"] == "tencent-tokenhub"
+
+    def test_custom_base_url_from_env(self, monkeypatch):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "tencent-tokenhub")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.setenv("TOKENHUB_API_KEY", "test-tokenhub-key")
+        monkeypatch.setenv("TOKENHUB_BASE_URL", "https://custom-proxy.example.com/v1")
+
+        resolved = rp.resolve_runtime_provider(requested="tencent-tokenhub")
+
+        assert resolved["provider"] == "tencent-tokenhub"
+        assert resolved["base_url"] == "https://custom-proxy.example.com/v1"
+        assert resolved["api_key"] == "test-tokenhub-key"
+
+    def test_config_base_url_honoured_when_provider_matches(self, monkeypatch):
+        """model.base_url in config.yaml should override the hardcoded default
+        when model.provider == tencent-tokenhub."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "tencent-tokenhub")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {
+            "provider": "tencent-tokenhub",
+            "base_url": "https://proxy.internal.com/v1",
+        })
+        monkeypatch.setenv("TOKENHUB_API_KEY", "test-tokenhub-key")
+        monkeypatch.delenv("TOKENHUB_BASE_URL", raising=False)
+
+        resolved = rp.resolve_runtime_provider(requested="tencent-tokenhub")
+
+        assert resolved["base_url"] == "https://proxy.internal.com/v1"
+
+    def test_config_base_url_ignored_for_different_provider(self, monkeypatch):
+        """model.base_url should NOT be used when model.provider doesn't match."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "tencent-tokenhub")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {
+            "provider": "openrouter",
+            "base_url": "https://some-other-endpoint.com/v1",
+        })
+        monkeypatch.setenv("TOKENHUB_API_KEY", "test-tokenhub-key")
+        monkeypatch.delenv("TOKENHUB_BASE_URL", raising=False)
+
+        resolved = rp.resolve_runtime_provider(requested="tencent-tokenhub")
+
+        # Should use the default, NOT the config base_url from a different provider
+        assert resolved["base_url"] == "https://tokenhub.tencentmaas.com/v1"
+
+    def test_explicit_override_skips_env(self, monkeypatch):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "tencent-tokenhub")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.setenv("TOKENHUB_API_KEY", "env-key-should-lose")
+        monkeypatch.delenv("TOKENHUB_BASE_URL", raising=False)
+
+        resolved = rp.resolve_runtime_provider(
+            requested="tencent-tokenhub",
+            explicit_api_key="explicit-tokenhub-key",
+            explicit_base_url="https://explicit-proxy.example.com/v1/",
+        )
+
+        assert resolved["provider"] == "tencent-tokenhub"
+        assert resolved["api_key"] == "explicit-tokenhub-key"
+        assert resolved["base_url"] == "https://explicit-proxy.example.com/v1"
+        assert resolved["source"] == "explicit"
 

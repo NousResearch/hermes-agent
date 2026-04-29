@@ -879,32 +879,12 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
 
-        mention_user_id = (metadata or {}).get("mention_user_id")
-
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_MESSAGE_LENGTH)
 
         last_event_id = None
         for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
-
-            # Append @mention pill to the last chunk for push notifications
-            # in muted rooms (mention-only mode).
-            if mention_user_id and i == len(chunks) - 1:
-                mention_html = (
-                    f'<a href="https://matrix.to/#/{mention_user_id}">'
-                    f"{mention_user_id}</a>"
-                )
-                msg_content["body"] = chunk + f" @{mention_user_id}"
-                base_html = msg_content.get("formatted_body", chunk)
-                msg_content["format"] = "org.matrix.custom.html"
-                msg_content["formatted_body"] = base_html + " " + mention_html
-                # m.mentions for MSC3952 push reliability.
-                existing_mentions = msg_content.get("m.mentions", {}).get("user_ids", [])
-                if mention_user_id not in existing_mentions:
-                    msg_content["m.mentions"] = {
-                        "user_ids": existing_mentions + [mention_user_id]
-                    }
 
             # Reply-to support.
             if reply_to:

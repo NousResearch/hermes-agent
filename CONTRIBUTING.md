@@ -494,7 +494,7 @@ branding:
   agent_name: "My Agent"
   welcome: "Welcome message"
   response_label: " ⚔ Agent "
-  prompt_symbol: "⚔ ❯ "
+  prompt_symbol: "⚔"
 
 tool_prefix: "╎"             # Tool output line prefix
 ```

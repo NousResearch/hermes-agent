@@ -53,6 +53,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "qiniu",
     "arcee",
     "gmi",
+    "tencent-tokenhub",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -61,6 +62,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "ollama",
     "stepfun", "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
+    "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
     "arcee-ai", "arceeai",
     "gmi-cloud", "gmicloud",
     "xai", "x-ai", "x.ai", "grok",
@@ -209,6 +211,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
     # Kimi
     "kimi": 262144,
+    # Tencent — Hy3 Preview (Hunyuan) with 256K context window
+    "hy3-preview": 256000,
     # Nemotron — NVIDIA's open-weights series (128K context across all sizes)
     "nemotron": 131072,
     # Arcee
@@ -313,6 +317,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.qnaigc.com": "qiniu",
     "qnaigc.com": "qiniu",
     "api.gmi-serving.com": "gmi",
+    "tokenhub.tencentmaas.com": "tencent-tokenhub",
     "ollama.com": "ollama-cloud",
 }
 
@@ -623,8 +628,6 @@ def fetch_endpoint_model_metadata(
                         if isinstance(ctx, int) and ctx > 0:
                             context_length = ctx
                             break
-                    if context_length is None:
-                        context_length = _extract_context_length(model)
                     if context_length is not None:
                         entry["context_length"] = context_length
 
@@ -1014,10 +1017,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                                 ctx = cfg.get("context_length")
                                 if ctx and isinstance(ctx, (int, float)):
                                     return int(ctx)
-                            # Fall back to max_context_length (theoretical model max)
-                            ctx = m.get("max_context_length") or m.get("context_length")
-                            if ctx and isinstance(ctx, (int, float)):
-                                return int(ctx)
+                            break
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")
@@ -1279,7 +1279,10 @@ def get_model_context_length(
     model = _strip_provider_prefix(model)
 
     # 1. Check persistent cache (model+provider)
-    if base_url:
+    # LM Studio is excluded — its loaded context length is transient (the
+    # user can reload the model with a different context_length at any time
+    # via /api/v1/models/load), so a stale cached value would mask reloads.
+    if base_url and provider != "lmstudio":
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
             # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
@@ -1332,7 +1335,8 @@ def get_model_context_length(
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
                 if local_ctx and local_ctx > 0:
-                    save_context_length(model, base_url, local_ctx)
+                    if provider != "lmstudio":
+                        save_context_length(model, base_url, local_ctx)
                     return local_ctx
             logger.info(
                 "Could not detect context length for model %r at %s — "
@@ -1422,7 +1426,8 @@ def get_model_context_length(
     if base_url and is_local_endpoint(base_url):
         local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
         if local_ctx and local_ctx > 0:
-            save_context_length(model, base_url, local_ctx)
+            if provider != "lmstudio":
+                save_context_length(model, base_url, local_ctx)
             return local_ctx
 
     # 10. Default fallback — 128K
@@ -1442,79 +1447,9 @@ def estimate_tokens_rough(text: str) -> int:
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
-    """Rough token estimate for a message list (pre-flight only).
-
-    Image parts (base64 PNG/JPEG) are counted as a flat ~1500 tokens per
-    image — the Anthropic pricing model — instead of counting raw base64
-    character length. Without this, a single ~1MB screenshot would be
-    estimated at ~250K tokens and trigger premature context compression.
-    """
-    _IMAGE_TOKEN_COST = 1500
-    total_chars = 0
-    image_tokens = 0
-    for msg in messages:
-        total_chars += _estimate_message_chars(msg)
-        image_tokens += _count_image_tokens(msg, _IMAGE_TOKEN_COST)
-    return ((total_chars + 3) // 4) + image_tokens
-
-
-def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
-    """Count image-like content parts in a message; return their token cost."""
-    count = 0
-    content = msg.get("content") if isinstance(msg, dict) else None
-    if isinstance(content, list):
-        for part in content:
-            if not isinstance(part, dict):
-                continue
-            ptype = part.get("type")
-            if ptype in ("image", "image_url", "input_image"):
-                count += 1
-    stashed = msg.get("_anthropic_content_blocks") if isinstance(msg, dict) else None
-    if isinstance(stashed, list):
-        for part in stashed:
-            if isinstance(part, dict) and part.get("type") == "image":
-                count += 1
-    # Multimodal tool results that haven't been converted yet.
-    if isinstance(content, dict) and content.get("_multimodal"):
-        inner = content.get("content")
-        if isinstance(inner, list):
-            for part in inner:
-                if isinstance(part, dict) and part.get("type") in ("image", "image_url"):
-                    count += 1
-    return count * cost_per_image
-
-
-def _estimate_message_chars(msg: Dict[str, Any]) -> int:
-    """Char count for token estimation, excluding base64 image data.
-
-    Base64 images are counted via `_count_image_tokens` instead; including
-    their raw chars here would massively overestimate token usage.
-    """
-    if not isinstance(msg, dict):
-        return len(str(msg))
-    shadow: Dict[str, Any] = {}
-    for k, v in msg.items():
-        if k == "_anthropic_content_blocks":
-            continue
-        if k == "content":
-            if isinstance(v, list):
-                cleaned = []
-                for part in v:
-                    if isinstance(part, dict):
-                        if part.get("type") in ("image", "image_url", "input_image"):
-                            cleaned.append({"type": part.get("type"), "image": "[stripped]"})
-                        else:
-                            cleaned.append(part)
-                    else:
-                        cleaned.append(part)
-                shadow[k] = cleaned
-            elif isinstance(v, dict) and v.get("_multimodal"):
-                shadow[k] = v.get("text_summary", "")
-            else:
-                shadow[k] = v
-        else:
-            shadow[k] = v
-    return len(str(shadow))
+    """Rough token estimate for a message list (pre-flight only)."""
+    total_chars = sum(len(str(msg)) for msg in messages)
+    return (total_chars + 3) // 4
 
 
 def estimate_request_tokens_rough(
@@ -1528,14 +1463,13 @@ def estimate_request_tokens_rough(
     Includes the major payload buckets Hermes sends to providers:
     system prompt, conversation messages, and tool schemas.  With 50+
     tools enabled, schemas alone can add 20-30K tokens — a significant
-    blind spot when only counting messages. Image content is counted
-    at a flat per-image cost (see estimate_messages_tokens_rough).
+    blind spot when only counting messages.
     """
-    total = 0
+    total_chars = 0
     if system_prompt:
-        total += (len(system_prompt) + 3) // 4
+        total_chars += len(system_prompt)
     if messages:
-        total += estimate_messages_tokens_rough(messages)
+        total_chars += sum(len(str(msg)) for msg in messages)
     if tools:
-        total += (len(str(tools)) + 3) // 4
-    return total
+        total_chars += len(str(tools))
+    return (total_chars + 3) // 4

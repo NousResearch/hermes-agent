@@ -455,7 +455,15 @@
       extraPackages = mkOption {
         type = types.listOf types.package;
         default = [ ];
-        description = "Extra packages available on PATH.";
+        description = ''
+          Extra packages available to the agent — terminal commands, skills,
+          cron jobs, and the service process all see them.
+
+          Implemented via the hermes user's per-user profile
+          (`/etc/profiles/per-user/${cfg.user}/bin`), which NixOS includes
+          in PATH for login shells.  The packages are also added to the
+          systemd service PATH for direct process access.
+        '';
       };
 
       extraPlugins = mkOption {
@@ -640,6 +648,17 @@
       }
 
       # ── Warnings ──────────────────────────────────────────────────────
+      # ── Per-user profile for extraPackages ───────────────────────────
+      # Wire extraPackages into the hermes user's per-user profile so the
+      # login-shell snapshot (which rebuilds PATH from NixOS profiles) sees
+      # them.  The systemd service PATH also includes them for direct access.
+      (lib.mkIf (cfg.extraPackages != []) {
+        # listOf options are merged by the NixOS module system — this appends to
+        # any packages the operator assigned to this user externally (e.g. when
+        # createUser = false and the user definition lives elsewhere in the config).
+        users.users.${cfg.user}.packages = cfg.extraPackages;
+      })
+
       (lib.mkIf (cfg.container.enable && !cfg.addToSystemPackages && cfg.container.hostUsers != []) {
         warnings = [
           ''

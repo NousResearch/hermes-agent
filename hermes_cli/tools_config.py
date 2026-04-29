@@ -72,7 +72,6 @@ CONFIGURABLE_TOOLSETS = [
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
-    ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
 ]
 
 # Toolsets that are OFF by default for new installs.
@@ -410,27 +409,6 @@ TOOL_CATEGORIES = {
             },
         ],
     },
-    "computer_use": {
-        "name": "Computer Use (macOS)",
-        "icon": "🖱️",
-        "platform_gate": "darwin",
-        "providers": [
-            {
-                "name": "cua-driver (background)",
-                "badge": "★ recommended · free · local",
-                "tag": (
-                    "macOS background computer-use via SkyLight SPIs — does "
-                    "NOT steal your cursor or focus. Works with any model."
-                ),
-                "env_vars": [
-                    # cua-driver reads HOME/TMPDIR from the process env, no
-                    # extra keys required. HERMES_CUA_DRIVER_VERSION is an
-                    # optional pin for reproducibility across macOS updates.
-                ],
-                "post_setup": "cua_driver",
-            },
-        ],
-    },
     "rl": {
         "name": "RL Training",
         "icon": "🧪",
@@ -489,7 +467,10 @@ def _run_post_setup(post_setup_key: str):
     import shutil
     if post_setup_key in ("agent_browser", "browserbase"):
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
-        if not node_modules.exists() and shutil.which("npm"):
+        npm_bin = shutil.which("npm")
+        npx_bin = shutil.which("npx")
+        # Step 1: install the agent-browser npm package into node_modules/
+        if not node_modules.exists() and npm_bin:
             _print_info("    Installing Node.js dependencies for browser tools...")
             import subprocess
             result = subprocess.run(
@@ -501,8 +482,94 @@ def _run_post_setup(post_setup_key: str):
             else:
                 from hermes_constants import display_hermes_home
                 _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install")
+                if result.stderr:
+                    _print_info(f"      {result.stderr.strip()[:200]}")
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
+            return
+
+        # Step 2: only the local browser provider actually needs Chromium on
+        # disk. Cloud providers (Browserbase, Browser Use, Firecrawl) host
+        # their own Chromium and don't need the local install.
+        if post_setup_key != "agent_browser":
+            return
+
+        # Step 3: ensure the Chromium / headless-shell build agent-browser
+        # drives is actually installed. Without it the CLI hangs on first
+        # use until the command timeout fires. Skip inside Docker — the
+        # image bakes Chromium in at build time, and runtime users usually
+        # can't write to PLAYWRIGHT_BROWSERS_PATH anyway.
+        try:
+            # Import lazily so the tools_config UI doesn't pull in the full
+            # browser_tool module at import time.
+            from tools.browser_tool import (
+                _chromium_installed,
+                _running_in_docker,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            _print_warning(f"    Could not check Chromium status: {exc}")
+            return
+
+        if _chromium_installed():
+            _print_success("    Chromium browser already installed")
+            return
+
+        if _running_in_docker():
+            _print_warning(
+                "    Chromium is missing but you're running in Docker."
+            )
+            _print_info(
+                "    Pull the latest image to get the bundled Chromium:"
+            )
+            _print_info(
+                "      docker pull ghcr.io/nousresearch/hermes-agent:latest"
+            )
+            return
+
+        if not npx_bin:
+            _print_warning(
+                "    npx not found - install Chromium manually: npx agent-browser install --with-deps"
+            )
+            return
+
+        _print_info("    Installing Chromium (~170MB one-time download)...")
+        import subprocess
+        # Prefer the bundled agent-browser install subcommand so the
+        # version of Chromium matches the CLI. Fall back to npx shim on
+        # setups where the local bin stub isn't present.
+        local_ab = PROJECT_ROOT / "node_modules" / ".bin" / "agent-browser"
+        if sys.platform == "win32":
+            local_ab_win = local_ab.with_suffix(".cmd")
+            if local_ab_win.exists():
+                local_ab = local_ab_win
+        install_cmd = (
+            [str(local_ab), "install", "--with-deps"]
+            if local_ab.exists()
+            else [npx_bin, "-y", "agent-browser", "install", "--with-deps"]
+        )
+        try:
+            result = subprocess.run(
+                install_cmd,
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT), timeout=600,
+            )
+            if result.returncode == 0:
+                _print_success("    Chromium installed")
+                # Invalidate the cached "missing" result so subsequent
+                # check_browser_requirements() calls see the new install.
+                import tools.browser_tool as _bt
+                _bt._cached_chromium_installed = None
+            else:
+                _print_warning("    Chromium install failed:")
+                tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+                for line in tail:
+                    _print_info(f"      {line[:200]}")
+                _print_info("    Run manually: npx agent-browser install --with-deps")
+        except subprocess.TimeoutExpired:
+            _print_warning("    Chromium install timed out (>10min)")
+            _print_info("    Run manually: npx agent-browser install --with-deps")
+        except Exception as exc:
+            _print_warning(f"    Chromium install failed: {exc}")
+            _print_info("    Run manually: npx agent-browser install --with-deps")
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
@@ -525,53 +592,6 @@ def _run_post_setup(post_setup_key: str):
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
             _print_info("      docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
-
-    elif post_setup_key == "cua_driver":
-        # cua-driver provides macOS background computer-use (SkyLight SPIs).
-        # Install via upstream curl script if the binary isn't on $PATH yet.
-        import platform as _plat
-        import subprocess
-        if _plat.system() != "Darwin":
-            _print_warning("    Computer Use (cua-driver) is macOS-only; skipping.")
-            return
-        if shutil.which("cua-driver"):
-            try:
-                version = subprocess.run(
-                    ["cua-driver", "--version"],
-                    capture_output=True, text=True, timeout=5,
-                ).stdout.strip()
-                _print_success(f"    cua-driver already installed: {version or 'unknown version'}")
-            except Exception:
-                _print_success("    cua-driver already installed.")
-            _print_info("    Grant macOS permissions if not done yet:")
-            _print_info("      System Settings > Privacy & Security > Accessibility")
-            _print_info("      System Settings > Privacy & Security > Screen Recording")
-            return
-        if not shutil.which("curl"):
-            _print_warning("    curl not found — install manually:")
-            _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
-            return
-        _print_info("    Installing cua-driver (macOS background computer-use)...")
-        try:
-            install_cmd = (
-                "/bin/bash -c \"$(curl -fsSL "
-                "https://raw.githubusercontent.com/trycua/cua/main/"
-                "libs/cua-driver/scripts/install.sh)\""
-            )
-            result = subprocess.run(install_cmd, shell=True, timeout=300)
-            if result.returncode == 0 and shutil.which("cua-driver"):
-                _print_success("    cua-driver installed.")
-                _print_info("    IMPORTANT — grant macOS permissions now:")
-                _print_info("      System Settings > Privacy & Security > Accessibility")
-                _print_info("      System Settings > Privacy & Security > Screen Recording")
-                _print_info("    Both must allow the terminal / Hermes process.")
-            else:
-                _print_warning("    cua-driver install did not complete. Re-run manually:")
-                _print_info(f"      {install_cmd}")
-        except subprocess.TimeoutExpired:
-            _print_warning("    cua-driver install timed out. Re-run manually.")
-        except Exception as e:
-            _print_warning(f"    cua-driver install failed: {e}")
 
     elif post_setup_key == "kittentts":
         try:

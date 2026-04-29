@@ -141,7 +141,6 @@ _SLASH_WORKER_TIMEOUT_S = max(
 _LONG_HANDLERS = frozenset(
     {
         "cli.exec",
-        "prompt.submit",
         "session.branch",
         "session.resume",
         "shell.exec",
@@ -2426,12 +2425,28 @@ def _(rid, params: dict) -> dict:
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
-    session, err = _sess(params, rid)
+    session, err = _sess_nowait(params, rid)
     if err:
         return err
+
+    _start_agent_build(sid, session)
+
+    def run_after_agent_ready() -> None:
+        err = _wait_agent(session, rid)
+        if err:
+            session.get("transport", current_transport() or _stdio_transport).write(err)
+            return
+        _run_prompt_submit(rid, sid, session, text)
+
+    threading.Thread(target=run_after_agent_ready, daemon=True).start()
+    return _ok(rid, {"status": "streaming"})
+
+
+def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     with session["history_lock"]:
         if session.get("running"):
-            return _err(rid, 4009, "session busy")
+            _emit("error", sid, {"message": "session busy"})
+            return
         session["running"] = True
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -2671,7 +2686,6 @@ def _(rid, params: dict) -> dict:
                 session["running"] = False
 
     threading.Thread(target=run, daemon=True).start()
-    return _ok(rid, {"status": "streaming"})
 
 
 @method("clipboard.paste")

@@ -27,11 +27,23 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
+export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
+
+// Single source of truth for indicator style names.  Union type is
+// derived from this tuple so adding/removing a style only touches one
+// line — `useConfigSync` (validation) and `session.ts` (slash arg
+// validation + usage hint) both import it.
+export const INDICATOR_STYLES = ['ascii', 'emoji', 'kaomoji', 'unicode'] as const
+export type IndicatorStyle = (typeof INDICATOR_STYLES)[number]
+export const DEFAULT_INDICATOR_STYLE: IndicatorStyle = 'kaomoji'
+
 export interface SelectionApi {
   captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void
   clearSelection: () => void
   copySelection: () => Promise<string>
+  copySelectionNoClear: () => Promise<string>
   getState: () => unknown
+  version: () => number
   shiftAnchor: (dRow: number, minRow: number, maxRow: number) => void
   shiftSelection: (dRow: number, minRow: number, maxRow: number) => void
 }
@@ -85,6 +97,7 @@ export interface TranscriptRow {
 export interface UiState {
   bgTasks: Set<string>
   busy: boolean
+  busyInputMode: BusyInputMode
   compact: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
@@ -94,6 +107,7 @@ export interface UiState {
   sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
+  indicatorStyle: IndicatorStyle
   sid: null | string
   status: string
   statusBar: StatusBarMode

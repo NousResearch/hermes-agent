@@ -13,6 +13,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -888,6 +889,48 @@ def play_audio_file(file_path: str) -> bool:
 
     if system == "Darwin":
         players.append(["afplay", file_path])
+
+    # WSL2: route audio through Windows PowerShell SoundPlayer when no Linux
+    # audio devices are available (issue #17573). Convert MP3→WAV via ffmpeg
+    # and save to a Windows-accessible temp path so PowerShell can play it.
+    _is_wsl = False
+    try:
+        with open("/proc/version") as _fv:
+            _is_wsl = "microsoft" in _fv.read().lower()
+    except OSError:
+        pass
+    if _is_wsl and system == "Linux" and shutil.which("powershell.exe"):
+        try:
+            # Detect Windows temp dir dynamically via cmd.exe to avoid
+            # hardcoding a username in the path (user's workaround limitation).
+            _win_tmp_raw = subprocess.check_output(
+                ["cmd.exe", "/c", "echo %TEMP%"],
+                stderr=subprocess.DEVNULL, timeout=3,
+            ).decode(errors="replace").strip()
+            _win_tmp_wsl = subprocess.check_output(
+                ["wslpath", "-u", _win_tmp_raw],
+                stderr=subprocess.DEVNULL, timeout=3,
+            ).decode(errors="replace").strip()
+            if _win_tmp_wsl:
+                _wsl_wav = os.path.join(_win_tmp_wsl, "hermes-tts.wav")
+                _win_wav = subprocess.check_output(
+                    ["wslpath", "-w", _wsl_wav],
+                    stderr=subprocess.DEVNULL, timeout=3,
+                ).decode(errors="replace").strip()
+                # Convert to WAV so PowerShell SoundPlayer can handle it
+                ffmpeg_exe = shutil.which("ffmpeg")
+                if ffmpeg_exe:
+                    players.insert(0, [
+                        "sh", "-c",
+                        f"{ffmpeg_exe} -i {shlex.quote(file_path)} -f wav {shlex.quote(_wsl_wav)} "
+                        f"-loglevel quiet -y 2>/dev/null && "
+                        f"powershell.exe -NoProfile -Command "
+                        f""(New-Object Media.SoundPlayer {shlex.quote(_win_wav)}).PlaySync()" && "
+                        f"rm -f {shlex.quote(_wsl_wav)}"
+                    ])
+        except Exception as _wsl_err:
+            logger.debug("WSL PowerShell audio setup failed: %s", _wsl_err)
+
     players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
     if system == "Linux":
         players.append(["aplay", "-q", file_path])

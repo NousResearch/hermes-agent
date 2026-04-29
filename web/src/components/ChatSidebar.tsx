@@ -23,8 +23,8 @@
  * terminal pane keeps working unimpaired.
  */
 
-import { Button } from "@nous-research/ui";
-import { Badge } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card } from "@/components/ui/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";

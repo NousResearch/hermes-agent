@@ -1,4 +1,4 @@
-import { ListItem } from "@nous-research/ui";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import {
   AlertCircle,
   Check,

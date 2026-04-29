@@ -107,17 +107,58 @@ def _run_async(coro):
         loop = None
 
     if loop and loop.is_running():
-        # Inside an async context (gateway, RL env) — run in a fresh thread.
+        # Inside an async context (gateway, RL env) — run in a fresh thread
+        # with its own event loop we own a reference to, so on timeout we
+        # can cancel the task inside that loop (ThreadPoolExecutor.cancel()
+        # only works on not-yet-started futures — it's a no-op on a running
+        # worker, which previously leaked the thread on every 300 s timeout).
         import concurrent.futures
+
+        worker_loop: Optional[asyncio.AbstractEventLoop] = None
+        loop_ready = threading.Event()
+
+        def _run_in_worker():
+            nonlocal worker_loop
+            worker_loop = asyncio.new_event_loop()
+            loop_ready.set()
+            try:
+                asyncio.set_event_loop(worker_loop)
+                return worker_loop.run_until_complete(coro)
+            finally:
+                try:
+                    # Cancel anything still pending (e.g. task cancelled
+                    # externally via call_soon_threadsafe on timeout).
+                    pending = asyncio.all_tasks(worker_loop)
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        worker_loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                except Exception:
+                    pass
+                worker_loop.close()
+
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(asyncio.run, coro)
+        future = pool.submit(_run_in_worker)
         try:
             return future.result(timeout=300)
         except concurrent.futures.TimeoutError:
-            future.cancel()
+            # Cancel the coroutine inside its own loop so the worker thread
+            # can wind down instead of running forever.
+            if loop_ready.wait(timeout=1.0) and worker_loop is not None:
+                try:
+                    for t in asyncio.all_tasks(worker_loop):
+                        worker_loop.call_soon_threadsafe(t.cancel)
+                except RuntimeError:
+                    # Loop already closed — nothing to cancel.
+                    pass
             raise
         finally:
-            pool.shutdown(wait=False, cancel_futures=True)
+            # wait=False: don't block the caller on a stuck coroutine. We've
+            # already requested cancellation above; the worker will exit
+            # once the coroutine observes it (usually at the next await).
+            pool.shutdown(wait=False)
 
     # If we're on a worker thread (e.g., parallel tool execution in
     # delegate_task), use a per-thread persistent loop.  This avoids
@@ -737,7 +778,7 @@ def handle_function_call(
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
-        logger.error(error_msg)
+        logger.exception(error_msg)
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 

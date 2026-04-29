@@ -314,6 +314,7 @@ export interface ProcessStopResponse {
 
 export interface BrowserManageResponse {
   connected?: boolean
+  messages?: string[]
   url?: string
 }
 

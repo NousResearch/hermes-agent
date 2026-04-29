@@ -2811,7 +2811,8 @@ def test_browser_manage_status_reads_env_var(monkeypatch):
         {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
     )
 
-    assert resp["result"] == {"connected": True, "url": "http://127.0.0.1:9222"}
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
 
 
 def test_browser_manage_status_falls_back_to_config_cdp_url(monkeypatch):
@@ -2874,7 +2875,9 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
             }
         )
 
-    assert resp["result"] == {"connected": True, "url": "http://127.0.0.1:9222"}
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert resp["result"]["messages"] == ["Chrome is already listening on port 9222"]
     assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
     # First cleanup runs against the OLD env (none here), second against the NEW.
     assert cleanup_calls == ["", "http://127.0.0.1:9222"]
@@ -2892,7 +2895,9 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
             {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
         )
 
-    assert resp["result"] == {"connected": True, "url": "http://127.0.0.1:9222"}
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert resp["result"]["messages"] == ["Chrome is already listening on port 9222"]
     assert urls[0] == "http://127.0.0.1:9222/json/version"
 
 
@@ -2907,12 +2912,18 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         with patch("hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False), \
              patch("hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[]):
             resp = server.handle_request(
-                {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
+                {
+                    "id": "1",
+                    "method": "browser.manage",
+                    "params": {"action": "connect", "url": "http://localhost:9222"},
+                }
             )
 
-    assert resp["error"]["code"] == 5031
-    assert "No Chrome/Chromium executable was found" in resp["error"]["message"]
-    assert "--remote-debugging-port=9222" in resp["error"]["message"]
+    assert resp["result"]["connected"] is False
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert resp["result"]["messages"][0] == "Chrome isn't running with remote debugging — attempting to launch..."
+    assert any("No Chrome/Chromium executable was found" in line for line in resp["result"]["messages"])
+    assert any("--remote-debugging-port=9222" in line for line in resp["result"]["messages"])
     assert "BROWSER_CDP_URL" not in os.environ
 
 
@@ -2950,7 +2961,12 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
             )
 
-    assert resp["result"] == {"connected": True, "url": "http://127.0.0.1:9222"}
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert resp["result"]["messages"] == [
+        "Chrome isn't running with remote debugging — attempting to launch...",
+        "Chrome launched and listening on port 9222",
+    ]
     assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
 
 

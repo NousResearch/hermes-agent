@@ -38,6 +38,8 @@ import os
 import re
 import shutil
 import tempfile
+import difflib
+import yaml
 from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
 from typing import Dict, Any, Optional, Tuple
@@ -97,8 +99,6 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     except Exception as e:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
-
-import yaml
 
 
 # All skills live in ~/.hermes/skills/ (single source of truth)
@@ -334,6 +334,163 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         raise
 
 
+def _stamp_authored_by(content: str, author: str) -> str:
+    """Inject ``authored_by: <author>`` into the YAML frontmatter of *content*.
+
+    Only adds the field when it is not already present, so user-supplied
+    ``authored_by`` values are never overwritten.  Returns *content* unchanged
+    on any parse error.
+    """
+    try:
+        end_match = re.search(r'\n---\s*\n', content[3:])
+        if not content.startswith("---") or not end_match:
+            return content
+        yaml_text = content[3: end_match.start() + 3]
+        parsed = yaml.safe_load(yaml_text)
+        if not isinstance(parsed, dict) or "authored_by" in parsed:
+            return content
+        # Insert the field right after the opening ---
+        insert_at = 3  # just after the opening "---"
+        return content[:insert_at] + f"\nauthored_by: {author}" + content[insert_at:]
+    except Exception:
+        return content
+
+
+# =============================================================================
+# Skill protection helpers
+# =============================================================================
+
+def _skill_approval_required() -> bool:
+    """Return True when skills.require_approval is enabled in config.
+
+    Off by default — existing behaviour is unchanged unless the user opts in
+    via ``hermes config set skills.require_approval true``.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return bool(cfg_get(cfg, "skills", "require_approval", default=False))
+    except Exception:
+        return False
+
+
+def _read_skill_frontmatter(skill_md: Path) -> Dict[str, Any]:
+    """Parse and return the YAML frontmatter of an existing SKILL.md.
+
+    Returns an empty dict on any read/parse error so callers can treat a
+    missing or malformed frontmatter as having no special flags set.
+    """
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+        end_match = re.search(r'\n---\s*\n', content[3:])
+        if not content.startswith("---") or not end_match:
+            return {}
+        yaml_text = content[3: end_match.start() + 3]
+        parsed = yaml.safe_load(yaml_text)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _is_skill_locked(skill_dir: Path) -> bool:
+    """Return True when the skill's SKILL.md has ``locked: true`` in its frontmatter.
+
+    A locked skill is user-authored and immutable to agent self-improvement.
+    The agent can read and follow the skill but cannot modify or delete it.
+    """
+    fm = _read_skill_frontmatter(skill_dir / "SKILL.md")
+    return bool(fm.get("locked", False))
+
+
+def _make_unified_diff(original: str, updated: str, skill_name: str, file_label: str = "SKILL.md") -> str:
+    """Return a unified diff string between *original* and *updated* content."""
+    original_lines = original.splitlines(keepends=True)
+    updated_lines = updated.splitlines(keepends=True)
+    diff_lines = list(difflib.unified_diff(
+        original_lines,
+        updated_lines,
+        fromfile=f"a/{skill_name}/{file_label}",
+        tofile=f"b/{skill_name}/{file_label}",
+        lineterm="",
+    ))
+    return "".join(diff_lines) if diff_lines else "(no textual changes)"
+
+
+def _request_skill_approval(
+    skill_name: str,
+    action: str,
+    diff: str,
+    reasoning: str = "",
+) -> bool:
+    """Block until the user approves or denies a proposed skill mutation.
+
+    Uses the same approval infrastructure as dangerous command approval:
+    - CLI: synchronous ``input()`` prompt with diff displayed inline.
+    - Gateway: async queue + ``/approve`` / ``/deny`` handler.
+
+    Returns True if approved, False if denied or timed out.
+    """
+    from tools.approval import (
+        get_current_session_key,
+        _gateway_queues,
+        _gateway_notify_cbs,
+        _lock,
+        _ApprovalEntry,
+    )
+    import threading
+
+    session_key = get_current_session_key()
+
+    # ── Gateway path ──────────────────────────────────────────────────────
+    with _lock:
+        notify_cb = _gateway_notify_cbs.get(session_key)
+
+    if notify_cb is not None:
+        entry = _ApprovalEntry()
+        entry.data = {
+            "type": "skill_change",
+            "skill_name": skill_name,
+            "action": action,
+            "diff": diff,
+            "reasoning": reasoning,
+            "message": (
+                f"Agent wants to **{action}** skill `{skill_name}`.\n\n"
+                f"```diff\n{diff}\n```\n\n"
+                f"Reply `/approve` to allow or `/deny` to block."
+            ),
+        }
+        entry.result = None
+        entry.event = threading.Event()
+
+        with _lock:
+            if session_key not in _gateway_queues:
+                _gateway_queues[session_key] = []
+            _gateway_queues[session_key].append(entry)
+
+        try:
+            notify_cb(entry.data)
+        except Exception as exc:
+            logger.warning("skill approval notify_cb failed: %s", exc)
+
+        # Block the agent thread until the user responds (or gateway shuts down)
+        entry.event.wait()
+        return entry.result is True
+
+    # ── CLI path ──────────────────────────────────────────────────────────
+    import sys
+    print(f"\n\033[33m⚠  Agent wants to {action} skill '{skill_name}':\033[0m", flush=True)
+    if reasoning:
+        print(f"   Reason: {reasoning}", flush=True)
+    print(f"\n{diff}\n", flush=True)
+
+    try:
+        answer = input("Allow this skill change? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = "n"
+
+    return answer in ("y", "yes")
+
+
 # =============================================================================
 # Core actions
 # =============================================================================
@@ -365,6 +522,10 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "success": False,
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
+
+    # Stamp authored_by: agent in the frontmatter so the skill is
+    # identifiable as agent-generated (used by lock checks and the curator).
+    content = _stamp_authored_by(content, "agent")
 
     # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category)
@@ -409,22 +570,45 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
-    skill_md = existing["path"] / "SKILL.md"
-    # Back up original content for rollback
-    original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+    skill_dir = existing["path"]
+
+    # Lock check — user-locked skills are immutable to the agent.
+    if _is_skill_locked(skill_dir):
+        return {
+            "success": False,
+            "error": (
+                f"Skill '{name}' is user-locked (locked: true in frontmatter). "
+                "Remove the lock to allow agent edits."
+            ),
+        }
+
+    skill_md = skill_dir / "SKILL.md"
+    # Back up original content for rollback / diff
+    original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else ""
+
+    # Approval gate — ask the user before writing when require_approval is on.
+    if _skill_approval_required():
+        diff = _make_unified_diff(original_content, content, name)
+        approved = _request_skill_approval(name, "edit", diff)
+        if not approved:
+            return {
+                "success": False,
+                "error": f"Skill edit for '{name}' was denied by the user.",
+            }
+
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
+    scan_error = _security_scan_skill(skill_dir)
     if scan_error:
-        if original_content is not None:
+        if original_content:
             _atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
 
     return {
         "success": True,
         "message": f"Skill '{name}' updated.",
-        "path": str(existing["path"]),
+        "path": str(skill_dir),
     }
 
 
@@ -450,6 +634,16 @@ def _patch_skill(
         return {"success": False, "error": f"Skill '{name}' not found."}
 
     skill_dir = existing["path"]
+
+    # Lock check — user-locked skills are immutable to the agent.
+    if _is_skill_locked(skill_dir):
+        return {
+            "success": False,
+            "error": (
+                f"Skill '{name}' is user-locked (locked: true in frontmatter). "
+                "Remove the lock to allow agent edits."
+            ),
+        }
 
     if file_path:
         # Patching a supporting file
@@ -507,6 +701,17 @@ def _patch_skill(
                 "error": f"Patch would break SKILL.md structure: {err}",
             }
 
+    # Approval gate — show the diff and wait for user confirmation.
+    if _skill_approval_required():
+        file_label = file_path if file_path else "SKILL.md"
+        diff = _make_unified_diff(content, new_content, name, file_label)
+        approved = _request_skill_approval(name, "patch", diff)
+        if not approved:
+            return {
+                "success": False,
+                "error": f"Skill patch for '{name}' was denied by the user.",
+            }
+
     original_content = content  # for rollback
     _atomic_write_text(target, new_content)
 
@@ -529,6 +734,31 @@ def _delete_skill(name: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
     skill_dir = existing["path"]
+
+    # Lock check — user-locked skills cannot be deleted by the agent.
+    if _is_skill_locked(skill_dir):
+        return {
+            "success": False,
+            "error": (
+                f"Skill '{name}' is user-locked (locked: true in frontmatter). "
+                "Remove the lock to allow agent deletion."
+            ),
+        }
+
+    # Approval gate — deletes are always shown to the user when require_approval is on.
+    if _skill_approval_required():
+        try:
+            original = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        except Exception:
+            original = "(unreadable)"
+        diff = _make_unified_diff(original, "", name)
+        approved = _request_skill_approval(name, "delete", diff)
+        if not approved:
+            return {
+                "success": False,
+                "error": f"Skill deletion of '{name}' was denied by the user.",
+            }
+
     skills_root = _containing_skills_root(skill_dir)
     shutil.rmtree(skill_dir)
 
@@ -571,18 +801,41 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
-    target, err = _resolve_skill_target(existing["path"], file_path)
+    skill_dir = existing["path"]
+
+    # Lock check — user-locked skills are immutable to the agent.
+    if _is_skill_locked(skill_dir):
+        return {
+            "success": False,
+            "error": (
+                f"Skill '{name}' is user-locked (locked: true in frontmatter). "
+                "Remove the lock to allow agent edits."
+            ),
+        }
+
+    target, err = _resolve_skill_target(skill_dir, file_path)
     if err:
         return {"success": False, "error": err}
     target.parent.mkdir(parents=True, exist_ok=True)
-    # Back up for rollback
-    original_content = target.read_text(encoding="utf-8") if target.exists() else None
+    # Back up for rollback / diff
+    original_content = target.read_text(encoding="utf-8") if target.exists() else ""
+
+    # Approval gate
+    if _skill_approval_required():
+        diff = _make_unified_diff(original_content, file_content, name, file_path)
+        approved = _request_skill_approval(name, f"write_file ({file_path})", diff)
+        if not approved:
+            return {
+                "success": False,
+                "error": f"Skill write_file for '{name}/{file_path}' was denied by the user.",
+            }
+
     _atomic_write_text(target, file_content)
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
+    scan_error = _security_scan_skill(skill_dir)
     if scan_error:
-        if original_content is not None:
+        if original_content:
             _atomic_write_text(target, original_content)
         else:
             target.unlink(missing_ok=True)
@@ -607,6 +860,16 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
     skill_dir = existing["path"]
 
+    # Lock check — user-locked skills are immutable to the agent.
+    if _is_skill_locked(skill_dir):
+        return {
+            "success": False,
+            "error": (
+                f"Skill '{name}' is user-locked (locked: true in frontmatter). "
+                "Remove the lock to allow agent edits."
+            ),
+        }
+
     target, err = _resolve_skill_target(skill_dir, file_path)
     if err:
         return {"success": False, "error": err}
@@ -624,6 +887,20 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
             "error": f"File '{file_path}' not found in skill '{name}'.",
             "available_files": available if available else None,
         }
+
+    # Approval gate
+    if _skill_approval_required():
+        try:
+            original = target.read_text(encoding="utf-8")
+        except Exception:
+            original = "(unreadable)"
+        diff = _make_unified_diff(original, "", name, file_path)
+        approved = _request_skill_approval(name, f"remove_file ({file_path})", diff)
+        if not approved:
+            return {
+                "success": False,
+                "error": f"Skill remove_file for '{name}/{file_path}' was denied by the user.",
+            }
 
     target.unlink()
 

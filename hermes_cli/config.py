@@ -924,6 +924,15 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Require explicit user approval before the agent can create,
+        # edit, patch, delete, or write supporting files for any skill.
+        # When enabled, the agent presents a unified diff and waits for
+        # the user to respond with /approve or /deny (gateway) or an
+        # interactive y/N prompt (CLI) before the write is committed.
+        # Off by default — existing self-improvement behaviour is
+        # unchanged unless you opt in.
+        # Enable with: hermes config set skills.require_approval true
+        "require_approval": False,
     },
 
     # Curator — background skill maintenance.

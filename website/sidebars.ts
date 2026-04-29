@@ -44,6 +44,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'user-guide/features/tools',
             'user-guide/features/skills',
+            'user-guide/features/curator',
             'user-guide/features/memory',
             'user-guide/features/memory-providers',
             'user-guide/features/context-files',

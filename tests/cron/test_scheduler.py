@@ -279,6 +279,64 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_deliver_as_list_with_single_telegram_target(self, monkeypatch):
+        """deliver=['telegram'] (list shape) must resolve like 'telegram'.
+
+        Regression for #17139: jobs whose ``deliver`` was persisted as a
+        Python list (typical when the LLM cron tool wrote it as an array)
+        produced ``"no delivery target resolved for deliver=['telegram']"``
+        because the resolver did ``str(deliver).split(",")`` and got back
+        the literal token ``"['telegram']"`` which no branch matched.
+        """
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "1234567890")
+        targets = _resolve_delivery_targets({"deliver": ["telegram"]})
+        assert targets == [
+            {"platform": "telegram", "chat_id": "1234567890", "thread_id": None}
+        ]
+
+    def test_deliver_as_list_with_multiple_targets(self, monkeypatch):
+        """deliver=['telegram', 'discord'] resolves both."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "111")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "222")
+        targets = _resolve_delivery_targets(
+            {"deliver": ["telegram", "discord"]}
+        )
+        assert {t["platform"] for t in targets} == {"telegram", "discord"}
+
+    def test_deliver_as_list_drops_empty_entries(self, monkeypatch):
+        """Stray empty / whitespace-only entries in a list are skipped."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "111")
+        targets = _resolve_delivery_targets(
+            {"deliver": ["", "   ", "telegram"]}
+        )
+        assert len(targets) == 1
+        assert targets[0]["platform"] == "telegram"
+
+    def test_deliver_as_string_still_resolves(self, monkeypatch):
+        """Existing string shape ("telegram") must keep working."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "1234567890")
+        targets = _resolve_delivery_targets({"deliver": "telegram"})
+        assert targets == [
+            {"platform": "telegram", "chat_id": "1234567890", "thread_id": None}
+        ]
+
+    def test_deliver_as_comma_separated_string_still_resolves(self, monkeypatch):
+        """Existing 'telegram,discord' shape must keep working."""
+        from cron.scheduler import _resolve_delivery_targets
+
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "111")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "222")
+        targets = _resolve_delivery_targets({"deliver": "telegram,discord"})
+        assert {t["platform"] for t in targets} == {"telegram", "discord"}
+
 
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""

@@ -234,11 +234,26 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
 
 def _resolve_delivery_targets(job: dict) -> List[dict]:
-    """Resolve all concrete auto-delivery targets for a cron job (supports comma-separated deliver)."""
+    """Resolve all concrete auto-delivery targets for a cron job.
+
+    ``deliver`` accepts both a comma-separated string ("telegram,discord")
+    and a list (``["telegram", "discord"]``). The list shape comes from
+    LLM tool calls and from older config that round-tripped through code
+    paths like ``hermes_cli.cron`` which already normalises to lists. The
+    previous implementation only handled the string shape and treated a
+    list as ``str([...])`` → ``"['telegram']"``, splitting on ``,`` to
+    produce a single literal ``"['telegram']"`` token that no resolver
+    branch matched (#17139). Result: ``last_delivery_error="no delivery
+    target resolved for deliver=['telegram']"`` and the user's daily
+    briefing was saved to disk but never reached Telegram.
+    """
     deliver = job.get("deliver", "local")
     if deliver == "local":
         return []
-    parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
+    if isinstance(deliver, (list, tuple)):
+        parts = [str(p).strip() for p in deliver if str(p).strip()]
+    else:
+        parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
     seen = set()
     targets = []
     for part in parts:

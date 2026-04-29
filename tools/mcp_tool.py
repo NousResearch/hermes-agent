@@ -1678,9 +1678,24 @@ def _is_session_expired_error(exc: BaseException) -> bool:
     needed is a transport reconnect — tear down and rebuild the
     ``streamablehttp_client`` + ``ClientSession`` pair, which is
     exactly what ``MCPServerTask._reconnect_event`` triggers.
+
+    **2026-04-30**: Also treat ``TimeoutError`` as a session-expiry
+    signal.  When a StreamableHTTP server closes the GET SSE stream
+    (idle timeout, server restart), subsequent tool calls on the stale
+    session hang until the tool-call timeout fires with an empty
+    message.  The transport reconnect path is the correct recovery
+    because the access token is still valid — only the server-side
+    session state needs rebuilding.
     """
     if isinstance(exc, InterruptedError):
         return False
+    # TimeoutError (builtin in 3.11+, concurrent.futures.TimeoutError
+    # before that) on an MCP tool call strongly suggests a stale
+    # session — the server-side session was garbage-collected while
+    # the GET SSE stream was disconnected.  Reconnecting the transport
+    # is the correct recovery path.
+    if isinstance(exc, TimeoutError):
+        return True
     # Exception messages vary across SDK versions + server
     # implementations, so match on a small allow-list of stable
     # substrings rather than exception type.  Kept narrow to avoid

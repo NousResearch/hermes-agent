@@ -74,10 +74,20 @@ def test_is_session_expired_rejects_interrupted_error():
 
 
 def test_is_session_expired_rejects_empty_message():
-    """Bare exceptions with no message shouldn't match."""
+    """Bare exceptions with no message shouldn't match — unless they are
+    TimeoutError, which signals a stale session (see #XXXX)."""
     from tools.mcp_tool import _is_session_expired_error
     assert _is_session_expired_error(RuntimeError("")) is False
     assert _is_session_expired_error(Exception()) is False
+
+
+def test_is_session_expired_detects_timeout_error():
+    """TimeoutError on an MCP tool call signals a stale transport session.
+    When the SSE stream disconnects, subsequent calls to the old session
+    hang until the tool-call timeout fires.  Reconnecting is the right fix."""
+    from tools.mcp_tool import _is_session_expired_error
+    assert _is_session_expired_error(TimeoutError()) is True
+    assert _is_session_expired_error(TimeoutError("timed out")) is True
 
 
 # ---------------------------------------------------------------------------

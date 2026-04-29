@@ -77,7 +77,7 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot", "yuanbao",
+    "qqbot",
 })
 
 # Platforms that support a configured cron/notification home target, mapped to
@@ -198,9 +198,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             if resolved:
                 parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
                 if resolved_is_explicit:
-                    chat_id = parsed_chat_id
-                    if parsed_thread_id is not None:
-                        thread_id = parsed_thread_id
+                    chat_id, thread_id = parsed_chat_id, parsed_thread_id
                 else:
                     chat_id = resolved
         except Exception:
@@ -339,7 +337,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "sms": Platform.SMS,
         "bluebubbles": Platform.BLUEBUBBLES,
         "qqbot": Platform.QQBOT,
-        "yuanbao": Platform.YUANBAO,
     }
 
     # Optionally wrap the content with a header/footer so the user knows this
@@ -819,12 +816,27 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     prompt = _build_job_prompt(job, prerun_script=prerun_script)
     origin = _resolve_origin(job)
-    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    _is_persistent = job_name.startswith("persistent:")
+    _cron_session_id = (
+        f"cron_{job_id}"
+        if _is_persistent
+        else f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    )
+
+    # For persistent jobs, load previous conversation history so the agent
+    # can resume with context from last run (e.g. "continue where we left off").
+    _conversation_history = None
+    if _is_persistent:
+        try:
+            _conversation_history = _session_db.get_messages_as_conversation(_cron_session_id)
+            if _conversation_history:
+                logger.info("Loaded %d prior messages for persistent session '%s'", len(_conversation_history), _cron_session_id)
+        except Exception as _e:
+            logger.warning("Failed to load history for persistent session '%s': %s", _cron_session_id, _e)
+            _conversation_history = None
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
-
-    agent = None
 
     # Mark this as a cron session so the approval system can apply cron_mode.
     # This env var is process-wide and persists for the lifetime of the
@@ -1039,7 +1051,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        _cron_future = _cron_pool.submit(
+            _cron_context.run,
+            agent.run_conversation,
+            prompt,
+            conversation_history=_conversation_history,
+        )
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
@@ -1173,25 +1190,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             try:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
-                logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
-        # Release subprocesses, terminal sandboxes, browser daemons, and the
-        # main OpenAI/httpx client held by this ephemeral cron agent. Without
-        # this, a gateway that ticks cron every N minutes leaks fds per job
-        # until it hits EMFILE (#10200 / "too many open files").
-        try:
-            if agent is not None:
-                agent.close()
-        except (Exception, KeyboardInterrupt) as e:
-            logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
-        # Each cron run spins up a short-lived worker thread whose event loop
-        # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
-        # httpx clients cached under that loop are now unusable — reap them
-        # so their transports don't accumulate in the process-global cache.
-        try:
-            from agent.auxiliary_client import cleanup_stale_async_clients
-            cleanup_stale_async_clients()
-        except Exception as e:
-            logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
+                logger.debug("Job '%s': failed to close session store: %s", job_id, e)
 
 
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
@@ -1330,17 +1329,6 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     _ctx = contextvars.copy_context()
                     _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
                 _results.extend(f.result() for f in _futures)
-
-        # Best-effort sweep of MCP stdio subprocesses that survived their
-        # session teardown during this tick.  Runs AFTER every job has
-        # finished so active sessions (including live user chats) are
-        # never touched — only PIDs explicitly detected as orphans in
-        # tools.mcp_tool._run_stdio's finally block are reaped.
-        try:
-            from tools.mcp_tool import _kill_orphaned_mcp_children
-            _kill_orphaned_mcp_children()
-        except Exception as _e:
-            logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
 
         return sum(_results)
     finally:

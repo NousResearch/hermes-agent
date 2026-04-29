@@ -1066,6 +1066,18 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     )
     assert resp_show["result"]["value"] == "show"
     assert server._sessions["sid"]["show_reasoning"] is True
+    assert server._load_cfg()["display"]["sections"]["thinking"] == "expanded"
+
+    resp_hide = server.handle_request(
+        {
+            "id": "3",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "hide"},
+        }
+    )
+    assert resp_hide["result"]["value"] == "hide"
+    assert server._sessions["sid"]["show_reasoning"] is False
+    assert server._load_cfg()["display"]["sections"]["thinking"] == "hidden"
 
 
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):

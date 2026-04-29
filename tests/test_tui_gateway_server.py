@@ -944,6 +944,39 @@ def test_config_set_section_rejects_unknown_section_or_mode(tmp_path, monkeypatc
     assert bad_mode["error"]["code"] == 4002
 
 
+def test_config_mouse_uses_documented_key_with_legacy_fallback(monkeypatch):
+    cfg = {"display": {"tui_mouse": False}}
+    writes = []
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+
+    get_legacy = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "mouse"}}
+    )
+    assert get_legacy["result"]["value"] == "off"
+
+    set_toggle = server.handle_request(
+        {"id": "2", "method": "config.set", "params": {"key": "mouse"}}
+    )
+    assert set_toggle["result"] == {"key": "mouse", "value": "on"}
+    assert writes == [("display.mouse_tracking", True)]
+
+    cfg["display"] = {"mouse_tracking": 0, "tui_mouse": True}
+    get_canonical = server.handle_request(
+        {"id": "3", "method": "config.get", "params": {"key": "mouse"}}
+    )
+    assert get_canonical["result"]["value"] == "off"
+
+    cfg["display"] = {"mouse_tracking": None, "tui_mouse": False}
+    get_null = server.handle_request(
+        {"id": "4", "method": "config.get", "params": {"key": "mouse"}}
+    )
+    assert get_null["result"]["value"] == "on"
+
+
 def test_enable_gateway_prompts_sets_gateway_env(monkeypatch):
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)

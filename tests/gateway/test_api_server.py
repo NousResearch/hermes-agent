@@ -314,6 +314,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
+    app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -489,6 +490,46 @@ class TestModelsEndpoint:
                 headers={"Authorization": "Bearer sk-secret"},
             )
             assert resp.status == 200
+
+
+# ---------------------------------------------------------------------------
+# /v1/capabilities endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestCapabilitiesEndpoint:
+    @pytest.mark.asyncio
+    async def test_capabilities_advertises_plugin_safe_contract(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["object"] == "hermes.api_server.capabilities"
+            assert data["platform"] == "hermes-agent"
+            assert data["model"] == "hermes-agent"
+            assert data["auth"]["type"] == "bearer"
+            assert data["auth"]["required"] is False
+            assert data["features"]["chat_completions"] is True
+            assert data["features"]["run_status"] is True
+            assert data["features"]["run_events_sse"] is True
+            assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
+            assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
+
+    @pytest.mark.asyncio
+    async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 401
+
+            authed = await cli.get(
+                "/v1/capabilities",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert authed.status == 200
+            data = await authed.json()
+            assert data["auth"]["required"] is True
 
 
 # ---------------------------------------------------------------------------

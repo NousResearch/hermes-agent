@@ -263,6 +263,7 @@ AUTHOR_MAP = {
     "danielrpike9@gmail.com": "Bartok9",
     "skozyuk@cruxexperts.com": "CruxExperts",
     "154585401+LeonSGP43@users.noreply.github.com": "LeonSGP43",
+    "12250313+Kailigithub@users.noreply.github.com": "Kailigithub",
     "mgparkprint@gmail.com": "vlwkaos",
     "tranquil_flow@protonmail.com": "Tranquil-Flow",
     "LyleLengyel@gmail.com": "mcndjxlefnd",

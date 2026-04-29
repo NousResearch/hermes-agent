@@ -97,7 +97,8 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
     candidates = get_chrome_debug_candidates(system)
 
     if candidates:
-        return shlex.join([candidates[0], *_chrome_debug_args(port)])
+        argv = [candidates[0], *_chrome_debug_args(port)]
+        return subprocess.list2cmdline(argv) if system == "Windows" else shlex.join(argv)
 
     if system == "Darwin":
         data_dir = chrome_debug_data_dir()
@@ -109,8 +110,18 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
     return None
 
 
+def _detach_kwargs(system: str) -> dict:
+    if system != "Windows":
+        return {"start_new_session": True}
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+        subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+    )
+    return {"creationflags": flags} if flags else {}
+
+
 def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> bool:
-    candidates = get_chrome_debug_candidates(system or platform.system())
+    system = system or platform.system()
+    candidates = get_chrome_debug_candidates(system)
     if not candidates:
         return False
 
@@ -120,7 +131,7 @@ def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | 
             [candidates[0], *_chrome_debug_args(port)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            **_detach_kwargs(system),
         )
         return True
     except Exception:

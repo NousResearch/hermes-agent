@@ -115,7 +115,9 @@ export const opsCommands: SlashCommand[] = [
           ctx.guarded<BrowserManageResponse>(r => {
             // Without a session we can't subscribe to streamed
             // browser.progress events, so flush the bundled list.
-            if (!sid) r.messages?.forEach(message => ctx.transcript.sys(message))
+            if (!sid) {
+              r.messages?.forEach(message => ctx.transcript.sys(message))
+            }
 
             if (action === 'status') {
               return ctx.transcript.sys(

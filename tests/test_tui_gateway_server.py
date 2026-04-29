@@ -3111,6 +3111,69 @@ def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch)
     assert os.environ["BROWSER_CDP_URL"] == concrete
 
 
+def test_browser_manage_connect_local_devtools_ws_preserves_path(monkeypatch):
+    """Regression: ``ws://127.0.0.1:9222/devtools/browser/<id>`` is a real
+    connectable endpoint; default-local normalization must not strip the
+    ``/devtools/browser/...`` path or it breaks valid local CDP connects."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    concrete = "ws://127.0.0.1:9222/devtools/browser/abc123"
+
+    class _OkSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        with patch("socket.create_connection", return_value=_OkSocket()):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "browser.manage",
+                    "params": {"action": "connect", "url": concrete},
+                }
+            )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == concrete
+    assert os.environ["BROWSER_CDP_URL"] == concrete
+
+
+def test_browser_manage_connect_rejects_invalid_port(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect", "url": "http://localhost:abc"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4015
+    assert "invalid port" in resp["error"]["message"]
+    assert "BROWSER_CDP_URL" not in os.environ
+
+
+def test_browser_manage_connect_rejects_missing_host(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect", "url": "http://:9222"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4015
+    assert "missing host" in resp["error"]["message"]
+    assert "BROWSER_CDP_URL" not in os.environ
+
+
 def test_browser_manage_connect_concrete_ws_skips_http_probe(monkeypatch):
     """Regression for round-2 Copilot review: a hosted CDP endpoint
     (no HTTP discovery) must connect via TCP-only reachability check.

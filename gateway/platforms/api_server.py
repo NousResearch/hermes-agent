@@ -1744,7 +1744,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     entry_content = _normalize_multimodal_content(entry["content"])
                 except ValueError as exc:
                     return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
-                conversation_history.append({"role": str(entry["role"]), "content": entry_content})
+                msg = {"role": str(entry["role"]), "content": entry_content}
+                # Preserve tool_call_id for tool messages — required by strict providers
+                if entry.get("tool_call_id"):
+                    msg["tool_call_id"] = entry["tool_call_id"]
+                # Preserve tool_calls for assistant messages
+                if entry.get("tool_calls"):
+                    msg["tool_calls"] = entry["tool_calls"]
+                if entry.get("name"):
+                    msg["name"] = entry["name"]
+                conversation_history.append(msg)
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
@@ -2406,7 +2415,16 @@ class APIServerAdapter(BasePlatformAdapter):
                         _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
                         status=400,
                     )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+                msg = {"role": str(entry["role"]), "content": str(entry["content"])}
+                # Preserve tool_call_id for tool messages — required by strict providers
+                if entry.get("tool_call_id"):
+                    msg["tool_call_id"] = entry["tool_call_id"]
+                # Preserve tool_calls for assistant messages
+                if entry.get("tool_calls"):
+                    msg["tool_calls"] = entry["tool_calls"]
+                if entry.get("name"):
+                    msg["name"] = entry["name"]
+                conversation_history.append(msg)
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
@@ -2432,7 +2450,16 @@ class APIServerAdapter(BasePlatformAdapter):
                             part.get("text", "") for part in content
                             if isinstance(part, dict) and part.get("type") == "text"
                         )
-                    conversation_history.append({"role": msg["role"], "content": str(content)})
+                    msg_out = {"role": msg["role"], "content": str(content)}
+                    # Preserve tool_call_id for tool messages — required by strict providers
+                    if msg.get("tool_call_id"):
+                        msg_out["tool_call_id"] = msg["tool_call_id"]
+                    # Preserve tool_calls for assistant messages
+                    if msg.get("tool_calls"):
+                        msg_out["tool_calls"] = msg["tool_calls"]
+                    if msg.get("name"):
+                        msg_out["name"] = msg["name"]
+                    conversation_history.append(msg_out)
 
         session_id = body.get("session_id") or stored_session_id or run_id
         ephemeral_system_prompt = instructions

@@ -2995,6 +2995,44 @@ def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
     assert [evt for evt, _ in emitted if evt == "browser.progress"] == []
 
 
+def test_browser_manage_connect_handles_null_url(monkeypatch):
+    """Explicit ``{"url": null}`` (or empty string) must fall back to the
+    default loopback URL instead of raising a TypeError that gets swallowed
+    by the outer 5031 catch."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=True)
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": None},
+            }
+        )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+
+
+def test_browser_manage_connect_rejects_non_string_url(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect", "url": 9222},
+        }
+    )
+
+    assert resp["error"]["code"] == 4015
+    assert "must be a string" in resp["error"]["message"]
+    assert "BROWSER_CDP_URL" not in os.environ
+
+
 def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)

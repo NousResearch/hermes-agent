@@ -6569,6 +6569,14 @@ class HermesCLI:
             connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
             cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
             parsed_cdp = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
+            if parsed_cdp.scheme not in {"http", "https", "ws", "wss"}:
+                print()
+                print(
+                    f"   ⚠ Unsupported browser url scheme: {parsed_cdp.scheme or '(missing)'} "
+                    "(expected one of: http, https, ws, wss)"
+                )
+                print()
+                return
             try:
                 _port = parsed_cdp.port or (443 if parsed_cdp.scheme in {"https", "wss"} else 80)
             except ValueError:

@@ -4843,7 +4843,11 @@ def _browser_connect(rid, params: dict) -> dict:
     from tools.browser_tool import cleanup_all_browsers
     from urllib.parse import urlparse
 
-    url = params.get("url", DEFAULT_BROWSER_CDP_URL)
+    raw_url = params.get("url")
+    if raw_url is not None and not isinstance(raw_url, str):
+        return _err(rid, 4015, f"browser url must be a string, got {type(raw_url).__name__}")
+    url = (raw_url or "").strip() or DEFAULT_BROWSER_CDP_URL
+
     sid = params.get("session_id") or ""
     system = platform.system()
     messages: list[str] = []
@@ -4877,7 +4881,9 @@ def _browser_connect(rid, params: dict) -> dict:
         # ws[s]://.../devtools/browser/<id> endpoints (hosted CDP
         # providers) don't serve the HTTP discovery path; just check
         # TCP-level reachability and let browser_navigate handshake.
-        if parsed.scheme in {"ws", "wss"} and parsed.path.startswith("/devtools/browser/"):
+        if parsed.scheme in {"ws", "wss"} and parsed.path.startswith(
+            "/devtools/browser/"
+        ):
             import socket
 
             try:
@@ -4892,7 +4898,9 @@ def _browser_connect(rid, params: dict) -> dict:
             if not ok and _is_default_local_cdp(parsed):
                 from hermes_cli.browser_connect import try_launch_chrome_debug
 
-                announce("Chrome isn't running with remote debugging — attempting to launch...")
+                announce(
+                    "Chrome isn't running with remote debugging — attempting to launch..."
+                )
 
                 if try_launch_chrome_debug(port, system):
                     for _ in range(20):
@@ -4906,7 +4914,9 @@ def _browser_connect(rid, params: dict) -> dict:
                 else:
                     for line in _failure_messages(url, port, system)[1:]:
                         announce(line, level="error")
-                    return _ok(rid, {"connected": False, "url": url, "messages": messages})
+                    return _ok(
+                        rid, {"connected": False, "url": url, "messages": messages}
+                    )
             elif not ok:
                 return _err(rid, 5031, f"could not reach browser CDP at {url}")
             elif _is_default_local_cdp(parsed):

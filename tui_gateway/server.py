@@ -3130,7 +3130,15 @@ def _(rid, params: dict) -> dict:
         allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
         if nv not in allowed_dm:
             return _err(rid, 4002, f"unknown details_mode: {value}")
-        _write_config_key("display.details_mode", nv)
+        cfg = _load_cfg()
+        display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+        sections = display.get("sections") if isinstance(display.get("sections"), dict) else {}
+        display["details_mode"] = nv
+        for section in ("thinking", "tools", "subagents", "activity"):
+            sections[section] = nv
+        display["sections"] = sections
+        cfg["display"] = display
+        _save_cfg(cfg)
         return _ok(rid, {"key": key, "value": nv})
 
     if key.startswith("details_mode."):

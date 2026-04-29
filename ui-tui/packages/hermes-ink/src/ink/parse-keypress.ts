@@ -288,9 +288,14 @@ export function parseMultipleKeypresses(
     }
   }
 
-  // If flushing and still in paste mode, emit what we have
-  if (isFlush && inPaste && pasteBuffer) {
-    keys.push(createPasteKey(pasteBuffer))
+  // If a terminal drops the paste-end marker, the App watchdog flushes the
+  // partial paste and returns to normal input instead of swallowing all future
+  // keystrokes as paste content.
+  if (isFlush && inPaste) {
+    if (pasteBuffer) {
+      keys.push(createPasteKey(pasteBuffer))
+    }
+
     inPaste = false
     pasteBuffer = ''
   }

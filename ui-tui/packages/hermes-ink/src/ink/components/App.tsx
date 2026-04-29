@@ -1,4 +1,4 @@
-import React, { PureComponent, type ReactNode } from 'react'
+import { PureComponent, type ReactNode } from 'react'
 
 import { updateLastInteractionTime } from '../../bootstrap/state.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -11,13 +11,13 @@ import { InputEvent } from '../events/input-event.js'
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js'
 import {
   INITIAL_STATE,
+  parseMultipleKeypresses,
   type ParsedInput,
   type ParsedKey,
-  type ParsedMouse,
-  parseMultipleKeypresses
+  type ParsedMouse
 } from '../parse-keypress.js'
 import reconciler from '../reconciler.js'
-import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js'
+import { finishSelection, hasSelection, startSelection, type SelectionState } from '../selection.js'
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js'
 import { TerminalQuerier, xtversion } from '../terminal-querier.js'
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js'
@@ -316,8 +316,10 @@ export default class App extends PureComponent<Props, State> {
     // Clear the timer reference
     this.incompleteEscapeTimer = null
 
-    // Only proceed if we have incomplete sequences
-    if (!this.keyParseState.incomplete) {
+    // Only proceed if we have an incomplete escape sequence or an unterminated
+    // bracketed paste. Missing paste-end markers otherwise leave every later
+    // keystroke trapped in the paste buffer.
+    if (!this.keyParseState.incomplete && this.keyParseState.mode !== 'IN_PASTE') {
       return
     }
 
@@ -335,8 +337,8 @@ export default class App extends PureComponent<Props, State> {
       return
     }
 
-    // Process incomplete as a flush operation (input=null)
-    // This reuses all existing parsing logic
+    // Process incomplete/paste state as a flush operation (input=null).
+    // This reuses all existing parsing logic.
     this.processInput(null)
   }
 
@@ -355,8 +357,10 @@ export default class App extends PureComponent<Props, State> {
       reconciler.discreteUpdates(processKeysInBatch, this, keys, undefined, undefined)
     }
 
-    // If we have incomplete escape sequences, set a timer to flush them
-    if (this.keyParseState.incomplete) {
+    // If we have incomplete escape sequences or an unterminated paste, set a
+    // timer to flush/reset them. Paste starts are complete CSI sequences, so
+    // checking only `incomplete` would never arm the watchdog.
+    if (this.keyParseState.incomplete || this.keyParseState.mode === 'IN_PASTE') {
       // Cancel any existing timer first
       if (this.incompleteEscapeTimer) {
         clearTimeout(this.incompleteEscapeTimer)

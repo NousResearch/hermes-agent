@@ -3293,6 +3293,12 @@ def _setup_weixin():
         print_warning("  Direct messages disabled.")
 
     print()
+    print_info("  Note: QR login connects an iLink bot identity (e.g. ...@im.bot), not a")
+    print_info("  scriptable personal WeChat account. Ordinary WeChat groups typically cannot")
+    print_info("  invite an @im.bot identity, and iLink does not deliver ordinary-group events")
+    print_info("  to most bot accounts. The settings below only apply when iLink actually")
+    print_info("  delivers group events for your account type — otherwise DM remains the only")
+    print_info("  working channel regardless of this choice.")
     group_choices = [
         "Disable group chats (recommended)",
         "Allow all group chats",
@@ -3306,12 +3312,12 @@ def _setup_weixin():
     elif group_idx == 1:
         save_env_value("WEIXIN_GROUP_POLICY", "open")
         save_env_value("WEIXIN_GROUP_ALLOWED_USERS", "")
-        print_warning("  All group chats enabled.")
+        print_warning("  All group chats enabled (only takes effect if iLink delivers group events).")
     else:
-        allow_groups = prompt("  Allowed group chat IDs (comma-separated)", "", password=False).replace(" ", "")
+        allow_groups = prompt("  Allowed group chat IDs (comma-separated, not member user IDs)", "", password=False).replace(" ", "")
         save_env_value("WEIXIN_GROUP_POLICY", "allowlist")
         save_env_value("WEIXIN_GROUP_ALLOWED_USERS", allow_groups)
-        print_success("  Group allowlist saved.")
+        print_success("  Group allowlist saved (only takes effect if iLink delivers group events).")
 
     if user_id:
         print()

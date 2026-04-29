@@ -10357,6 +10357,7 @@ Examples:
             args.oneshot,
             model=getattr(args, "model", None),
             provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
         ))
 
     # Handle top-level --resume / --continue as shortcut to chat

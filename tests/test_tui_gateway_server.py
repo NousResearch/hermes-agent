@@ -74,7 +74,6 @@ def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
 
 def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"platform_toolsets": {"cli": ["memory"]}})
 
     import hermes_cli.config as config_mod
 

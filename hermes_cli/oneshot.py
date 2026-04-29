@@ -3,7 +3,8 @@
 Bypasses cli.py entirely.  No banner, no spinner, no session_id line,
 no stderr chatter.  Just the agent's final text to stdout.
 
-Toolsets = whatever the user has configured for "cli" in `hermes tools`.
+Toolsets = explicit --toolsets when provided, otherwise whatever the user has
+configured for "cli" in `hermes tools`.
 Rules / memory / AGENTS.md / preloaded skills = same as a normal chat turn.
 Approvals = auto-bypassed (HERMES_YOLO_MODE=1 is set for the call).
 Working directory = the user's CWD (AGENTS.md etc. resolve from there as usual).
@@ -28,10 +29,29 @@ from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
 
+def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
+    if not toolsets:
+        return None
+
+    raw_items = [toolsets] if isinstance(toolsets, str) else toolsets
+    if not isinstance(raw_items, (list, tuple)):
+        raw_items = [raw_items]
+
+    normalized: list[str] = []
+    for item in raw_items:
+        if isinstance(item, str):
+            normalized.extend(part.strip() for part in item.split(","))
+        else:
+            normalized.append(str(item).strip())
+
+    return [item for item in normalized if item] or None
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
+    toolsets: object = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -42,6 +62,7 @@ def run_oneshot(
         provider: Optional provider override. Falls back to
             HERMES_INFERENCE_PROVIDER env var, then config.yaml's model.provider,
             then "auto".
+        toolsets: Optional comma-separated string or iterable of toolsets.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -77,7 +98,7 @@ def run_oneshot(
 
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
-            response = _run_agent(prompt, model=model, provider=provider)
+            response = _run_agent(prompt, model=model, provider=provider, toolsets=toolsets)
     finally:
         try:
             devnull.close()
@@ -96,6 +117,7 @@ def _run_agent(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
+    toolsets: object = None,
 ) -> str:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns the final response string."""
@@ -168,9 +190,12 @@ def _run_agent(
         explicit_base_url=explicit_base_url_from_alias,
     )
 
-    # Pull in whatever toolsets the user has enabled for "cli".
-    # sorted() gives stable ordering; set→list for AIAgent's signature.
-    toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
+    # Pull in explicit toolsets when provided; otherwise use whatever the user
+    # has enabled for "cli". sorted() gives stable ordering for config-derived
+    # sets; explicit values preserve user order.
+    toolsets_list = _normalize_toolsets(toolsets)
+    if toolsets_list is None:
+        toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),

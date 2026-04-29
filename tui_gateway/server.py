@@ -3105,14 +3105,34 @@ def _(rid, params: dict) -> dict:
 
             arg = str(value or "").strip().lower()
             if arg in ("show", "on"):
-                _write_config_key("display.show_reasoning", True)
-                _write_config_key("display.sections.thinking", "expanded")
+                cfg = _load_cfg()
+                display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                sections = (
+                    display.get("sections")
+                    if isinstance(display.get("sections"), dict)
+                    else {}
+                )
+                display["show_reasoning"] = True
+                sections["thinking"] = "expanded"
+                display["sections"] = sections
+                cfg["display"] = display
+                _save_cfg(cfg)
                 if session:
                     session["show_reasoning"] = True
                 return _ok(rid, {"key": key, "value": "show"})
             if arg in ("hide", "off"):
-                _write_config_key("display.show_reasoning", False)
-                _write_config_key("display.sections.thinking", "hidden")
+                cfg = _load_cfg()
+                display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                sections = (
+                    display.get("sections")
+                    if isinstance(display.get("sections"), dict)
+                    else {}
+                )
+                display["show_reasoning"] = False
+                sections["thinking"] = "hidden"
+                display["sections"] = sections
+                cfg["display"] = display
+                _save_cfg(cfg)
                 if session:
                     session["show_reasoning"] = False
                 return _ok(rid, {"key": key, "value": "hide"})

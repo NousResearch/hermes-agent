@@ -6630,8 +6630,12 @@ class HermesCLI:
                 else:
                     print("   ⚠ Could not auto-launch Chrome")
                     sys_name = _plat.system()
-                    print(f"     Launch Chrome manually:")
-                    print(f"     {manual_chrome_debug_command(_port, sys_name)}")
+                    chrome_cmd = manual_chrome_debug_command(_port, sys_name)
+                    if chrome_cmd:
+                        print(f"     Launch Chrome manually:")
+                        print(f"     {chrome_cmd}")
+                    else:
+                        print("     No Chrome/Chromium executable found in this environment")
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
 

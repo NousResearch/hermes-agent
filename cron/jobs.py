@@ -313,9 +313,10 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     elif schedule["kind"] == "cron":
         if not HAS_CRONITER:
             logger.warning(
-                "Cannot compute next run for cron schedule %r: 'croniter' "
-                "is not installed. Install the 'cron' extra (pip install "
-                "'hermes-agent[cron]') to re-enable recurring cron jobs.",
+                "Cannot compute next run for cron schedule %r: 'croniter' is "
+                "not installed. croniter is a core dependency as of v0.9.x; "
+                "reinstall hermes-agent or run 'pip install croniter' in your "
+                "runtime env.",
                 schedule.get("expr"),
             )
             return None

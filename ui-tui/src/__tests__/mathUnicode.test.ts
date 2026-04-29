@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { texToUnicode } from '../lib/mathUnicode.js'
+import { BOX_CLOSE, BOX_OPEN, BOX_RE, texToUnicode } from '../lib/mathUnicode.js'
+
+const stripBox = (s: string) => s.replace(BOX_RE, '$1')
 
 describe('texToUnicode — symbols', () => {
   it('substitutes lowercase Greek', () => {
@@ -115,6 +117,100 @@ describe('texToUnicode — fractions', () => {
 
   it('handles nested fractions', () => {
     expect(texToUnicode('\\frac{1}{\\frac{1}{x}}')).toBe('1/(1/x)')
+  })
+
+  it('handles braces inside numerator / denominator (regression: regex \\frac couldn\'t)', () => {
+    // The regex-only `\frac` matcher used `[^{}]*` for each arg, which
+    // failed the moment a numerator contained its own braces (here the
+    // `{p-1}` from a superscript). The balanced-brace parser handles it.
+    expect(texToUnicode('\\frac{|t|^{p-1}|P(t)|^p}{(p-1)!}')).toBe('(|t|ᵖ⁻¹|P(t)|ᵖ)/((p-1)!)')
+  })
+
+  it('preserves \\frac when arguments are malformed', () => {
+    expect(texToUnicode('\\frac{a}')).toBe('\\frac{a}')
+    expect(texToUnicode('\\fraction{a}{b}')).toBe('\\fraction{a}{b}')
+  })
+})
+
+describe('texToUnicode — typography no-ops', () => {
+  it('strips \\displaystyle / \\textstyle / \\scriptstyle / \\scriptscriptstyle', () => {
+    expect(texToUnicode('\\displaystyle\\sum_{i=1}^n x_i')).toBe('∑ᵢ₌₁ⁿ xᵢ')
+    expect(texToUnicode('f(x) = \\displaystyle \\frac{1}{2}')).toBe('f(x) = 1/2')
+    expect(texToUnicode('\\textstyle x + y')).toBe('x + y')
+  })
+
+  it('strips \\limits / \\nolimits which only affect bound positioning', () => {
+    expect(texToUnicode('\\sum\\limits_{k=1}^n a_k')).toBe('∑ₖ₌₁ⁿ aₖ')
+    expect(texToUnicode('\\int\\nolimits_0^1 f(x) dx')).toBe('∫₀¹ f(x) dx')
+  })
+
+  it('does not eat letter-continuation commands like \\limit_inf', () => {
+    // The `(?![A-Za-z])` lookahead protects hypothetical commands that
+    // start with `\limit` / `\display` / etc. The bare names are stripped
+    // but anything longer is preserved verbatim.
+    expect(texToUnicode('\\limitinf x')).toBe('\\limitinf x')
+  })
+})
+
+describe('texToUnicode — sizing wrappers', () => {
+  it('strips \\big / \\Big / \\bigg / \\Bigg before delimiters', () => {
+    expect(texToUnicode('\\bigl[ x \\bigr]')).toBe('[ x ]')
+    expect(texToUnicode('\\Big( y \\Big)')).toBe('( y )')
+    expect(texToUnicode('\\bigg| z \\bigg|')).toBe('| z |')
+    expect(texToUnicode('\\Biggl\\{ a \\Biggr\\}')).toBe('{ a }')
+  })
+
+  it('does not eat \\bigtriangleup or other letter-continuations', () => {
+    expect(texToUnicode('A \\bigtriangleup B')).toBe('A \\bigtriangleup B')
+  })
+})
+
+describe('texToUnicode — modular arithmetic and tags', () => {
+  it('renders \\pmod{p} as " (mod p)"', () => {
+    expect(texToUnicode('a \\equiv b \\pmod{p}')).toBe('a ≡ b (mod p)')
+  })
+
+  it('renders \\bmod / \\mod inline', () => {
+    expect(texToUnicode('a \\bmod n')).toBe('a mod n')
+  })
+
+  it('collapses \\tag{n} to " (n)"', () => {
+    expect(texToUnicode('x = y \\tag{24}')).toBe('x = y (24)')
+  })
+})
+
+describe('texToUnicode — newly added symbols', () => {
+  it('renders \\nmid, \\blacksquare, \\qed', () => {
+    expect(texToUnicode('p \\nmid q')).toBe('p ∤ q')
+    expect(texToUnicode('Therefore \\blacksquare')).toBe('Therefore ■')
+    expect(texToUnicode('done \\qed')).toBe('done ∎')
+  })
+})
+
+describe('texToUnicode — \\boxed / \\fbox', () => {
+  // `\boxed` produces non-printable U+0001 / U+0002 sentinels around its
+  // content so the markdown renderer can apply highlight styling. These
+  // tests assert both the sentinel form and the human-readable
+  // strip-fallback (BOX_RE).
+  it('wraps simple boxed content in BOX_OPEN/BOX_CLOSE sentinels', () => {
+    expect(texToUnicode('\\boxed{x = 0}')).toBe(`${BOX_OPEN}x = 0${BOX_CLOSE}`)
+    expect(stripBox(texToUnicode('\\boxed{x = 0}'))).toBe('x = 0')
+    expect(stripBox(texToUnicode('\\fbox{answer}'))).toBe('answer')
+  })
+
+  it('handles boxed expressions with nested braces (regression: regex couldn\'t)', () => {
+    // A `[^{}]*` regex would stop at the first `{` inside the body. The
+    // balanced-brace parser walks past it.
+    expect(stripBox(texToUnicode('\\boxed{x^{n+1}}'))).toBe('xⁿ⁺¹')
+    expect(stripBox(texToUnicode('\\boxed{\\frac{a}{b}}'))).toBe('a/b')
+  })
+
+  it('handles real-world boxed final answer', () => {
+    expect(stripBox(texToUnicode('\\boxed{J = -\\sum_{k=0}^n a_k F(k)}'))).toBe('J = -∑ₖ₌₀ⁿ aₖ F(k)')
+  })
+
+  it('preserves \\boxed without a brace argument', () => {
+    expect(texToUnicode('\\boxed something')).toBe('\\boxed something')
   })
 })
 

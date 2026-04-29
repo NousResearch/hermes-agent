@@ -737,7 +737,9 @@ class SignalAdapter(BasePlatformAdapter):
         Positions are measured in **UTF-16 code units** (not Python code
         points) because that's what the Signal protocol uses.
 
-        Supported styles: BOLD, ITALIC, STRIKETHROUGH, MONOSPACE, SPOILER.
+        Supported styles: BOLD, ITALIC, STRIKETHROUGH, MONOSPACE.
+        (Signal's SPOILER style is not currently mapped — no standard
+        markdown syntax for it; would need ``||spoiler||`` parsing.)
 
         Returns ``(plain_text, styles_list)`` where *styles_list* may be
         empty if there's nothing to format.

@@ -411,6 +411,32 @@ Set `HERMES_QWEN_BASE_URL` only if the portal endpoint relocates (default: `http
 `qwen-oauth` uses the consumer-facing Qwen Portal with OAuth login — ideal for individual users. The `alibaba` provider uses DashScope's enterprise API with a `DASHSCOPE_API_KEY` — ideal for programmatic / production workloads. Both route to Qwen-family models but live at different endpoints.
 :::
 
+### MiniMax (OAuth)
+
+MiniMax-M2.7 via browser OAuth login — no API key needed. Pick **MiniMax (OAuth)** in `hermes model`, sign in through the browser, and Hermes persists the access + refresh tokens. Uses the Anthropic Messages-compatible endpoint (`/anthropic`) under the hood.
+
+```bash
+hermes model
+# → pick "MiniMax (OAuth)"
+# → browser opens; sign in with your MiniMax account (global or CN region)
+# → confirm — credentials are saved to ~/.hermes/auth.json
+
+hermes chat   # uses api.minimax.io/anthropic endpoint
+```
+
+Or configure `config.yaml`:
+```yaml
+model:
+  provider: "minimax-oauth"
+  default: "MiniMax-M2.7"
+```
+
+Supported models: `MiniMax-M2.7` (main) and `MiniMax-M2.7-highspeed` (wired as the default auxiliary model). The OAuth path ignores `MINIMAX_API_KEY` / `MINIMAX_BASE_URL`.
+
+:::tip MiniMax OAuth vs API key
+`minimax-oauth` uses MiniMax's consumer-facing portal with OAuth login — no billing setup required. The `minimax` and `minimax-cn` providers use `MINIMAX_API_KEY` / `MINIMAX_CN_API_KEY` — for programmatic access. See the [MiniMax OAuth guide](/docs/guides/minimax-oauth) for a full walkthrough.
+:::
+
 ### NVIDIA NIM
 
 Nemotron and other open source models via [build.nvidia.com](https://build.nvidia.com) (free API key) or a local NIM endpoint.
@@ -1194,7 +1220,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

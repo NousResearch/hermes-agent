@@ -159,14 +159,21 @@ def show_status(args):
     print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
 
     try:
-        from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status, get_qwen_auth_status
+        from hermes_cli.auth import (
+            get_nous_auth_status,
+            get_codex_auth_status,
+            get_qwen_auth_status,
+            get_minimax_oauth_auth_status,
+        )
         nous_status = get_nous_auth_status()
         codex_status = get_codex_auth_status()
         qwen_status = get_qwen_auth_status()
+        minimax_status = get_minimax_oauth_auth_status()
     except Exception:
         nous_status = {}
         codex_status = {}
         qwen_status = {}
+        minimax_status = {}
 
     nous_logged_in = bool(nous_status.get("logged_in"))
     nous_error = nous_status.get("error")
@@ -218,6 +225,20 @@ def show_status(args):
         print(f"    Access exp: {datetime.fromtimestamp(int(qwen_exp) / 1000, tz=timezone.utc).isoformat()}")
     if qwen_status.get("error") and not qwen_logged_in:
         print(f"    Error:      {qwen_status.get('error')}")
+
+    minimax_logged_in = bool(minimax_status.get("logged_in"))
+    print(
+        f"  {'MiniMax OAuth':<12}  {check_mark(minimax_logged_in)} "
+        f"{'logged in' if minimax_logged_in else 'not logged in (run: hermes auth add minimax-oauth)'}"
+    )
+    minimax_region = minimax_status.get("region")
+    if minimax_logged_in and minimax_region:
+        print(f"    Region:     {minimax_region}")
+    minimax_exp = minimax_status.get("expires_at")
+    if minimax_exp:
+        print(f"    Access exp: {minimax_exp}")
+    if minimax_status.get("error") and not minimax_logged_in:
+        print(f"    Error:      {minimax_status.get('error')}")
 
     # =========================================================================
     # Nous Subscription Features

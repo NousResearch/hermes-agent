@@ -106,6 +106,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.tool_failure_tracker import ToolFailureTracker
+from agent.session_lessons import extract_lessons_from_sessions, format_lessons_for_prompt
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
@@ -4647,6 +4648,18 @@ class AIAgent:
                     prompt_parts.append(_ext_mem_block)
             except Exception:
                 pass
+        # Auto-inject lessons from recent session failures
+        if self._session_db:
+            try:
+                _lessons = extract_lessons_from_sessions(
+                    self._session_db,
+                    current_session_id=self.session_id,
+                )
+                _lessons_block = format_lessons_for_prompt(_lessons)
+                if _lessons_block:
+                    prompt_parts.append(_lessons_block)
+            except Exception as _lesson_err:
+                logger.debug("Session lessons extraction failed: %s", _lesson_err)
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:

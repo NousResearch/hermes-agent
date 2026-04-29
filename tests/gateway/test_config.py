@@ -456,6 +456,15 @@ class TestHomeChannelEnvOverrides:
                 ("C123", "Ops"),
             ),
             (
+                Platform.WHATSAPP,
+                PlatformConfig(enabled=True),
+                {
+                    "WHATSAPP_HOME_CHANNEL": "1234567890@lid",
+                    "WHATSAPP_HOME_CHANNEL_NAME": "Owner DM",
+                },
+                ("1234567890@lid", "Owner DM"),
+            ),
+            (
                 Platform.SIGNAL,
                 PlatformConfig(
                     enabled=True,

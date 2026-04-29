@@ -638,7 +638,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
             if not skills_dir.exists():
                 continue
             for skill_md in skills_dir.rglob("SKILL.md"):
-                if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+                if any(part in ('.git', '.github', '.hub', '.archive') for part in skill_md.parts):
                     continue
                 name = skill_md.parent.name.lower().replace("_", "-")
                 if name == normalized and name in disabled:

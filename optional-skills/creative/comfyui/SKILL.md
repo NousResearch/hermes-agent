@@ -1,7 +1,7 @@
 ---
 name: comfyui
 description: "Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection. Uses the official comfy-cli for lifecycle and direct REST API for execution."
-version: 4.0.0
+version: 4.1.0
 requires: ComfyUI (local or Comfy Cloud); comfy-cli (pip install comfy-cli)
 author: [kshitijk4poor, alt-glitch]
 license: MIT
@@ -9,7 +9,7 @@ platforms: [macos, linux, windows]
 prerequisites:
   commands: ["python3"]
 setup:
-  help: "pip install comfy-cli && comfy install. Cloud: get API key at platform.comfy.org"
+  help: "Run scripts/hardware_check.py FIRST to decide local vs Comfy Cloud; then scripts/comfyui_setup.sh auto-installs locally (or use Cloud API key for platform.comfy.org)."
 metadata:
   hermes:
     tags:
@@ -37,7 +37,8 @@ setup/management and direct REST API calls for workflow execution.
 
 **Scripts in this skill:**
 
-- `scripts/comfyui_setup.sh` — full setup automation (install + launch + verify)
+- `scripts/hardware_check.py` — detect GPU/VRAM/Apple Silicon, decide local vs Comfy Cloud
+- `scripts/comfyui_setup.sh` — full setup automation (hardware check + install + launch + verify)
 - `scripts/extract_schema.py` — reads workflow JSON, outputs which parameters are controllable
 - `scripts/run_workflow.py` — injects user args, submits workflow, monitors progress, downloads outputs
 - `scripts/check_deps.py` — checks if required custom nodes and models are installed
@@ -81,9 +82,13 @@ param injection, execution monitoring, and output download that the CLI doesn't 
 # What's available?
 command -v comfy >/dev/null 2>&1 && echo "comfy-cli: installed"
 curl -s http://127.0.0.1:8188/system_stats 2>/dev/null && echo "server: running"
+
+# Can this machine actually run ComfyUI locally? (GPU/VRAM/Apple Silicon check)
+python3 scripts/hardware_check.py
 ```
 
-If nothing is installed, go to **Setup & Onboarding** below.
+If nothing is installed, go to **Setup & Onboarding** below — but always run the
+hardware check first, before picking an install path.
 If the server is already running, skip to **Core Workflow**.
 
 ## Core Workflow
@@ -175,22 +180,69 @@ Show images to the user via `vision_analyze` or return the file path directly.
 ## Setup & Onboarding
 
 When a user asks to set up ComfyUI, walk them through the path that fits their situation.
-Ask what hardware they have and whether they want local or cloud.
+**Do not assume they can run ComfyUI locally** — run the hardware check first, then use
+its verdict to pick the right install path.
 
 **Official docs:** https://docs.comfy.org/installation
 **CLI docs:** https://docs.comfy.org/comfy-cli/getting-started
 **Cloud docs:** https://docs.comfy.org/get_started/cloud
 
+### Step 0: Check If This Machine Can Run ComfyUI Locally (MANDATORY)
+
+Before recommending an install path, run:
+
+```bash
+python3 scripts/hardware_check.py --json
+```
+
+It detects OS, GPU (NVIDIA CUDA / AMD ROCm / Apple Silicon / Intel Arc), VRAM,
+and unified/system RAM, then returns a verdict plus a suggested `comfy-cli` flag:
+
+| Verdict    | Meaning                                                   | Action                                          |
+|------------|-----------------------------------------------------------|-------------------------------------------------|
+| `ok`       | ≥8 GB VRAM (discrete) OR ≥32 GB unified (Apple Silicon)   | Local install — use `comfy_cli_flag` from report |
+| `marginal` | SD1.5 works; SDXL tight; Flux/video unlikely              | Local OK for light workflows, else **Path A (Cloud)** |
+| `cloud`    | No usable GPU, <6 GB VRAM, <16 GB Apple unified, Intel Mac | **Go straight to Path A (Comfy Cloud)** — do NOT install locally |
+
+Hardware thresholds the skill enforces:
+
+- **Discrete GPU minimum:** 6 GB VRAM. Below that, most modern models won't load.
+- **Apple Silicon:** M1 or newer (ARM64). Intel Macs have no MPS backend — Cloud only.
+- **Apple Silicon memory:** 16 GB unified minimum. 8 GB M1/M2 will swap/OOM on SDXL/Flux.
+- **No accelerator at all:** CPU-only is listed as a comfy-cli option but a single SDXL
+  image takes 10+ minutes — treat it as unusable and route to Cloud.
+
+The report's `comfy_cli_flag` field gives you the exact flag for Step 1 below:
+`--nvidia`, `--amd`, or `--m-series`. For Intel Arc, use Path E (manual install).
+For `verdict: cloud`, skip to Path A.
+
+Surface the `notes` array verbatim to the user so they understand why a
+particular path was recommended.
+
 ### Choosing an Installation Path
+
+Use the hardware check result first. The table below is a fallback for when the user
+has already told you their hardware or you need to narrow down between multiple
+viable paths:
 
 | Situation | Recommended Path |
 |-----------|-----------------|
-| No GPU / just want to try it | **Comfy Cloud** (zero setup) |
-| Windows + NVIDIA GPU + non-technical | **ComfyUI Desktop** (one-click installer) |
-| Windows + NVIDIA GPU + technical | **Portable build** or **comfy-cli** |
-| Linux + any GPU | **comfy-cli** (easiest) or manual install |
-| macOS + Apple Silicon | **ComfyUI Desktop** (macOS) or **comfy-cli** |
-| Headless / server / CI | **comfy-cli** |
+| `verdict: cloud` from hardware check | **Path A: Comfy Cloud** |
+| No GPU / just want to try it | **Path A: Comfy Cloud** (zero setup) |
+| Windows + NVIDIA GPU + non-technical | **Path B: ComfyUI Desktop** (one-click installer) |
+| Windows + NVIDIA GPU + technical | **Path C: Portable** or **Path D: comfy-cli** |
+| Linux + any GPU | **Path D: comfy-cli** (easiest) or Path E manual |
+| macOS + Apple Silicon | **Path B: ComfyUI Desktop** or **Path D: comfy-cli** |
+| Headless / server / CI | **Path D: comfy-cli** |
+
+For the fully automated path (hardware check → install → launch), just run:
+
+```bash
+bash scripts/comfyui_setup.sh
+```
+
+It runs `hardware_check.py` internally, refuses to install locally when the verdict
+is `cloud`, picks the right `comfy-cli` flag otherwise, then installs and launches.
 
 ---
 
@@ -559,6 +611,7 @@ curl -s http://127.0.0.1:8188/system_stats | python3 -m json.tool
 
 ## Verification Checklist
 
+- [ ] `hardware_check.py` verdict is `ok` OR the user explicitly chose Comfy Cloud
 - [ ] `comfy` available on PATH (or `uvx --from comfy-cli comfy --help` works)
 - [ ] `curl http://127.0.0.1:8188/system_stats` returns JSON
 - [ ] `comfy model list` shows at least one checkpoint

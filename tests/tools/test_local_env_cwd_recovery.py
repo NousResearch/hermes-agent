@@ -43,25 +43,53 @@ class TestResolveSafeCwd:
         monkeypatch.setattr(os.path, "isdir", lambda p: False)
         assert _resolve_safe_cwd("/no/such/dir") == tempfile.gettempdir()
 
+    def test_returns_root_when_only_root_exists(self, monkeypatch):
+        """If every ancestor except the filesystem root is gone, the root
+        itself is still a valid recovery target — don't skip it just because
+        ``os.path.dirname('/') == '/'`` is the loop's exit condition."""
+        sep = os.path.sep
+        monkeypatch.setattr(os.path, "isdir", lambda p: p == sep)
+        assert _resolve_safe_cwd("/no/such/deep/dir") == sep
+
 
 def _fake_interrupt():
     return threading.Event()
 
 
-def _make_fake_popen(captured: dict):
+def _make_fake_popen(captured: dict, fds: list):
+    """Build a fake ``Popen`` whose ``stdout`` exposes a real OS file
+    descriptor so ``BaseEnvironment._wait_for_process`` can call
+    ``select.select([fd], ...)`` and ``os.read(fd, ...)`` against it without
+    tripping ``TypeError: fileno() returned a non-integer`` from a MagicMock
+    ``fileno()`` (or worse, accidentally reading from the test runner's own
+    stdout).
+
+    The pipe's write end is closed immediately so the drain loop sees EOF on
+    the first iteration.  Every fd handed out is appended to ``fds`` so the
+    caller can clean up after the test.
+    """
     def fake_popen(cmd, **kwargs):
         captured["cwd"] = kwargs.get("cwd")
         captured["env"] = kwargs.get("env", {})
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)
+        stdout = os.fdopen(read_fd, "rb", buffering=0)
+        fds.append(stdout)
         proc = MagicMock()
         proc.poll.return_value = 0
         proc.returncode = 0
-        proc.stdout = MagicMock(
-            __iter__=lambda s: iter([]),
-            __next__=lambda s: (_ for _ in ()).throw(StopIteration),
-        )
+        proc.stdout = stdout
         proc.stdin = MagicMock()
         return proc
     return fake_popen
+
+
+def _close_fds(fds):
+    for f in fds:
+        try:
+            f.close()
+        except Exception:
+            pass
 
 
 class TestRunBashCwdRecovery:
@@ -82,11 +110,15 @@ class TestRunBashCwdRecovery:
         assert env.cwd == str(wedged) and not os.path.isdir(env.cwd)
 
         captured = {}
-        with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
-             patch("subprocess.Popen", side_effect=_make_fake_popen(captured)), \
-             patch("tools.terminal_tool._interrupt_event", _fake_interrupt()), \
-             caplog.at_level("WARNING", logger="tools.environments.local"):
-            env.execute("echo hello")
+        fds: list = []
+        try:
+            with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
+                 patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
+                 patch("tools.terminal_tool._interrupt_event", _fake_interrupt()), \
+                 caplog.at_level("WARNING", logger="tools.environments.local"):
+                env.execute("echo hello")
+        finally:
+            _close_fds(fds)
 
         # Popen must have been handed a real, existing directory.
         assert captured["cwd"] == str(tmp_path)
@@ -103,11 +135,15 @@ class TestRunBashCwdRecovery:
             env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
 
         captured = {}
-        with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
-             patch("subprocess.Popen", side_effect=_make_fake_popen(captured)), \
-             patch("tools.terminal_tool._interrupt_event", _fake_interrupt()), \
-             caplog.at_level("WARNING", logger="tools.environments.local"):
-            env.execute("echo hello")
+        fds: list = []
+        try:
+            with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
+                 patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
+                 patch("tools.terminal_tool._interrupt_event", _fake_interrupt()), \
+                 caplog.at_level("WARNING", logger="tools.environments.local"):
+                env.execute("echo hello")
+        finally:
+            _close_fds(fds)
 
         assert captured["cwd"] == str(tmp_path)
         assert env.cwd == str(tmp_path)

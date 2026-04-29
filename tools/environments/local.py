@@ -31,10 +31,15 @@ def _resolve_safe_cwd(cwd: str) -> str:
     if cwd and os.path.isdir(cwd):
         return cwd
     parent = os.path.dirname(cwd) if cwd else ""
-    while parent and parent != os.path.dirname(parent):
+    while parent:
         if os.path.isdir(parent):
             return parent
-        parent = os.path.dirname(parent)
+        next_parent = os.path.dirname(parent)
+        if next_parent == parent:
+            # Reached the filesystem root and it doesn't exist either —
+            # genuinely nothing to fall back to except the temp dir.
+            break
+        parent = next_parent
     return tempfile.gettempdir()
 
 

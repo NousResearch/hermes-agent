@@ -702,6 +702,11 @@ class WeComAdapter(BasePlatformAdapter):
                     refs.append(("file", appmsg["file"]))
                 elif isinstance(appmsg.get("image"), dict):
                     refs.append(("image", appmsg["image"]))
+            # Handle pic_url from WeCom AI Bot image messages
+            pic_url = str(body.get("pic_url") or "").strip()
+            if pic_url:
+                pic_media = {"url": pic_url, "aeskey": str(body.get("pic_aeskey") or body.get("aeskey") or "")}
+                refs.append(("image", pic_media))
 
         quote = body.get("quote") if isinstance(body.get("quote"), dict) else {}
         quote_type = str(quote.get("msgtype") or "").lower()
@@ -1004,13 +1009,29 @@ class WeComAdapter(BasePlatformAdapter):
             raise RuntimeError(f"{operation} failed: {error}")
 
     @staticmethod
+    def _decode_wecom_aes_key(aes_key: str) -> bytes:
+        """Decode WeCom AES key (43-char base64 without padding -> 32 bytes)."""
+        payload = str(aes_key or "").strip()
+        if not payload:
+            raise ValueError("aes_key is empty")
+        # Try hex first (64-char hex string from aibot websocket)
+        if len(payload) == 64:
+            try:
+                return bytes.fromhex(payload)
+            except ValueError:
+                pass
+        # WeCom encoding_aeskey is 43 chars, missing the trailing '=' padding
+        padded = payload + "=" * (4 - len(payload) % 4) if len(payload) % 4 else payload
+        return base64.b64decode(padded)
+
+    @staticmethod
     def _decrypt_file_bytes(encrypted_data: bytes, aes_key: str) -> bytes:
         if not encrypted_data:
             raise ValueError("encrypted_data is empty")
         if not aes_key:
             raise ValueError("aes_key is required")
 
-        key = base64.b64decode(aes_key)
+        key = WeComAdapter._decode_wecom_aes_key(aes_key)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
 

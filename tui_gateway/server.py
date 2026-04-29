@@ -2433,13 +2433,19 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    with session["history_lock"]:
+        if session.get("running"):
+            return _err(rid, 4009, "session busy")
+        session["running"] = True
 
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
         err = _wait_agent(session, rid)
         if err:
-            session.get("transport", current_transport() or _stdio_transport).write(err)
+            _emit("error", sid, {"message": err.get("error", {}).get("message", "agent initialization failed")})
+            with session["history_lock"]:
+                session["running"] = False
             return
         _run_prompt_submit(rid, sid, session, text)
 
@@ -2449,10 +2455,6 @@ def _(rid, params: dict) -> dict:
 
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     with session["history_lock"]:
-        if session.get("running"):
-            _emit("error", sid, {"message": "session busy"})
-            return
-        session["running"] = True
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))

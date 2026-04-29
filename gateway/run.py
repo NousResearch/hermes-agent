@@ -1185,6 +1185,50 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
+    def _find_approval_session_key(
+        self, source: SessionSource, session_key: str
+    ) -> str:
+        """Find the session key with pending approvals.
+
+        For DMs, returns the session key as-is (DMs don't have the
+        cross-user issue).
+
+        For group chats, the approval queue may be registered under any
+        user's session key in the same group.  Search across all
+        ``_gateway_queues`` entries that share the same platform + chat_type
+        + chat_id (the ``agent:main:{platform}:{chat_type}:{chat_id}`` prefix),
+        and return the one that has pending approvals.  Falls back to the
+        caller's own session_key if no cross-user match is found.
+        """
+        from tools.approval import _gateway_queues, _lock
+
+        # DM — no cross-user lookup needed
+        if source.chat_type != "group":
+            return session_key
+
+        # Build the group prefix: agent:main:{platform}:{chat_type}:{chat_id}
+        parts = session_key.split(":")
+        # Group session key format:
+        #   agent:main:{platform}:group:{chat_id}:{thread_id?}:{user_id?}
+        # We need the prefix through chat_id (index 0-4, possibly 5 for thread).
+        # Find the group part (index 3) and extract chat_id (index 4).
+        if len(parts) < 5 or parts[3] != "group":
+            return session_key
+
+        group_prefix = ":".join(parts[:5])  # agent:main:{platform}:group:{chat_id}
+
+        with _lock:
+            # First check if the caller's own session has pending approvals
+            if session_key in _gateway_queues and _gateway_queues[session_key]:
+                return session_key
+
+            # Search other users' sessions in the same group
+            for sk in _gateway_queues:
+                if sk.startswith(group_prefix + ":") and _gateway_queues[sk]:
+                    return sk
+
+        return session_key
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -3687,7 +3731,19 @@ class GatewayRunner:
                 _update_prompts.pop(_quick_key, None)
                 label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
                 return f"✓ Sent `{label}` to the update process."
-            # Recognized slash command during a pending update prompt:
+
+        # /approve and /deny must be intercepted early — before the
+        # _running_agents check.  In group chats, the agent may be running
+        # under another user's session key, so the per-user _quick_key
+        # lookup would miss it and treat /approve as a regular
+        # message that interrupts the agent.  Handle it here unconditionally.
+        _early_cmd = event.get_command()
+        if _early_cmd in ("approve", "deny"):
+            if _early_cmd == "approve":
+                return await self._handle_approve_command(event)
+            return await self._handle_deny_command(event)
+
+        # Recognized slash command during a pending update prompt:
             # unblock the detached update subprocess by writing a blank
             # response so ``_gateway_prompt`` returns the prompt's default
             # (typically a safe "n" / skip) and exits cleanly instead of
@@ -8182,6 +8238,10 @@ class GatewayRunner:
         execute_code).  ``/approve`` resolves the oldest pending command;
         ``/approve all`` resolves every pending command at once.
 
+        In group chats, automatically searches across all users' pending
+        approvals in the same group — so any group member can approve a
+        command triggered by another member.
+
         Usage:
             /approve              — approve oldest pending command once
             /approve all          — approve ALL pending commands at once
@@ -8197,9 +8257,16 @@ class GatewayRunner:
             resolve_gateway_approval, has_blocking_approval,
         )
 
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
+        # In group chats, find the matching session_key that has pending
+        # approvals — any group member can approve commands triggered by
+        # another member, since approval notifications are sent to the group.
+        target_session_key = self._find_approval_session_key(
+            source, session_key
+        )
+
+        if not has_blocking_approval(target_session_key):
+            if target_session_key in self._pending_approvals:
+                self._pending_approvals.pop(target_session_key)
                 return "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
             return "No pending command to approve."
 
@@ -8218,7 +8285,9 @@ class GatewayRunner:
             choice = "once"
             scope_msg = ""
 
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        count = resolve_gateway_approval(
+            target_session_key, choice, resolve_all=resolve_all
+        )
         if not count:
             return "No pending command to approve."
 
@@ -8238,6 +8307,10 @@ class GatewayRunner:
         a definitive BLOCKED message, same as the CLI deny flow.
 
         ``/deny`` denies the oldest; ``/deny all`` denies everything.
+
+        In group chats, automatically searches across all users' pending
+        approvals in the same group — so any group member can deny a
+        command triggered by another member.
         """
         source = event.source
         session_key = self._session_key_for_source(source)
@@ -8246,16 +8319,24 @@ class GatewayRunner:
             resolve_gateway_approval, has_blocking_approval,
         )
 
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
+        # In group chats, find the matching session_key that has pending
+        # approvals — same cross-user logic as /approve.
+        target_session_key = self._find_approval_session_key(
+            source, session_key
+        )
+
+        if not has_blocking_approval(target_session_key):
+            if target_session_key in self._pending_approvals:
+                self._pending_approvals.pop(target_session_key)
                 return "❌ Command denied (approval was stale)."
             return "No pending command to deny."
 
         args = event.get_command_args().strip().lower()
         resolve_all = "all" in args
 
-        count = resolve_gateway_approval(session_key, "deny", resolve_all=resolve_all)
+        count = resolve_gateway_approval(
+            target_session_key, "deny", resolve_all=resolve_all
+        )
         if not count:
             return "No pending command to deny."
 

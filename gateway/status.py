@@ -103,23 +103,56 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
-def _get_process_start_time(pid: int) -> Optional[int]:
+def _get_process_start_time(pid: int) -> Optional[str]:
     """Return the kernel start time for a process when available."""
+    if _IS_WINDOWS:
+        try:
+            # wmic process get CreationDate returns something like 20240320...
+            result = subprocess.run(
+                ["wmic", "process", "where", f"ProcessId={pid}", "get", "CreationDate", "/FORMAT:LIST"],
+                capture_output=True,
+                text=False,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.decode("utf-16", errors="replace").splitlines():
+                    if line.strip().startswith("CreationDate="):
+                        return line.strip().split("=")[1]
+        except Exception:
+            return None
+        return None
+
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text().split()[21])
+        return stat_path.read_text().split()[21]
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         return None
 
 
-def get_process_start_time(pid: int) -> Optional[int]:
+def get_process_start_time(pid: int) -> Optional[Any]:
     """Public wrapper for retrieving a process start time when available."""
     return _get_process_start_time(pid)
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string."""
+    if _IS_WINDOWS:
+        try:
+            result = subprocess.run(
+                ["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine", "/FORMAT:LIST"],
+                capture_output=True,
+                text=False,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.decode("utf-16", errors="replace").splitlines():
+                    if line.strip().startswith("CommandLine="):
+                        return line.strip().split("=")[1]
+        except Exception:
+            return None
+        return None
+
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
         raw = cmdline_path.read_bytes()
@@ -570,7 +603,7 @@ def release_scoped_lock(scope: str, identity: str) -> None:
 def release_all_scoped_locks(
     *,
     owner_pid: Optional[int] = None,
-    owner_start_time: Optional[int] = None,
+    owner_start_time: Optional[Any] = None,
 ) -> int:
     """Remove scoped lock files in the lock directory.
 

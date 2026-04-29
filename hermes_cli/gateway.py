@@ -278,13 +278,22 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
             result = subprocess.run(
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
                 capture_output=True,
-                text=True,
+                text=False,  # Decode manually to avoid UnicodeDecodeError on Windows
                 timeout=10,
             )
             if result.returncode != 0:
                 return []
+            
+            # wmic output is often UTF-16 or uses the system code page.
+            try:
+                # Try UTF-16 first as it's the wmic default
+                raw_stdout = result.stdout.decode("utf-16")
+            except UnicodeError:
+                # Fallback to system locale (often cp1252) with replacement
+                raw_stdout = result.stdout.decode("cp1252", errors="replace")
+
             current_cmd = ""
-            for line in result.stdout.split("\n"):
+            for line in raw_stdout.split("\n"):
                 line = line.strip()
                 if line.startswith("CommandLine="):
                     current_cmd = line[len("CommandLine="):]
@@ -731,6 +740,10 @@ def is_windows() -> bool:
     return sys.platform == 'win32'
 
 
+CHECK_MARK = "[OK]" if is_windows() else "✓"
+X_MARK = "[X]" if is_windows() else "✗"
+
+
 # =============================================================================
 # Service Configuration
 # =============================================================================
@@ -1161,7 +1174,7 @@ def remove_legacy_hermes_units(
             _run_systemctl(["stop", name], system=False, check=False, timeout=90)
             _run_systemctl(["disable", name], system=False, check=False, timeout=30)
             path.unlink(missing_ok=True)
-            print(f"  ✓ Removed {path}")
+            print(f"  {CHECK_MARK} Removed {path}")
             removed += 1
         except (OSError, RuntimeError) as e:
             print(f"  ⚠ Could not remove {path}: {e}")
@@ -1187,7 +1200,7 @@ def remove_legacy_hermes_units(
                     _run_systemctl(["stop", name], system=True, check=False, timeout=90)
                     _run_systemctl(["disable", name], system=True, check=False, timeout=30)
                     path.unlink(missing_ok=True)
-                    print(f"  ✓ Removed {path}")
+                    print(f"  {CHECK_MARK} Removed {path}")
                     removed += 1
                 except (OSError, RuntimeError) as e:
                     print(f"  ⚠ Could not remove {path}: {e}")
@@ -1365,7 +1378,7 @@ def print_systemd_linger_guidance() -> None:
     """Print the current linger status and the fix when it is disabled."""
     linger_enabled, linger_detail = get_systemd_linger_status()
     if linger_enabled is True:
-        print("✓ Systemd linger is enabled (service survives logout)")
+        print(f"{CHECK_MARK} Systemd linger is enabled (service survives logout)")
     elif linger_enabled is False:
         print("⚠ Systemd linger is disabled (gateway may stop when you log out)")
         print("  Run: sudo loginctl enable-linger $USER")
@@ -1687,12 +1700,12 @@ def _ensure_linger_enabled() -> None:
     username = getpass.getuser()
     linger_file = Path(f"/var/lib/systemd/linger/{username}")
     if linger_file.exists():
-        print("✓ Systemd linger is enabled (service survives logout)")
+        print(f"{CHECK_MARK} Systemd linger is enabled (service survives logout)")
         return
 
     linger_enabled, linger_detail = get_systemd_linger_status()
     if linger_enabled is True:
-        print("✓ Systemd linger is enabled (service survives logout)")
+        print(f"{CHECK_MARK} Systemd linger is enabled (service survives logout)")
         return
 
     if not shutil.which("loginctl"):
@@ -1826,7 +1839,7 @@ def systemd_start(system: bool = False):
         _preflight_user_systemd()
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
-    print(f"✓ {_service_scope_label(system).capitalize()} service started")
+    print(f"{CHECK_MARK} {_service_scope_label(system).capitalize()} service started")
 
 
 
@@ -1835,7 +1848,7 @@ def systemd_stop(system: bool = False):
     if system:
         _require_root_for_system_service("stop")
     _run_systemctl(["stop", get_service_name()], system=system, check=True, timeout=90)
-    print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
+    print(f"{CHECK_MARK} {_service_scope_label(system).capitalize()} service stopped")
 
 
 
@@ -1906,7 +1919,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
     scope_flag = " --system" if system else ""
 
     if not unit_path.exists():
-        print("✗ Gateway service is not installed")
+        print(f"{X_MARK} Gateway service is not installed")
         print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
         return
 
@@ -1981,7 +1994,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
     else:
         linger_enabled, _ = get_systemd_linger_status()
         if linger_enabled is True:
-            print("✓ Systemd linger is enabled (service survives logout)")
+            print(f"{CHECK_MARK} Systemd linger is enabled (service survives logout)")
         elif linger_enabled is False:
             print("⚠ Systemd linger is disabled (gateway may stop when you log out)")
             print("  Run: sudo loginctl enable-linger $USER")
@@ -4049,7 +4062,7 @@ def _gateway_command_inner(args):
             if total:
                 print(f"✓ Stopped {total} gateway process(es) across all profiles")
             else:
-                print("✗ No gateway processes found")
+                print(f"{X_MARK} No gateway processes found")
         else:
             # Default: stop only the current profile's gateway
             service_available = False
@@ -4179,7 +4192,7 @@ def _gateway_command_inner(args):
             # Check for manually running processes
             pids = list(snapshot.gateway_pids)
             if pids:
-                print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
+                print(f"{CHECK_MARK} Gateway is running (PID: {', '.join(map(str, pids))})")
                 print("  (Running manually, not as a system service)")
                 runtime_lines = _runtime_health_lines()
                 if runtime_lines:
@@ -4200,7 +4213,7 @@ def _gateway_command_inner(args):
                     print("  hermes gateway install")
                     print("  sudo hermes gateway install --system")
             else:
-                print("✗ Gateway is not running")
+                print(f"{X_MARK} Gateway is not running")
                 runtime_lines = _runtime_health_lines()
                 if runtime_lines:
                     print()

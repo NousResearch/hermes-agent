@@ -320,7 +320,15 @@ def get_tool_definitions(
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)
     if quiet_mode:
+        # Cache the freshly-computed list, but hand callers a shallow copy so
+        # downstream mutations (e.g. run_agent appending memory/LCM tool
+        # schemas to self.tools) don't poison the cache. Without this, a
+        # long-lived Gateway process accumulates duplicate tool names across
+        # agent inits and providers that enforce unique tool names
+        # (DeepSeek, Xiaomi MiMo, Moonshot Kimi) reject the request with
+        # HTTP 400. Mirrors the cache-hit path above. (issue #17335)
         _tool_defs_cache[cache_key] = result
+        return list(result)
     return result
 
 

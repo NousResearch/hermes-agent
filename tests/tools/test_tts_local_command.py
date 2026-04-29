@@ -135,6 +135,36 @@ def test_generate_local_command_tts_supports_template_placeholders(tmp_path):
     )
 
 
+def test_generate_local_command_tts_output_path_suffix_overrides_config_format(tmp_path):
+    from tools.tts_tool import _generate_local_command_tts
+
+    script = _write_synth_script(tmp_path)
+    output_path = tmp_path / "speech.wav"
+    config = {
+        "local_command": {
+            "command": (
+                f"{sys.executable} {script} "
+                "--input {{text_path}} --output {{output_path}} --format {{format}}"
+            ),
+            "format": "mp3",
+        }
+    }
+
+    _generate_local_command_tts("hello", str(output_path), config)
+
+    assert output_path.read_text(encoding="utf-8") == (
+        "AUDIO:hello|format=wav|voice=|model=|speed="
+    )
+
+
+def test_get_local_tts_output_format_accepts_leading_dot():
+    from tools.tts_tool import _get_local_tts_output_format
+
+    config = {"local_command": {"output_format": ".wav"}}
+
+    assert _get_local_tts_output_format(config) == "wav"
+
+
 def test_generate_local_command_tts_missing_command_raises_value_error(tmp_path):
     from tools.tts_tool import _generate_local_command_tts
 
@@ -148,6 +178,25 @@ def test_generate_local_command_tts_invalid_placeholder_raises_value_error(tmp_p
     config = {"local_command": {"command": "fake-tts {missing_placeholder}"}}
 
     with pytest.raises(ValueError, match="missing placeholder"):
+        _generate_local_command_tts("hello", str(tmp_path / "speech.mp3"), config)
+
+
+@pytest.mark.parametrize(
+    "command_template",
+    [
+        "fake-tts --input {text_path",
+        "fake-tts --input {}",
+    ],
+)
+def test_generate_local_command_tts_invalid_template_raises_value_error(
+    tmp_path,
+    command_template,
+):
+    from tools.tts_tool import _generate_local_command_tts
+
+    config = {"local_command": {"command": command_template}}
+
+    with pytest.raises(ValueError, match="invalid template"):
         _generate_local_command_tts("hello", str(tmp_path / "speech.mp3"), config)
 
 
@@ -231,6 +280,72 @@ def test_text_to_speech_tool_routes_local_command_and_returns_json_shape(monkeyp
         "output_path": str(output_path),
         "tts_config": config,
     }
+
+
+def test_text_to_speech_tool_local_command_ogg_format_without_voice_compatible_stays_attachment(
+    monkeypatch,
+    tmp_path,
+):
+    from tools.tts_tool import text_to_speech_tool
+
+    calls = {}
+
+    def fake_local_command(text, output_path_arg, tts_config):
+        calls["output_path"] = output_path_arg
+        Path(output_path_arg).write_bytes(b"AUDIO")
+        return output_path_arg
+
+    def fail_convert_to_opus(_path):
+        pytest.fail("local_command should not convert to opus without voice_compatible")
+
+    config = {
+        "provider": "local_command",
+        "local_command": {"command": "fake", "output_format": "ogg"},
+    }
+    monkeypatch.setattr("tools.tts_tool.DEFAULT_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: config)
+    monkeypatch.setattr("tools.tts_tool._generate_local_command_tts", fake_local_command)
+    monkeypatch.setattr("tools.tts_tool._convert_to_opus", fail_convert_to_opus)
+    _disable_non_local_tts_providers(monkeypatch)
+
+    result = json.loads(text_to_speech_tool("hello"))
+
+    assert result["success"] is True
+    assert result["file_path"].endswith(".mp3")
+    assert calls["output_path"].endswith(".mp3")
+    assert result["media_tag"] == f"MEDIA:{result['file_path']}"
+    assert result["voice_compatible"] is False
+
+
+def test_text_to_speech_tool_local_command_voice_compatible_allows_ogg_output(
+    monkeypatch,
+    tmp_path,
+):
+    from tools.tts_tool import text_to_speech_tool
+
+    def fake_local_command(text, output_path_arg, tts_config):
+        Path(output_path_arg).write_bytes(b"AUDIO")
+        return output_path_arg
+
+    config = {
+        "provider": "local_command",
+        "local_command": {
+            "command": "fake",
+            "output_format": "ogg",
+            "voice_compatible": True,
+        },
+    }
+    monkeypatch.setattr("tools.tts_tool.DEFAULT_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: config)
+    monkeypatch.setattr("tools.tts_tool._generate_local_command_tts", fake_local_command)
+    _disable_non_local_tts_providers(monkeypatch)
+
+    result = json.loads(text_to_speech_tool("hello"))
+
+    assert result["success"] is True
+    assert result["file_path"].endswith(".ogg")
+    assert result["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{result['file_path']}"
+    assert result["voice_compatible"] is True
 
 
 def test_text_to_speech_tool_returns_helpful_json_error_when_command_missing(monkeypatch, tmp_path):

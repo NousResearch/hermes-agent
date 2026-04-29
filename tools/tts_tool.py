@@ -274,17 +274,34 @@ def _get_local_tts_timeout(tts_config: Dict[str, Any]) -> float:
     return timeout
 
 
-def _get_local_tts_output_format(tts_config: Dict[str, Any]) -> str:
+def _get_local_tts_output_format(
+    tts_config: Dict[str, Any],
+    output_path: Optional[str] = None,
+) -> str:
     """Return validated local_command output format."""
+    if output_path:
+        suffix_format = Path(output_path).suffix.lower().strip().lstrip(".")
+        if suffix_format in LOCAL_TTS_OUTPUT_FORMATS:
+            return suffix_format
+
     local_config = _get_provider_config(tts_config, "local_command")
     output_format = str(
         local_config.get("format")
         or local_config.get("output_format")
         or DEFAULT_LOCAL_TTS_OUTPUT_FORMAT
-    ).lower().strip()
+    ).lower().strip().lstrip(".")
     if output_format not in LOCAL_TTS_OUTPUT_FORMATS:
         return DEFAULT_LOCAL_TTS_OUTPUT_FORMAT
     return output_format
+
+
+def _is_local_tts_voice_compatible(tts_config: Dict[str, Any]) -> bool:
+    """Return True only when local_command voice delivery is explicitly enabled."""
+    local_config = _get_provider_config(tts_config, "local_command")
+    value = local_config.get("voice_compatible", False)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _generate_local_command_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
@@ -297,7 +314,7 @@ def _generate_local_command_tts(text: str, output_path: str, tts_config: Dict[st
     output = Path(output_path).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
     timeout = _get_local_tts_timeout(tts_config)
-    output_format = _get_local_tts_output_format(tts_config)
+    output_format = _get_local_tts_output_format(tts_config, str(output))
     speed = local_config.get("speed", tts_config.get("speed", ""))
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -325,6 +342,10 @@ def _generate_local_command_tts(text: str, output_path: str, tts_config: Dict[st
             missing = exc.args[0]
             raise ValueError(
                 f"tts.local_command.command missing placeholder: {missing}"
+            ) from exc
+        except (ValueError, IndexError) as exc:
+            raise ValueError(
+                f"tts.local_command.command invalid template: {exc}"
             ) from exc
 
         try:
@@ -1102,6 +1123,8 @@ def text_to_speech_tool(
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
         if provider == "local_command":
             output_format = _get_local_tts_output_format(tts_config)
+            if output_format == "ogg" and not _is_local_tts_voice_compatible(tts_config):
+                output_format = DEFAULT_LOCAL_TTS_OUTPUT_FORMAT
             file_path = out_dir / f"tts_{timestamp}.{output_format}"
         elif want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
@@ -1227,21 +1250,22 @@ def text_to_speech_tool(
         # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV — all need ffmpeg conversion
         voice_compatible = False
         if (
-            provider in ("edge", "neutts", "minimax", "xai", "kittentts", "local_command")
+            provider in ("edge", "neutts", "minimax", "xai", "kittentts")
             and not file_str.endswith(".ogg")
         ):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
-                voice_compatible = provider != "local_command"
+                voice_compatible = True
+        elif provider == "local_command":
+            if _is_local_tts_voice_compatible(tts_config):
+                if not file_str.endswith(".ogg"):
+                    opus_path = _convert_to_opus(file_str)
+                    if opus_path:
+                        file_str = opus_path
+                voice_compatible = file_str.endswith(".ogg")
         elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
             voice_compatible = file_str.endswith(".ogg")
-        if provider == "local_command":
-            local_config = _get_provider_config(tts_config, "local_command")
-            voice_compatible = (
-                bool(local_config.get("voice_compatible"))
-                and file_str.endswith(".ogg")
-            )
 
         file_size = os.path.getsize(file_str)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)

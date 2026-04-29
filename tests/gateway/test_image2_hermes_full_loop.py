@@ -289,3 +289,59 @@ def test_feishu_image_client_accepts_item_readback_shape(tmp_path):
     result = client.send_image_and_verify(image, chat_id="chat-id", reply_to="root-message", candidate_sha256=sha256_file(image))
     assert result["verified"] is True
     assert result["image_key"] == "img_unit_key"
+
+
+def test_opencli_generation_title_includes_task_id_and_subject(tmp_path, monkeypatch):
+    job_dir = tmp_path / "img2_unique123"
+    captured = {}
+
+    def fake_run(cmd, cwd, env, text, capture_output, timeout):
+        captured["cmd"] = cmd
+        out_dir = Path(cmd[cmd.index("--op") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        candidate = out_dir / "generated.png"
+        candidate.write_bytes(b"fresh image")
+        rows = [{"status": "✅ saved", "file": str(candidate), "link": "https://chatgpt.com/c/unique"}]
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(rows), stderr="")
+
+    monkeypatch.setattr("gateway.image2_generation.subprocess.run", fake_run)
+
+    result = run_opencli_generation(
+        job_dir=job_dir,
+        prompt_text="主视觉对象：臭豆腐。\n文案上图要求：主标题「外酥里嫩臭豆腐」",
+        environ={"IMAGE2_OPENCLI_TIMEOUT": "1"},
+        source_files=[],
+    )
+
+    title = captured["cmd"][captured["cmd"].index("--title") + 1]
+    assert "img2_unique123" in title
+    assert "臭豆腐" in title
+    assert title != "海报设计"
+    assert result["title"] == title
+
+
+def test_opencli_generation_title_does_not_trust_generic_env_title(tmp_path, monkeypatch):
+    job_dir = tmp_path / "img2_titleenv"
+    captured = {}
+
+    def fake_run(cmd, cwd, env, text, capture_output, timeout):
+        captured["cmd"] = cmd
+        out_dir = Path(cmd[cmd.index("--op") + 1])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        candidate = out_dir / "generated.png"
+        candidate.write_bytes(b"fresh image")
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps([{"status": "✅ saved", "file": str(candidate)}]), stderr="")
+
+    monkeypatch.setattr("gateway.image2_generation.subprocess.run", fake_run)
+
+    run_opencli_generation(
+        job_dir=job_dir,
+        prompt_text="主视觉对象：臭豆腐。",
+        environ={"IMAGE2_OPENCLI_TIMEOUT": "1", "IMAGE2_OPENCLI_TITLE": "海报设计"},
+        source_files=[],
+    )
+
+    title = captured["cmd"][captured["cmd"].index("--title") + 1]
+    assert title != "海报设计"
+    assert "img2_titleenv" in title
+    assert "臭豆腐" in title

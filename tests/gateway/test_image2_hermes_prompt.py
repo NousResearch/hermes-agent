@@ -88,3 +88,43 @@ def test_job_store_writes_prompt_artifacts_inside_hermes_runtime(tmp_path):
     assert "夏日鲜果冰柠系列" in prompt
     assert "marketing-hub/scripts" not in prompt
     assert "image2_job_pipeline.py" not in prompt
+
+
+def test_title_request_for_choudoufu_uses_short_human_copy():
+    payload = {
+        "source_platform": "feishu",
+        "feishu_message_id": "om_title",
+        "chat_id": "oc_chat",
+        "root_id": "",
+        "thread_id": "",
+        "text": "/image2 帮我把这个臭豆腐的海报设计的好看一点，更有食欲一点。然后标题你帮我想一个好一点的文案，控制在 8 个字以内",
+        "source_files": [],
+    }
+
+    brief = build_visual_brief_from_payload(payload)
+    prompt = compile_image2_prompt_payload(payload)["one_shot_design_prompt"]
+
+    assert brief["copy"]["headline"] == "外酥里嫩臭豆腐"
+    assert len(brief["copy"]["headline"]) <= 8
+    assert "主标题「外酥里嫩臭豆腐」" in prompt
+    assert "主标题「臭豆腐」" not in prompt
+
+
+def test_explicit_plain_title_label_is_preserved_for_source_edit(tmp_path):
+    source_image = tmp_path / "source.jpg"
+    source_image.write_bytes(b"source")
+    payload = {
+        "source_platform": "feishu",
+        "feishu_message_id": "om_title_explicit",
+        "chat_id": "oc_chat",
+        "root_id": "",
+        "thread_id": "",
+        "text": "/image2 重新美化这张图，增加水果元素。标题：夏日鲜果 冰柠系列",
+        "source_files": [{"path": str(source_image), "mime_type": "image/jpeg", "source": "feishu_direct_media"}],
+    }
+
+    brief = build_visual_brief_from_payload(payload)
+    prompt = compile_image2_prompt_payload(payload)["one_shot_design_prompt"]
+
+    assert brief["copy"]["headline"] == "夏日鲜果 冰柠系列"
+    assert "主标题「夏日鲜果 冰柠系列」" in prompt

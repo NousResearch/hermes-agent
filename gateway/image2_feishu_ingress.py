@@ -173,6 +173,19 @@ def _message_type_value(message_type: Any) -> str:
     return str(getattr(message_type, "value", message_type) or "").lower()
 
 
+
+
+def _text_appears_to_wait_for_followup_image(text: str) -> bool:
+    raw = str(text or "")
+    if not raw.strip():
+        return False
+    if any(word in raw for word in ("这张图", "这张图片", "这张", "这个图片", "原图", "参考图", "把这个", "美化一下这张", "重新美化", "这个海报")):
+        return True
+    if any(word in raw for word in ("发图", "发个图", "图片我马上发", "等我发图")):
+        return True
+    return False
+
+
 def should_handle_feishu_visual_request(*, platform: Any, text: str, message_type: Any = "text") -> bool:
     platform_value = str(getattr(platform, "value", platform) or "").lower()
     if platform_value != "feishu":
@@ -428,6 +441,80 @@ def _sender_key(message: Any) -> str:
 def _sender_type(message: Any) -> str:
     sender = _object_get(message, "sender") or {}
     return str(_object_get(sender, "sender_type") or "")
+
+
+def _message_text(message: Any) -> str:
+    content = _message_content_dict(message)
+    for key in ("text", "content"):
+        value = content.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    body = _object_get(message, "body") or {}
+    value = _object_get(body, "text") or _object_get(message, "text")
+    return str(value or "").strip()
+
+
+def select_recent_previous_visual_text_message(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    current_message_id: str,
+    lookback_seconds: int = 120,
+) -> Optional[Mapping[str, Any]]:
+    current_index = None
+    for idx, message in enumerate(messages):
+        if str(_object_get(message, "message_id") or "") == str(current_message_id or ""):
+            current_index = idx
+            break
+    if current_index is None:
+        return None
+    current = messages[current_index]
+    current_time = _message_time_ms(current)
+    current_sender = _sender_key(current)
+    for message in messages[current_index + 1 :]:
+        candidate_time = _message_time_ms(message)
+        if current_time is not None and candidate_time is not None:
+            delta_ms = current_time - candidate_time
+            if delta_ms < 0:
+                continue
+            if delta_ms > lookback_seconds * 1000:
+                break
+        if str(_object_get(message, "msg_type") or "").lower() not in {"text", "post"}:
+            continue
+        text = _message_text(message)
+        if not should_handle_feishu_visual_request(platform="feishu", text=text, message_type="text"):
+            continue
+        if not _text_appears_to_wait_for_followup_image(text):
+            continue
+        candidate_sender = _sender_key(message)
+        if current_sender and candidate_sender and current_sender != candidate_sender:
+            continue
+        if _sender_type(message) and _sender_type(message) != "user":
+            continue
+        return message
+    return None
+
+
+def resolve_recent_previous_feishu_text(event: Any, *, settings: Image2IngressSettings) -> str:
+    source = getattr(event, "source", None)
+    chat_id = str(getattr(source, "chat_id", "") or "")
+    message_id = str(getattr(event, "message_id", "") or "")
+    if not chat_id or not message_id:
+        return ""
+    try:
+        env = _feishu_env(settings)
+        token = _feishu_tenant_token(env)
+        if not token:
+            return ""
+        messages = _list_recent_feishu_messages(chat_id=chat_id, env=env, token=token)
+        previous = select_recent_previous_visual_text_message(
+            messages,
+            current_message_id=message_id,
+            lookback_seconds=settings.split_image_lookback_seconds,
+        )
+        return _message_text(previous) if previous else ""
+    except Exception as exc:
+        logger.warning("[Image2Ingress] Could not resolve recent previous Feishu text for split text/image request: %s", exc)
+        return ""
 
 
 def select_recent_previous_image_message(
@@ -907,6 +994,7 @@ def build_feishu_message_payload(
     image_downloader: Optional[Callable[[Any, Path], Optional[Mapping[str, Any]]]] = None,
     recent_image_resolver: Optional[Callable[[Any, Path], Optional[Mapping[str, Any]]]] = None,
     thread_image_resolver: Optional[Callable[[Any, Path], Optional[Mapping[str, Any]]]] = None,
+    previous_text_resolver: Optional[Callable[[Any], str]] = None,
 ) -> Dict[str, Any]:
     source = getattr(event, "source", None)
     platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", "feishu"))
@@ -914,13 +1002,17 @@ def build_feishu_message_payload(
         chat_id, root_id, thread_id = canonical_image2_thread_identity(event, settings=settings)
     else:
         chat_id, root_id, thread_id = _event_thread_identity(event)
+    event_text = str(getattr(event, "text", "") or "")
+    if settings is not None and not event_text.strip():
+        resolver = previous_text_resolver or (lambda current_event: resolve_recent_previous_feishu_text(current_event, settings=settings))
+        event_text = str(resolver(event) or "")
     return {
         "source_platform": str(platform or "feishu"),
         "feishu_message_id": str(getattr(event, "message_id", "") or ""),
         "chat_id": chat_id,
         "root_id": root_id or "",
         "thread_id": thread_id or "",
-        "text": str(getattr(event, "text", "") or ""),
+        "text": event_text,
         "source_files": collect_image2_source_files(
             event,
             settings=settings,
@@ -1061,8 +1153,6 @@ def handle_image2_feishu_ingress_event(
         text=str(getattr(event, "text", "") or ""),
         message_type=getattr(event, "message_type", "text"),
     )
-    if not is_visual_request and not should_handle_feishu_image2_continuation_request(event, settings=loaded):
-        return None
 
     try:
         payload = build_feishu_message_payload(event, settings=loaded)
@@ -1072,6 +1162,15 @@ def handle_image2_feishu_ingress_event(
             exc.__class__.__name__,
         )
         return "⚠️ 视觉任务来源图片读取失败：已停止普通聊天兜底，请重新发送图片或引用后再试。"
+
+    inferred_text = str(payload.get("text") or "")
+    has_source = bool(payload.get("source_files"))
+    if is_visual_request and not has_source and _text_appears_to_wait_for_followup_image(inferred_text):
+        return "收到，这条 Image2 需求我先等图片；请把源图直接发出来，我会把上一条文字和图片合成同一个任务。"
+
+    if not is_visual_request and not should_handle_feishu_image2_continuation_request(event, settings=loaded):
+        if not (has_source and should_handle_feishu_visual_request(platform=getattr(source, "platform", None), text=inferred_text, message_type="text")):
+            return None
 
     try:
         job = dict(enqueue_func(loaded, payload))

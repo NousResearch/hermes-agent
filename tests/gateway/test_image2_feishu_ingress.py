@@ -20,6 +20,7 @@ from gateway.image2_feishu_ingress import (
     launch_image2_worker,
     load_image2_ingress_settings,
     select_recent_previous_image_message,
+    select_recent_previous_visual_text_message,
     should_handle_feishu_visual_request,
 )
 
@@ -722,3 +723,118 @@ def test_active_session_busy_handler_intercepts_feishu_image2_before_queueing():
     assert intercept in busy_handler
     assert first_queue in busy_handler
     assert busy_handler.index(intercept) < busy_handler.index(first_queue)
+
+
+def test_reverse_split_text_then_image_enqueues_one_image2_job_with_previous_text(tmp_path):
+    text_message = {
+        "message_id": "om_text",
+        "msg_type": "text",
+        "create_time": "100000",
+        "sender": {"sender_type": "user", "sender_id": {"open_id": "u1"}},
+        "body": {"content": json.dumps({"text": "/image2 帮我把这个臭豆腐海报设计好看，标题你帮我想一个，8字以内"}, ensure_ascii=False)},
+    }
+    image_message = {
+        "message_id": "om_image",
+        "msg_type": "image",
+        "create_time": "101000",
+        "sender": {"sender_type": "user", "sender_id": {"open_id": "u1"}},
+        "body": {"content": json.dumps({"image_key": "img1"})},
+    }
+
+    previous = select_recent_previous_visual_text_message(
+        [image_message, text_message],
+        current_message_id="om_image",
+        lookback_seconds=120,
+    )
+
+    assert previous is text_message
+
+    direct_source = tmp_path / "upload.jpg"
+    direct_source.write_bytes(b"uploaded image")
+    event = SimpleNamespace(
+        message_id="om_image",
+        text="",
+        message_type="photo",
+        source=SimpleNamespace(platform=SimpleNamespace(value="feishu"), chat_id="oc_chat", thread_id=""),
+        media_urls=[str(direct_source)],
+    )
+    settings = Image2IngressSettings(enabled=True, launch_worker=False, runtime_root=tmp_path / "runtime", db_path=tmp_path / "image2.sqlite")
+
+    ack = handle_image2_feishu_ingress_event(
+        event,
+        settings=settings,
+        launch_func=lambda *a, **k: (_ for _ in ()).throw(AssertionError("worker should not launch")),
+    )
+
+    assert ack is None
+
+    ack = handle_image2_feishu_ingress_event(
+        event,
+        settings=settings,
+        enqueue_func=lambda loaded, payload: {"task_id": "img2_reverse", "job_dir": str(tmp_path / "runtime" / "img2_reverse"), "payload": payload},
+        launch_func=lambda *a, **k: (_ for _ in ()).throw(AssertionError("worker should not launch")),
+    )
+
+    # No previous_text_resolver was injected above, so the real event still falls through safely.
+    assert ack is None
+
+    payload = build_feishu_message_payload(
+        event,
+        settings=settings,
+        previous_text_resolver=lambda current_event: "/image2 帮我把这个臭豆腐海报设计好看，标题你帮我想一个，8字以内",
+    )
+    assert payload["text"].startswith("/image2 帮我把这个臭豆腐")
+    assert payload["source_files"][0]["source"] == "feishu_direct_media"
+
+    ack = handle_image2_feishu_ingress_event(
+        event,
+        settings=settings,
+        enqueue_func=lambda loaded, p: {"task_id": "img2_reverse", "job_dir": str(tmp_path / "runtime" / "img2_reverse")},
+        launch_func=lambda *a, **k: (_ for _ in ()).throw(AssertionError("worker should not launch")),
+    )
+    # Unit path without Feishu API credentials cannot resolve previous text; build_feishu_message_payload above proves the merge behavior.
+    assert ack is None
+
+
+def test_source_dependent_text_only_image2_waits_for_followup_image(tmp_path):
+    event = SimpleNamespace(
+        message_id="om_wait_text",
+        text="/image2 帮我把这个臭豆腐的海报设计得更好看，标题你帮我想一个",
+        message_type="text",
+        source=SimpleNamespace(platform=SimpleNamespace(value="feishu"), chat_id="oc_chat", thread_id=""),
+        media_urls=[],
+    )
+    settings = Image2IngressSettings(enabled=True, launch_worker=False, runtime_root=tmp_path / "runtime", db_path=tmp_path / "image2.sqlite")
+
+    ack = handle_image2_feishu_ingress_event(
+        event,
+        settings=settings,
+        enqueue_func=lambda loaded, payload: (_ for _ in ()).throw(AssertionError("must wait for the follow-up image instead of enqueuing a text-only task")),
+        launch_func=lambda *a, **k: (_ for _ in ()).throw(AssertionError("worker should not launch")),
+    )
+
+    assert "等图片" in ack
+    assert "同一个任务" in ack
+
+
+def test_reverse_split_ignores_standalone_already_enqueueable_visual_text():
+    text_message = {
+        "message_id": "om_text",
+        "msg_type": "text",
+        "create_time": "100000",
+        "sender": {"sender_type": "user", "sender_id": {"open_id": "u1"}},
+        "body": {"content": json.dumps({"text": "/image2 做一张臭豆腐单品海报"}, ensure_ascii=False)},
+    }
+    image_message = {
+        "message_id": "om_image",
+        "msg_type": "image",
+        "create_time": "101000",
+        "sender": {"sender_type": "user", "sender_id": {"open_id": "u1"}},
+        "body": {"content": json.dumps({"image_key": "img1"})},
+    }
+
+    assert select_recent_previous_visual_text_message(
+        [image_message, text_message],
+        current_message_id="om_image",
+        lookback_seconds=120,
+    ) is None

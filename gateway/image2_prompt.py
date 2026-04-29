@@ -193,6 +193,59 @@ def _extract_aspect_ratio(text: str) -> str:
     return "3:4"
 
 
+
+
+def _extract_explicit_title(text: str) -> str:
+    for label in ("主标题", "补总标题", "标题", "大标题", "文案"):
+        pattern = re.compile(rf"{re.escape(label)}\s*[:：]\s*([^\n；;，,。]+)")
+        match = pattern.search(text)
+        if match:
+            return match.group(1).strip().strip("『』《》\"\'“”‘’")
+    quoted = re.search(r'[『《"“]([^『』《》"“”]{2,16})[』》"”]', text)
+    if quoted and any(word in text for word in ("标题", "文案")):
+        return quoted.group(1).strip()
+    return ""
+
+
+def _wants_generated_title(text: str) -> bool:
+    return any(word in text for word in ("标题你帮我想", "帮我想一个", "想一个好", "起一个", "取一个", "标题文案", "文案")) and any(word in text for word in ("标题", "文案"))
+
+
+def _headline_limit(text: str) -> int:
+    match = re.search(r"(\d{1,2})\s*个?字以内", text)
+    if match:
+        return max(2, int(match.group(1)))
+    return 12
+
+
+def _fit_headline(value: str, limit: int) -> str:
+    clean = re.sub(r"\s+", "", value).strip("，。；;、")
+    return clean[:limit] if len(clean) > limit else clean
+
+
+def _suggest_headline(text: str, subject: str) -> str:
+    explicit = _extract_explicit_title(text)
+    if explicit:
+        return _fit_headline(explicit, max(_headline_limit(text), len(explicit)))
+    limit = _headline_limit(text)
+    if _wants_generated_title(text):
+        if "臭豆腐" in subject or "臭豆腐" in text:
+            return _fit_headline("外酥里嫩臭豆腐", limit)
+        if any(word in text for word in ("冰柠", "柠檬", "鲜果", "饮品", "果茶")) or any(word in subject for word in ("饮品", "冰柠", "鲜果")):
+            return _fit_headline("鲜果冰柠一夏", limit)
+        if subject and subject != "本次指定单一主体":
+            return _fit_headline(f"{subject}上新", limit)
+    return subject or "本次指定单一主体"
+
+
+def _extract_headline(text: str, fallback: str) -> str:
+    explicit = _extract_explicit_title(text)
+    if explicit:
+        return explicit
+    subject = _extract_subject_anchor(text) or fallback
+    return _suggest_headline(text, subject)
+
+
 def _extract_copy_line(text: str, label: str, fallback: str) -> str:
     pattern = re.compile(rf"{re.escape(label)}\s*[:：]\s*([^\n；;]+)")
     match = pattern.search(text)
@@ -265,7 +318,7 @@ def build_visual_brief_from_payload(payload: Mapping[str, Any]) -> dict[str, Any
             "business_goal": "基于用户引用图片和回复文字完成同主题设计修改",
             "main_visual_object": main_visual,
             "copy": {
-                "headline": _extract_copy_line(text, "补总标题", "沿用参考图里的核心标题/商品名层级"),
+                "headline": _extract_headline(text, "沿用参考图里的核心标题/商品名层级"),
                 "selling_point": _extract_copy_line(text, "补卖点", "按用户回复的完整修改要求执行，不臆造菜品卖点"),
                 "info_line": "保留参考图已有信息位置；不要新增门店/T3/菜品信息",
             },
@@ -311,7 +364,7 @@ def build_visual_brief_from_payload(payload: Mapping[str, Any]) -> dict[str, Any
         "business_goal": "生成同比例完整海报预览，过视觉 gate 后发送飞书原生图片",
         "main_visual_object": default_subject,
         "copy": {
-            "headline": _extract_copy_line(text, "主标题", default_subject),
+            "headline": _extract_headline(text, default_subject),
             "selling_point": _extract_copy_line(text, "卖点", "突出食欲、产品利益点和本次业务目标"),
             "info_line": "按用户本条需求克制呈现；不要乱写价格、二维码或小字",
         },

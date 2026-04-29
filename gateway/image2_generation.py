@@ -142,6 +142,32 @@ def _base_env(environ: Mapping[str, str]) -> dict[str, str]:
     return merged
 
 
+
+
+def _clip_title(value: str, limit: int = 48) -> str:
+    cleaned = re.sub(r"\s+", " ", str(value or "")).strip(" -_｜|：:")
+    return cleaned[:limit].rstrip() if len(cleaned) > limit else cleaned
+
+
+def build_opencli_window_title(*, job_dir: Path, prompt_text: str, environ: Mapping[str, str]) -> str:
+    task_id = Path(job_dir).name or "img2"
+    subject = ""
+    for pattern in (r"主视觉对象[:：]\s*([^。；;\n]+)", r"主标题[「:\s：]+([^」；;\n]+)"):
+        match = re.search(pattern, prompt_text or "")
+        if match:
+            subject = match.group(1).strip("「」 ：:")
+            break
+    explicit = str(environ.get("IMAGE2_OPENCLI_TITLE") or "").strip()
+    parts = ["Image2", task_id]
+    if subject:
+        parts.append(subject)
+    if explicit and explicit not in {"海报设计", "poster design", "Image2"} and explicit not in parts:
+        parts.append(explicit)
+    if len(parts) <= 2:
+        parts.append("Image2任务")
+    return _clip_title(" ".join(parts), 64)
+
+
 def probe_opencli_browser_state(*, job_dir: Path, environ: Mapping[str, str], timeout: int = 60) -> dict[str, Any]:
     """Probe ChatGPT Images page via OpenCLI without sending a generation prompt."""
     root = Path(job_dir)
@@ -205,7 +231,7 @@ def run_opencli_generation(
     env = _base_env(environ)
     timeout = int(env.get("IMAGE2_SUBPROCESS_TIMEOUT") or env.get("IMAGE2_OPENCLI_TIMEOUT") or 600)
     opencli_timeout = str(env.get("IMAGE2_OPENCLI_TIMEOUT") or 420)
-    title = str(env.get("IMAGE2_OPENCLI_TITLE") or f"HERMES-IMAGE2-{root.name}")
+    title = build_opencli_window_title(job_dir=root, prompt_text=prompt_text, environ=env)
     source_path = _source_image_path(source_files)
     requested_aspect = str(env.get("IMAGE2_OPENCLI_ASPECT") or env.get("IMAGE2_OPENCLI_SIZE") or "").strip()
     attempts: list[dict[str, Any]] = []
@@ -263,13 +289,13 @@ def run_opencli_generation(
         attempts.append(attempt)
         if attempt["files"]:
             result_status = "saved" if attempt.get("returncode") == 0 else "saved_with_nonzero_exit"
-            result = {"status": result_status, "files": attempt["files"], "link": attempt.get("link") or "", "attempts": attempts, "source_file": source_path}
+            result = {"status": result_status, "files": attempt["files"], "link": attempt.get("link") or "", "attempts": attempts, "source_file": source_path, "title": title}
             (root / "generation_result.json").write_text(_safe_json(result), encoding="utf-8")
             return result
         # Only retry aspect-specific failures once without aspect.
         if not aspect:
             break
 
-    result = {"status": "no_file", "files": [], "link": _first_link(attempts[-1].get("rows") if attempts else None), "attempts": attempts, "source_file": source_path}
+    result = {"status": "no_file", "files": [], "link": _first_link(attempts[-1].get("rows") if attempts else None), "attempts": attempts, "source_file": source_path, "title": title}
     (root / "generation_result.json").write_text(_safe_json(result), encoding="utf-8")
     return result

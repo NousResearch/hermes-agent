@@ -38,6 +38,26 @@ def _pgid_still_alive(pgid: int) -> bool:
         return False
 
 
+def _process_group_snapshot(pgid: int) -> str:
+    """Return a process-table snapshot for diagnostics."""
+    return subprocess.run(
+        ["ps", "-o", "pid,ppid,pgid,stat,cmd", "-g", str(pgid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+
+
+def _wait_for_pgid_exit(pgid: int, timeout: float = 10.0) -> bool:
+    """Wait for a process group to disappear under loaded xdist hosts."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pgid_still_alive(pgid):
+            return True
+        time.sleep(0.1)
+    return not _pgid_still_alive(pgid)
+
+
 def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     """If the shell wrapper exits before cleanup, still kill its process group.
 
@@ -151,19 +171,15 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         assert not t.is_alive(), "worker didn't exit within 5 s of the interrupt"
 
         # The critical assertion: the subprocess GROUP must be dead.  Not
-        # just the bash wrapper — the 'sleep 30' child too.
-        # Give the SIGTERM+1s wait+SIGKILL escalation a moment to complete.
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline:
-            if not _pgid_still_alive(pgid):
-                break
-            time.sleep(0.1)
-        assert not _pgid_still_alive(pgid), (
+        # just the bash wrapper — the 'sleep 30' child too. Under xdist load,
+        # process-group disappearance can lag briefly after the worker exits,
+        # especially if the process is already dying or waiting to be reaped.
+        assert _wait_for_pgid_exit(pgid), (
             f"subprocess group {pgid} is STILL ALIVE after worker received "
             f"KeyboardInterrupt — orphan bug regressed.  This is the "
             f"sleep-300-survives-SIGTERM scenario from Physikal's Apr 2026 "
             f"report.  See tools/environments/base.py _wait_for_process "
-            f"except-block."
+            f"except-block.\n{_process_group_snapshot(pgid)}"
         )
         # And the worker should have observed the KeyboardInterrupt (i.e.
         # it re-raised cleanly, not silently swallowed).

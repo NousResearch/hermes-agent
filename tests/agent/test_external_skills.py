@@ -1,6 +1,7 @@
 """Tests for external skill directories (skills.external_dirs config)."""
 
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -104,6 +105,26 @@ class TestGetAllSkillsDirs:
         assert result[1] == external_skills_dir.resolve()
 
 
+
+
+class TestProjectLocalSkillsDirs:
+    def test_project_skills_precede_global_and_external(self, hermes_home, external_skills_dir, tmp_path):
+        project = tmp_path / "project"
+        project_skills = project / ".hermes" / "skills"
+        project_skills.mkdir(parents=True)
+        (project / ".git").mkdir()
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.skill_utils import get_all_skills_dirs, get_project_skills_dirs
+
+            assert get_project_skills_dirs(cwd=project / "subdir") == [project_skills.resolve()]
+            result = get_all_skills_dirs(cwd=project / "subdir")
+
+        assert result == [project_skills.resolve(), hermes_home / "skills", external_skills_dir.resolve()]
+
 class TestExternalSkillsInFindAll:
     def test_external_skills_found(self, hermes_home, external_skills_dir):
         (hermes_home / "config.yaml").write_text(
@@ -140,6 +161,36 @@ class TestExternalSkillsInFindAll:
         assert len(matching) == 1
         assert matching[0]["description"] == "Local version"
 
+    def test_project_local_takes_precedence_over_global_and_external(self, hermes_home, external_skills_dir, tmp_path):
+        project = tmp_path / "project"
+        project_skills = project / ".hermes" / "skills"
+        project_skill = project_skills / "project-skill"
+        project_skill.mkdir(parents=True)
+        (project / ".git").mkdir()
+        (project_skill / "SKILL.md").write_text(
+            "---\nname: shared-skill\ndescription: Project version\n---\n\nProject.\n"
+        )
+        local_skills = hermes_home / "skills"
+        global_skill = local_skills / "shared-skill"
+        global_skill.mkdir(parents=True)
+        (global_skill / "SKILL.md").write_text(
+            "---\nname: shared-skill\ndescription: Global version\n---\n\nGlobal.\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
+        )
+
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home), "TERMINAL_CWD": str(project)}),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+        ):
+            from tools.skills_tool import _find_all_skills
+            skills = _find_all_skills()
+
+        matching = [s for s in skills if s["name"] == "shared-skill"]
+        assert len(matching) == 1
+        assert matching[0]["description"] == "Project version"
+
 
 class TestExternalSkillView:
     def test_skill_view_finds_external(self, hermes_home, external_skills_dir):
@@ -155,3 +206,26 @@ class TestExternalSkillView:
             result = json.loads(skill_view("my-external-skill"))
         assert result["success"] is True
         assert "external things" in result["content"]
+
+    def test_skill_view_finds_project_local_before_global(self, hermes_home, tmp_path, caplog):
+        project = tmp_path / "project"
+        project_skills = project / ".hermes" / "skills"
+        project_skill = project_skills / "project-only"
+        project_skill.mkdir(parents=True)
+        (project / ".git").mkdir()
+        (project_skill / "SKILL.md").write_text(
+            "---\nname: project-only\ndescription: Project-only skill\n---\n\nProject local content.\n"
+        )
+
+        caplog.set_level(logging.WARNING, logger="tools.skills_tool")
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home), "TERMINAL_CWD": str(project)}),
+            patch("tools.skills_tool.SKILLS_DIR", hermes_home / "skills"),
+        ):
+            from tools.skills_tool import skill_view
+            result = json.loads(skill_view("project-only"))
+
+        assert result["success"] is True
+        assert "Project local content" in result["content"]
+        assert "outside the trusted skills directory" not in caplog.text
+

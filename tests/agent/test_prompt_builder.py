@@ -428,6 +428,29 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt()
         assert "backend-skill" in result
 
+    def test_project_local_skills_precede_global_in_prompt(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / "hermes-home"
+        project = tmp_path / "project"
+        project_skill = project / ".hermes" / "skills" / "shared-skill"
+        global_skill = hermes_home / "skills" / "shared-skill"
+        project_skill.mkdir(parents=True)
+        global_skill.mkdir(parents=True)
+        (project / ".git").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_CWD", str(project))
+        (project_skill / "SKILL.md").write_text(
+            "---\nname: shared-skill\ndescription: Project prompt version\n---\n"
+        )
+        (global_skill / "SKILL.md").write_text(
+            "---\nname: shared-skill\ndescription: Global prompt version\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "shared-skill" in result
+        assert "Project prompt version" in result
+        assert "Global prompt version" not in result
+
 
 class TestBuildNousSubscriptionPrompt:
     def test_includes_active_subscription_features(self, monkeypatch):

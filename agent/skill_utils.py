@@ -8,6 +8,7 @@ tool registration or provider resolution.
 import logging
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -168,7 +169,76 @@ def _normalize_string_set(values) -> Set[str]:
     return {str(v).strip() for v in values if str(v).strip()}
 
 
-# ── External skills directories ──────────────────────────────────────────
+# ── Skill directory discovery ────────────────────────────────────────────
+
+
+def _resolve_cwd(cwd: Optional[os.PathLike | str] = None) -> Path:
+    """Return the session working directory used for project-local discovery."""
+    raw_cwd = (
+        cwd
+        or os.getenv("TERMINAL_CWD")
+        or os.getenv("HERMES_CWD")
+        or os.getcwd()
+    )
+    return Path(raw_cwd).expanduser().resolve()
+
+
+def _find_project_root(cwd: Optional[os.PathLike | str] = None) -> Path:
+    """Find the nearest git root for cwd, falling back to cwd/parents."""
+    cwd_path = _resolve_cwd(cwd)
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(cwd_path),
+            text=True,
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return Path(proc.stdout.strip()).resolve()
+    except Exception:
+        pass
+
+    for candidate in (cwd_path, *cwd_path.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return cwd_path
+
+
+def get_project_skills_dirs(cwd: Optional[os.PathLike | str] = None) -> List[Path]:
+    """Return project-local skill directories for the current project.
+
+    Discovery is based on the current session working directory (``TERMINAL_CWD``
+    first, then ``HERMES_CWD``, then ``os.getcwd()``) or an explicit ``cwd``.
+    A git root is used when available.  Existing directories are returned in
+    precedence order before global/external skills:
+
+    1. ``<project-root>/.hermes/skills``
+    2. ``<project-root>/.ai/skills``
+    """
+    root = _find_project_root(cwd)
+    global_skills = get_skills_dir().resolve()
+    candidates = [root / ".hermes" / "skills", root / ".ai" / "skills"]
+    result: List[Path] = []
+    seen: Set[Path] = set()
+    for candidate in candidates:
+        path = candidate.resolve()
+        if path == global_skills or path in seen or not path.is_dir():
+            continue
+        seen.add(path)
+        result.append(path)
+    return result
+
+
+def get_project_skills_base_dir(cwd: Optional[os.PathLike | str] = None) -> Path:
+    """Return the default writable project-local skills root for the CWD.
+
+    The directory may not exist yet; callers that create project-local skills can
+    create it on demand.  Discovery still uses :func:`get_project_skills_dirs`
+    so empty/non-existent project skill roots do not pollute listings.
+    """
+    return (_find_project_root(cwd) / ".hermes" / "skills").resolve()
 
 
 def get_external_skills_dirs() -> List[Path]:
@@ -232,14 +302,22 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
-def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+def get_all_skills_dirs(cwd: Optional[os.PathLike | str] = None) -> List[Path]:
+    """Return skill roots in precedence order: project-local, global, external.
 
-    The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    Project-local directories are discovered dynamically from the session CWD so
+    switching projects changes the visible skills without editing global config.
+    The global ``~/.hermes/skills`` dir is always included; external dirs follow
+    in config order.  Duplicates are removed after resolving symlinks.
     """
-    dirs = [get_skills_dir()]
-    dirs.extend(get_external_skills_dirs())
+    dirs: List[Path] = []
+    seen: Set[Path] = set()
+    for skills_dir in [*get_project_skills_dirs(cwd), get_skills_dir(), *get_external_skills_dirs()]:
+        resolved = skills_dir.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        dirs.append(skills_dir)
     return dirs
 
 

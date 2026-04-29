@@ -40,7 +40,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_replace
 from hermes_cli.config import cfg_get
@@ -101,7 +101,7 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
 import yaml
 
 
-# All skills live in ~/.hermes/skills/ (single source of truth)
+# Default global skills directory. Project-local roots are discovered dynamically.
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 
@@ -110,10 +110,11 @@ MAX_DESCRIPTION_LENGTH = 1024
 
 
 def _containing_skills_root(skill_path: Path) -> Path:
-    """Return the skills root directory (local or external_dirs entry) that
-    contains ``skill_path``.  Falls back to the local ``SKILLS_DIR`` if no
-    match is found (defensive — callers should have located the skill via
-    ``_find_skill`` first).
+    """Return the skills root directory that contains ``skill_path``.
+
+    This includes the global skills directory, project-local skill roots, and
+    configured external_dirs as returned by ``get_all_skills_dirs()``.  It falls
+    back to the global ``SKILLS_DIR`` defensively when no root matches.
     """
     from agent.skill_utils import get_all_skills_dirs
 
@@ -156,7 +157,6 @@ def _pinned_guard(name: str) -> Optional[str]:
     except Exception:
         logger.debug("pinned-guard lookup failed for %s", name, exc_info=True)
     return None
-
 
 MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
 MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
@@ -265,11 +265,20 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     return None
 
 
-def _resolve_skill_dir(name: str, category: str = None) -> Path:
-    """Build the directory path for a new skill, optionally under a category."""
+def _resolve_skill_dir(name: str, category: str = None, scope: str = "global") -> Path:
+    """Build the directory path for a new skill under the requested scope."""
+    if scope == "global":
+        root = SKILLS_DIR
+    elif scope == "project":
+        from agent.skill_utils import get_project_skills_base_dir
+        root = get_project_skills_base_dir()
+        if root == SKILLS_DIR.resolve():
+            root = SKILLS_DIR
+    else:
+        raise ValueError("scope must be 'global' or 'project'")
     if category:
-        return SKILLS_DIR / category / name
-    return SKILLS_DIR / name
+        return root / category / name
+    return root / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -365,7 +374,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 # Core actions
 # =============================================================================
 
-def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
+def _create_skill(name: str, content: str, category: str = None, scope: str = "global") -> Dict[str, Any]:
     """Create a new user skill with SKILL.md content."""
     # Validate name
     err = _validate_name(name)
@@ -375,6 +384,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     err = _validate_category(category)
     if err:
         return {"success": False, "error": err}
+
+    if scope not in {"global", "project"}:
+        return {"success": False, "error": "scope must be 'global' or 'project'."}
 
     # Validate content
     err = _validate_frontmatter(content)
@@ -394,7 +406,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         }
 
     # Create the skill directory
-    skill_dir = _resolve_skill_dir(name, category)
+    skill_dir = _resolve_skill_dir(name, category, scope)
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     # Write SKILL.md atomically
@@ -410,8 +422,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(SKILLS_DIR)),
+        "path": str(skill_dir),
         "skill_md": str(skill_md),
+        "scope": scope,
     }
     if category:
         result["category"] = category
@@ -571,9 +584,9 @@ def _delete_skill(name: str) -> Dict[str, Any]:
     skills_root = _containing_skills_root(skill_dir)
     shutil.rmtree(skill_dir)
 
-    # Clean up empty category directories (don't remove the skills root itself)
+    # Clean up empty category directories (don't remove the containing skills root itself)
     parent = skill_dir.parent
-    if parent != skills_root and parent.exists() and not any(parent.iterdir()):
+    if parent.resolve() != skills_root.resolve() and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
 
     return {
@@ -699,6 +712,7 @@ def skill_manage(
     old_string: str = None,
     new_string: str = None,
     replace_all: bool = False,
+    scope: str = "global",
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -708,7 +722,7 @@ def skill_manage(
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
-        result = _create_skill(name, content, category)
+        result = _create_skill(name, content, category, scope)
 
     elif action == "edit":
         if not content:
@@ -770,7 +784,7 @@ SKILL_MANAGE_SCHEMA = {
     "description": (
         "Manage skills (create, update, delete). Skills are your procedural "
         "memory — reusable approaches for recurring task types. "
-        f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
+        f"New skills go to {display_hermes_home()}/skills/ by default; pass scope='project' to create under the current project's .hermes/skills/. Existing skills can be modified wherever they live.\n\n"
         "Actions: create (full SKILL.md + optional category), "
         "patch (old_string/new_string — preferred for fixes), "
         "edit (full SKILL.md rewrite — major overhauls only), "
@@ -839,6 +853,15 @@ SKILL_MANAGE_SCHEMA = {
                     "Only used with 'create'."
                 )
             },
+            "scope": {
+                "type": "string",
+                "enum": ["global", "project"],
+                "description": (
+                    "Where to create a new skill. 'global' (default) writes to "
+                    f"{display_hermes_home()}/skills/. 'project' writes to the current "
+                    "project's .hermes/skills/ directory. Only used with 'create'."
+                )
+            },
             "file_path": {
                 "type": "string",
                 "description": (
@@ -874,6 +897,7 @@ registry.register(
         file_content=args.get("file_content"),
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False)),
+        replace_all=args.get("replace_all", False),
+        scope=args.get("scope", "global")),
     emoji="📝",
 )

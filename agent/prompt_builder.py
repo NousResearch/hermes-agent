@@ -669,10 +669,15 @@ def build_skills_system_prompt(
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
     """
-    skills_dir = get_skills_dir()
-    external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
+    # Skill roots are ordered by lookup precedence: project-local (if any),
+    # global ~/.hermes/skills, then configured external dirs.  Snapshot only
+    # the first/root-most directory to preserve the existing single-snapshot
+    # format; remaining roots are scanned directly with duplicate suppression.
+    all_skill_dirs = get_all_skills_dirs()
+    skills_dir = all_skill_dirs[0] if all_skill_dirs else get_skills_dir()
+    external_dirs = all_skill_dirs[1:]
 
-    if not skills_dir.exists() and not external_dirs:
+    if not skills_dir.exists() and not any(d.exists() for d in external_dirs):
         return ""
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────

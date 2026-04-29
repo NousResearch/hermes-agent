@@ -450,12 +450,13 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     For paths like: ~/.hermes/skills/mlops/axolotl/SKILL.md -> "mlops"
     Also works for external skill dirs configured via skills.external_dirs.
     """
-    # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
-    # then fall back to external dirs from config.
+    # Try all active skill roots in lookup precedence order (project-local,
+    # global, then external).  The module-level SKILLS_DIR fallback preserves
+    # test monkeypatch compatibility.
     dirs_to_check = [SKILLS_DIR]
     try:
-        from agent.skill_utils import get_external_skills_dirs
-        dirs_to_check.extend(get_external_skills_dirs())
+        from agent.skill_utils import get_all_skills_dirs
+        dirs_to_check = [*get_all_skills_dirs(), SKILLS_DIR]
     except Exception:
         pass
     for skills_dir in dirs_to_check:
@@ -557,7 +558,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files
 
     skills = []
     seen_names: set = set()
@@ -565,11 +566,17 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
+    # Scan project-local, global, then external dirs (earlier roots win).
+    # Append module-level SKILLS_DIR to preserve tests/legacy callers that
+    # monkeypatch tools.skills_tool.SKILLS_DIR directly.
     dirs_to_scan = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
-    dirs_to_scan.extend(get_external_skills_dirs())
+    seen_dirs: set[Path] = set()
+    for candidate in [*get_all_skills_dirs(), SKILLS_DIR]:
+        resolved = candidate.resolve()
+        if resolved in seen_dirs or not candidate.exists():
+            continue
+        seen_dirs.add(resolved)
+        dirs_to_scan.append(candidate)
 
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -931,13 +938,18 @@ def skill_view(
             # Plugin itself not found — fall through to flat-tree scan
             # which will return a normal "not found" with suggestions.
 
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_all_skills_dirs
 
-        # Build list of all skill directories to search
+        # Build list of all active skill directories to search. Append module-level
+        # SKILLS_DIR for tests/legacy callers that monkeypatch it directly.
         all_dirs = []
-        if SKILLS_DIR.exists():
-            all_dirs.append(SKILLS_DIR)
-        all_dirs.extend(get_external_skills_dirs())
+        seen_dirs: set[Path] = set()
+        for candidate in [*get_all_skills_dirs(), SKILLS_DIR]:
+            resolved = candidate.resolve()
+            if resolved in seen_dirs or not candidate.exists():
+                continue
+            seen_dirs.add(resolved)
+            all_dirs.append(candidate)
 
         if not all_dirs:
             return json.dumps(
@@ -1010,14 +1022,16 @@ def skill_view(
                 ensure_ascii=False,
             )
 
-        # Security: warn if skill is loaded from outside trusted directories
-        # (local skills dir + configured external_dirs are all trusted)
+        # Security: warn if skill is loaded from outside trusted directories.
+        # Active skill roots (project-local, global, and configured external_dirs)
+        # are trusted; arbitrary fallback paths still warn.
         _outside_skills_dir = True
-        _trusted_dirs = [SKILLS_DIR.resolve()]
+        _trusted_dirs = []
         try:
-            _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
+            _trusted_dirs = [d.resolve() for d in all_dirs]
+            _trusted_dirs.append(SKILLS_DIR.resolve())
         except Exception:
-            pass
+            _trusted_dirs = [SKILLS_DIR.resolve()]
         for _td in _trusted_dirs:
             try:
                 skill_md.resolve().relative_to(_td)

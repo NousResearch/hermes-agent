@@ -196,6 +196,46 @@ class TestCreateSkill:
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
+    def test_create_with_project_scope_writes_to_project_skills(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / "hermes-home"
+        global_skills = hermes_home / "skills"
+        global_skills.mkdir(parents=True)
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".git").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_CWD", str(project))
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", global_skills):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT, scope="project")
+
+        assert result["success"] is True
+        assert result["scope"] == "project"
+        assert (project / ".hermes" / "skills" / "my-skill" / "SKILL.md").exists()
+        assert not (global_skills / "my-skill" / "SKILL.md").exists()
+
+    def test_patch_project_local_skill_is_writable(self, monkeypatch, tmp_path):
+        hermes_home = tmp_path / "hermes-home"
+        global_skills = hermes_home / "skills"
+        global_skills.mkdir(parents=True)
+        project = tmp_path / "project"
+        project_skill = project / ".hermes" / "skills" / "my-skill"
+        project_skill.mkdir(parents=True)
+        (project / ".git").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_CWD", str(project))
+        (project_skill / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", global_skills):
+            result = _patch_skill(
+                "my-skill",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the project thing.",
+            )
+
+        assert result["success"] is True
+        assert "Do the project thing" in (project_skill / "SKILL.md").read_text()
+
     def test_create_with_category(self, tmp_path):
         with _skill_dir(tmp_path):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT, category="devops")

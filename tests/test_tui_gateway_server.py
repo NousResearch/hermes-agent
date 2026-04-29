@@ -879,6 +879,36 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
     assert saved["display"]["tui_statusbar"] == "bottom"
 
 
+def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump(
+            {"display": {"sections": {"tools": "expanded", "activity": "hidden"}}}
+        )
+    )
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "details_mode", "value": "collapsed"},
+        }
+    )
+
+    assert resp["result"] == {"key": "details_mode", "value": "collapsed"}
+    saved = yaml.safe_load(cfg_path.read_text())
+    assert saved["display"]["details_mode"] == "collapsed"
+    assert saved["display"]["sections"] == {
+        "thinking": "collapsed",
+        "tools": "collapsed",
+        "subagents": "collapsed",
+        "activity": "collapsed",
+    }
+
+
 def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
     import yaml
 

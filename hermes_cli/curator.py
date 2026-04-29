@@ -55,6 +55,9 @@ def _cmd_status(args) -> int:
     print(f"  runs:           {runs}")
     print(f"  last run:       {_fmt_ts(last_run)}")
     print(f"  last summary:   {summary}")
+    _report = state.get("last_report_path")
+    if _report:
+        print(f"  last report:    {_report}")
     _ih = curator.get_interval_hours()
     _interval_label = (
         f"{_ih // 24}d" if _ih % 24 == 0 and _ih >= 24

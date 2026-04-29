@@ -28,7 +28,7 @@ import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from hermes_constants import get_hermes_home
 from tools import skill_usage
@@ -355,6 +355,218 @@ CURATOR_REVIEW_PROMPT = (
 
 
 # ---------------------------------------------------------------------------
+# Per-run reports — {YYYYMMDD-HHMMSS}/run.json + REPORT.md under logs/curator/
+# ---------------------------------------------------------------------------
+
+def _reports_root() -> Path:
+    """Directory where curator run reports are written.
+
+    Lives under the profile-aware logs dir (``~/.hermes/logs/curator/``)
+    alongside ``agent.log`` and ``gateway.log`` so it's found by anyone
+    looking for operational telemetry, not mixed in with the user's
+    authored skill data in ``~/.hermes/skills/``.
+    """
+    return get_hermes_home() / "logs" / "curator"
+
+
+def _write_run_report(
+    *,
+    started_at: datetime,
+    elapsed_seconds: float,
+    auto_counts: Dict[str, int],
+    auto_summary: str,
+    before_report: List[Dict[str, Any]],
+    before_names: Set[str],
+    after_report: List[Dict[str, Any]],
+    llm_meta: Dict[str, Any],
+) -> Optional[Path]:
+    """Write run.json + REPORT.md under logs/curator/{YYYYMMDD-HHMMSS}/.
+
+    Returns the report directory path on success, None if the write
+    couldn't happen (caller logs and continues — reporting is best-effort).
+    """
+    root = _reports_root()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.debug("Curator report dir create failed: %s", e)
+        return None
+
+    stamp = started_at.strftime("%Y%m%d-%H%M%S")
+    run_dir = root / stamp
+    # If we crash-reran within the same second, append a disambiguator
+    suffix = 1
+    while run_dir.exists():
+        suffix += 1
+        run_dir = root / f"{stamp}-{suffix}"
+    try:
+        run_dir.mkdir(parents=True, exist_ok=False)
+    except Exception as e:
+        logger.debug("Curator run dir create failed: %s", e)
+        return None
+
+    # Diff before/after
+    after_by_name = {r.get("name"): r for r in after_report if isinstance(r, dict)}
+    after_names = set(after_by_name.keys())
+    removed = sorted(before_names - after_names)   # archived during this run
+    added = sorted(after_names - before_names)     # new skills this run
+    before_by_name = {r.get("name"): r for r in before_report if isinstance(r, dict)}
+
+    # State transitions between the two snapshots (e.g. active -> stale)
+    transitions: List[Dict[str, str]] = []
+    for name in sorted(after_names & before_names):
+        s_before = (before_by_name.get(name) or {}).get("state")
+        s_after = (after_by_name.get(name) or {}).get("state")
+        if s_before and s_after and s_before != s_after:
+            transitions.append({"name": name, "from": s_before, "to": s_after})
+
+    # Classify LLM tool calls
+    tc_counts: Dict[str, int] = {}
+    for tc in llm_meta.get("tool_calls", []) or []:
+        name = tc.get("name", "unknown")
+        tc_counts[name] = tc_counts.get(name, 0) + 1
+
+    payload = {
+        "started_at": started_at.isoformat(),
+        "duration_seconds": round(elapsed_seconds, 2),
+        "model": llm_meta.get("model", ""),
+        "provider": llm_meta.get("provider", ""),
+        "auto_transitions": auto_counts,
+        "counts": {
+            "before": len(before_names),
+            "after": len(after_names),
+            "delta": len(after_names) - len(before_names),
+            "archived_this_run": len(removed),
+            "added_this_run": len(added),
+            "state_transitions": len(transitions),
+            "tool_calls_total": sum(tc_counts.values()),
+        },
+        "tool_call_counts": tc_counts,
+        "archived": removed,
+        "added": added,
+        "state_transitions": transitions,
+        "llm_final": llm_meta.get("final", ""),
+        "llm_summary": llm_meta.get("summary", ""),
+        "llm_error": llm_meta.get("error"),
+        "tool_calls": llm_meta.get("tool_calls", []),
+    }
+
+    # run.json — machine-readable, full fidelity
+    try:
+        (run_dir / "run.json").write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.debug("Curator run.json write failed: %s", e)
+
+    # REPORT.md — human-readable
+    try:
+        md = _render_report_markdown(payload)
+        (run_dir / "REPORT.md").write_text(md, encoding="utf-8")
+    except Exception as e:
+        logger.debug("Curator REPORT.md write failed: %s", e)
+
+    return run_dir
+
+
+def _render_report_markdown(p: Dict[str, Any]) -> str:
+    """Render the human-readable report."""
+    lines: List[str] = []
+    started = p.get("started_at", "")
+    duration = p.get("duration_seconds", 0) or 0
+    mins, secs = divmod(int(duration), 60)
+    dur_label = f"{mins}m {secs}s" if mins else f"{secs}s"
+
+    lines.append(f"# Curator run — {started}\n")
+    model = p.get("model") or "(not resolved)"
+    prov = p.get("provider") or "(not resolved)"
+    counts = p.get("counts") or {}
+    lines.append(
+        f"Model: `{model}` via `{prov}`  ·  Duration: {dur_label}  ·  "
+        f"Agent-created skills: {counts.get('before', 0)} → {counts.get('after', 0)} "
+        f"({counts.get('delta', 0):+d})\n"
+    )
+
+    error = p.get("llm_error")
+    if error:
+        lines.append(f"> ⚠ LLM pass error: `{error}`\n")
+
+    # Auto-transitions (pure, no LLM)
+    auto = p.get("auto_transitions") or {}
+    lines.append("## Auto-transitions (pure, no LLM)\n")
+    lines.append(f"- checked: {auto.get('checked', 0)}")
+    lines.append(f"- marked stale: {auto.get('marked_stale', 0)}")
+    lines.append(f"- archived: {auto.get('archived', 0)}")
+    lines.append(f"- reactivated: {auto.get('reactivated', 0)}")
+    lines.append("")
+
+    # LLM pass numbers
+    tc_counts = p.get("tool_call_counts") or {}
+    lines.append("## LLM consolidation pass\n")
+    lines.append(f"- tool calls: **{counts.get('tool_calls_total', 0)}** "
+                 f"(by name: {', '.join(f'{k}={v}' for k, v in sorted(tc_counts.items())) or 'none'})")
+    lines.append(f"- archived this run: **{counts.get('archived_this_run', 0)}**")
+    lines.append(f"- new skills this run: **{counts.get('added_this_run', 0)}**")
+    lines.append(f"- state transitions (active ↔ stale ↔ archived): "
+                 f"**{counts.get('state_transitions', 0)}**")
+    lines.append("")
+
+    # Archived list
+    archived = p.get("archived") or []
+    if archived:
+        lines.append(f"### Skills archived ({len(archived)})\n")
+        lines.append("_Archived skills are at `~/.hermes/skills/.archive/`. "
+                     "Restore any via `hermes curator restore <name>`._\n")
+        # Show first 50 inline, note truncation after that
+        SHOW = 50
+        for n in archived[:SHOW]:
+            lines.append(f"- `{n}`")
+        if len(archived) > SHOW:
+            lines.append(f"- … and {len(archived) - SHOW} more (see `run.json` for the full list)")
+        lines.append("")
+
+    # Added list
+    added = p.get("added") or []
+    if added:
+        lines.append(f"### New skills this run ({len(added)})\n")
+        lines.append("_Usually these are new class-level umbrellas created via `skill_manage action=create`._\n")
+        for n in added:
+            lines.append(f"- `{n}`")
+        lines.append("")
+
+    # State transitions
+    trans = p.get("state_transitions") or []
+    if trans:
+        lines.append(f"### State transitions ({len(trans)})\n")
+        for t in trans:
+            lines.append(f"- `{t.get('name')}`: {t.get('from')} → {t.get('to')}")
+        lines.append("")
+
+    # Full LLM final response
+    final = (p.get("llm_final") or "").strip()
+    if final:
+        lines.append("## LLM final summary\n")
+        lines.append(final)
+        lines.append("")
+    elif not error:
+        llm_sum = p.get("llm_summary") or ""
+        if llm_sum:
+            lines.append("## LLM summary\n")
+            lines.append(llm_sum)
+            lines.append("")
+
+    # Recovery footer
+    lines.append("## Recovery\n")
+    lines.append("- Restore an archived skill: `hermes curator restore <name>`")
+    lines.append("- All archives live under `~/.hermes/skills/.archive/` and are recoverable by `mv`")
+    lines.append("- See `run.json` in this directory for the full machine-readable record.")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator — spawn a forked AIAgent for the LLM review pass
 # ---------------------------------------------------------------------------
 
@@ -415,22 +627,72 @@ def run_curator_review(
 
     def _llm_pass():
         nonlocal auto_summary
+        # Snapshot skill state BEFORE the LLM pass so the report can diff.
+        try:
+            before_report = skill_usage.agent_created_report()
+        except Exception:
+            before_report = []
+        before_names = {r.get("name") for r in before_report if isinstance(r, dict)}
+
+        llm_meta: Dict[str, Any] = {}
         try:
             candidate_list = _render_candidate_list()
             if "No agent-created skills" in candidate_list:
                 final_summary = f"auto: {auto_summary}; llm: skipped (no candidates)"
+                llm_meta = {
+                    "final": "",
+                    "summary": "skipped (no candidates)",
+                    "model": "",
+                    "provider": "",
+                    "tool_calls": [],
+                    "error": None,
+                }
             else:
                 prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
-                llm_summary = _run_llm_review(prompt)
-                final_summary = f"auto: {auto_summary}; llm: {llm_summary}"
+                llm_meta = _run_llm_review(prompt)
+                final_summary = (
+                    f"auto: {auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
+                )
         except Exception as e:
             logger.debug("Curator LLM pass failed: %s", e, exc_info=True)
             final_summary = f"auto: {auto_summary}; llm: error ({e})"
+            llm_meta = {
+                "final": "",
+                "summary": f"error ({e})",
+                "model": "",
+                "provider": "",
+                "tool_calls": [],
+                "error": str(e),
+            }
 
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         state2 = load_state()
         state2["last_run_duration_seconds"] = elapsed
         state2["last_run_summary"] = final_summary
+
+        # Write the per-run report. Runs in a best-effort try so a
+        # reporting bug never breaks the curator itself. Report path is
+        # recorded in state so `hermes curator status` can point at it.
+        try:
+            after_report = skill_usage.agent_created_report()
+        except Exception:
+            after_report = []
+        try:
+            report_path = _write_run_report(
+                started_at=start,
+                elapsed_seconds=elapsed,
+                auto_counts=counts,
+                auto_summary=auto_summary,
+                before_report=before_report,
+                before_names=before_names,
+                after_report=after_report,
+                llm_meta=llm_meta,
+            )
+            if report_path is not None:
+                state2["last_report_path"] = str(report_path)
+        except Exception as e:
+            logger.debug("Curator report write failed: %s", e, exc_info=True)
+
         save_state(state2)
 
         if on_summary:
@@ -452,14 +714,34 @@ def run_curator_review(
     }
 
 
-def _run_llm_review(prompt: str) -> str:
-    """Spawn an AIAgent fork to run the curator review prompt. Returns a short
-    summary of what the model said in its final response."""
+def _run_llm_review(prompt: str) -> Dict[str, Any]:
+    """Spawn an AIAgent fork to run the curator review prompt.
+
+    Returns a dict with:
+      - final: full (untruncated) final response from the reviewer
+      - summary: short summary suitable for state file (240-char cap)
+      - model, provider: what the fork actually ran on
+      - tool_calls: list of {name, arguments} for every tool call made during
+        the pass (arguments may be truncated for readability)
+      - error: set if the pass failed mid-run; final/summary may still be empty
+
+    Never raises; callers get a structured failure instead.
+    """
     import contextlib
+    result_meta: Dict[str, Any] = {
+        "final": "",
+        "summary": "",
+        "model": "",
+        "provider": "",
+        "tool_calls": [],
+        "error": None,
+    }
     try:
         from run_agent import AIAgent
     except Exception as e:
-        return f"AIAgent import failed: {e}"
+        result_meta["error"] = f"AIAgent import failed: {e}"
+        result_meta["summary"] = result_meta["error"]
+        return result_meta
 
     # Resolve provider + model the same way the CLI does, so the curator
     # fork inherits the user's active main config rather than falling
@@ -488,6 +770,9 @@ def _run_llm_review(prompt: str) -> str:
         _resolved_provider = _rp.get("provider") or _provider
     except Exception as e:
         logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
+
+    result_meta["model"] = _model_name
+    result_meta["provider"] = _resolved_provider or ""
 
     review_agent = None
     try:
@@ -520,20 +805,43 @@ def _run_llm_review(prompt: str) -> str:
         with open(os.devnull, "w") as _devnull, \
              contextlib.redirect_stdout(_devnull), \
              contextlib.redirect_stderr(_devnull):
-            result = review_agent.run_conversation(user_message=prompt)
+            conv_result = review_agent.run_conversation(user_message=prompt)
 
         final = ""
-        if isinstance(result, dict):
-            final = str(result.get("final_response") or "").strip()
-        return (final[:240] + "…") if len(final) > 240 else (final or "no change")
+        if isinstance(conv_result, dict):
+            final = str(conv_result.get("final_response") or "").strip()
+        result_meta["final"] = final
+        result_meta["summary"] = (final[:240] + "…") if len(final) > 240 else (final or "no change")
+
+        # Collect tool calls for the report. Walk the forked agent's
+        # session messages and extract every tool_call made during the
+        # pass. Truncate argument payloads so a giant skill_manage create
+        # doesn't blow up the report.
+        _calls: List[Dict[str, Any]] = []
+        for msg in getattr(review_agent, "_session_messages", []) or []:
+            if not isinstance(msg, dict):
+                continue
+            tcs = msg.get("tool_calls") or []
+            for tc in tcs:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                name = fn.get("name") or ""
+                args_raw = fn.get("arguments") or ""
+                if isinstance(args_raw, str) and len(args_raw) > 400:
+                    args_raw = args_raw[:400] + "…"
+                _calls.append({"name": name, "arguments": args_raw})
+        result_meta["tool_calls"] = _calls
     except Exception as e:
-        return f"error: {e}"
+        result_meta["error"] = f"error: {e}"
+        result_meta["summary"] = result_meta["error"]
     finally:
         if review_agent is not None:
             try:
                 review_agent.close()
             except Exception:
                 pass
+    return result_meta
 
 
 # ---------------------------------------------------------------------------

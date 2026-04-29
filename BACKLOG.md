@@ -32,3 +32,7 @@ Use when comparing implementation to architecture, handoffs, task lists, binding
 ## Stage 5 precedence default (2026-04-29)
 
 `/tmp/precedence-test-result.txt` was missing or unresolved during unattended Stage 5. Defaulted to the user-global `~/.claude/agents/` overlay strategy per operator instruction.
+
+## /escalate smoke test deferred (2026-04-29)
+
+Deferred until full provider setup is complete. Command contract installed, but multi-family fan-out and cost tracking still need a live-provider smoke test.

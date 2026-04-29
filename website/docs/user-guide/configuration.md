@@ -42,6 +42,10 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # Saves to .env
 The `hermes config set` command automatically routes values to the right file — API keys are saved to `.env`, everything else to `config.yaml`.
 :::
 
+:::tip
+Want autocomplete in `config.yaml`? See [YAML Schema Autocomplete](#yaml-schema-autocomplete).
+:::
+
 ## Configuration Precedence
 
 Settings are resolved in this order (highest priority first):
@@ -80,6 +84,22 @@ You can set `providers.<id>.request_timeout_seconds` for a provider-wide request
 You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming stale-call detector, plus `providers.<id>.models.<model>.stale_timeout_seconds` for a model-specific override. This wins over the legacy `HERMES_API_CALL_STALE_TIMEOUT` env var.
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=300`s, native Anthropic 900s). Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
+
+## YAML Schema Autocomplete
+
+Hermes now ships a JSON Schema for `~/.hermes/config.yaml` at:
+
+- `https://hermes-agent.nousresearch.com/schemas/hermes-config.schema.json`
+
+If your editor uses `yaml-language-server` (VS Code YAML, Zed YAML, many JetBrains setups), add this modeline at the top of your config file:
+
+```yaml
+# yaml-language-server: $schema=https://hermes-agent.nousresearch.com/schemas/hermes-config.schema.json
+```
+
+That enables field completion, hover docs, and type validation for Hermes config keys.
+
+If you prefer editor-side mapping instead of editing the file, bind `~/.hermes/config.yaml` to the same schema URL in your editor settings.
 
 ## Terminal Backend Configuration
 

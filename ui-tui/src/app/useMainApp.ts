@@ -17,6 +17,7 @@ import type {
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
+import { isMac } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
@@ -52,7 +53,7 @@ const capHistory = (items: Msg[]): Msg[] => {
   return items[0]?.kind === 'intro' ? [items[0]!, ...items.slice(-(MAX_HISTORY - 1))] : items.slice(-MAX_HISTORY)
 }
 
-const statusColorOf = (status: string, t: { dim: string; error: string; ok: string; warn: string }) => {
+const statusColorOf = (status: string, t: { error: string; muted: string; ok: string; warn: string }) => {
   if (status === 'ready') {
     return t.ok
   }
@@ -65,7 +66,7 @@ const statusColorOf = (status: string, t: { dim: string; error: string; ok: stri
     return t.warn
   }
 
-  return t.dim
+  return t.muted
 }
 
 export function useMainApp(gw: GatewayClient) {
@@ -143,10 +144,46 @@ export function useMainApp(gw: GatewayClient) {
 
   const hasSelection = useHasSelection()
   const selection = useSelection()
+  const lastCopiedVersionRef = useRef(-1)
 
   useEffect(() => {
     selection.setSelectionBgColor(ui.theme.color.selectionBg)
   }, [selection, ui.theme.color.selectionBg])
+
+  // macOS Terminal.app does not forward Cmd+C to fullscreen TUIs that enable
+  // mouse tracking, so the only reliable native-feeling path is iTerm-style
+  // copy-on-select: once a drag creates a stable TUI selection, write it to
+  // the system clipboard while keeping the highlight visible.
+  //
+  // Subscribe directly via the ink selection bus (not useSyncExternalStore)
+  // so React doesn't re-render MainApp on every drag-move tick. The version
+  // ref de-dupes against re-entrant notifications.
+  useEffect(() => {
+    if (!isMac) {
+      return
+    }
+
+    return selection.subscribe(() => {
+      if (!selection.hasSelection()) {
+        return
+      }
+
+      const state = selection.getState() as { isDragging?: boolean } | null
+
+      if (state?.isDragging) {
+        return
+      }
+
+      const version = selection.version()
+
+      if (version === lastCopiedVersionRef.current) {
+        return
+      }
+
+      lastCopiedVersionRef.current = version
+      void selection.copySelectionNoClear()
+    })
+  }, [selection])
 
   const clearSelection = useCallback(() => {
     selection.clearSelection()

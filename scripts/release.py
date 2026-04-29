@@ -84,6 +84,7 @@ AUTHOR_MAP = {
     "6548898+romanornr@users.noreply.github.com": "romanornr",
     "foxion37@gmail.com": "foxion37",
     "bloodcarter@gmail.com": "bloodcarter",
+    "scott@scotttrinh.com": "scotttrinh",
     # contributors (from noreply pattern)
     "david.vv@icloud.com": "davidvv",
     "wangqiang@wangqiangdeMac-mini.local": "xiaoqiang243",

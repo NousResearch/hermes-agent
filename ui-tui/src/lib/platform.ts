@@ -42,7 +42,13 @@ export const isCopyShortcut = (
   ch: string,
   env: NodeJS.ProcessEnv = process.env
 ): boolean =>
-  isAction(key, ch, 'c') || (isRemoteShell(env) && (key.meta || key.super === true) && ch.toLowerCase() === 'c')
+  ch.toLowerCase() === 'c' &&
+  (isAction(key, ch, 'c') ||
+    (isRemoteShell(env) && (key.meta || key.super === true)) ||
+    // VS Code/Cursor/Windsurf terminal setup forwards Cmd+C as a CSI-u
+    // sequence with the super bit plus a benign ctrl bit. Accept that shape
+    // even though raw Ctrl+C should remain interrupt on local macOS.
+    (isMac && key.ctrl && (key.meta || key.super === true)))
 
 /**
  * Voice recording toggle key (Ctrl+B).

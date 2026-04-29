@@ -21,6 +21,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "Dockerfile"
+DOCKERIGNORE = REPO_ROOT / ".dockerignore"
 
 
 @pytest.fixture(scope="module")
@@ -108,17 +109,37 @@ def test_dockerfile_installs_tui_dependencies(dockerfile_text):
     assert "ui-tui/package.json" in dockerfile_text
     assert "ui-tui/packages/hermes-ink/package-lock.json" in dockerfile_text
     assert any(
-        "ui-tui" in step
-        and "npm" in step
-        and (" install" in step or " ci" in step)
+        "ui-tui" in step and "npm" in step and (" install" in step or " ci" in step)
         for step in _run_steps(dockerfile_text)
     )
 
 
 def test_dockerfile_builds_tui_assets(dockerfile_text):
     assert any(
-        "ui-tui" in step
-        and "npm" in step
-        and "run build" in step
+        "ui-tui" in step and "npm" in step and "run build" in step
         for step in _run_steps(dockerfile_text)
     )
+
+
+def test_dockerfile_materializes_local_tui_ink_package(dockerfile_text):
+    assert any(
+        "ui-tui" in step
+        and "node_modules/@hermes/ink" in step
+        and "packages/hermes-ink" in step
+        and "rm -rf packages/hermes-ink/node_modules" in step
+        and "npm install --omit=dev" in step
+        and "--prefix node_modules/@hermes/ink" in step
+        and "rm -rf node_modules/@hermes/ink/node_modules/react" in step
+        and "await import('@hermes/ink')" in step
+        for step in _run_steps(dockerfile_text)
+    )
+
+
+def test_dockerignore_excludes_nested_dependency_dirs():
+    if not DOCKERIGNORE.exists():
+        pytest.skip(".dockerignore not present in this checkout")
+
+    text = DOCKERIGNORE.read_text()
+
+    assert "**/node_modules" in text
+    assert "**/.venv" in text

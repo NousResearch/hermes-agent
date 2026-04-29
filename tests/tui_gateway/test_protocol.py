@@ -83,6 +83,134 @@ def test_write_json_broken_pipe(server):
     assert server.write_json({"x": 1}) is False
 
 
+def test_write_json_closed_stream_returns_false(server):
+    """ValueError ('I/O on closed file') used to bubble up; treat as gone."""
+
+    class _Closed:
+        def write(self, _): raise ValueError("I/O operation on closed file")
+        def flush(self): raise ValueError("I/O operation on closed file")
+
+    server._real_stdout = _Closed()
+    assert server.write_json({"x": 1}) is False
+
+
+def test_write_json_unicode_encode_error_re_raises(server):
+    """A non-UTF-8 stdout encoding raises UnicodeEncodeError (a ValueError
+    subclass).  It must NOT be swallowed as 'peer gone' — that would let
+    `entry.py` exit cleanly via the False path and hide the real config
+    bug.  We re-raise so the existing crash-log infrastructure records it."""
+
+    class _AsciiOnly:
+        def write(self, line):
+            line.encode("ascii")  # raises UnicodeEncodeError on non-ascii
+        def flush(self): pass
+
+    server._real_stdout = _AsciiOnly()
+    with pytest.raises(UnicodeEncodeError):
+        server.write_json({"msg": "héllo"})
+
+
+def test_write_json_unrelated_value_error_re_raises(server):
+    """Only ValueError('...closed file...') means peer gone.  Other
+    ValueErrors are programming errors and must surface."""
+
+    class _BadValue:
+        def write(self, _): raise ValueError("something else entirely")
+        def flush(self): pass
+
+    server._real_stdout = _BadValue()
+    with pytest.raises(ValueError, match="something else entirely"):
+        server.write_json({"x": 1})
+
+
+def test_write_json_non_serializable_payload_re_raises(server):
+    """Non-JSON-safe payloads are programming errors — they must NOT be
+    silently dropped via the False path (which would trigger a clean exit
+    in entry.py and mask the real bug)."""
+    import io
+
+    server._real_stdout = io.StringIO()
+    with pytest.raises(TypeError):
+        server.write_json({"obj": object()})
+
+
+def test_write_json_peer_gone_oserror_on_flush_returns_false(server):
+    """A flush that raises a peer-gone OSError (EPIPE) must not strand
+    the lock or crash; it returns False so the dispatcher exits cleanly."""
+    import errno
+
+    written = []
+
+    class _FlushPeerGone:
+        def write(self, line): written.append(line)
+        def flush(self): raise OSError(errno.EPIPE, "broken pipe")
+
+    server._real_stdout = _FlushPeerGone()
+    assert server.write_json({"x": 1}) is False
+    assert written and json.loads(written[0]) == {"x": 1}
+
+
+def test_write_json_non_peer_gone_oserror_re_raises(server):
+    """Host I/O failures (ENOSPC, EACCES, EIO …) are NOT peer-gone — they
+    must re-raise so the crash log records them instead of looking like
+    a clean disconnect via the False path."""
+    import errno
+
+    class _DiskFull:
+        def write(self, _): raise OSError(errno.ENOSPC, "no space left")
+        def flush(self): pass
+
+    server._real_stdout = _DiskFull()
+    with pytest.raises(OSError, match="no space"):
+        server.write_json({"x": 1})
+
+
+def test_write_json_skips_flush_when_disable_flush_true(monkeypatch):
+    """`StdioTransport` skips flush when `_DISABLE_FLUSH` is true.
+
+    Tests the runtime *behaviour* via direct module-attr patch.  The env
+    var → module constant wiring is covered by the dedicated env test
+    below; reloading server.py here would re-register atexit hooks and
+    recreate the worker pool.
+    """
+    import importlib
+
+    transport_mod = importlib.import_module("tui_gateway.transport")
+    monkeypatch.setattr(transport_mod, "_DISABLE_FLUSH", True)
+
+    flushed = {"count": 0}
+    written = []
+
+    class _Stream:
+        def write(self, line): written.append(line)
+        def flush(self): flushed["count"] += 1
+
+    stream = _Stream()
+    transport = transport_mod.StdioTransport(lambda: stream, threading.Lock())
+
+    assert transport.write({"x": 1}) is True
+    assert flushed["count"] == 0
+
+
+def test_disable_flush_env_var_actually_wires_to_module_constant(monkeypatch):
+    """End-to-end: setting `HERMES_TUI_GATEWAY_NO_FLUSH=1` and importing
+    `tui_gateway.transport` fresh actually flips `_DISABLE_FLUSH` true.
+
+    Reloads only the transport module — server.py is untouched so its
+    atexit hooks/worker pool stay intact."""
+    import importlib
+
+    monkeypatch.setenv("HERMES_TUI_GATEWAY_NO_FLUSH", "1")
+    transport_mod = importlib.reload(importlib.import_module("tui_gateway.transport"))
+
+    try:
+        assert transport_mod._DISABLE_FLUSH is True
+    finally:
+        # Restore the env-disabled state so other tests see the default.
+        monkeypatch.delenv("HERMES_TUI_GATEWAY_NO_FLUSH", raising=False)
+        importlib.reload(transport_mod)
+
+
 # ── _emit ────────────────────────────────────────────────────────────
 
 

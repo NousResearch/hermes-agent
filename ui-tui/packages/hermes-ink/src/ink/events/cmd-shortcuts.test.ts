@@ -39,6 +39,15 @@ describe('enhanced keyboard modifier parsing', () => {
     expect(event.key.super).toBe(true)
   })
 
+  it('preserves forwarded VS Code/Cursor Cmd+C copy sequence as ctrl+super+c', () => {
+    const parsed = parseOne('\u001b[99;13u')
+    const event = new InputEvent(parsed)
+
+    expect(parsed.name).toBe('c')
+    expect(event.key.ctrl).toBe(true)
+    expect(event.key.super).toBe(true)
+  })
+
   it('preserves Cmd on word-delete and word-navigation sequences', () => {
     const backspace = new InputEvent(parseOne('\u001b[127;9u'))
     const left = new InputEvent(parseOne('\u001b[1;9D'))

@@ -129,11 +129,11 @@ def _run_agent(
     # the caller just asked for.
     effective_provider = (provider or "").strip() or None
     explicit_base_url_from_alias: Optional[str] = None
-    if effective_provider is None and (model or env_model):
+    explicit_model = (model or "").strip() or env_model
+    if explicit_model:
         # Only auto-detect when the model was explicitly requested via arg or
         # env var (not when it came from config — that's the "use my defaults"
         # path and the configured provider is already correct).
-        explicit_model = (model or "").strip() or env_model
         if explicit_model:
             # First check DIRECT_ALIASES populated from config.yaml `model_aliases:`.
             # These map a user-defined alias to (model, provider, base_url) for
@@ -146,10 +146,16 @@ def _run_agent(
                 direct = None
             if direct is not None:
                 effective_model = direct.model
-                effective_provider = direct.provider
-                if direct.base_url:
+                if effective_provider is None:
+                    effective_provider = direct.provider
+                provider_matches_alias = (
+                    direct.provider
+                    and direct.provider.strip().lower()
+                    == (effective_provider or "").strip().lower()
+                )
+                if direct.base_url and provider_matches_alias:
                     explicit_base_url_from_alias = direct.base_url.rstrip("/")
-            else:
+            elif effective_provider is None:
                 cfg_provider = ""
                 if isinstance(model_cfg, dict):
                     cfg_provider = str(model_cfg.get("provider") or "").strip().lower()

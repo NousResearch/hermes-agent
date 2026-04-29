@@ -2021,13 +2021,45 @@ class HermesCLI:
             or os.getenv("HERMES_INFERENCE_PROVIDER")
             or "auto"
         )
+        if model:
+            try:
+                from hermes_cli.model_switch import resolve_alias
+
+                alias_result = resolve_alias(str(model), self.requested_provider or "auto")
+                if alias_result is not None:
+                    alias_provider, alias_model, alias_name = alias_result
+                    self.model = alias_model
+
+                    # If the user did not pin --provider, let direct aliases
+                    # carry their configured route. With --provider, keep the
+                    # explicit route and only use the alias as a model shorthand.
+                    if alias_provider and not provider:
+                        self.requested_provider = alias_provider
+
+                    alias_provider_matches = (
+                        alias_provider
+                        and alias_provider.strip().lower()
+                        == (self.requested_provider or "").strip().lower()
+                    )
+                    if not base_url and alias_provider_matches:
+                        try:
+                            from hermes_cli.model_switch import DIRECT_ALIASES, _ensure_direct_aliases
+
+                            _ensure_direct_aliases()
+                            direct_alias = DIRECT_ALIASES.get(alias_name)
+                            if direct_alias is not None and direct_alias.base_url:
+                                self._explicit_base_url = direct_alias.base_url
+                        except Exception:
+                            logger.debug("Failed to apply base_url from model alias", exc_info=True)
+            except Exception:
+                logger.debug("Failed to resolve CLI model alias", exc_info=True)
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
         self.acp_command: Optional[str] = None
         self.acp_args: list[str] = []
         self.base_url = (
-            base_url
+            self._explicit_base_url
             or CLI_CONFIG["model"].get("base_url", "")
             or os.getenv("OPENROUTER_BASE_URL", "")
         ) or None

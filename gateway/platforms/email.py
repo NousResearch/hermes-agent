@@ -38,6 +38,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_audio_from_bytes,
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
@@ -64,6 +65,7 @@ MAX_MESSAGE_LENGTH = 50_000
 
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+_AUDIO_EXTS = {".mp3", ".wav", ".ogg", ".m4a", ".aac", ".amr", ".flac"}
 
 def _is_automated_sender(address: str, headers: dict) -> bool:
     """Return True if this email is from an automated/noreply source."""
@@ -205,6 +207,14 @@ def _extract_attachments(
                 "path": cached_path,
                 "filename": filename,
                 "type": "image",
+                "media_type": content_type,
+            })
+        elif ext in _AUDIO_EXTS:
+            cached_path = cache_audio_from_bytes(payload, ext)
+            attachments.append({
+                "path": cached_path,
+                "filename": filename,
+                "type": "audio",
                 "media_type": content_type,
             })
         else:
@@ -435,6 +445,8 @@ class EmailAdapter(BasePlatformAdapter):
             media_types.append(att["media_type"])
             if att["type"] == "image":
                 msg_type = MessageType.PHOTO
+            elif att["type"] == "audio":
+                msg_type = MessageType.AUDIO
 
         # Store thread context for reply threading
         self._thread_context[sender_addr] = {
@@ -534,12 +546,69 @@ class EmailAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        **kwargs,
     ) -> SendResult:
-        """Send an image URL as part of an email body."""
+        """Send an image as an email attachment (local file) or inline URL."""
+        # If it's a local file path, send it as a proper attachment
+        if Path(image_url).is_file():
+            return await self.send_document(
+                chat_id=chat_id,
+                file_path=image_url,
+                caption=caption,
+                file_name=Path(image_url).name,
+                reply_to=reply_to,
+            )
+        # Remote URL — embed it in the email body
         text = caption or ""
         text += f"\n\nImage: {image_url}"
         return await self.send(chat_id, text.strip(), reply_to)
 
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local image file — delegates to send_document for attachment handling."""
+        return await self.send_document(
+            chat_id=chat_id,
+            file_path=image_path,
+            caption=caption,
+            file_name=Path(image_path).name,
+            reply_to=reply_to,
+        )
+
+    async def send_audio(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send an audio file — delegates to send_document for attachment handling."""
+        return await self.send_document(
+            chat_id=chat_id,
+            file_path=audio_path,
+            caption=caption,
+            file_name=Path(audio_path).name,
+            reply_to=reply_to,
+        )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a voice note (audio file) — delegates to send_document."""
+        return await self.send_audio(chat_id, audio_path, caption, reply_to, **kwargs)
+
+    
     async def send_document(
         self,
         chat_id: str,
@@ -595,11 +664,22 @@ class EmailAdapter(BasePlatformAdapter):
         if body:
             msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        # Attach file
+        # Attach file — use correct MIME type so images/audio render inline in mail clients
         p = Path(file_path)
         fname = file_name or p.name
+        ext = p.suffix.lower().lstrip(".")
+        _IMG_MIME = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "gif": "gif", "webp": "webp"}
+        _AUDIO_MIME = {"mp3": "mpeg", "wav": "wav", "ogg": "ogg", "m4a": "mp4", "aac": "aac", "amr": "amr", "flac": "x-flac"}
+
+        if ext in _IMG_MIME:
+            maintype, subtype = "image", _IMG_MIME[ext]
+        elif ext in _AUDIO_MIME:
+            maintype, subtype = "audio", _AUDIO_MIME[ext]
+        else:
+            maintype, subtype = "application", "octet-stream"
+
         with open(p, "rb") as f:
-            part = MIMEBase("application", "octet-stream")
+            part = MIMEBase(maintype, subtype)
             part.set_payload(f.read())
             encoders.encode_base64(part)
             part.add_header("Content-Disposition", f"attachment; filename={fname}")

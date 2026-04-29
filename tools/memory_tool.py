@@ -115,7 +115,7 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 3200, user_char_limit: int = 2375):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
@@ -254,7 +254,12 @@ class MemoryStore:
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
                         f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
+                        "Classify the fact before retrying: compact/replace built-in memory "
+                        "for hard durable rules; create or update a skill for procedures; "
+                        "write/update a canonical artifact for exact project state such as "
+                        "URLs, seed sets, TODOs, decisions, or status; or use external "
+                        "semantic memory for non-canonical recall. DO NOT claim mental "
+                        "or ephemeral retention for durable facts."
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
@@ -528,6 +533,12 @@ MEMORY_SCHEMA = {
         "The most valuable memory prevents the user from having to repeat themselves.\n\n"
         "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
         "state to memory; use session_search to recall those from past transcripts.\n"
+        "Route persistence by durability target:\n"
+        "- built-in memory: hard user preferences, safety rules, provider constraints, and compact durable environment facts\n"
+        "- skills: procedures, troubleshooting recipes, reusable workflows, and multi-step lessons\n"
+        "- canonical artifact: exact project state such as URLs, seed sets, TODOs, decisions logs, status files, READMEs, and config truth\n"
+        "- Honcho/external semantic memory: broad semantic recall, NOT the sole source for exact ordered lists or canonical state\n"
+        "If memory.add fails because built-in memory is full, MUST compact/replace memory, save an appropriate skill, write/update a canonical artifact, or use external semantic memory when suitable. DO NOT claim mental or ephemeral retention for durable facts.\n"
         "If you've discovered a new way to do something, solved a problem that could be "
         "necessary later, save it as a skill with the skill tool.\n\n"
         "TWO TARGETS:\n"

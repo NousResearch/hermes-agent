@@ -2209,7 +2209,7 @@ for paper in results:
 
 ### State Management with `memory` and `todo`
 
-**`memory` tool** — persist key decisions (bounded: ~2200 chars for MEMORY.md):
+**`memory` tool** — persist key decisions (bounded: ~3200 chars for MEMORY.md):
 
 ```
 memory("add", "Paper: autoreason. Venue: NeurIPS 2025 (9 pages). 

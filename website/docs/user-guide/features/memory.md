@@ -203,8 +203,8 @@ hermes sessions list    # Browse past sessions
 memory:
   memory_enabled: true
   user_profile_enabled: true
-  memory_char_limit: 2200   # ~800 tokens
-  user_char_limit: 1375     # ~500 tokens
+  memory_char_limit: 3200   # ~1160 tokens
+  user_char_limit: 2375     # ~860 tokens
 ```
 
 ## External Memory Providers

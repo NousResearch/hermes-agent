@@ -215,7 +215,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "zai": "glm-4.5-flash",
     "kimi-coding": "kimi-k2-turbo-preview",
     "stepfun": "step-3.5-flash",
-    "kimi-coding-cn": "kimi-k2-turbo-preview",
+    "kimi-coding-cn": "kimi-k2.6",
     "gmi": "google/gemini-3.1-flash-lite-preview",
     "minimax": "MiniMax-M2.7",
     "minimax-oauth": "MiniMax-M2.7-highspeed",

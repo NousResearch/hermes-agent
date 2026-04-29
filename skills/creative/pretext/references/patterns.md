@@ -103,49 +103,93 @@ function tick(dt) {
 }
 ```
 
-## 4. Proportional ASCII surface (donut / sphere / wave)
+## 4. ASCII mask as moving obstacle
 
-The "cool demos" money pattern. Sample a parametric 3D surface, use classic luminance → glyph picking, but replace the monospace grid with a **z-buffer keyed by screen cell** and pull glyphs from a real corpus in reading order.
+The "cool demos" money pattern: rasterize an ASCII logo, sprite, or bitmap into a cell buffer, then convert the occupied cells into per-row obstacle spans. Pretext lays the paragraphs around those spans, so the text actually opens around the moving ASCII object instead of being visually overpainted.
 
-See `templates/donut-orbit.html` in this skill for the full implementation. Key structure:
+See `templates/donut-orbit.html` in this skill for a full implementation. Treat it as an example, not the canonical scene: it shows how to derive spans from an ASCII logo, project a wire shape into obstacle rows, keep text selectable in a DOM layer, and hide tuning controls behind `?dev`. Key structure:
 
 ```js
-const CELL = 9; // px bucket
-const cols = Math.ceil(W / CELL), rows = Math.ceil(H / CELL);
-const zbuf = new Float32Array(cols * rows);
-const chbuf = new Array(cols * rows);
+const CELL_W = 12, CELL_H = 15;
+const cols = Math.ceil(W / CELL_W), rows = Math.ceil(H / CELL_H);
+const asciiMask = new Uint8Array(cols * rows);
+const obstacleRows = Array.from({ length: rows }, () => []);
 
-// Sample the surface
-for (let j = 0; j < PHI_STEPS; j++) {
-  for (let i = 0; i < THETA_STEPS; i++) {
-    const { sx, sy, ooz, L } = projectSurfacePoint(i, j);
-    if (L <= 0) continue;
-    const ci = (sx / CELL) | 0, ri = (sy / CELL) | 0;
-    const idx = ri * cols + ci;
-    if (ooz > zbuf[idx]) {
-      zbuf[idx] = ooz;
-      chbuf[idx] = GLYPHS[glyphIdx++ % GLYPHS.length];
+function rasterizeLogo(time) {
+  asciiMask.fill(0);
+  for (const r of obstacleRows) r.length = 0;
+
+  for (const block of logoBlocks(time)) {
+    const r0 = Math.floor(block.y0 / CELL_H);
+    const r1 = Math.ceil(block.y1 / CELL_H);
+    for (let r = r0; r <= r1; r++) {
+      obstacleRows[r]?.push([block.x0 - 18, block.x1 + 22]);
+      // Fill asciiMask cells here for drawing.
+    }
+  }
+
+  mergeRowSpans(obstacleRows);
+}
+
+function drawParagraphs(prepared) {
+  let cursor = { segmentIndex: 0, graphemeIndex: 0 };
+  for (let y = yStart; y < yEnd; y += LINE_H) {
+    const spans = obstacleRows[Math.floor(y / CELL_H)];
+    for (const [x0, x1] of freeIntervalsAround(spans)) {
+      const range = layoutNextLineRange(prepared, cursor, x1 - x0);
+      if (!range) return;
+      ctx.fillText(materializeLineRange(prepared, range).text, x0, y);
+      cursor = range.end;
     }
   }
 }
-
-// Draw once
-for (let i = 0; i < chbuf.length; i++) if (chbuf[i]) ctx.fillText(chbuf[i], ...);
 ```
 
-The `GLYPHS` array comes from pretext:
+The important bit is that the ASCII geometry is not decorative only. The same moving spans that draw the logo or draggable object also carve the line intervals passed to `layoutNextLineRange`.
+
+### Measured spans beat magic padding
+
+When a logo or bitmap is rasterized into cells, measure the actual occupied cells per row and then add a small halo. Do not use one giant bounding box. Tight measured spans make the text read as if it is flowing around the letter shapes.
 
 ```js
-const prepared = prepareWithSegments(CORPUS, FONT);
-const { lines } = layoutWithLines(prepared, 260, 16);
-const GLYPHS = [];
-for (const line of lines) {
-  const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-  for (const { segment } of seg.segment(line.text)) GLYPHS.push(segment);
+const rowMin = new Float32Array(rows).fill(Infinity);
+const rowMax = new Float32Array(rows).fill(-Infinity);
+
+for (const cell of visibleCells) {
+  rowMin[cell.row] = Math.min(rowMin[cell.row], cell.x);
+  rowMax[cell.row] = Math.max(rowMax[cell.row], cell.x + CELL_W);
+}
+
+for (let row = 0; row < rows; row++) {
+  if (!Number.isFinite(rowMin[row])) continue;
+  obstacleRows[row].push([rowMin[row] - halo, rowMax[row] + halo]);
 }
 ```
 
-Why not just `[...CORPUS]`? Because pretext gives you **reading-order graphemes after line-break decisions** — which makes the surface glyphs follow the corpus's natural rhythm, including non-Latin scripts and soft-hyphen-resolved breaks.
+For sharp pixel-art letters, smooth adjacent rows before pushing spans. A 1-2 row halo usually prevents code/prose from touching corners without losing the letter silhouette.
+
+### Morphing shapes need morphing obstacles
+
+If the visible object morphs (sphere to cube, logo to particles, etc.), tween the collision field too. A convincing demo uses the same `mix` value for both the rendered buffer and the pretext obstacle rows.
+
+```js
+function pushMorphedRows(aRows, bRows, mix) {
+  for (let row = 0; row < rows; row++) {
+    const a = aRows[row] ?? [centerX, centerX];
+    const b = bRows[row] ?? [centerX, centerX];
+    obstacleRows[row].push([
+      a[0] + (b[0] - a[0]) * mix,
+      a[1] + (b[1] - a[1]) * mix,
+    ]);
+  }
+}
+```
+
+Without this, the artwork may morph while the text still wraps around the old shape, which breaks the pretext effect.
+
+### Separate visual layers from collision
+
+Use separate canvases when visual treatment should not affect layout. For example, fade an ASCII object with CSS opacity on its own canvas layer, but keep its obstacle rows controlled by explicit shape state. Fading glyph intensity or scaling obstacle spans often looks like the object is shrinking instead of fading.
 
 ## 5. Editorial multi-column with shared cursor
 

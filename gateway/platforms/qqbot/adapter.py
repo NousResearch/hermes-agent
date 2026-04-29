@@ -1193,8 +1193,13 @@ class QQAdapter(BasePlatformAdapter):
                     cached_path = await self._download_and_cache(url, ct)
                     if cached_path:
                         other_attachments.append(f"[Attachment: {filename or ct}]")
+                    else:
+                        # Download failed — record the attachment name so the
+                        # agent knows a file was sent even if content is unavailable.
+                        other_attachments.append(f"[Attachment: {filename or ct}] (download failed)")
                 except Exception as exc:
                     logger.debug("[%s] Failed to cache attachment: %s", self._log_tag, exc)
+                    other_attachments.append(f"[Attachment: {filename or ct}] (download failed)")
 
         attachment_info = "\n".join(other_attachments) if other_attachments else ""
         return {

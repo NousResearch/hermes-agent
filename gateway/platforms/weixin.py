@@ -707,9 +707,30 @@ def _normalize_markdown_blocks(content: str) -> str:
             continue
 
         blank_run = 0
+        # WeChat clips tables with many columns — truncate cells that would
+        # overflow the narrow mobile viewport.  This is a workaround for
+        # WeChat's broken CSS "overflow: visible" on table wrappers.
+        if line.strip().startswith("|") and " | " in line and line.count("|") > 6:
+            line = _truncate_wide_table_row(line)
         result.append(line)
 
     return "\n".join(result).strip()
+
+
+def _truncate_wide_table_row(line: str) -> str:
+    """Truncate cells in wide markdown table rows to prevent WeChat viewport clipping."""
+    cells = line.split("|")
+    # | col1 | col2 | ... | means cells[0]="" and cells[-1]=""
+    MAX_VISIBLE = 6  # max |cells| in a row (including empty first/last)
+    if len(cells) <= MAX_VISIBLE:
+        return line
+    # Truncate to MAX_VISIBLE cells, append overflow indicator to last cell
+    truncated = cells[:MAX_VISIBLE]
+    truncated[-1] = truncated[-1].rstrip("\n")
+    # Mark truncated content
+    if len(cells) > MAX_VISIBLE:
+        truncated[-1] = truncated[-1].rstrip() + " ..."
+    return "|".join(truncated)
 
 
 def _split_markdown_blocks(content: str) -> List[str]:

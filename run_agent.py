@@ -11610,6 +11610,7 @@ class AIAgent:
                         error_context=error_context,
                     )
                     if recovered_with_pool:
+                        retry_count = 0  # reset — credential rotation is not an API attempt
                         continue
 
                     # Image-too-large recovery: shrink oversized native image

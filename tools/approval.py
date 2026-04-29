@@ -1065,7 +1065,8 @@ def check_all_command_guards(command: str, env_type: str,
             try:
                 notify_cb(approval_data)
             except Exception as exc:
-                logger.warning("Gateway approval notify failed: %s", exc)
+                exc_repr = repr(exc)  # use repr() not str() — some exceptions have empty str()
+                logger.warning("Gateway approval notify failed: %s", exc_repr)
                 with _lock:
                     queue = _gateway_queues.get(session_key, [])
                     if entry in queue:
@@ -1074,7 +1075,10 @@ def check_all_command_guards(command: str, env_type: str,
                         _gateway_queues.pop(session_key, None)
                 return {
                     "approved": False,
-                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "message": (
+                        f"BLOCKED: Failed to send approval request to user "
+                        f"({exc_repr or 'unknown error'}). Do NOT retry."
+                    ),
                     "pattern_key": primary_key,
                     "description": combined_desc,
                 }

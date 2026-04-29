@@ -11378,8 +11378,20 @@ class GatewayRunner:
                         ),
                         _loop_for_step,
                     ).result(timeout=15)
-                except Exception as _e:
-                    logger.error("Failed to send approval request: %s", _e)
+                except Exception as _text_e:
+                    # Both card-based AND text-based approval sends failed.
+                    # Re-raise so the caller (approval.py) treats this as a
+                    # hard block instead of silently hanging forever waiting
+                    # for a response the user never sees.
+                    logger.error(
+                        "Approval notify failed: card send errored (%s), "
+                        "text fallback also failed (%s)",
+                        getattr("_approval_result", "error", "N/A") if "_approval_result" in dir() else _e,
+                        _text_e,
+                    )
+                    raise RuntimeError(
+                        f"Approval notification failed (card + text): {_text_e}"
+                    ) from _text_e
 
             # Prepend pending model switch note so the model knows about the switch
             _pending_notes = getattr(self, '_pending_model_notes', {})

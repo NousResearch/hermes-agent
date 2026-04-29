@@ -1740,12 +1740,26 @@ class FeishuAdapter(BasePlatformAdapter):
         The buttons carry ``hermes_action`` in their value dict so that
         ``_handle_card_action_event`` can intercept them and call
         ``resolve_gateway_approval()`` to unblock the waiting agent thread.
+
+        **Pre-registration pattern**: ``_approval_state`` is populated *before*
+        the API call so that fast button callbacks arriving before the send
+        coroutine resolves can still be matched.  On send failure the stale
+        entry is cleaned up so stale clicks become no-ops instead of hangs.
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         try:
             approval_id = next(self._approval_counter)
+            # Pre-register approval state BEFORE sending so that button
+            # callbacks that arrive while the send coroutine is in-flight
+            # (Feishu renders cards optimistically) can still resolve.
+            self._approval_state[approval_id] = {
+                "session_key": session_key,
+                "message_id": "",       # filled after successful send
+                "chat_id": chat_id,
+            }
+
             cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
 
             def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
@@ -1790,14 +1804,28 @@ class FeishuAdapter(BasePlatformAdapter):
 
             result = self._finalize_send_result(response, "send_exec_approval failed")
             if result.success:
-                self._approval_state[approval_id] = {
-                    "session_key": session_key,
-                    "message_id": result.message_id or "",
-                    "chat_id": chat_id,
-                }
+                # Fill in the message_id now that we have it
+                self._approval_state.setdefault(approval_id, {}).update(
+                    message_id=result.message_id or "",
+                )
+            else:
+                # Send failed — remove pre-registered state so callbacks
+                # don't silently resolve against a stale entry.  Log the
+                # raw response for diagnostics (previously swallowed).
+                self._approval_state.pop(approval_id, None)
+                raw = getattr(response, "__dict__", {}) if hasattr(response, "__dict__") else {}
+                logger.warning(
+                    "[Feishu] send_exec_approval card send failed (approval_id=%s, "
+                    "error=%s, raw_keys=%s) — button clicks for this card will "
+                    "be dropped",
+                    approval_id, result.error, list(raw.keys()),
+                )
             return result
         except Exception as exc:
-            logger.warning("[Feishu] send_exec_approval failed: %s", exc)
+            # Clean up pre-registered state on exception too
+            if "approval_id" in dir():
+                self._approval_state.pop(approval_id, None)
+            logger.warning("[Feishu] send_exec_approval exception: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
@@ -2365,7 +2393,16 @@ class FeishuAdapter(BasePlatformAdapter):
         """Pop approval state and unblock the waiting agent thread."""
         state = self._approval_state.pop(approval_id, None)
         if not state:
-            logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
+            # Previously DEBUG — upgraded to WARNING because this indicates
+            # a real user-facing bug (card visible but clicks do nothing).
+            # Include diagnostic info to help identify the root cause.
+            logger.warning(
+                "[Feishu] Approval %s not found in _approval_state (choice=%s, user=%s). "
+                "Known keys: %s. The card send likely failed silently — check "
+                "preceding 'send_exec_approval card send failed' log entries.",
+                approval_id, choice, user_name,
+                list(self._approval_state.keys())[:10],
+            )
             return
         try:
             from tools.approval import resolve_gateway_approval

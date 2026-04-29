@@ -1290,6 +1290,95 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    async def send_draft_message(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+    ) -> SendResult:
+        """Stream a partial message via Telegram's sendMessageDraft API.
+
+        Uses Bot API 9.5+ sendMessageDraft which avoids flood-control limits
+        on edit_message_text and provides smoother client-side animations.
+        Only works in private chats (chat_id must be an integer).
+
+        ``draft_id`` must be non-zero.  Successive calls with the same
+        draft_id are animated (diff-based update on the client).
+
+        Drafts are sent with MarkdownV2 formatting when the content parses
+        cleanly.  If the intermediate content has unclosed formatting markers
+        (code blocks, bold/italic, etc.) the method silently falls back to
+        plain text for that update.  The final response is also delivered
+        separately with full Markdown formatting via the standard send path.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if not draft_id:
+            return SendResult(success=False, error="draft_id must be non-zero")
+        if not content or not content.strip():
+            return SendResult(success=True)  # nothing to stream
+        try:
+            # Strip the streaming cursor before sending to draft
+            draft_text = content
+            if draft_text.endswith(" ▉"):
+                draft_text = draft_text[:-2]
+            if not draft_text.strip():
+                return SendResult(success=True)
+            # Try with MarkdownV2 first; if the intermediate content has
+            # unclosed formatting markers, fall back to plain text.
+            from telegram.error import BadRequest as _BadReq
+
+            ok = await self._bot.send_message_draft(
+                chat_id=int(chat_id),
+                draft_id=draft_id,
+                text=draft_text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return SendResult(success=bool(ok))
+        except _BadReq as e:
+            err_str = str(e).lower()
+            # "not modified" is a no-op success
+            if "not modified" in err_str:
+                return SendResult(success=True)
+            # Parse error — fall back to plain text for this update
+            if "parse" in err_str or "can't parse" in err_str:
+                logger.debug(
+                    "[%s] MarkdownV2 parse error in draft (falling back to plain): %s",
+                    self.name, e,
+                )
+                try:
+                    ok = await self._bot.send_message_draft(
+                        chat_id=int(chat_id),
+                        draft_id=draft_id,
+                        text=draft_text,
+                        parse_mode=None,
+                    )
+                    return SendResult(success=bool(ok))
+                except Exception as e2:
+                    err_str2 = str(e2).lower()
+                    if "not modified" in err_str2:
+                        return SendResult(success=True)
+                    logger.debug(
+                        "[%s] sendMessageDraft plain-text fallback also failed (chat_id=%s, draft_id=%s): %s",
+                        self.name, chat_id, draft_id, e2,
+                    )
+                    return SendResult(success=False, error=str(e2))
+            logger.debug(
+                "[%s] sendMessageDraft failed (chat_id=%s, draft_id=%s): %s",
+                self.name, chat_id, draft_id, e,
+            )
+            return SendResult(success=False, error=str(e))
+        except Exception as e:
+            err_str = str(e).lower()
+            # "not modified" is a no-op success
+            if "not modified" in err_str:
+                return SendResult(success=True)
+            logger.debug(
+                "[%s] sendMessageDraft failed (chat_id=%s, draft_id=%s): %s",
+                self.name, chat_id, draft_id, e,
+            )
+            return SendResult(success=False, error=str(e))
+
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a previously sent Telegram message.
 

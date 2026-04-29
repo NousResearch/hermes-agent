@@ -20,12 +20,7 @@ from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
-    """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig.
-
-    Gemini native/cloud-code adapters do not read ``extra_body.reasoning``.
-    They only inspect ``extra_body.thinking_config`` / ``thinkingConfig`` and
-    then request thought parts with ``includeThoughts`` enabled.
-    """
+    """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if reasoning_config is None or not isinstance(reasoning_config, dict):
         return None
 
@@ -69,6 +64,30 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
             )
 
     return thinking_config
+
+
+def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
+    """Convert Gemini thinking config keys to the OpenAI-compat field names."""
+    if not isinstance(config, dict) or not config:
+        return None
+
+    translated: Dict[str, Any] = {}
+    if isinstance(config.get("includeThoughts"), bool):
+        translated["include_thoughts"] = config["includeThoughts"]
+    if isinstance(config.get("thinkingLevel"), str) and config["thinkingLevel"].strip():
+        translated["thinking_level"] = config["thinkingLevel"].strip().lower()
+    if isinstance(config.get("thinkingBudget"), (int, float)):
+        translated["thinking_budget"] = int(config["thinkingBudget"])
+    return translated or None
+
+
+def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
+    normalized = str(base_url or "").strip().rstrip("/").lower()
+    if not normalized:
+        return False
+    if "generativelanguage.googleapis.com" not in normalized:
+        return False
+    return normalized.endswith("/openai")
 
 
 class ChatCompletionsTransport(ProviderTransport):
@@ -309,6 +328,7 @@ class ChatCompletionsTransport(ProviderTransport):
         is_nous = params.get("is_nous", False)
         is_github_models = params.get("is_github_models", False)
         provider_name = str(params.get("provider_name") or "").strip().lower()
+        base_url = params.get("base_url")
 
         provider_prefs = params.get("provider_preferences")
         if provider_prefs and is_openrouter:
@@ -362,7 +382,19 @@ class ChatCompletionsTransport(ProviderTransport):
         if is_qwen:
             extra_body["vl_high_resolution_images"] = True
 
-        if provider_name in {"gemini", "google-gemini-cli"}:
+        if provider_name == "gemini":
+            raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
+            if _is_gemini_openai_compat_base_url(base_url):
+                thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
+                if thinking_config:
+                    openai_compat_extra = extra_body.get("extra_body", {})
+                    google_extra = openai_compat_extra.get("google", {})
+                    google_extra["thinking_config"] = thinking_config
+                    openai_compat_extra["google"] = google_extra
+                    extra_body["extra_body"] = openai_compat_extra
+            elif raw_thinking_config:
+                extra_body["thinking_config"] = raw_thinking_config
+        elif provider_name == "google-gemini-cli":
             thinking_config = _build_gemini_thinking_config(model, reasoning_config)
             if thinking_config:
                 extra_body["thinking_config"] = thinking_config

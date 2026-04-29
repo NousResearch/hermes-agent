@@ -3107,6 +3107,8 @@ class HermesCLI:
             return "Processing skills command..."
         if cmd_lower == "/reload-mcp":
             return "Reloading MCP servers..."
+        if cmd_lower == "/reload-skills" or cmd_lower == "/reload_skills":
+            return "Reloading skills..."
         if cmd_lower.startswith("/browser"):
             return "Configuring browser..."
         return "Processing command..."
@@ -6286,6 +6288,9 @@ class HermesCLI:
         elif canonical == "reload-mcp":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_mcp()
+        elif canonical == "reload-skills":
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._reload_skills()
         elif canonical == "browser":
             self._handle_browser_command(cmd_original)
         elif canonical == "plugins":
@@ -7496,6 +7501,67 @@ class HermesCLI:
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
+
+    def _reload_skills(self) -> None:
+        """Reload skills: rescan ~/.hermes/skills/, clear prompt cache.
+
+        Mirrors the ``/reload-mcp`` UX. After rescanning, the system prompt
+        for the next turn is rebuilt with the fresh skill list and any
+        ``/skill-name`` slash commands are picked up immediately.
+        """
+        try:
+            from agent.skill_commands import reload_skills
+
+            if not self._command_running:
+                print("🔄 Reloading skills...")
+
+            result = reload_skills()
+            added = result.get("added", [])
+            removed = result.get("removed", [])
+            total = result.get("total", 0)
+
+            if added:
+                print(f"  ➕ Added: {', '.join(added)}")
+            if removed:
+                print(f"  ➖ Removed: {', '.join(removed)}")
+            if not added and not removed:
+                print("  No changes detected.")
+            print(f"  📚 {total} skill(s) available")
+
+            # Inject a system-style note so the model sees the new skill
+            # list on its next turn. Appended at the end of history to
+            # preserve prompt-cache for the prefix.
+            change_parts = []
+            if added:
+                change_parts.append(f"Added skills: {', '.join(added)}")
+            if removed:
+                change_parts.append(f"Removed skills: {', '.join(removed)}")
+            if change_parts:
+                change_detail = ". ".join(change_parts) + ". "
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": (
+                        f"[IMPORTANT: Skills have been reloaded. {change_detail}"
+                        f"{total} skill(s) now available. Use skills_list to "
+                        f"see the updated catalog.]"
+                    ),
+                })
+
+                # Persist immediately so the session log reflects the
+                # reload event.
+                if self.agent is not None:
+                    try:
+                        self.agent._persist_session(
+                            self.conversation_history,
+                            self.conversation_history,
+                        )
+                    except Exception:
+                        pass  # Best-effort
+
+            print(f"  ✅ Skill cache cleared")
+
+        except Exception as e:
+            print(f"  ❌ Skills reload failed: {e}")
 
     # ====================================================================
     # Tool-call generation indicator (shown during streaming)

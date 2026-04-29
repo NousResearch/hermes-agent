@@ -284,6 +284,70 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     return _skill_commands
 
 
+def reload_skills() -> Dict[str, Any]:
+    """Re-scan the skills directory and invalidate every in-process skill cache.
+
+    Mirrors the ``/reload-mcp`` shape: clears state, rebuilds it, returns a
+    diff summary that the caller (CLI, gateway, or agent tool) can render
+    for the user / model.
+
+    What this clears:
+      * ``agent.skill_commands._skill_commands`` (slash-command map)
+      * ``agent.prompt_builder._SKILLS_PROMPT_CACHE`` (in-process LRU)
+      * ``.skills_prompt_snapshot.json`` on disk (cross-process snapshot)
+
+    What gets re-read on the next prompt build:
+      * ``~/.hermes/skills/`` and any ``skills.external_dirs``
+      * Plugin-provided skills
+      * ``skills.disabled`` / ``skills.platform_disabled`` from config.yaml
+
+    Returns:
+        Dict with keys::
+
+            {
+              "added":      [skill names newly visible],
+              "removed":    [skill names no longer visible],
+              "unchanged":  [skill names present before and after],
+              "total":      total skill count after rescan,
+              "commands":   total /slash-skill count after rescan,
+            }
+    """
+    # Snapshot pre-reload state from the cache (what the agent had been
+    # advertising). Comparing this to the post-rescan disk state shows
+    # the user/agent which skills actually appeared / disappeared.
+    before = set(_skill_commands.keys())  # /slash-form keys, e.g. "/demo"
+
+    # Clear the slash-command cache. ``scan_skill_commands`` already
+    # resets ``_skill_commands = {}`` internally, but we call the public
+    # rescan path so the result is observable to ``get_skill_commands``.
+    new_commands = scan_skill_commands()
+
+    # Clear the system-prompt cache (in-process LRU + on-disk snapshot)
+    # so the next prompt build re-walks the skills dir.
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+    except Exception as e:  # pragma: no cover — best-effort
+        logger.debug("Could not clear skills prompt cache: %s", e)
+
+    after = set(new_commands.keys())
+    # Strip leading slash for display: callers compare bare skill names.
+    def _strip(s: set) -> set:
+        return {k.lstrip("/") for k in s}
+
+    added = sorted(_strip(after - before))
+    removed = sorted(_strip(before - after))
+    unchanged = sorted(_strip(after & before))
+
+    return {
+        "added": added,
+        "removed": removed,
+        "unchanged": unchanged,
+        "total": len(after),
+        "commands": len(new_commands),
+    }
+
+
 def resolve_skill_command_key(command: str) -> Optional[str]:
     """Resolve a user-typed /command to its canonical skill_cmds key.
 

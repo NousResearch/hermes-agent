@@ -830,6 +830,22 @@ def _user_dbus_socket_path() -> Path:
     return Path(xdg) / "bus"
 
 
+def _user_systemd_private_socket_path() -> Path:
+    """Return the per-user systemd private socket path (regardless of existence)."""
+    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(xdg) / "systemd" / "private"
+
+
+def _user_systemd_socket_ready() -> bool:
+    """Return True when user-scope systemd has a reachable control socket.
+
+    Some distros expose only the per-user systemd private socket even when the
+    D-Bus session bus socket is absent. ``systemctl --user`` can still work in
+    that configuration, so preflight checks must treat either socket as valid.
+    """
+    return _user_dbus_socket_path().exists() or _user_systemd_private_socket_path().exists()
+
+
 def _ensure_user_systemd_env() -> None:
     """Ensure DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR are set for systemctl --user.
 
@@ -853,28 +869,29 @@ def _ensure_user_systemd_env() -> None:
 
 
 def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
-    """Poll for the user D-Bus socket to appear, up to ``timeout`` seconds.
+    """Poll for the user systemd runtime socket(s), up to ``timeout`` seconds.
 
-    Linger-enabled user@.service can take a second or two to spawn the socket
-    after ``loginctl enable-linger`` runs.  Returns True once the socket exists.
+    Linger-enabled user@.service can take a second or two to spawn its control
+    socket(s) after ``loginctl enable-linger`` runs. Returns True once either
+    the user D-Bus socket or the per-user systemd private socket exists.
     """
     import time
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if _user_dbus_socket_path().exists():
+        if _user_systemd_socket_ready():
             _ensure_user_systemd_env()
             return True
         time.sleep(0.2)
-    return _user_dbus_socket_path().exists()
+    return _user_systemd_socket_ready()
 
 
 def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
-    """Ensure ``systemctl --user`` will reach the user D-Bus session bus.
+    """Ensure ``systemctl --user`` will reach the user-scope systemd instance.
 
-    No-op when the bus socket is already there (the common case on desktops
-    and linger-enabled servers).  On fresh SSH sessions where the socket is
-    missing:
+    No-op when the user D-Bus socket or per-user systemd private socket is
+    already there (the common case on desktops and linger-enabled servers). On
+    fresh SSH sessions where both are missing:
 
     * If linger is already enabled, wait briefly for user@.service to spawn
       the socket.
@@ -888,8 +905,7 @@ def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
     systemd operations and surface the message to the user.
     """
     _ensure_user_systemd_env()
-    bus_path = _user_dbus_socket_path()
-    if bus_path.exists():
+    if _user_systemd_socket_ready():
         return
 
     import getpass
@@ -903,7 +919,7 @@ def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
         # Linger is on but socket still missing — unusual; fall through to error.
         _raise_user_systemd_unavailable(
             username,
-            reason="User D-Bus socket is missing even though linger is enabled.",
+            reason="User systemd control sockets are missing even though linger is enabled.",
             fix_hint=(
                 f"  systemctl start user@{os.getuid()}.service\n"
                 "  (may require sudo; try again after the command succeeds)"

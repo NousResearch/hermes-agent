@@ -310,8 +310,8 @@ def redact_sensitive_text(text: str, *, force: bool = False) -> str:
 
     Safe to call on any string -- non-matching text passes through unchanged.
     Disabled by default — enable via security.redact_secrets: true in config.yaml.
-    Set force=True for safety boundaries that must never return raw secrets
-    regardless of the user's global logging redaction preference.
+    Pass ``force=True`` for security boundaries that must never echo raw
+    credential-shaped content regardless of the user's display preference.
     """
     if text is None:
         return None
@@ -319,7 +319,7 @@ def redact_sensitive_text(text: str, *, force: bool = False) -> str:
         text = str(text)
     if not text:
         return text
-    if not (force or _REDACT_ENABLED):
+    if not force and not _REDACT_ENABLED:
         return text
 
     # Known prefixes (sk-, ghp_, etc.)

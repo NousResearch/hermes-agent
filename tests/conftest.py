@@ -27,7 +27,6 @@ import signal
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -187,6 +186,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_REDACT_SECRETS",
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
+    "HERMES_CRON_SESSION",
     "HERMES_HOME_MODE",
     "TERMINAL_CWD",
     "TERMINAL_ENV",
@@ -338,13 +338,35 @@ def _reset_module_state():
     that don't exist yet (test collection before production import) are
     skipped silently — production import later creates fresh empty state.
     """
-    # --- logging — quiet/one-shot paths mutate process-global logger state ---
+    # --- logging — legacy tests sometimes call logging.disable() directly.
+    # Re-enable logs before every test so caplog-based assertions are not
+    # affected by worker-local state from earlier tests.
     logging.disable(logging.NOTSET)
     for _logger_name in ("tools", "run_agent", "trajectory_compressor", "cron", "hermes_cli"):
         _logger = logging.getLogger(_logger_name)
         _logger.disabled = False
         _logger.setLevel(logging.NOTSET)
         _logger.propagate = True
+
+    # --- hermes_constants — environment detection caches shared by helpers ---
+    try:
+        import hermes_constants as _hc_mod
+        _hc_mod._wsl_detected = None
+        _hc_mod._container_detected = None
+    except Exception:
+        pass
+
+    # --- hermes_cli.config — path/value caches are keyed by patched paths and
+    # env-sensitive expanded values. Clear per test to prevent monkeypatched
+    # config/env paths from reusing another test's cached config on the same
+    # xdist worker.
+    try:
+        from hermes_cli import config as _cli_config_mod
+        _cli_config_mod._LOAD_CONFIG_CACHE.clear()
+        _cli_config_mod._RAW_CONFIG_CACHE.clear()
+        _cli_config_mod._LAST_EXPANDED_CONFIG_BY_PATH.clear()
+    except Exception:
+        pass
 
     # --- tools.approval — the single biggest source of cross-test pollution ---
     try:
@@ -440,7 +462,10 @@ def _reset_module_state():
     except Exception:
         pass
 
-    yield
+    try:
+        yield
+    finally:
+        logging.disable(logging.NOTSET)
 
 
 @pytest.fixture()

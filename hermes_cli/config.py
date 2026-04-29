@@ -3711,7 +3711,8 @@ def _sanitize_env_lines(lines: list) -> list:
             idx = stripped.find(needle)
             while idx >= 0:
                 # Only treat as a real KEY= separator if it starts at position 0
-                # or follows a non-identifier character.
+                # or follows a non-identifier character (not part of a longer key).
+                # e.g. "LM_API_KEY=" must not split inside "GLM_API_KEY=".
                 if idx == 0 or not stripped[idx - 1].isidentifier():
                     split_positions.append(idx)
                 idx = stripped.find(needle, idx + len(needle))

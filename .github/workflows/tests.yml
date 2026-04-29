@@ -23,7 +23,9 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Full suite is ~15k+ tests; with xdist and occasional slow modules, 20m
+    # can hit GitHub's job limit before completion (orphan worker PIDs on cancel).
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -46,7 +48,7 @@ jobs:
       - name: Run tests
         run: |
           source .venv/bin/activate
-          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto
+          python -m pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e --tb=short -n auto --durations=20
         env:
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""

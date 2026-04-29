@@ -348,9 +348,25 @@ def _reset_module_state():
     # so caplog assertions are not affected by earlier tests on the same worker.
     logging.disable(logging.NOTSET)
     try:
-        for _obj in logging.root.manager.loggerDict.values():
+        for _name, _obj in logging.root.manager.loggerDict.items():
             if isinstance(_obj, logging.Logger):
                 _obj.disabled = False
+                # AIAgent quiet-mode tests intentionally raise project logger
+                # thresholds (``hermes_cli``, ``tools``, ``run_agent``, ...)
+                # to ERROR.  xdist workers reuse processes, so reset project
+                # loggers before the next test or caplog WARNING assertions
+                # silently miss records.
+                if _name == "run_agent" or _name.startswith((
+                    "agent",
+                    "cron",
+                    "gateway",
+                    "hermes_cli",
+                    "tools",
+                    "trajectory_compressor",
+                    "tui_gateway",
+                )):
+                    _obj.setLevel(logging.NOTSET)
+                    _obj.propagate = True
     except Exception:
         pass
     for _logger_name in ("tools", "run_agent", "trajectory_compressor", "cron", "hermes_cli"):
@@ -364,6 +380,16 @@ def _reset_module_state():
         import hermes_constants as _hc_mod
         _hc_mod._wsl_detected = None
         _hc_mod._container_detected = None
+    except Exception:
+        pass
+    # Some tests remove/re-import hermes_constants.  Modules that imported the
+    # old function object (for example hermes_cli.clipboard._is_wsl) keep that
+    # function's original globals dict, so also reset the cached values through
+    # the imported function object when present.
+    try:
+        from hermes_cli import clipboard as _clipboard_mod
+        _clipboard_mod._is_wsl.__globals__["_wsl_detected"] = None
+        _clipboard_mod._is_wsl.__globals__["_container_detected"] = None
     except Exception:
         pass
 

@@ -351,6 +351,10 @@ class TestOwnerPidCrossProcess:
 
         monkeypatch.setattr(bt.subprocess, "Popen", _FakePopen)
         monkeypatch.setattr(bt, "_find_agent_browser", lambda: "/bin/true")
+        # This test verifies owner_pid wiring, not host browser installation.
+        # Avoid short-circuiting before _write_owner_pid on CI images that do
+        # not have Playwright/agent-browser Chromium installed.
+        monkeypatch.setattr(bt, "_chromium_installed", lambda: True)
         monkeypatch.setattr(
             bt, "_requires_real_termux_browser_install", lambda *a: False
         )

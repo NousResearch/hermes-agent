@@ -335,6 +335,7 @@ _CUDA_LIB_ERROR_MARKERS = (
     "cannot be loaded",
     "cannot open shared object",
     "no kernel image is available",
+    "CUBLAS_STATUS_NOT_SUPPORTED",
     "no CUDA-capable device",
     "CUDA driver version is insufficient",
 )

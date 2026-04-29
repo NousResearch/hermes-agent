@@ -1325,6 +1325,51 @@ class HindsightMemoryProvider(MemoryProvider):
 
         return tool_error(f"Unknown tool: {tool_name}")
 
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Refresh cached per-session state when the agent rotates session_id.
+
+        Fires on /resume, /branch, /reset, /new, and context compression.
+        Without this hook, initialize()-cached state (``_session_id``,
+        ``_document_id``, ``_session_turns``, ``_turn_counter``) would keep
+        pointing at the previous session and writes would land in the wrong
+        document. See hermes-agent#6672.
+
+        Always update ``_session_id`` so metadata and tags on subsequent
+        retains reflect the active session. Always mint a fresh
+        ``_document_id`` so the new session's retain doesn't overwrite the
+        old session's document on vectorize-io/hindsight#1303. Always clear
+        the accumulated batch buffers (``_session_turns``, ``_turn_counter``,
+        ``_turn_index``) — even for /resume and /branch, the new session's
+        batching must start from zero so an in-flight retain doesn't flush
+        under the wrong ``_document_id``.
+
+        ``parent_session_id`` is recorded for lineage tags on future retains.
+        ``reset`` is accepted but not needed for Hindsight's state model —
+        buffer clearing is correct for every session switch, not only /reset.
+        """
+        new_id = str(new_session_id or "").strip()
+        if not new_id:
+            return
+        if parent_session_id:
+            self._parent_session_id = str(parent_session_id).strip()
+        self._session_id = new_id
+        start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self._document_id = f"{self._session_id}-{start_ts}"
+        self._session_turns = []
+        self._turn_counter = 0
+        self._turn_index = 0
+        logger.debug(
+            "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
+            self._session_id, self._parent_session_id, reset, self._document_id,
+        )
+
     def shutdown(self) -> None:
         logger.debug("Hindsight shutdown: waiting for background threads")
         for t in (self._prefetch_thread, self._sync_thread):

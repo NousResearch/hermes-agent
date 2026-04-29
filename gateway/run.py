@@ -7817,6 +7817,13 @@ class GatewayRunner:
             return "Failed to switch session."
         self._clear_session_boundary_security_state(session_key)
 
+        # Evict any cached agent for this session so the next message
+        # rebuilds with the correct session_id end-to-end — mirrors
+        # /branch and /reset. Without this, the cached AIAgent (and its
+        # memory provider, which cached `_session_id` during initialize())
+        # keeps writing into the wrong session's record. See #6672.
+        self._evict_cached_agent(session_key)
+
         # Get the title for confirmation
         title = self._session_db.get_session_title(target_id) or name
 

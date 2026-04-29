@@ -89,13 +89,73 @@ class TestThirdPartyAnthropicGateway:
         assert should is True, "Third-party Anthropic gateway with Claude must cache"
         assert native is True, "Third-party Anthropic gateway uses native cache_control layout"
 
-    def test_third_party_without_claude_name_does_not_cache(self):
-        # A provider exposing e.g. GLM via anthropic_messages transport — we
-        # don't know whether it supports cache_control, so stay conservative.
+    def test_third_party_anthropic_non_claude_unknown_provider_does_not_cache(self):
+        # A provider exposing e.g. GLM via anthropic_messages transport from
+        # a host we don't recognize — we don't know whether it supports
+        # cache_control, so stay conservative.
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://some-unknown-gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="glm-4.5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
+class TestMiniMaxAnthropicWire:
+    """MiniMax's own model family on its Anthropic-compatible endpoint.
+
+    MiniMax documents cache_control support on ``/anthropic`` (0.1× read
+    pricing, 5-minute TTL). Issue #17332: the blanket ``is_claude`` gate on
+    the third-party-gateway branch left MiniMax-M2.7 etc. paying full input
+    cost every turn. Allowlist MiniMax explicitly via provider id or host.
+    """
+
+    def test_minimax_m27_on_provider_minimax_caches_native_layout(self):
+        agent = _make_agent(
+            provider="minimax",
+            base_url="https://api.minimax.io/anthropic",
+            api_mode="anthropic_messages",
+            model="minimax-m2.7",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_minimax_m25_on_provider_minimax_cn_caches_native_layout(self):
+        agent = _make_agent(
+            provider="minimax-cn",
+            base_url="https://api.minimaxi.com/anthropic",
+            api_mode="anthropic_messages",
+            model="minimax-m2.5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_custom_provider_pointed_at_minimax_host_caches(self):
+        # User wires a custom provider manually at MiniMax's Anthropic URL;
+        # host match alone should be sufficient to enable caching.
         agent = _make_agent(
             provider="custom",
             base_url="https://api.minimax.io/anthropic",
             api_mode="anthropic_messages",
+            model="minimax-m2.7",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_minimax_host_china_endpoint_caches(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://api.minimaxi.com/anthropic",
+            api_mode="anthropic_messages",
+            model="minimax-m2.1",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_minimax_provider_on_openai_wire_does_not_cache(self):
+        # chat_completions transport — MiniMax's cache_control support is
+        # documented only for the /anthropic endpoint. Stay off.
+        agent = _make_agent(
+            provider="minimax",
+            base_url="https://api.minimax.io/v1",
+            api_mode="chat_completions",
             model="minimax-m2.7",
         )
         assert agent._anthropic_prompt_cache_policy() == (False, False)

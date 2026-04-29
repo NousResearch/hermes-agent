@@ -2814,6 +2814,24 @@ class AIAgent:
             # Third-party Anthropic-compatible gateway.
             return True, True
 
+        # MiniMax on its Anthropic-compatible endpoint serves its own
+        # model family (MiniMax-M2.7, M2.5, M2.1, M2) with documented
+        # cache_control support (0.1× read pricing, 5-minute TTL).  The
+        # blanket is_claude gate above excludes these — opt them in
+        # explicitly via provider id or host match so users on
+        # provider=minimax / minimax-cn (or custom endpoints pointing at
+        # api.minimax.io/anthropic / api.minimaxi.com/anthropic) get the
+        # same cost reduction as Claude traffic.
+        # Docs: https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache
+        if is_anthropic_wire:
+            is_minimax_provider = provider_lower in {"minimax", "minimax-cn"}
+            is_minimax_host = (
+                base_url_host_matches(eff_base_url, "api.minimax.io")
+                or base_url_host_matches(eff_base_url, "api.minimaxi.com")
+            )
+            if is_minimax_provider or is_minimax_host:
+                return True, True
+
         # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
         # transport that accepts Anthropic-style cache_control markers and
         # rewards them with real cache hits.  Without this branch

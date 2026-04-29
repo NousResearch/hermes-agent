@@ -75,6 +75,57 @@ class TestLoadMCPConfig:
             assert "filesystem" in result
             assert result["filesystem"]["command"] == "npx"
 
+    def test_secret_arg_placeholder_not_interpolated(self, monkeypatch):
+        """Secret-shaped env placeholders in stdio args stay out of argv."""
+        monkeypatch.setenv("EXAMPLE_API_KEY", "test-token-not-real")
+        servers = {
+            "example": {
+                "command": "node",
+                "args": ["server.js", "${EXAMPLE_API_KEY}"],
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value={"mcp_servers": servers}), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"):
+            from tools.mcp_tool import _load_mcp_config
+            result = _load_mcp_config()
+
+        assert result["example"]["args"] == ["server.js", "${EXAMPLE_API_KEY}"]
+        assert "test-token-not-real" not in result["example"]["args"]
+
+    def test_non_secret_arg_placeholder_still_interpolates(self, monkeypatch):
+        """Non-secret args interpolation remains backwards-compatible."""
+        monkeypatch.setenv("EXAMPLE_PROJECT", "demo-project")
+        servers = {
+            "example": {
+                "command": "node",
+                "args": ["server.js", "--project", "${EXAMPLE_PROJECT}"],
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value={"mcp_servers": servers}), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"):
+            from tools.mcp_tool import _load_mcp_config
+            result = _load_mcp_config()
+
+        assert result["example"]["args"] == ["server.js", "--project", "demo-project"]
+
+    def test_env_block_placeholder_still_interpolates(self, monkeypatch):
+        """Explicit env remains the supported channel for MCP credentials."""
+        monkeypatch.setenv("EXAMPLE_API_KEY", "test-token-not-real")
+        servers = {
+            "example": {
+                "command": "node",
+                "args": ["server.js"],
+                "env": {"EXAMPLE_API_KEY": "${EXAMPLE_API_KEY}"},
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value={"mcp_servers": servers}), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"):
+            from tools.mcp_tool import _load_mcp_config
+            result = _load_mcp_config()
+
+        assert result["example"]["env"]["EXAMPLE_API_KEY"] == "test-token-not-real"
+        assert "test-token-not-real" not in result["example"]["args"]
+
     def test_mcp_servers_not_dict_returns_empty(self):
         """mcp_servers set to non-dict value -> empty dict."""
         with patch("hermes_cli.config.load_config", return_value={"mcp_servers": "invalid"}):
@@ -708,6 +759,38 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_run_stdio_rejects_secret_arg_placeholder_before_spawn(self):
+        """Secret-shaped argv placeholders fail before subprocess params exist."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("example")
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params:
+                with pytest.raises(ValueError, match="secret environment placeholder"):
+                    await server._run_stdio({
+                        "command": "node",
+                        "args": ["server.js", "${EXAMPLE_API_KEY}"],
+                    })
+                mock_params.assert_not_called()
+
+        asyncio.run(_test())
+
+    def test_run_stdio_rejects_secret_arg_flag_before_spawn(self):
+        """Secret-bearing argv flags are rejected even with placeholder-free values."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("example")
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params:
+                with pytest.raises(ValueError, match="secret-bearing argv flag"):
+                    await server._run_stdio({
+                        "command": "node",
+                        "args": ["server.js", "--api-key", "test-token-not-real"],
+                    })
+                mock_params.assert_not_called()
+
+        asyncio.run(_test())
+
     def test_refresh_tools_deregisters_removed_tools(self):
         """Dynamic refresh removes stale registry entries for deleted tools."""
         from tools.registry import ToolRegistry
@@ -834,6 +917,38 @@ class TestMCPServerTask:
                 assert isinstance(env_arg, dict)
                 assert "PATH" in env_arg
                 assert "HOME" in env_arg
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+
+    def test_explicit_env_reaches_stdio_params_without_argv_leak(self):
+        """Credential env entries are passed via env, never via stdio args."""
+        from tools.mcp_tool import MCPServerTask
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(
+            return_value=SimpleNamespace(tools=[])
+        )
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params, \
+                 p_stdio, p_cs, \
+                 patch.dict("os.environ", {"PATH": "/usr/bin", "HOME": "/home/test"}, clear=False):
+                server = MCPServerTask("srv")
+                await server.start({
+                    "command": "node",
+                    "args": ["server.js"],
+                    "env": {"EXAMPLE_API_KEY": "test-token-not-real"},
+                })
+
+                call_kwargs = mock_params.call_args.kwargs
+                assert call_kwargs["args"] == ["server.js"]
+                assert "test-token-not-real" not in call_kwargs["args"]
+                assert call_kwargs["env"]["EXAMPLE_API_KEY"] == "test-token-not-real"
 
                 await server.shutdown()
 

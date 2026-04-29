@@ -268,6 +268,28 @@ _CREDENTIAL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_ENV_VAR_REF_PATTERN = re.compile(r"\$\{([^}]+)\}")
+_SECRET_ENV_VAR_NAME_PATTERN = re.compile(
+    r"(?:^|_)(?:API_?KEY|ACCESS_?KEY|AUTH_?TOKEN|BEARER_?TOKEN|"
+    r"CLIENT_?SECRET|CREDENTIALS?|PASSWORD|PASS|PRIVATE_?KEY|SECRET|TOKEN)(?:_|$)"
+    r"|_KEY$",
+    re.IGNORECASE,
+)
+_SECRET_ARG_FLAGS = frozenset({
+    "--access-key",
+    "--access-token",
+    "--api-key",
+    "--apikey",
+    "--auth-token",
+    "--bearer-token",
+    "--client-secret",
+    "--key",
+    "--password",
+    "--private-key",
+    "--secret",
+    "--token",
+})
+
 
 # ---------------------------------------------------------------------------
 # Security helpers
@@ -290,6 +312,45 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     if user_env:
         env.update(user_env)
     return env
+
+
+def _is_secret_env_var_name(name: str) -> bool:
+    """Return True for env var names that conventionally carry secrets."""
+    return bool(_SECRET_ENV_VAR_NAME_PATTERN.search(str(name or "")))
+
+
+def _is_mcp_args_path(path: tuple) -> bool:
+    return len(path) >= 3 and path[0] == "mcp_servers" and path[2] == "args"
+
+
+def _stdio_argv_secret_error(args: Optional[list]) -> Optional[str]:
+    """Explain why stdio argv is unsafe, or return None if it is safe."""
+    for raw in args or []:
+        value = str(raw)
+        lowered = value.lower()
+        flag_name = lowered.split("=", 1)[0]
+
+        if flag_name in _SECRET_ARG_FLAGS:
+            return f"secret-bearing argv flag '{flag_name}'"
+
+        for env_name in _ENV_VAR_REF_PATTERN.findall(value):
+            if _is_secret_env_var_name(env_name):
+                return f"secret environment placeholder '${{{env_name}}}'"
+
+        if _CREDENTIAL_PATTERN.search(value):
+            return "credential-shaped argv value"
+
+    return None
+
+
+def _validate_stdio_args_no_secrets(server_name: str, args: Optional[list]) -> None:
+    reason = _stdio_argv_secret_error(args)
+    if reason:
+        raise ValueError(
+            f"MCP server '{server_name}' places a secret in stdio argv ({reason}). "
+            f"Move credentials to mcp_servers.{server_name}.env or another "
+            "non-argv secret channel."
+        )
 
 
 def _sanitize_error(text: str) -> str:
@@ -1068,6 +1129,8 @@ class MCPServerTask:
 
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)
+
+        _validate_stdio_args_no_secrets(self.name, args)
 
         # Check package against OSV malware database before spawning
         from tools.osv_check import check_package_for_malware
@@ -1896,16 +1959,24 @@ def _interrupted_call_result() -> str:
 # Config loading
 # ---------------------------------------------------------------------------
 
-def _interpolate_env_vars(value):
-    """Recursively resolve ``${VAR}`` placeholders from ``os.environ``."""
+def _interpolate_env_vars(value, _path: tuple = ()):
+    """Recursively resolve ``${VAR}`` placeholders from ``os.environ``.
+
+    Secret-shaped placeholders inside MCP stdio ``args`` are intentionally
+    left unresolved so credentials cannot be copied into child process argv.
+    The stdio launcher rejects those placeholders with an actionable error.
+    """
     if isinstance(value, str):
         def _replace(m):
-            return os.environ.get(m.group(1), m.group(0))
-        return re.sub(r"\$\{([^}]+)\}", _replace, value)
+            env_name = m.group(1)
+            if _is_mcp_args_path(_path) and _is_secret_env_var_name(env_name):
+                return m.group(0)
+            return os.environ.get(env_name, m.group(0))
+        return _ENV_VAR_REF_PATTERN.sub(_replace, value)
     if isinstance(value, dict):
-        return {k: _interpolate_env_vars(v) for k, v in value.items()}
+        return {k: _interpolate_env_vars(v, (*_path, str(k))) for k, v in value.items()}
     if isinstance(value, list):
-        return [_interpolate_env_vars(v) for v in value]
+        return [_interpolate_env_vars(v, (*_path, str(i))) for i, v in enumerate(value)]
     return value
 
 
@@ -1919,6 +1990,8 @@ def _load_mcp_config() -> Dict[str, dict]:
 
     ``${ENV_VAR}`` placeholders in string values are resolved from
     ``os.environ`` (which includes ``~/.hermes/.env`` loaded at startup).
+    Secret-shaped placeholders inside stdio ``args`` are not resolved; use the
+    server's explicit ``env`` block for credentials.
     """
     try:
         from hermes_cli.config import load_config
@@ -1932,7 +2005,10 @@ def _load_mcp_config() -> Dict[str, dict]:
             load_hermes_dotenv()
         except Exception:
             pass
-        return {name: _interpolate_env_vars(cfg) for name, cfg in servers.items()}
+        return {
+            name: _interpolate_env_vars(cfg, ("mcp_servers", str(name)))
+            for name, cfg in servers.items()
+        }
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}

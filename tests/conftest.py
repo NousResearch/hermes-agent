@@ -480,3 +480,29 @@ def _enforce_test_timeout():
     yield
     signal.alarm(0)
     signal.signal(signal.SIGALRM, old)
+
+
+@pytest.fixture(autouse=True)
+def _reset_tool_registry_caches():
+    """Clear tool-registry-level caches between tests.
+
+    The production registry caches ``check_fn()`` results for 30 s
+    (see tools/registry.py) and :func:`get_tool_definitions` memoizes
+    its result (see model_tools.py). Both are keyed on state that tests
+    routinely mutate (env vars, registry._generation, config.yaml mtime)
+    — but a stale result from test A can still be served to test B
+    because 30 s covers the entire suite, and xdist worker reuse means
+    one test's cache lands in another's process. Clearing before every
+    test keeps hermetic behavior.
+    """
+    try:
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
+    except ImportError:
+        pass
+    try:
+        from model_tools import _clear_tool_defs_cache
+        _clear_tool_defs_cache()
+    except ImportError:
+        pass
+    yield

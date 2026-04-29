@@ -453,6 +453,156 @@ class TestValidateSignature:
         assert adapter._validate_signature(req, body, secret) is True
 
 
+class TestAuthFormatPinning:
+    """Route-bound authentication-format selection via `auth_format`.
+
+    Under the default "auto", the validator picks the scheme from request
+    headers — so a sender who knows the shared secret can downgrade an
+    HMAC route to the raw X-Gitlab-Token comparison (authenticates the
+    caller, but not the body). Pinning `auth_format` on the route closes
+    that: only the pinned scheme's credential is consulted.
+    """
+
+    def test_github_pinned_rejects_valid_gitlab_token(self):
+        """The downgrade attack: a correct GitLab token + non-empty JSON
+        body must NOT authenticate against an HMAC-pinned route."""
+        adapter = _make_adapter()
+        secret = "shared-secret"
+        body = b'{"action": "opened", "injected": "attacker-controlled"}'
+        req = _mock_request(headers={"X-Gitlab-Token": secret})
+        assert (
+            adapter._validate_signature(req, body, secret, auth_format="github")
+            is False
+        )
+
+    def test_github_pinned_accepts_valid_hmac(self):
+        adapter = _make_adapter()
+        secret = "shared-secret"
+        body = b'{"action": "opened"}'
+        sig = _github_signature(body, secret)
+        req = _mock_request(headers={"X-Hub-Signature-256": sig})
+        assert (
+            adapter._validate_signature(req, body, secret, auth_format="github")
+            is True
+        )
+
+    def test_github_pinned_ignores_gitlab_token_next_to_valid_hmac(self):
+        """A stray X-Gitlab-Token must not disturb a valid pinned HMAC."""
+        adapter = _make_adapter()
+        secret = "shared-secret"
+        body = b'{"action": "opened"}'
+        sig = _github_signature(body, secret)
+        req = _mock_request(headers={
+            "X-Hub-Signature-256": sig,
+            "X-Gitlab-Token": "whatever",
+        })
+        assert (
+            adapter._validate_signature(req, body, secret, auth_format="github")
+            is True
+        )
+
+    def test_gitlab_pinned_accepts_correct_token(self):
+        adapter = _make_adapter()
+        secret = "gl-token-value"
+        req = _mock_request(headers={"X-Gitlab-Token": secret})
+        assert (
+            adapter._validate_signature(req, b"{}", secret, auth_format="gitlab")
+            is True
+        )
+
+    def test_gitlab_pinned_rejects_wrong_token(self):
+        adapter = _make_adapter()
+        req = _mock_request(headers={"X-Gitlab-Token": "wrong"})
+        assert (
+            adapter._validate_signature(req, b"{}", "correct", auth_format="gitlab")
+            is False
+        )
+
+    def test_gitlab_pinned_rejects_hmac_signature(self):
+        """A gitlab-pinned route must not accept HMAC (or any other) scheme."""
+        adapter = _make_adapter()
+        secret = "shared-secret"
+        body = b'{"action": "opened"}'
+        sig = _github_signature(body, secret)
+        req = _mock_request(headers={"X-Hub-Signature-256": sig})
+        assert (
+            adapter._validate_signature(req, body, secret, auth_format="gitlab")
+            is False
+        )
+
+    def test_unpinned_route_keeps_legacy_gitlab_behavior(self):
+        """No auth_format on the route → header-driven selection unchanged
+        (mirrors test_validate_gitlab_token, including an empty-ish body)."""
+        adapter = _make_adapter()
+        secret = "gl-token-value"
+        req = _mock_request(headers={"X-Gitlab-Token": secret})
+        assert adapter._validate_signature(req, b"{}", secret) is True
+
+    def test_unknown_auth_format_fails_closed(self):
+        adapter = _make_adapter()
+        secret = "gl-token-value"
+        req = _mock_request(headers={"X-Gitlab-Token": secret})
+        assert (
+            adapter._validate_signature(req, b"{}", secret, auth_format="nope")
+            is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_handler_uses_route_auth_format(self):
+        """End-to-end: the handler reads auth_format from the route config —
+        a valid GitLab token 401s on a github-pinned route, while a valid
+        HMAC signature on the same route is dispatched."""
+        secret = "shared-secret"
+        routes = {
+            "gh": {
+                "secret": secret,
+                "auth_format": "github",
+                "prompt": "PR: {action}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        body = json.dumps({"action": "opened"}).encode()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Gitlab-Token": secret,
+                },
+            )
+            assert resp.status == 401, (
+                "valid GitLab token must not authenticate a github-pinned route"
+            )
+
+            resp = await cli.post(
+                "/webhooks/gh",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Hub-Signature-256": _github_signature(body, secret),
+                },
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_invalid_auth_format(self):
+        """A typo'd auth_format fails at startup, not silently at runtime."""
+        routes = {
+            "gh": {
+                "secret": "s3cret",
+                "auth_format": "githab",
+                "prompt": "x",
+            }
+        }
+        adapter = _make_adapter(routes=routes, host="127.0.0.1")
+        with pytest.raises(ValueError, match="auth_format"):
+            await adapter.connect()
+
+
 # ===================================================================
 # Prompt rendering
 # ===================================================================

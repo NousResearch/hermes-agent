@@ -9,6 +9,11 @@ Configuration lives in config.yaml under platforms.webhook.extra.routes.
 Each route defines:
   - events: which event types to accept (header-based filtering)
   - secret: HMAC secret for signature validation (REQUIRED)
+  - auth_format: pin the route to one authentication scheme ("github" =
+    body-bound HMAC via X-Hub-Signature-256 only, "gitlab" = plain
+    X-Gitlab-Token only). Default "auto" selects the scheme from request
+    headers, which lets the sender choose the weakest accepted scheme —
+    pin routes that need body integrity.
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
   - deliver: where to send the response (github_comment, telegram, etc.)
@@ -80,6 +85,11 @@ _BUILTIN_DELIVER_PLATFORMS = {
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
+# Valid values for a route's optional `auth_format` field. "auto" (default)
+# selects the scheme from the request headers — legacy behavior. Pinning
+# "github" or "gitlab" binds the route to that single scheme so a sender
+# cannot pick a weaker one via headers.
+_AUTH_FORMATS = ("auto", "github", "gitlab")
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 _RATE_WINDOW_SECONDS = 60.0
 # Hostnames/IP literals that only serve connections originating on the same
@@ -196,6 +206,16 @@ class WebhookAdapter(BasePlatformAdapter):
                     f"but is bound to non-loopback host '{self._host}'. "
                     f"INSECURE_NO_AUTH is for local testing only. "
                     f"Refusing to start to prevent accidental exposure."
+                )
+
+            # auth_format pins the route to a single authentication scheme;
+            # catch typos at startup rather than silently rejecting every
+            # request at runtime (the validator fails closed on unknowns).
+            auth_format = route.get("auth_format", "auto")
+            if auth_format not in _AUTH_FORMATS:
+                raise ValueError(
+                    f"[webhook] Route '{name}' has invalid auth_format "
+                    f"'{auth_format}'. Valid values: {', '.join(_AUTH_FORMATS)}."
                 )
             # deliver_only routes bypass the agent — the POST body becomes a
             # direct push notification via the configured delivery target.
@@ -532,7 +552,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=403,
             )
         if secret != _INSECURE_NO_AUTH:
-            if not self._validate_signature(request, raw_body, secret):
+            auth_format = route_config.get("auth_format", "auto")
+            if not self._validate_signature(
+                request, raw_body, secret, auth_format
+            ):
                 logger.warning(
                     "[webhook] Invalid signature for route %s", route_name
                 )
@@ -893,9 +916,47 @@ class WebhookAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _validate_signature(
-        self, request: "web.Request", body: bytes, secret: str
+        self,
+        request: "web.Request",
+        body: bytes,
+        secret: str,
+        auth_format: str = "auto",
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256).
+
+        ``auth_format`` binds a route to a single authentication scheme.
+        Under the default ``"auto"`` the scheme is selected from the request
+        headers (legacy behavior) — which means the SENDER picks the scheme:
+        a caller who knows the shared secret can downgrade a route that
+        expects body-bound HMAC integrity to the raw ``X-Gitlab-Token``
+        string comparison (which authenticates the caller but not the body).
+        Routes that need body integrity should pin ``auth_format: github``;
+        GitLab routes should pin ``auth_format: gitlab``.
+        """
+        # Route-bound scheme: only the pinned scheme's credential is
+        # consulted; any other header (present or not) cannot authenticate.
+        if auth_format == "gitlab":
+            gl_token = request.headers.get("X-Gitlab-Token", "")
+            if not gl_token:
+                return False
+            return hmac.compare_digest(gl_token, secret)
+        if auth_format == "github":
+            gh_sig = request.headers.get("X-Hub-Signature-256", "")
+            if not gh_sig:
+                return False
+            expected = "sha256=" + hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(gh_sig, expected)
+        if auth_format != "auto":
+            # Unknown value (connect() validates static routes, but fail
+            # closed here too so handler reuse can't skip that check).
+            logger.warning(
+                "[webhook] Unknown auth_format %r; rejecting request",
+                auth_format,
+            )
+            return False
+
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
@@ -930,6 +991,9 @@ class WebhookAdapter(BasePlatformAdapter):
             return hmac.compare_digest(gh_sig, expected)
 
         # GitLab: X-Gitlab-Token = <plain secret>
+        # NOTE: authenticates the caller but does NOT bind the body. Routes
+        # that need body integrity must pin `auth_format: github` — under
+        # "auto" a sender who knows the secret can always choose this branch.
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
             return hmac.compare_digest(gl_token, secret)

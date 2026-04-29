@@ -20,7 +20,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
-from utils import normalize_proxy_env_vars
+from utils import base_url_host_matches, normalize_proxy_env_vars
 
 # NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
 # ~220 ms of imports (anthropic.types, anthropic.lib.tools._beta_runner, etc.)
@@ -363,6 +363,61 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     if not normalized:
         return False
     return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
+
+
+# Model-name prefixes that identify the Kimi / Moonshot family.  Covers
+# - official slugs: ``kimi-k2.5``, ``kimi_thinking``, ``moonshot-v1-8k``
+# - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``
+# Matched case-insensitively against the post-``normalize_model_name`` form,
+# so a caller's ``provider/vendor/model`` slug is handled the same as a
+# bare name.
+_KIMI_FAMILY_MODEL_PREFIXES = (
+    "kimi-", "kimi_",
+    "moonshot-", "moonshot_",
+    "k1.", "k1-",
+    "k2.", "k2-",
+    "k25", "k2.5",
+)
+
+
+def _model_name_is_kimi_family(model: str | None) -> bool:
+    if not isinstance(model, str):
+        return False
+    m = model.strip().lower()
+    if not m:
+        return False
+    # Strip vendor prefix (e.g. ``moonshotai/kimi-k2.5`` → ``kimi-k2.5``)
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    return m.startswith(_KIMI_FAMILY_MODEL_PREFIXES)
+
+
+def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> bool:
+    """Return True for any Kimi / Moonshot Anthropic-Messages-speaking endpoint.
+
+    Broader than ``_is_kimi_coding_endpoint`` — matches:
+
+    - Kimi's official ``/coding`` URL (legacy check, preserved)
+    - Any ``api.kimi.com`` / ``moonshot.ai`` / ``moonshot.cn`` host
+    - Custom or proxied endpoints whose *model* name is in the Kimi / Moonshot
+      family (``kimi-*``, ``moonshot-*``, ``k1.*``, ``k2.*``, …).  Users with
+      ``api_mode: anthropic_messages`` on a private gateway fronting Kimi
+      fall into this branch — the upstream still enforces Kimi's thinking
+      semantics (reasoning_content required on every replayed tool-call
+      message) regardless of the gateway's hostname.
+
+    Used to decide whether to drop Anthropic's ``thinking`` kwarg and to
+    preserve unsigned reasoning_content-derived thinking blocks on replay.
+    See hermes-agent#13848, #17057.
+    """
+    if _is_kimi_coding_endpoint(base_url):
+        return True
+    for _domain in ("api.kimi.com", "moonshot.ai", "moonshot.cn"):
+        if base_url_host_matches(base_url or "", _domain):
+            return True
+    if _model_name_is_kimi_family(model):
+        return True
+    return False
 
 
 def _requires_bearer_auth(base_url: str | None) -> bool:
@@ -1268,6 +1323,7 @@ def _convert_content_to_anthropic(content: Any) -> Any:
 def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
+    model: str | None = None,
 ) -> Tuple[Optional[Any], List[Dict]]:
     """Convert OpenAI-format messages to Anthropic format.
 
@@ -1279,6 +1335,12 @@ def convert_messages_to_anthropic(
     endpoint, all thinking block signatures are stripped.  Signatures are
     Anthropic-proprietary — third-party endpoints cannot validate them and will
     reject them with HTTP 400 "Invalid signature in thinking block".
+
+    When *model* is provided and matches the Kimi / Moonshot family (or
+    *base_url* is a Kimi / Moonshot host), unsigned thinking blocks
+    synthesised from ``reasoning_content`` are preserved on replayed
+    assistant tool-call messages — Kimi requires the field to exist, even
+    if empty.
     """
     system = None
     result = []
@@ -1507,7 +1569,7 @@ def convert_messages_to_anthropic(
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
-    _is_kimi = _is_kimi_coding_endpoint(base_url)
+    _is_kimi = _is_kimi_family_endpoint(base_url, model)
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -1630,7 +1692,9 @@ def build_anthropic_kwargs(
     Currently only supported on native Anthropic endpoints (not third-party
     compatible ones).
     """
-    system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url)
+    system, anthropic_messages = convert_messages_to_anthropic(
+        messages, base_url=base_url, model=model
+    )
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
@@ -1736,7 +1800,7 @@ def build_anthropic_kwargs(
     # silently hides reasoning text that Hermes surfaces in its CLI. We
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
-    _is_kimi_coding = _is_kimi_coding_endpoint(base_url)
+    _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()

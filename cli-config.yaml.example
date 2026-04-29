@@ -180,6 +180,11 @@ terminal:
 #   lifetime_seconds: 300
 #   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   docker_mount_cwd_to_workspace: true   # Explicit opt-in: mount your launch cwd into /workspace
+#   # Optional: run the container as your host user's uid:gid so files written
+#   # into bind-mounted dirs are owned by you, not root. Drops SETUID/SETGID
+#   # caps too since no gosu privilege drop is needed. Leave off if your
+#   # chosen docker_image expects to start as root.
+#   docker_run_as_host_user: true
 #   # Optional: explicitly forward selected env vars into Docker.
 #   # These values come from your current shell first, then ~/.hermes/.env.
 #   # Warning: anything forwarded here is visible to commands run in the container.

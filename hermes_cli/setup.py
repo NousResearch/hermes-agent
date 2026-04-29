@@ -3249,33 +3249,14 @@ def run_setup_wizard(args):
     _offer_launch_chat()
 
 
-def _resolve_hermes_chat_argv() -> Optional[list[str]]:
-    """Resolve argv for launching ``hermes chat`` in a fresh process."""
-    hermes_bin = shutil.which("hermes")
-    if hermes_bin:
-        return [hermes_bin, "chat"]
-
-    try:
-        if importlib.util.find_spec("hermes_cli") is not None:
-            return [sys.executable, "-m", "hermes_cli.main", "chat"]
-    except Exception:
-        pass
-
-    return None
-
-
 def _offer_launch_chat():
     """Prompt the user to jump straight into chat after setup."""
     print()
     if not prompt_yes_no("Launch hermes chat now?", True):
         return
 
-    chat_argv = _resolve_hermes_chat_argv()
-    if not chat_argv:
-        print_info("Could not relaunch Hermes automatically. Run 'hermes chat' manually.")
-        return
-
-    os.execvp(chat_argv[0], chat_argv)
+    from hermes_cli.relaunch import relaunch_chat
+    relaunch_chat()
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):

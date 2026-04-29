@@ -927,7 +927,7 @@ display:
   #     agent_name: "My Agent"               # Banner title and branding
   #     welcome: "Welcome message"           # Shown at CLI startup
   #     response_label: " ⚔ Agent "         # Response box header label
-  #     prompt_symbol: "⚔ ❯ "              # Prompt symbol
+  #     prompt_symbol: "⚔"                  # Prompt symbol (bare token; renderers add trailing space)
   #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
   #
   skin: default

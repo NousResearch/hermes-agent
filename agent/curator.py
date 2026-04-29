@@ -743,12 +743,12 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         result_meta["summary"] = result_meta["error"]
         return result_meta
 
-    # Resolve provider + model the same way the CLI does, so the curator
-    # fork inherits the user's active main config rather than falling
-    # through to an empty provider/model pair (which sends HTTP 400
-    # "No models provided"). AIAgent() without explicit provider/model
-    # arguments hits an auto-resolution path that fails for OAuth-only
-    # providers and for pool-backed credentials.
+    # Resolve provider + model for the curator fork.
+    # Precedence:
+    #   1. curator.auxiliary.{provider,model} (explicit curator override)
+    #   2. model.{provider,default} (main model config)
+    # Without explicit provider/model, AIAgent hits an auto-resolution
+    # path that fails for OAuth-only providers and pool-backed credentials.
     _api_key = None
     _base_url = None
     _api_mode = None
@@ -758,9 +758,12 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
         _cfg = load_config()
+        _curator = _cfg.get("curator", {}) if isinstance(_cfg.get("curator"), dict) else {}
+        _aux = _curator.get("auxiliary", {}) if isinstance(_curator, dict) else {}
         _m = _cfg.get("model", {}) if isinstance(_cfg.get("model"), dict) else {}
-        _provider = _m.get("provider") or "auto"
-        _model_name = _m.get("default") or _m.get("model") or ""
+        # curator.auxiliary takes priority; fall back to main model config
+        _provider = _aux.get("provider") or _m.get("provider") or "auto"
+        _model_name = _aux.get("model") or _m.get("default") or _m.get("model") or ""
         _rp = resolve_runtime_provider(
             requested=_provider, target_model=_model_name
         )

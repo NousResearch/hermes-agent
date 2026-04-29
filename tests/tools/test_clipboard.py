@@ -12,7 +12,7 @@ import os
 import queue
 import subprocess
 import sys
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import patch, MagicMock, PropertyMock, mock_open
 
@@ -234,6 +234,7 @@ class TestIsWsl:
         fake_uname = SimpleNamespace(
             release="5.15.0-microsoft-standard-WSL2" if wants_wsl else "6.8.0-generic"
         )
+
         def _fake_exists(path) -> bool:
             # Normalize Path/str — CI workers may pass pathlib paths to exists().
             norm = str(path).replace("\\", "/").rstrip("/")
@@ -241,20 +242,30 @@ class TestIsWsl:
                 return wants_wsl
             return False
 
-        # patch.object avoids string-target resolution quirks across import paths (xdist CI).
-        with patch.object(hermes_constants.platform, "uname", return_value=fake_uname), patch.object(
-            hermes_constants.os.path, "exists", side_effect=_fake_exists
-        ):
+        import platform as plat_mod
+
+        plat_mod._uname_cache = None
+        hermes_constants._wsl_detected = None
+
+        # Linux: ``os.path`` is ``posixpath``; patching only ``hermes_constants.os.path``
+        # has proven flaky under pytest-xdist on GHA — patch ``posixpath.exists`` too.
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(hermes_constants.platform, "uname", return_value=fake_uname))
+            stack.enter_context(patch.object(hermes_constants.os.path, "exists", side_effect=_fake_exists))
+            if sys.platform != "win32":
+                import posixpath
+
+                stack.enter_context(patch.object(posixpath, "exists", side_effect=_fake_exists))
             if open_exc is not None:
-                with patch("hermes_constants._builtin_open", side_effect=open_exc), patch(
-                    "builtins.open", side_effect=open_exc
-                ):
-                    yield None
+                stack.enter_context(patch("hermes_constants._builtin_open", side_effect=open_exc))
+                stack.enter_context(patch("builtins.open", side_effect=open_exc))
+                yield None
                 return
             assert read_data is not None
             m = mock_open(read_data=read_data)
-            with patch("hermes_constants._builtin_open", m), patch("builtins.open", m):
-                yield m
+            stack.enter_context(patch("hermes_constants._builtin_open", m))
+            stack.enter_context(patch("builtins.open", m))
+            yield m
 
     def test_wsl2_detected(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"

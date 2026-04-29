@@ -67,6 +67,7 @@ AUTHOR_MAP = {
     "beliefanx@gmail.com": "BeliefanX",
     "jefferson@heimdallstrategy.com": "Mind-Dragon",
     "steve.westerhouse@origami-analytics.com": "westers",
+    "liuhao03@bilibili.com": "liuhao1024",
     "130918800+devorun@users.noreply.github.com": "devorun",
     "surat.s@itm.kmutnb.ac.th": "beesrsj2500",
     "beesr@bee.localdomain": "beesrsj2500",

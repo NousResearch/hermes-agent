@@ -80,7 +80,18 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
     monkeypatch.setattr(config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}})
 
     assert server._load_enabled_toolsets() == ["memory"]
-    assert "falling back" in capsys.readouterr().err
+    assert "using configured CLI toolsets" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_warns_when_config_fallback_fails(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    assert server._load_enabled_toolsets() is None
+    assert "could not be loaded" in capsys.readouterr().err
 
 
 def test_load_enabled_toolsets_honors_builtin_env_if_config_fails(monkeypatch):

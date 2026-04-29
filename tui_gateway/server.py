@@ -904,10 +904,8 @@ def _load_enabled_toolsets() -> list[str] | None:
         if valid:
             return valid
 
-        print(
-            "[tui] no valid HERMES_TUI_TOOLSETS entries; falling back to configured CLI toolsets",
-            file=sys.stderr,
-            flush=True,
+        fallback_notice = (
+            "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
         )
 
     try:
@@ -925,8 +923,16 @@ def _load_enabled_toolsets() -> list[str] | None:
         enabled = sorted(
             _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         )
+        if "fallback_notice" in locals():
+            print(fallback_notice, file=sys.stderr, flush=True)
         return enabled or None
     except Exception:
+        if "fallback_notice" in locals():
+            print(
+                "[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets",
+                file=sys.stderr,
+                flush=True,
+            )
         return None
 
 

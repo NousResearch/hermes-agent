@@ -47,6 +47,43 @@ def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     return [item for item in normalized if item] or None
 
 
+def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
+    normalized = _normalize_toolsets(toolsets)
+    if normalized is None:
+        return None, None
+
+    try:
+        from toolsets import validate_toolset
+    except Exception as exc:
+        return None, f"hermes -z: failed to validate --toolsets: {exc}\n"
+
+    built_in = [name for name in normalized if validate_toolset(name)]
+    unresolved = [name for name in normalized if name not in built_in]
+
+    mcp_names: set[str] = set()
+    if unresolved:
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            mcp_servers = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
+            mcp_names = set(mcp_servers)
+        except Exception:
+            mcp_names = set()
+
+    mcp_valid = [name for name in unresolved if name in mcp_names]
+    invalid = [name for name in unresolved if name not in mcp_names]
+    valid = built_in + mcp_valid
+
+    if invalid:
+        sys.stderr.write(f"hermes -z: ignoring unknown --toolsets entries: {', '.join(invalid)}\n")
+
+    if not valid:
+        return None, "hermes -z: --toolsets did not contain any valid toolsets.\n"
+
+    return valid, None
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
@@ -86,6 +123,11 @@ def run_oneshot(
         )
         return 2
 
+    explicit_toolsets, toolsets_error = _validate_explicit_toolsets(toolsets)
+    if toolsets_error:
+        sys.stderr.write(toolsets_error)
+        return 2
+
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
@@ -98,7 +140,7 @@ def run_oneshot(
 
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
-            response = _run_agent(prompt, model=model, provider=provider, toolsets=toolsets)
+            response = _run_agent(prompt, model=model, provider=provider, toolsets=explicit_toolsets)
     finally:
         try:
             devnull.close()

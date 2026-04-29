@@ -192,6 +192,25 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
     assert captured == {"prompt": "hello", "model": None, "provider": None, "toolsets": "web,terminal"}
 
 
+def test_oneshot_rejects_invalid_only_toolsets(capsys):
+    from hermes_cli.oneshot import run_oneshot
+
+    assert run_oneshot("hello", toolsets="nope") == 2
+    err = capsys.readouterr().err
+    assert "nope" in err
+    assert "did not contain any valid toolsets" in err
+
+
+def test_oneshot_filters_invalid_toolsets_before_redirect(capsys):
+    from hermes_cli.oneshot import _validate_explicit_toolsets
+
+    valid, error = _validate_explicit_toolsets("web,nope")
+
+    assert valid == ["web"]
+    assert error is None
+    assert "nope" in capsys.readouterr().err
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None

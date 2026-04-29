@@ -2001,16 +2001,31 @@ class AIAgent:
                 f"model.context_length in config.yaml to override."
             )
 
-        # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand)
+        # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).
+        # Skip names that are already present — the get_tool_definitions()
+        # quiet_mode cache returned a shared list pre-#17335, so a stray
+        # mutation here would poison subsequent agent inits in the same
+        # Gateway process and trip provider-side 'duplicate tool name'
+        # errors. Even with the cache fix, dedup is the right defense
+        # against plugin paths that may register the same schemas via
+        # ctx.register_tool(). Mirrors the memory tools dedup above.
         self._context_engine_tool_names: set = set()
         if hasattr(self, "context_compressor") and self.context_compressor and self.tools is not None:
+            _existing_tool_names = {
+                t.get("function", {}).get("name")
+                for t in self.tools
+                if isinstance(t, dict)
+            }
             for _schema in self.context_compressor.get_tool_schemas():
+                _tname = _schema.get("name", "")
+                if _tname and _tname in _existing_tool_names:
+                    continue  # already registered via plugin/cache path
                 _wrapped = {"type": "function", "function": _schema}
                 self.tools.append(_wrapped)
-                _tname = _schema.get("name", "")
                 if _tname:
                     self.valid_tool_names.add(_tname)
                     self._context_engine_tool_names.add(_tname)
+                    _existing_tool_names.add(_tname)
 
         # Notify context engine of session start
         if hasattr(self, "context_compressor") and self.context_compressor:

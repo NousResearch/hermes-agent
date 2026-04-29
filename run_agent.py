@@ -96,9 +96,11 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
+from agent.retrieval_budget import RetrievalBudget
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE, OPENAI_TASK_FOCUS_GUIDANCE
+from agent.tool_planner import build_default_plan, plan_retrieval_tool_use, should_skip_retrieval_planner
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -254,18 +256,19 @@ class IterationBudget:
             return max(0, self.max_total - self._used)
 
 
+# Tools that use per-turn retrieval policy state. Keep them sequential so the
+# planner/budget ladder remains deterministic within a turn.
+_RETRIEVAL_POLICY_TOOLS = frozenset({"read_file", "search_files", "session_search"})
+
 # Tools that must never run concurrently (interactive / user-facing).
 # When any of these appear in a batch, we fall back to sequential execution.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify"}) | _RETRIEVAL_POLICY_TOOLS
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
     "ha_get_state",
     "ha_list_entities",
     "ha_list_services",
-    "read_file",
-    "search_files",
-    "session_search",
     "skill_view",
     "skills_list",
     "vision_analyze",
@@ -1697,6 +1700,21 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+
+        _retrieval_cfg = _agent_cfg.get("retrieval_policy", {})
+        if not isinstance(_retrieval_cfg, dict):
+            _retrieval_cfg = {}
+        self._retrieval_policy_config = {
+            "enabled": bool(_retrieval_cfg.get("enabled", True)),
+            "planner_enabled": bool(_retrieval_cfg.get("planner_enabled", True)),
+            "max_retrieval_calls": max(1, int(_retrieval_cfg.get("max_retrieval_calls", 4))),
+            "max_broad_search_calls": max(0, int(_retrieval_cfg.get("max_broad_search_calls", 1))),
+            "max_subtree_expansions": max(0, int(_retrieval_cfg.get("max_subtree_expansions", 2))),
+            "max_total_retrieval_seconds": max(1.0, float(_retrieval_cfg.get("max_total_retrieval_seconds", 25))),
+            "allow_unplanned_broad_search": bool(_retrieval_cfg.get("allow_unplanned_broad_search", False)),
+            "debug_log_events": bool(_retrieval_cfg.get("debug_log_events", True)),
+        }
+        self._reset_retrieval_policy_turn_state()
 
         # App-level API retry count (wraps each model API call).  Default 3,
         # overridable via agent.api_max_retries in config.yaml.  See #11616.
@@ -8106,6 +8124,165 @@ class AIAgent:
             parent_agent=self,
         )
 
+    def _reset_retrieval_policy_turn_state(self) -> None:
+        self._retrieval_turn_plan = None
+        self._retrieval_turn_budget = None
+        self._current_user_message = getattr(self, "_current_user_message", "") or ""
+
+    def _retrieval_policy_enabled(self) -> bool:
+        return bool(getattr(self, "_retrieval_policy_config", {}).get("enabled", False))
+
+    def _build_retrieval_budget(self, plan) -> RetrievalBudget:
+        cfg = self._retrieval_policy_config
+        max_calls = plan.max_retrieval_calls if plan and getattr(plan, "max_retrieval_calls", None) else cfg["max_retrieval_calls"]
+        return RetrievalBudget(
+            max_retrieval_calls=max_calls,
+            max_broad_search_calls=cfg["max_broad_search_calls"],
+            max_subtree_expansions=cfg["max_subtree_expansions"],
+            max_total_retrieval_seconds=cfg["max_total_retrieval_seconds"],
+            recommended_sequence=list(getattr(plan, "recommended_sequence", []) or []),
+            allow_broad_search=bool(getattr(plan, "allow_broad_search", cfg["allow_unplanned_broad_search"])),
+        )
+
+    @staticmethod
+    def _classify_retrieval_stage(function_name: str, function_args: dict) -> str | None:
+        function_args = function_args or {}
+        if function_name == "read_file":
+            return "exact_path"
+        if function_name == "session_search":
+            return "session_search"
+        if function_name != "search_files":
+            return None
+        search_path = str(function_args.get("path", ".") or ".").strip()
+        if search_path in ("", ".", "./", "/"):
+            return "broad_search"
+        return "known_subtree"
+
+    def _normalize_retrieval_outcome(self, function_name: str, result: str) -> str:
+        try:
+            payload = json.loads(result)
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            err = str(payload.get("error") or "").lower()
+            if err:
+                if "permission" in err or "refusing" in err:
+                    return "permission_denied"
+                if "not found" in err or "no such file" in err or "0 results" in err:
+                    return "empty"
+                if "safety limit" in err or "too broad" in err:
+                    return "too_broad"
+                if "invalid scope" in err:
+                    return "invalid_scope"
+                return "timed_out" if "timed out" in err else "invalid_scope"
+
+            if function_name == "read_file":
+                return "success" if payload.get("content") is not None else "empty"
+            if function_name == "search_files":
+                total_count = payload.get("total_count")
+                if isinstance(total_count, int) and total_count == 0:
+                    return "empty"
+                if payload.get("files") == [] or payload.get("matches") == []:
+                    return "empty"
+                return "success"
+            if function_name == "session_search":
+                if payload.get("count") == 0 or payload.get("results") == []:
+                    return "empty"
+                return "success"
+
+        lower = str(result or "").lower()
+        if "timed out" in lower:
+            return "timed_out"
+        if "not found" in lower:
+            return "empty"
+        return "success"
+
+    def _policy_error_result(self, function_name: str, stage: str, reason: str) -> str:
+        next_step = None
+        if self._retrieval_turn_budget and self._retrieval_turn_budget.recommended_sequence:
+            for candidate in self._retrieval_turn_budget.recommended_sequence:
+                if candidate not in self._retrieval_turn_budget.last_outcome_by_stage:
+                    next_step = candidate
+                    break
+        human_stage = stage.replace("_", " ")
+        message = (
+            f"Retrieval policy blocked {function_name} at {human_stage}: {reason}."
+            + (f" Allowed next step: {next_step}." if next_step else "")
+        )
+        if self._retrieval_policy_config.get("debug_log_events", True):
+            logger.info("retrieval policy deny: tool=%s stage=%s reason=%s next=%s", function_name, stage, reason, next_step)
+        return json.dumps({
+            "success": False,
+            "error": message,
+            "policy": {
+                "stage": stage,
+                "reason": reason,
+                "next_step": next_step,
+            },
+        }, ensure_ascii=False)
+
+    def _ensure_retrieval_plan(self, function_name: str, function_args: dict, messages: list | None = None):
+        if self._retrieval_turn_plan is not None:
+            return self._retrieval_turn_plan
+        cfg = self._retrieval_policy_config
+        if cfg.get("planner_enabled", True) and not should_skip_retrieval_planner(function_name, function_args):
+            plan = plan_retrieval_tool_use(
+                user_message=self._current_user_message,
+                function_name=function_name,
+                function_args=function_args,
+                recent_messages=messages or [],
+                max_retrieval_calls=cfg["max_retrieval_calls"],
+                allow_broad_search=cfg["allow_unplanned_broad_search"],
+            )
+        else:
+            plan = build_default_plan(
+                user_message=self._current_user_message,
+                function_name=function_name,
+                function_args=function_args,
+                max_retrieval_calls=cfg["max_retrieval_calls"],
+                allow_broad_search=cfg["allow_unplanned_broad_search"],
+            )
+        self._retrieval_turn_plan = plan
+        self._retrieval_turn_budget = self._build_retrieval_budget(plan)
+        if cfg.get("debug_log_events", True):
+            logger.info(
+                "retrieval planner: source=%s sequence=%s allow_broad=%s max_calls=%s",
+                getattr(plan, "source", "unknown"),
+                getattr(plan, "recommended_sequence", []),
+                getattr(plan, "allow_broad_search", False),
+                getattr(plan, "max_retrieval_calls", cfg["max_retrieval_calls"]),
+            )
+        return plan
+
+    def _invoke_retrieval_with_policy(self, function_name: str, function_args: dict, executor, *, messages: list | None = None) -> str:
+        if not self._retrieval_policy_enabled():
+            return executor()
+        stage = self._classify_retrieval_stage(function_name, function_args)
+        if stage is None:
+            return executor()
+        self._ensure_retrieval_plan(function_name, function_args, messages=messages)
+        budget = self._retrieval_turn_budget or self._build_retrieval_budget(self._retrieval_turn_plan)
+        self._retrieval_turn_budget = budget
+        allowed, reason = budget.can_attempt(stage)
+        if not allowed:
+            return self._policy_error_result(function_name, stage, reason or "blocked")
+        start = time.time()
+        result = executor()
+        duration = time.time() - start
+        outcome = self._normalize_retrieval_outcome(function_name, result)
+        budget.record_attempt(stage, function_name, seconds=duration, outcome=outcome)
+        if self._retrieval_policy_config.get("debug_log_events", True):
+            logger.info(
+                "retrieval stage=%s tool=%s result=%s remaining_calls=%s total_seconds=%.2f",
+                stage,
+                function_name,
+                outcome,
+                budget.remaining_calls(),
+                budget.total_retrieval_seconds,
+            )
+        return result
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
@@ -8137,12 +8314,17 @@ class AIAgent:
             if not self._session_db:
                 return json.dumps({"success": False, "error": "Session database not available."})
             from tools.session_search_tool import session_search as _session_search
-            return _session_search(
-                query=function_args.get("query", ""),
-                role_filter=function_args.get("role_filter"),
-                limit=function_args.get("limit", 3),
-                db=self._session_db,
-                current_session_id=self.session_id,
+            return self._invoke_retrieval_with_policy(
+                function_name,
+                function_args,
+                lambda: _session_search(
+                    query=function_args.get("query", ""),
+                    role_filter=function_args.get("role_filter"),
+                    limit=function_args.get("limit", 3),
+                    db=self._session_db,
+                    current_session_id=self.session_id,
+                ),
+                messages=messages,
             )
         elif function_name == "memory":
             target = function_args.get("target", "memory")
@@ -8181,12 +8363,17 @@ class AIAgent:
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
         else:
-            return handle_function_call(
-                function_name, function_args, effective_task_id,
-                tool_call_id=tool_call_id,
-                session_id=self.session_id or "",
-                enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                skip_pre_tool_call_hook=True,
+            return self._invoke_retrieval_with_policy(
+                function_name,
+                function_args,
+                lambda: handle_function_call(
+                    function_name, function_args, effective_task_id,
+                    tool_call_id=tool_call_id,
+                    session_id=self.session_id or "",
+                    enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                    skip_pre_tool_call_hook=True,
+                ),
+                messages=messages,
             )
 
     @staticmethod
@@ -8649,12 +8836,17 @@ class AIAgent:
                     function_result = json.dumps({"success": False, "error": "Session database not available."})
                 else:
                     from tools.session_search_tool import session_search as _session_search
-                    function_result = _session_search(
-                        query=function_args.get("query", ""),
-                        role_filter=function_args.get("role_filter"),
-                        limit=function_args.get("limit", 3),
-                        db=self._session_db,
-                        current_session_id=self.session_id,
+                    function_result = self._invoke_retrieval_with_policy(
+                        function_name,
+                        function_args,
+                        lambda: _session_search(
+                            query=function_args.get("query", ""),
+                            role_filter=function_args.get("role_filter"),
+                            limit=function_args.get("limit", 3),
+                            db=self._session_db,
+                            current_session_id=self.session_id,
+                        ),
+                        messages=messages,
                     )
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():
@@ -8778,12 +8970,17 @@ class AIAgent:
                     spinner.start()
                 _spinner_result = None
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
+                    function_result = self._invoke_retrieval_with_policy(
+                        function_name,
+                        function_args,
+                        lambda: handle_function_call(
+                            function_name, function_args, effective_task_id,
+                            tool_call_id=tool_call.id,
+                            session_id=self.session_id or "",
+                            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                            skip_pre_tool_call_hook=True,
+                        ),
+                        messages=messages,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -8798,12 +8995,17 @@ class AIAgent:
                         self._vprint(f"  {cute_msg}")
             else:
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
-                        skip_pre_tool_call_hook=True,
+                    function_result = self._invoke_retrieval_with_policy(
+                        function_name,
+                        function_args,
+                        lambda: handle_function_call(
+                            function_name, function_args, effective_task_id,
+                            tool_call_id=tool_call.id,
+                            session_id=self.session_id or "",
+                            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                            skip_pre_tool_call_hook=True,
+                        ),
+                        messages=messages,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -9141,6 +9343,8 @@ class AIAgent:
         # state registry.  Set BEFORE any tool dispatch so snapshots taken at
         # child-launch time see the parent's real id, not None.
         self._current_task_id = effective_task_id
+        self._current_user_message = user_message or ""
+        self._reset_retrieval_policy_turn_state()
         
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.

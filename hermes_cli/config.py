@@ -516,13 +516,23 @@ DEFAULT_CONFIG = {
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
-        "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
-        "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-
+        "target_ratio": 0.20,         # shrink to this ratio of context window after compression
+        "protect_last_n": 20,         # always keep the newest N messages verbatim
+        "protect_first_n": 1,         # keep the initial system prompt message
+    },
+    "retrieval_policy": {
+        "enabled": True,
+        "planner_enabled": True,
+        "max_retrieval_calls": 4,
+        "max_broad_search_calls": 1,
+        "max_subtree_expansions": 2,
+        "max_total_retrieval_seconds": 25,
+        "allow_unplanned_broad_search": False,
+        "debug_log_events": True,
     },
 
-    # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
-    # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
+    # Auxiliary model config — provider:model for each side task.
+
     "prompt_caching": {
         "cache_ttl": "5m",
     },
@@ -594,6 +604,14 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
+        },
+        "planner": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 15,
             "extra_body": {},
         },
         "approval": {
@@ -2226,7 +2244,7 @@ def check_config_version() -> Tuple[int, int]:
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
-    "agent", "terminal", "display", "compression", "delegation",
+    "agent", "terminal", "display", "compression", "retrieval_policy", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",
 }

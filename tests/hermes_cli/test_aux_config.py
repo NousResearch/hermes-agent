@@ -50,6 +50,22 @@ def test_session_search_defaults_include_extra_body_and_concurrency():
     assert ss["max_concurrency"] == 3
 
 
+def test_planner_defaults_present_in_default_config():
+    planner = DEFAULT_CONFIG["auxiliary"]["planner"]
+    assert planner["provider"] == "auto"
+    assert planner["model"] == ""
+    assert planner["timeout"] == 15
+    assert planner["extra_body"] == {}
+
+
+def test_retrieval_policy_defaults_present():
+    rp = DEFAULT_CONFIG["retrieval_policy"]
+    assert rp["enabled"] is True
+    assert rp["planner_enabled"] is True
+    assert rp["max_retrieval_calls"] == 4
+    assert rp["allow_unplanned_broad_search"] is False
+
+
 def test_aux_tasks_keys_all_exist_in_default_config():
     """Every task the menu offers must be defined in DEFAULT_CONFIG."""
     aux_keys = {k for k, _name, _desc in _AUX_TASKS}

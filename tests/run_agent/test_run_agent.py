@@ -1663,10 +1663,10 @@ class TestConcurrentToolExecution:
                 mock_seq.assert_called_once()
                 mock_con.assert_not_called()
 
-    def test_multiple_tools_uses_concurrent_path(self, agent):
-        """Multiple read-only tools should use concurrent path."""
+    def test_multiple_non_retrieval_tools_use_concurrent_path(self, agent):
+        """Multiple read-only non-retrieval tools should use concurrent path."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
-        tc2 = _mock_tool_call(name="read_file", arguments='{"path":"x.py"}', call_id="c2")
+        tc2 = _mock_tool_call(name="skill_view", arguments='{"name":"demo"}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
         with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:

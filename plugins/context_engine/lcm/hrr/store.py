@@ -101,11 +101,19 @@ class MemoryStore:
 
     def __init__(
         self,
-        db_path: "str | Path" = "~/.hermes/memory_store.db",
+        db_path: "str | Path | None" = None,
         default_trust: float = 0.5,
         hrr_dim: int = 1024,
     ) -> None:
-        self.db_path = Path(db_path).expanduser()
+        if db_path is None:
+            try:
+                from hermes_constants import get_hermes_home
+                resolved = get_hermes_home() / "memory_store.db"
+            except ImportError:
+                resolved = Path.home() / ".hermes" / "memory_store.db"
+            self.db_path = resolved
+        else:
+            self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.default_trust = _clamp_trust(default_trust)
         self.hrr_dim = hrr_dim

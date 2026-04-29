@@ -1,12 +1,12 @@
 ---
 name: spike
-description: "Spike an idea with throwaway experiments before committing to build."
+description: "Throwaway experiments to validate an idea before build."
 version: 1.0.0
-author: Hermes Agent
+author: Hermes Agent (adapted from gsd-build/get-shit-done)
 license: MIT
 metadata:
   hermes:
-    tags: [spike, prototype, experiment, feasibility, throwaway, exploration, research, planning]
+    tags: [spike, prototype, experiment, feasibility, throwaway, exploration, research, planning, mvp, proof-of-concept]
     related_skills: [sketch, writing-plans, subagent-driven-development, plan]
 ---
 
@@ -75,7 +75,13 @@ Spikes are not research-free — you research enough to pick the right approach,
 3. **Pick one.** State why. If 2+ are credible, build quick variants within the spike.
 4. **Skip research** for pure logic with no external dependencies.
 
-Use `web_search` / `web_extract` for APIs and services. For libraries, read their actual docs.
+Use Hermes tools for the research step:
+
+- `web_search("python websocket streaming libraries 2025")` — find candidates
+- `web_extract(urls=["https://websockets.readthedocs.io/..."])` — read the actual docs (returns markdown)
+- `terminal("pip show websockets | grep Version")` — check what's installed in the project's venv
+
+For libraries without docs pages, clone and read their `README.md` / `examples/` via `read_file`. Context7 MCP (if the user has it configured) is also a good source — `mcp_*_resolve-library-id` then `mcp_*_query-docs`.
 
 ### 4. Build
 
@@ -104,6 +110,27 @@ spikes/
 **Depth over speed.** Never declare "it works" after one happy-path run. Test edge cases. Follow surprising findings. The verdict is only trustworthy when the investigation was honest.
 
 **Avoid** unless the spike specifically requires it: complex package management, build tools/bundlers, Docker, env files, config systems. Hardcode everything — it's a spike.
+
+**Building one spike** — a typical tool sequence:
+
+```
+terminal("mkdir -p spikes/001-websocket-streaming")
+write_file("spikes/001-websocket-streaming/README.md", "# 001: websocket-streaming\n\n...")
+write_file("spikes/001-websocket-streaming/main.py", "...")
+terminal("cd spikes/001-websocket-streaming && python3 main.py")
+# Observe output, iterate.
+```
+
+**Parallel comparison spikes (002a / 002b) — delegate.** When two approaches can run in parallel and both need real engineering (not 10-line prototypes), fan out with `delegate_task`:
+
+```
+delegate_task(tasks=[
+    {"goal": "Build 002a-pdf-parse-pdfjs: ...", "toolsets": ["terminal", "file", "web"]},
+    {"goal": "Build 002b-pdf-parse-camelot: ...", "toolsets": ["terminal", "file", "web"]},
+])
+```
+
+Each subagent returns its own verdict; you write the head-to-head.
 
 ### 5. Verdict
 

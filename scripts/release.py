@@ -857,6 +857,7 @@ AUTHOR_MAP = {
     "nfb0408@163.com": "ningfangbin",
     "164839249+Joseph19820124@users.noreply.github.com": "Joseph19820124",
     "rugved@lmstudio.ai": "rugvedS07",
+<<<<<<< HEAD
     "44333070+Heltman@users.noreply.github.com": "Heltman",
     # v0.12.0 additions
     "ching@kachingappz.com": "ching-kaching",
@@ -901,6 +902,7 @@ AUTHOR_MAP = {
     "promptsiren@gmail.com": "firefly",  # PR #18123 salvage of #16660 (ContextVars)
     "wtyopenclaw@gmail.com": "WuTianyi123",  # PR #20275 salvage of #13723 (feishu markdown)
     # pander: empty email, salvaged via PR #19665 from #16126 by @ms-alan
+    "giuseppe.littera@gmail.com": "dusterbloom",
 }
 
 

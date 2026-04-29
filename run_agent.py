@@ -83,6 +83,39 @@ class _OpenAIProxy:
 
 OpenAI = _OpenAIProxy()
 
+
+def _normalize_fallback_chain(fallback_model: Any) -> List[Dict[str, Any]]:
+    """Flatten supported fallback config shapes into an ordered provider chain.
+
+    The canonical config is ``fallback_providers: [ ... ]``. Older examples
+    used a single ``fallback_model`` dict, and some users nested another
+    ``fallback_model`` inside that dict to express a second fallback. Preserve
+    that legacy shape so a failed first fallback can still cascade.
+    """
+    chain: List[Dict[str, Any]] = []
+
+    def _append(entry: Any) -> None:
+        if not isinstance(entry, dict):
+            return
+        if entry.get("provider") and entry.get("model"):
+            chain.append(entry)
+        nested = entry.get("fallback_model")
+        if nested is not None:
+            if isinstance(nested, list):
+                for item in nested:
+                    _append(item)
+            else:
+                _append(nested)
+
+    if isinstance(fallback_model, list):
+        for item in fallback_model:
+            _append(item)
+    else:
+        _append(fallback_model)
+
+    return chain
+
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -1497,15 +1530,7 @@ class AIAgent:
         # when the primary is exhausted (rate-limit, overload, connection
         # failure).  Supports both legacy single-dict ``fallback_model`` and
         # new list ``fallback_providers`` format.
-        if isinstance(fallback_model, list):
-            self._fallback_chain = [
-                f for f in fallback_model
-                if isinstance(f, dict) and f.get("provider") and f.get("model")
-            ]
-        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-            self._fallback_chain = [fallback_model]
-        else:
-            self._fallback_chain = []
+        self._fallback_chain = _normalize_fallback_chain(fallback_model)
         self._fallback_index = 0
         self._fallback_activated = False
         # Legacy attribute kept for backward compat (tests, external callers)

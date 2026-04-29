@@ -61,6 +61,48 @@ class TestFallbackChainInit:
         assert len(agent._fallback_chain) == 2
         assert agent._fallback_model == fbs[0]
 
+    def test_nested_legacy_fallback_model_flattens_to_chain(self):
+        fbs = {
+            "provider": "groq",
+            "model": "llama-3.3-70b-versatile",
+            "fallback_model": {
+                "provider": "mistral",
+                "model": "mistral-large-latest",
+            },
+        }
+        agent = _make_agent(fallback_model=fbs)
+        assert agent._fallback_chain == [
+            {
+                "provider": "groq",
+                "model": "llama-3.3-70b-versatile",
+                "fallback_model": {
+                    "provider": "mistral",
+                    "model": "mistral-large-latest",
+                },
+            },
+            {"provider": "mistral", "model": "mistral-large-latest"},
+        ]
+        assert agent._fallback_model == fbs
+
+    def test_list_entry_nested_fallback_model_flattens_to_chain(self):
+        fbs = [
+            {
+                "provider": "groq",
+                "model": "llama-3.3-70b-versatile",
+                "fallback_model": {
+                    "provider": "mistral",
+                    "model": "mistral-large-latest",
+                },
+            },
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        assert [entry["provider"] for entry in agent._fallback_chain] == [
+            "groq",
+            "mistral",
+            "openrouter",
+        ]
+
     def test_invalid_entries_filtered(self):
         fbs = [
             {"provider": "openai", "model": "gpt-4o"},
@@ -115,6 +157,26 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._try_activate_fallback() is True
             assert agent.model == "glm-4.7"
+            assert agent._fallback_index == 2
+
+    def test_nested_legacy_fallback_cascades_to_second_provider(self):
+        fbs = {
+            "provider": "groq",
+            "model": "llama-3.3-70b-versatile",
+            "fallback_model": {
+                "provider": "mistral",
+                "model": "mistral-large-latest",
+            },
+        }
+        agent = _make_agent(fallback_model=fbs)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "resolved"),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.model == "llama-3.3-70b-versatile"
+            assert agent._try_activate_fallback() is True
+            assert agent.model == "mistral-large-latest"
             assert agent._fallback_index == 2
 
     def test_all_exhausted_returns_false(self):

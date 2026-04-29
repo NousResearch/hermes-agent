@@ -842,6 +842,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
+
+    # --- script_only mode: run the script and deliver its output directly,
+    # bypassing the LLM entirely.  The script is responsible for producing
+    # the final user-facing message (or [SILENT] to suppress delivery).
+    if job.get("script_only") and job.get("script"):
+        logger.info("Job '%s': script_only mode — running script directly", job_name)
+        success, script_output = _run_job_script(job["script"])
+        if not success:
+            return False, f"# Cron Job: {job_name} (SCRIPT FAILED)\n\n{script_output}", "", script_output
+        output_doc = f"# Cron Job: {job_name}\n\n**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n## Script Output\n\n{script_output}\n"
+        return True, output_doc, script_output or "", None
+
     logger.info("Prompt: %s", prompt[:100])
 
     agent = None

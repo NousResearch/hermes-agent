@@ -1,8 +1,10 @@
 """Shared utility functions for hermes-agent."""
 
+import errno
 import json
 import logging
 import os
+import shutil
 import stat
 import tempfile
 from pathlib import Path
@@ -73,12 +75,45 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     and non-existent paths the behavior is identical to a plain
     ``os.replace`` call.
 
+    When ``tmp_path`` and the resolved real target sit on different
+    filesystems (Docker bind mounts, NAS volumes, custom vault mounts —
+    common when ``~/.hermes`` is a symlink to a managed location), the
+    initial ``os.replace`` raises ``OSError`` with ``errno == EXDEV``.
+    In that case the helper falls back to copying the temp content onto
+    a sibling temp file in the real target's directory and atomically
+    replacing within that filesystem, so the swap remains atomic on the
+    target side even though the original move crossed devices
+    (GitHub #17313).
+
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
     """
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
-    os.replace(str(tmp_path), real_path)
+    tmp_str = str(tmp_path)
+    try:
+        os.replace(tmp_str, real_path)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        real_dir = os.path.dirname(real_path) or "."
+        sibling_fd, sibling_tmp = tempfile.mkstemp(
+            dir=real_dir, prefix=".atomic_xdev_", suffix=".tmp"
+        )
+        try:
+            os.close(sibling_fd)
+            shutil.copyfile(tmp_str, sibling_tmp)
+            os.replace(sibling_tmp, real_path)
+        except BaseException:
+            try:
+                os.unlink(sibling_tmp)
+            except OSError:
+                pass
+            raise
+        try:
+            os.unlink(tmp_str)
+        except OSError:
+            pass
     return real_path
 
 

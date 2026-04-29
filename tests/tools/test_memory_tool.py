@@ -1,6 +1,8 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
+import errno
 import json
+import os
 import pytest
 from pathlib import Path
 
@@ -255,3 +257,56 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+
+# =========================================================================
+# Cross-device write (GitHub #17313)
+# =========================================================================
+
+class TestMemoryToolCrossDeviceWrite:
+    """Reporter setup: ~/.hermes/memories is a symlink (or otherwise sits on a
+    different filesystem) from where the temp file lands, so the original
+    ``os.replace`` raised EXDEV and the write surfaced as
+    ``Failed to write memory file ...: [Errno 18] Invalid cross-device link``.
+
+    The fix in ``utils.atomic_replace`` now copies onto a sibling temp on the
+    real target's filesystem and atomically replaces there — these tests pin
+    the memory tool's reliance on that behavior so the bug doesn't regress."""
+
+    def test_write_succeeds_when_first_replace_raises_exdev(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+
+        real_replace = os.replace
+        state = {"raised": False}
+
+        def _replace(src, dst):
+            if not state["raised"]:
+                state["raised"] = True
+                raise OSError(errno.EXDEV, "Invalid cross-device link", src)
+            return real_replace(src, dst)
+
+        monkeypatch.setattr("utils.os.replace", _replace)
+
+        store = MemoryStore()
+        store.load_from_disk()
+        store.add("memory", "fact persisted across cross-device move")
+
+        # Reload from disk to confirm content was actually persisted, not just
+        # held in memory.
+        reloaded = MemoryStore()
+        reloaded.load_from_disk()
+        assert "fact persisted across cross-device move" in reloaded.memory_entries
+
+        # Cross-device fallback should not leave behind sibling temps in the
+        # memories dir.
+        leftovers = sorted(
+            p.name for p in tmp_path.iterdir() if p.name.startswith(".atomic_xdev_")
+        )
+        assert leftovers == [], f"unexpected sibling temps: {leftovers}"
+
+        # Original `.mem_*.tmp` should also be cleaned up (the fallback unlinks
+        # it after copying onto the sibling).
+        mem_temps = sorted(
+            p.name for p in tmp_path.iterdir() if p.name.startswith(".mem_")
+        )
+        assert mem_temps == [], f"original mem temp not cleaned up: {mem_temps}"

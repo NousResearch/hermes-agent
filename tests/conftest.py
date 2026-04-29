@@ -510,13 +510,12 @@ def _enforce_test_timeout(request):
     if request.node.get_closest_marker("long_running"):
         yield
         return
-    # SIGALRM can interrupt event-loop syscalls and spuriously break asyncio
-    # cancellation under load (pytest-xdist CI); rely on workflow timeout for these.
-    if request.node.get_closest_marker("asyncio") is not None:
-        yield
-        return
+    # Async tests are more sensitive to short SIGALRM budgets under xdist;
+    # keep a larger cap instead of disabling timeouts entirely (which can let
+    # one hung coroutine stall the whole CI job until workflow timeout).
+    timeout_s = 120 if request.node.get_closest_marker("asyncio") is not None else 30
     old = signal.signal(signal.SIGALRM, _timeout_handler)
-    signal.alarm(30)
+    signal.alarm(timeout_s)
     yield
     signal.alarm(0)
     signal.signal(signal.SIGALRM, old)

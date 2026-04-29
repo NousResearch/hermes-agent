@@ -110,6 +110,12 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
 
+    def test_excludes_browser_cdp_profile(self):
+        """Live browser profiles contain sockets and locked SQLite DBs."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("browser-cdp-profile/SingletonSocket"))
+        assert _should_exclude(Path("browser-cdp-profile/Default/History"))
+
     def test_excludes_sqlite_sidecars(self):
         """SQLite WAL/SHM/journal sidecars must not ship alongside the
         safe-copied .db — pairing a fresh snapshot with stale sidecar state
@@ -406,6 +412,43 @@ class TestBackup:
             names = zf.namelist()
             pid_files = [n for n in names if n.endswith(".pid")]
             assert pid_files == []
+
+    def test_excludes_symlinks(self, tmp_path, monkeypatch):
+        """Backup skips symlinks instead of following targets."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        real_file = hermes_home / "real.txt"
+        real_file.write_text("real\n")
+        link = hermes_home / "linked.txt"
+        try:
+            link.symlink_to(real_file)
+        except OSError as exc:
+            pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            assert "real.txt" in names
+            assert "linked.txt" not in names
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="mkfifo unavailable")
+    def test_rejects_special_files(self, tmp_path):
+        """Backup file filter rejects FIFOs/sockets and other special files."""
+        from hermes_cli.backup import _is_backupable_file
+
+        fifo = tmp_path / "pipe"
+        os.mkfifo(fifo)
+
+        assert not _is_backupable_file(fifo)
 
     def test_default_output_path(self, tmp_path, monkeypatch):
         """When no output path given, zip goes to ~/hermes-backup-*.zip."""

@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import time
@@ -52,6 +53,7 @@ _EXCLUDED_DIRS = {
     ".git",             # nested git dirs (profiles shouldn't have these, but safety)
     "node_modules",     # js deps — reinstalled on demand
     "backups",          # prior auto-backups — don't nest backups exponentially
+    "browser-cdp-profile",  # live Chrome profile — sockets and locked SQLite DBs
     "checkpoints",      # session-local trajectory caches — regenerated per-session,
                         # session-hash-keyed so they don't port to another machine anyway
     # Python dependency trees (plugin / MCP-server venvs under HERMES_HOME) —
@@ -233,14 +235,27 @@ def _should_exclude(rel_path: Path) -> bool:
     return False
 
 
+def _is_backupable_file(path: Path) -> bool:
+    """Return True only for regular files.
+
+    ``zipfile.write()`` follows symlinks. Runtime browser profiles can contain
+    symlinks to Unix sockets such as ``SingletonSocket``; following those can
+    block forever. Skip all symlinks and other special files.
+    """
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
 def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> bool:
     """Return True when a candidate file should not be written to a backup zip."""
     if _should_exclude(rel_path):
         return True
 
-    # zipfile.write() follows file symlinks, so skip links before any archive
-    # write can copy data from outside HERMES_HOME.
-    if abs_path.is_symlink():
+    # zipfile.write() follows symlinks and can block on FIFOs/sockets. Only
+    # regular files are backup candidates.
+    if not _is_backupable_file(abs_path):
         return True
 
     try:

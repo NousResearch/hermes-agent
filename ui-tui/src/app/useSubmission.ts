@@ -127,9 +127,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       // Plain prompts are the common path and should not pay an extra RPC
-      // before prompt.submit. File-drop detection can still run for inputs
-      // that contain an absolute/tilde path or file:// URI.
-      if (!looksLikeSlashCommand(text) && !/(?:^|\s)(?:file:\/\/|~\/|\/)[^\s]+/.test(text)) {
+      // before prompt.submit. File-drop detection still runs for absolute,
+      // tilde, file://, and explicit relative paths.
+      if (!looksLikeSlashCommand(text) && !/(?:^|\s)(?:file:\/\/|~\/|\.?\.\/|\/)[^\s]+/.test(text)) {
         return startSubmit(text, expand(text), showUserMessage)
       }
 

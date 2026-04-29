@@ -6998,11 +6998,18 @@ class GatewayRunner:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if ext in _AUDIO_EXTS:
-                        await adapter.send_voice(
-                            chat_id=event.source.chat_id,
-                            audio_path=media_path,
-                            metadata=_thread_meta,
-                        )
+                        if is_voice:
+                            await adapter.send_voice(
+                                chat_id=event.source.chat_id,
+                                audio_path=media_path,
+                                metadata=_thread_meta,
+                            )
+                        else:
+                            await adapter.send_document(
+                                chat_id=event.source.chat_id,
+                                file_path=media_path,
+                                metadata=_thread_meta,
+                            )
                     elif ext in _VIDEO_EXTS:
                         await adapter.send_video(
                             chat_id=event.source.chat_id,

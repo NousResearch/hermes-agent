@@ -78,6 +78,58 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _probe_audio_duration_seconds(audio_path: str, file_size_bytes: Optional[int] = None) -> float:
+    """Best-effort duration probe for Discord voice-message metadata.
+
+    Accurate duration is important for native Discord voice messages: if the
+    metadata duration is longer than the Opus file's real duration, Discord's
+    UI shows the inflated duration and playback stops early when the stream
+    ends. Prefer ffprobe, then mutagen if available, then fall back to a rough
+    byte-size heuristic.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=nw=1:nk=1",
+                audio_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+        duration_text = result.stdout.strip()
+        if duration_text:
+            duration = float(duration_text)
+            if duration > 0:
+                return duration
+    except Exception:
+        pass
+
+    try:
+        from mutagen import File as MutagenFile
+
+        info = MutagenFile(audio_path)
+        length = getattr(getattr(info, "info", None), "length", None)
+        if length and length > 0:
+            return float(length)
+    except Exception:
+        pass
+
+    if file_size_bytes is None:
+        try:
+            file_size_bytes = os.path.getsize(audio_path)
+        except OSError:
+            file_size_bytes = 0
+    return max(1.0, file_size_bytes / 2000.0)
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
@@ -1404,13 +1456,10 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 import base64
 
-                duration_secs = 5.0
-                try:
-                    from mutagen.oggopus import OggOpus
-                    info = OggOpus(audio_path)
-                    duration_secs = info.info.length
-                except Exception:
-                    duration_secs = max(1.0, len(file_data) / 2000.0)
+                duration_secs = _probe_audio_duration_seconds(
+                    audio_path,
+                    file_size_bytes=len(file_data),
+                )
 
                 waveform_bytes = bytes([128] * 256)
                 waveform_b64 = base64.b64encode(waveform_bytes).decode()

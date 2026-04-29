@@ -1096,21 +1096,26 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
 
 def _normalize_tui_toolsets(toolsets: object) -> list[str]:
     """Normalize argparse/Fire-style toolset input for the TUI subprocess."""
-    if not toolsets:
-        return []
+    try:
+        from hermes_cli.oneshot import _normalize_toolsets
 
-    raw_items = [toolsets] if isinstance(toolsets, str) else toolsets
-    if not isinstance(raw_items, (list, tuple)):
-        raw_items = [raw_items]
+        return _normalize_toolsets(toolsets) or []
+    except (AttributeError, ImportError):
+        if not toolsets:
+            return []
 
-    normalized: list[str] = []
-    for item in raw_items:
-        if isinstance(item, str):
-            normalized.extend(part.strip() for part in item.split(","))
-        else:
-            normalized.append(str(item).strip())
+        raw_items = [toolsets] if isinstance(toolsets, str) else toolsets
+        if not isinstance(raw_items, (list, tuple)):
+            raw_items = [raw_items]
 
-    return [item for item in normalized if item]
+        normalized: list[str] = []
+        for item in raw_items:
+            if isinstance(item, str):
+                normalized.extend(part.strip() for part in item.split(","))
+            else:
+                normalized.append(str(item).strip())
+
+        return [item for item in normalized if item]
 
 
 def _launch_tui(

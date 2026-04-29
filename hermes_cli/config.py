@@ -915,6 +915,35 @@ DEFAULT_CONFIG = {
         "guard_agent_created": False,
     },
 
+    # Curator — background skill maintenance.
+    #
+    # Periodically reviews AGENT-CREATED skills (never bundled or
+    # hub-installed) and keeps the collection tidy: marks long-unused skills
+    # as stale, archives genuinely obsolete ones (archive only, never
+    # deletes), and spawns a forked aux-model agent to consolidate overlaps
+    # and patch drift. Runs inactivity-triggered from session start — no
+    # cron daemon.
+    #
+    # See `hermes curator status` for the last run summary.
+    "curator": {
+        "enabled": True,
+        # How long to wait between curator runs (hours).  Default: 7 days.
+        "interval_hours": 24 * 7,
+        # Only run when the agent has been idle at least this long (hours).
+        "min_idle_hours": 2,
+        # Mark a skill as "stale" after this many days without use.
+        "stale_after_days": 30,
+        # Archive a skill (move to skills/.archive/) after this many days
+        # without use. Archived skills are recoverable — no auto-deletion.
+        "archive_after_days": 90,
+        # Optional per-task override for the curator's aux model. Leave null
+        # to use Hermes' main auxiliary client resolution.
+        "auxiliary": {
+            "provider": None,
+            "model": None,
+        },
+    },
+
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
     # This section is only needed for hermes-specific overrides; everything else
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
@@ -3689,10 +3718,9 @@ def _sanitize_env_lines(lines: list) -> list:
     1. Split key names — a bare uppercase fragment on one line followed
        by the rest of the KEY=VALUE on the next (e.g. ``G`` + newline +
        ``LM_API_KEY=***`` from input method corruption).
-    2. Concatenated KEY=VALUE pairs on a single line (missing newline
-       between entries, e.g. ``ANTHROPIC_API_KEY=sk-***OPENAI_BASE_URL=...``).
-    3. Stale ``KEY=***`` placeholder entries left by incomplete setup
-       runs.
+    2. Concatenated KEY=VALUE pairs on a single line (missing newline between
+       entries, e.g. ``ANTHROPIC_API_KEY=sk-...OPENAI_BASE_URL=https://...``).
+    3. Stale ``KEY=***`` placeholder entries left by incomplete setup runs.
 
     Uses a known-keys set (OPTIONAL_ENV_VARS + _EXTRA_ENV_KEYS) so we only
     split on real Hermes env var names, avoiding false positives from values
@@ -3745,39 +3773,33 @@ def _sanitize_env_lines(lines: list) -> list:
             continue
 
         # Detect concatenated KEY=VALUE pairs on one line.
-        # Collect all known KEY= matches with their key-name lengths,
-        # then filter out matches that fall inside another key's name
-        # (e.g., LM_API_KEY matching inside GLM_API_KEY).
-        matches = []  # (position, key_name_length)
+        # Search for known KEY= patterns at any position in the line.
+        # We collect full needle ranges so we can drop matches that are
+        # fully contained within a longer overlapping needle. Without this,
+        # suffix collisions corrupt the file: e.g. LM_API_KEY= inside
+        # GLM_API_KEY= would otherwise split the line into "G\nLM_API_KEY=...".
+        match_ranges: list[tuple[int, int]] = []
         for key_name in known_keys:
             needle = key_name + "="
             idx = stripped.find(needle)
             while idx >= 0:
-                matches.append((idx, len(key_name)))
+                match_ranges.append((idx, idx + len(needle)))
                 idx = stripped.find(needle, idx + len(needle))
 
-        if matches:
-            matches.sort()
-            # Filter: discard matches embedded inside another known
-            # key's name (LM_API_KEY in GLM_API_KEY, etc.).
-            valid = []
-            for i, (pos, key_len) in enumerate(matches):
-                embedded = False
-                for j, (other_pos, other_len) in enumerate(matches):
-                    if i != j and other_pos < pos < other_pos + other_len:
-                        embedded = True
-                        break
-                if not embedded:
-                    valid.append(pos)
+        split_positions = sorted({
+            s for s, e in match_ranges
+            if not any(
+                s2 <= s and e2 >= e and (s2, e2) != (s, e)
+                for s2, e2 in match_ranges
+            )
+        })
 
-            if len(valid) > 1:
-                for i, pos in enumerate(valid):
-                    end = valid[i + 1] if i + 1 < len(valid) else len(stripped)
-                    part = stripped[pos:end].strip()
-                    if part:
-                        sanitized.append(part + "\n")
-            else:
-                sanitized.append(stripped + "\n")
+        if len(split_positions) > 1:
+            for i, pos in enumerate(split_positions):
+                end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
+                part = stripped[pos:end].strip()
+                if part:
+                    sanitized.append(part + "\n")
         else:
             sanitized.append(stripped + "\n")
 
@@ -4064,12 +4086,13 @@ def get_env_value(key: str) -> Optional[str]:
 # =============================================================================
 
 def redact_key(key: str) -> str:
-    """Redact an API key for display."""
-    if not key:
-        return color("(not set)", Colors.DIM)
-    if len(key) < 12:
-        return "***"
-    return key[:4] + "..." + key[-4:]
+    """Redact an API key for display.
+
+    Thin wrapper over :func:`agent.redact.mask_secret` — preserves the
+    "(not set)" placeholder in dim color for the empty case.
+    """
+    from agent.redact import mask_secret
+    return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
 def show_config():

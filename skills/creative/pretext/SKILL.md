@@ -16,7 +16,7 @@ metadata:
 
 [`@chenglou/pretext`](https://github.com/chenglou/pretext) is a 15KB zero-dependency TypeScript library by Cheng Lou (React core, ReasonML, Midjourney) for **DOM-free multiline text measurement and layout**. It does one thing: given `(text, font, width)`, return the line breaks, per-line widths, per-grapheme positions, and total height — all via canvas measurement, no reflow.
 
-That sounds like plumbing. It is not. Because it is fast and geometric, it is a **creative primitive**: you can reflow paragraphs around a moving sprite at 60fps, build games whose level geometry is made of real words, render proportional (not monospaced) ASCII art, animate variable-width Sloane donuts out of prose, shatter text into particles with exact per-grapheme starting positions, or pack shrink-wrapped multiline UI without any `getBoundingClientRect` thrash.
+That sounds like plumbing. It is not. Because it is fast and geometric, it is a **creative primitive**: you can reflow paragraphs around a moving sprite at 60fps, build games whose level geometry is made of real words, drive ASCII logos through prose, shatter text into particles with exact per-grapheme starting positions, or pack shrink-wrapped multiline UI without any `getBoundingClientRect` thrash.
 
 This skill exists so Hermes can make **cool demos** with it — the kind people post to X. See `pretext.cool` and `chenglou.me/pretext` for the community demo corpus.
 
@@ -45,7 +45,7 @@ This is visual art rendered in a browser. Pretext returns numbers; **you** draw 
 - **Don't ship a "hello world" demo.** The `hello-orb-flow.html` template is the *starting* point. Every delivered demo must add intentional color, motion, composition, and one visual detail the user didn't ask for but will appreciate.
 - **Dark backgrounds, warm cores, considered palette.** Classic amber-on-black (CRT / terminal) works, but so do cold-white-on-charcoal (editorial) and desaturated pastels (risograph). Pick one and commit.
 - **Proportional fonts are the point.** Pretext's whole vibe is "not monospaced" — lean into it. Use Iowan Old Style, Inter, JetBrains Mono, Helvetica Neue, or a variable font. Never default sans.
-- **Real prose, not lorem ipsum.** The corpus should mean something. Short manifestos, poetry, the library's own README, a found text — never `lorem ipsum`.
+- **Real source/text, not lorem ipsum.** The corpus should mean something. Short manifestos, poetry, real source code, a found text, the library's own README — never `lorem ipsum`.
 - **First-paint excellence.** No loading states, no blank frames. The demo must look shippable the instant it opens.
 
 ## Stack
@@ -139,7 +139,7 @@ The community corpus (see `references/patterns.md`) clusters into a handful of s
 | **Reflow around obstacle** | `layoutNextLineRange` + per-row width function | Editorial paragraph that parts around a dragged cursor sprite |
 | **Text-as-geometry game** | `layoutWithLines` + per-line collision rects | Breakout where each brick is a measured word |
 | **Shatter / particles** | `walkLineRanges` → per-grapheme (x,y) → physics | Sentence that explodes into letters on click |
-| **Proportional ASCII** | `layoutWithLines` sampled across (theta,phi) of a 3D surface | Torus / sphere / wave made of prose glyphs (see `donut-orbit.html`) |
+| **ASCII obstacle typography** | `layoutNextLineRange` + measured per-row obstacle spans | Bitmap ASCII logo, shape morphs, and draggable wire objects that make text open around their actual geometry |
 | **Editorial multi-column** | `layoutNextLineRange` per column + shared cursor | Animated magazine spread with pull quotes |
 | **Kinetic type** | `layoutWithLines` + per-line transform over time | Star Wars crawl, wave, bounce, glitch |
 | **Multiline shrink-wrap** | `measureLineStats` | Quote card that auto-sizes to its tightest container |
@@ -151,7 +151,7 @@ See `templates/donut-orbit.html` and `templates/hello-orb-flow.html` for working
 1. **Pick a pattern** from the table above based on the user's brief.
 2. **Start from a template**:
    - `templates/hello-orb-flow.html` — text reflowing around a moving orb (reflow-around-obstacle pattern)
-   - `templates/donut-orbit.html` — full 3D ASCII torus with orbit controls (proportional-ASCII + interaction)
+   - `templates/donut-orbit.html` — advanced example: measured ASCII logo obstacles, draggable wire sphere/cube, morphing shape fields, selectable DOM text, and dev-only controls
    - `write_file` to a new `.html` in `/tmp/` or the user's workspace.
 3. **Swap the corpus** for something intentional to the brief. Real prose, 10-100 sentences, no lorem.
 4. **Tune the aesthetic** — font, palette, composition, interaction. This is the work; don't skip it.
@@ -168,7 +168,9 @@ See `templates/donut-orbit.html` and `templates/hello-orb-flow.html` for working
 - `prepare()` / `prepareWithSegments()` is the expensive call. Do it **once** per text+font pair. Cache the handle.
 - On resize, only rerun `layout()` / `layoutWithLines()` — never re-prepare.
 - For per-frame animations where text doesn't change but geometry does, `layoutNextLineRange` in a tight loop is cheap enough to do every frame at 60fps for normal-length paragraphs.
-- When rendering thousands of glyphs per frame (e.g. the donut demo), use a **z-buffer keyed by screen cell** instead of sorting — see `templates/donut-orbit.html` for the pattern.
+- When rendering ASCII masks per frame, keep a cell buffer (`Uint8Array`/typed arrays), derive measured per-row obstacle spans from the cells or projected geometry, merge spans, then feed those spans into `layoutNextLineRange` before drawing text.
+- Keep visual animation and layout animation coupled. If a sphere morphs into a cube, tween both the rendered cell buffer and the obstacle spans with the same value; otherwise the demo looks painted-on instead of physically reflowed.
+- For fades, prefer layer opacity over changing glyph intensity or obstacle scale. Put transient ASCII sprites on their own canvas and fade the canvas with CSS/GSAP opacity so geometry does not appear to shrink.
 - Canvas `ctx.font` setting is surprisingly slow; set it **once** per frame if font doesn't vary, not per `fillText` call.
 
 ## Common Pitfalls

@@ -2428,55 +2428,92 @@ class GatewayRunner:
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
         
-        # Initialize and connect each configured platform
+        # Per-platform connection timeout (seconds) — prevents one slow platform
+        # from blocking all others during startup. Each platform connects
+        # concurrently via asyncio.gather() instead of sequentially.
+        _PLATFORM_CONNECT_TIMEOUT = 30.0
+
+        # Phase 1: create all adapters and set up handlers (sync, fast)
+        prepared: list[tuple[Platform, Any, Any]] = []  # (platform, adapter, config)
         for platform, platform_config in self.config.platforms.items():
             if not platform_config.enabled:
                 continue
             enabled_platform_count += 1
-            
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
                 logger.warning("No adapter available for %s", platform.value)
                 continue
-            
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-            
-            # Try to connect
-            logger.info("Connecting to %s...", platform.value)
+            prepared.append((platform, adapter, platform_config))
+
+        # Phase 2: connect all platforms concurrently, each with its own timeout.
+        # This ensures a Discord timeout (60s default) cannot block Telegram/钉钉
+        # which can connect almost instantly.
+        async def _connect_one_with_timeout(
+            platform: Platform, adapter, platform_config, platform_config_cfg
+        ) -> tuple[Platform, Any, Any, Any, str | None]:
+            """Connect one platform with a timeout. Returns (platform, adapter, config, result_type, error_msg)."""
+            logger.info("Connecting to %s (timeout=%.0fs)...", platform.value, _PLATFORM_CONNECT_TIMEOUT)
             self._update_platform_runtime_status(
-                platform.value,
-                platform_state="connecting",
-                error_code=None,
-                error_message=None,
+                platform.value, platform_state="connecting", error_code=None, error_message=None,
             )
+            result_type = "ok"  # "ok" | "failed" | "error" | "timeout"
+            error_msg: str | None = None
+            success = False
             try:
-                success = await adapter.connect()
+                success = await asyncio.wait_for(adapter.connect(), timeout=_PLATFORM_CONNECT_TIMEOUT)
                 if success:
-                    self.adapters[platform] = adapter
-                    self._sync_voice_mode_state_to_adapter(adapter)
-                    connected_count += 1
-                    self._update_platform_runtime_status(
-                        platform.value,
-                        platform_state="connected",
-                        error_code=None,
-                        error_message=None,
-                    )
-                    logger.info("✓ %s connected", platform.value)
+                    result_type = "ok"
                 else:
-                    logger.warning("✗ %s failed to connect", platform.value)
-                    # Defensive cleanup: a failed connect() may have
-                    # allocated resources (aiohttp.ClientSession, poll
-                    # tasks, bridge subprocesses) before giving up.
-                    # Without this call, those resources are orphaned
-                    # and Python logs "Unclosed client session" at
-                    # process exit. Adapter disconnect() implementations
-                    # are expected to be idempotent and tolerate
-                    # partial-init state.
-                    await self._safe_adapter_disconnect(adapter, platform)
+                    result_type = "failed"
+            except asyncio.TimeoutError:
+                result_type = "timeout"
+                error_msg = f"connection timed out after {_PLATFORM_CONNECT_TIMEOUT:.0f}s"
+                logger.error("✗ %s %s", platform.value, error_msg)
+            except Exception as e:
+                result_type = "error"
+                error_msg = str(e)
+                logger.error("✗ %s error: %s", platform.value, e)
+            return (platform, adapter, platform_config, result_type, error_msg)
+
+        # Run all connections concurrently
+        if prepared:
+            results = await asyncio.gather(
+                *[_connect_one_with_timeout(p, a, c, c) for p, a, c in prepared],
+                return_exceptions=True,
+            )
+        else:
+            results = []
+
+        # Phase 3: process results (sync, fast)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                p, a, c = prepared[i]
+                logger.error("Unexpected exception during %s connect: %s", p.value, result)
+                startup_retryable_errors.append(f"{p.value}: {result}")
+                self._failed_platforms[p] = {"config": c, "attempts": 1, "next_retry": time.monotonic() + 30}
+                self._update_platform_runtime_status(p.value, platform_state="retrying", error_code=None, error_message=str(result))
+                continue
+
+            platform, adapter, platform_config, result_type, error_msg = result
+
+            if result_type == "ok":
+                self.adapters[platform] = adapter
+                self._sync_voice_mode_state_to_adapter(adapter)
+                connected_count += 1
+                self._update_platform_runtime_status(platform.value, platform_state="connected", error_code=None, error_message=None)
+                logger.info("✓ %s connected", platform.value)
+            else:
+                await self._safe_adapter_disconnect(adapter, platform)
+                if result_type == "timeout":
+                    self._update_platform_runtime_status(platform.value, platform_state="retrying", error_code=None, error_message=error_msg)
+                    startup_retryable_errors.append(f"{platform.value}: {error_msg}")
+                    self._failed_platforms[platform] = {"config": platform_config, "attempts": 1, "next_retry": time.monotonic() + 30}
+                elif result_type == "failed":
                     if adapter.has_fatal_error:
                         self._update_platform_runtime_status(
                             platform.value,
@@ -2484,56 +2521,18 @@ class GatewayRunner:
                             error_code=adapter.fatal_error_code,
                             error_message=adapter.fatal_error_message,
                         )
-                        target = (
-                            startup_retryable_errors
-                            if adapter.fatal_error_retryable
-                            else startup_nonretryable_errors
-                        )
-                        target.append(
-                            f"{platform.value}: {adapter.fatal_error_message}"
-                        )
-                        # Queue for reconnection if the error is retryable
+                        target = startup_retryable_errors if adapter.fatal_error_retryable else startup_nonretryable_errors
+                        target.append(f"{platform.value}: {adapter.fatal_error_message}")
                         if adapter.fatal_error_retryable:
-                            self._failed_platforms[platform] = {
-                                "config": platform_config,
-                                "attempts": 1,
-                                "next_retry": time.monotonic() + 30,
-                            }
+                            self._failed_platforms[platform] = {"config": platform_config, "attempts": 1, "next_retry": time.monotonic() + 30}
                     else:
-                        self._update_platform_runtime_status(
-                            platform.value,
-                            platform_state="retrying",
-                            error_code=None,
-                            error_message="failed to connect",
-                        )
-                        startup_retryable_errors.append(
-                            f"{platform.value}: failed to connect"
-                        )
-                        # No fatal error info means likely a transient issue — queue for retry
-                        self._failed_platforms[platform] = {
-                            "config": platform_config,
-                            "attempts": 1,
-                            "next_retry": time.monotonic() + 30,
-                        }
-            except Exception as e:
-                logger.error("✗ %s error: %s", platform.value, e)
-                # Same defensive cleanup path for exceptions — an adapter
-                # that raised mid-connect may still have a live
-                # aiohttp.ClientSession or child subprocess.
-                await self._safe_adapter_disconnect(adapter, platform)
-                self._update_platform_runtime_status(
-                    platform.value,
-                    platform_state="retrying",
-                    error_code=None,
-                    error_message=str(e),
-                )
-                startup_retryable_errors.append(f"{platform.value}: {e}")
-                # Unexpected exceptions are typically transient — queue for retry
-                self._failed_platforms[platform] = {
-                    "config": platform_config,
-                    "attempts": 1,
-                    "next_retry": time.monotonic() + 30,
-                }
+                        self._update_platform_runtime_status(platform.value, platform_state="retrying", error_code=None, error_message="failed to connect")
+                        startup_retryable_errors.append(f"{platform.value}: failed to connect")
+                        self._failed_platforms[platform] = {"config": platform_config, "attempts": 1, "next_retry": time.monotonic() + 30}
+                else:  # error
+                    self._update_platform_runtime_status(platform.value, platform_state="retrying", error_code=None, error_message=error_msg)
+                    startup_retryable_errors.append(f"{platform.value}: {error_msg}")
+                    self._failed_platforms[platform] = {"config": platform_config, "attempts": 1, "next_retry": time.monotonic() + 30}
         
         if connected_count == 0:
             if startup_nonretryable_errors:

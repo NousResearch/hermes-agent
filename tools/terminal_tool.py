@@ -963,6 +963,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     volumes = cc.get("docker_volumes", [])
     docker_forward_env = cc.get("docker_forward_env", [])
     docker_env = cc.get("docker_env", {})
+    tmpfs_tmp_size = cc.get("container_tempfs_tmp_size", None)
+    tmpfs_var_tmp_size = cc.get("container_tempfs_var_tmp_size", None)
+    tmpfs_run_size = cc.get("container_tempfs_run_size", None)
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
@@ -977,6 +980,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
             forward_env=docker_forward_env,
             env=docker_env,
+            tmpfs_tmp_size=tmpfs_tmp_size,
+            tmpfs_var_tmp_size=tmpfs_var_tmp_size,
+            tmpfs_run_size=tmpfs_run_size,
         )
     
     elif env_type == "singularity":

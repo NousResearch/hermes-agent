@@ -234,6 +234,11 @@ terminal:
   container_memory: 5120        # Memory in MB (5120 = 5GB)
   container_disk: 51200         # Disk in MB (51200 = 50GB)
   container_persistent: true    # Persist filesystem across sessions (false = ephemeral)
+  # Docker tmpfs size overrides (default: 512m /tmp, 256m /var/tmp, 64m /run)
+  # Uncomment to allow larger tmpfs for tools like spaCy that download large models
+  # container_tempfs_tmp_size: 1024m   # /tmp size (e.g. 512m, 1g, 2g)
+  # container_tempfs_var_tmp_size: 512m # /var/tmp size
+  # container_tempfs_run_size: 128m    # /run size
 
 # -----------------------------------------------------------------------------
 # SUDO SUPPORT (works with ALL backends above)

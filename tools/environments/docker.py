@@ -154,7 +154,8 @@ def find_docker() -> Optional[str]:
 #       the drop, so the security posture is preserved.
 # Block privilege escalation and limit PIDs.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
-_SECURITY_ARGS = [
+# Sizes are configurable via DockerEnvironment constructor parameters.
+_SECURITY_ARGS_BASE = [
     "--cap-drop", "ALL",
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
@@ -163,10 +164,30 @@ _SECURITY_ARGS = [
     "--cap-add", "SETGID",
     "--security-opt", "no-new-privileges",
     "--pids-limit", "256",
-    "--tmpfs", "/tmp:rw,nosuid,size=512m",
-    "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
-    "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
 ]
+_DEFAULT_TMPFS_SIZE = "512m"
+_DEFAULT_VAR_TMPFS_SIZE = "256m"
+_DEFAULT_RUN_TMPFS_SIZE = "64m"
+
+
+def _build_security_args(
+    tmpfs_tmp_size: str | None = None,
+    tmpfs_var_tmp_size: str | None = None,
+    tmpfs_run_size: str | None = None,
+) -> list[str]:
+    """Build the security-related tmpfs args, with configurable sizes."""
+    tmp_size = tmpfs_tmp_size or _DEFAULT_TMPFS_SIZE
+    var_tmp_size = tmpfs_var_tmp_size or _DEFAULT_VAR_TMPFS_SIZE
+    run_size = tmpfs_run_size or _DEFAULT_RUN_TMPFS_SIZE
+    return list(_SECURITY_ARGS_BASE) + [
+        "--tmpfs", f"/tmp:rw,nosuid,size={tmp_size}",
+        "--tmpfs", f"/var/tmp:rw,noexec,nosuid,size={var_tmp_size}",
+        "--tmpfs", f"/run:rw,noexec,nosuid,size={run_size}",
+    ]
+
+
+# Legacy constant for backwards compatibility with existing code/tests
+_SECURITY_ARGS = _build_security_args()
 
 
 _storage_opt_ok: Optional[bool] = None  # cached result across instances
@@ -266,6 +287,10 @@ class DockerEnvironment(BaseEnvironment):
         network: bool = True,
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
+        # Configurable tmpfs sizes (in MB or with k/m/g suffix, e.g. "512m", "1g")
+        tmpfs_tmp_size: str | None = None,
+        tmpfs_var_tmp_size: str | None = None,
+        tmpfs_run_size: str | None = None,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -275,6 +300,9 @@ class DockerEnvironment(BaseEnvironment):
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
         self._container_id: Optional[str] = None
+        self._tmpfs_tmp_size = tmpfs_tmp_size
+        self._tmpfs_var_tmp_size = tmpfs_var_tmp_size
+        self._tmpfs_run_size = tmpfs_run_size
         logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
@@ -422,7 +450,10 @@ class DockerEnvironment(BaseEnvironment):
             env_args.extend(["-e", f"{key}={self._env[key]}"])
 
         logger.info(f"Docker volume_args: {volume_args}")
-        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args + env_args
+        all_run_args = (
+            _build_security_args(self._tmpfs_tmp_size, self._tmpfs_var_tmp_size, self._tmpfs_run_size)
+            + writable_args + resource_args + volume_args + env_args
+        )
         logger.info(f"Docker run_args: {all_run_args}")
 
         # Resolve the docker executable once so it works even when

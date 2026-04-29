@@ -2766,6 +2766,8 @@ async def pty_ws(ws: WebSocket) -> None:
             if chunk is None:  # EOF
                 return
             if not chunk:  # no data this tick; yield control and retry
+                if not bridge.is_alive():
+                    return
                 await asyncio.sleep(0)
                 continue
             try:

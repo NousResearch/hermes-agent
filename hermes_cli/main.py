@@ -5403,7 +5403,7 @@ def _find_stale_dashboard_pids() -> list[int]:
                 capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
-                for line in getattr(result, "stdout", "").split("\n"):
+                for line in (getattr(result, "stdout", "") or "").split("\n"):
                     stripped = line.strip()
                     if not stripped or "grep" in stripped:
                         continue

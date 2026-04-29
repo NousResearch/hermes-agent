@@ -1854,16 +1854,17 @@ class BasePlatformAdapter(ABC):
                 if stop_event is None:
                     await asyncio.sleep(interval)
                     continue
+                # Avoid wrapping Event.wait() in wait_for(): cancelling a
+                # parent message-processing task while this helper is inside
+                # wait_for(stop_event.wait()) can leave the inner Event.wait()
+                # task pending and stall shutdown. Polling on sleep keeps
+                # cancellation immediate while still observing stop_event.
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + interval
                 while not stop_event.is_set():
                     remaining = deadline - loop.time()
                     if remaining <= 0:
                         break
-                    # Poll instead of wait_for(stop_event.wait()).  Cancelling
-                    # wait_for while it owns the inner Event.wait task can leave
-                    # shutdown paths stuck awaiting the typing task on Python
-                    # 3.11/pytest-asyncio; sleep cancellation is immediate.
                     await asyncio.sleep(min(0.25, remaining))
                 if stop_event.is_set():
                     return
@@ -2861,6 +2862,18 @@ class BasePlatformAdapter(ABC):
         whole shutdown path.  Stragglers are released from our tracking and
         allowed to finish unwinding on their own.
         """
+        # Wake typing/interrupt waiters before cancelling owner tasks.  A
+        # just-started processing task may have spawned _keep_typing() and then
+        # blocked in the message handler; if shutdown cancels it immediately,
+        # the cleanup path can otherwise wait on a typing task that has not had
+        # a chance to observe its stop event yet.
+        for guard in list(self._active_sessions.values()):
+            try:
+                guard.set()
+            except Exception:
+                pass
+        await asyncio.sleep(0)
+
         # Loop until no new tasks appear.  Without this, a message
         # arriving during the `await asyncio.gather` below would spawn
         # a fresh _process_message_background task (added to

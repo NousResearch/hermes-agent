@@ -2010,8 +2010,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
-            async with server._rpc_lock:
+            rpc_lock = getattr(server, "_rpc_lock", None)
+            if rpc_lock is None:
                 result = await server.session.call_tool(tool_name, arguments=args)
+            else:
+                async with rpc_lock:
+                    result = await server.session.call_tool(tool_name, arguments=args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""

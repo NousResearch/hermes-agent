@@ -27,6 +27,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 
@@ -95,6 +96,15 @@ class MattermostAdapter(BasePlatformAdapter):
             config.extra.get("reply_mode", "")
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
         ).lower()
+
+        # Command prefix: "!" by default so Mattermost doesn't intercept
+        # unregistered slash commands.  The adapter rewrites the prefix to
+        # "/" before passing messages upstream, so gateway/run.py sees
+        # normal "/command" text and dispatches as usual.
+        self._command_prefix: str = (
+            config.extra.get("command_prefix", "")
+            or os.getenv("MATTERMOST_COMMAND_PREFIX", "!")
+        )
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
@@ -302,6 +312,64 @@ class MattermostAdapter(BasePlatformAdapter):
             f"users/{self._bot_user_id}/typing",
             {"channel_id": chat_id},
         )
+
+    # ── Reaction helpers (lifecycle hooks) ───────────────────────────
+
+    @staticmethod
+    def _reactions_enabled() -> bool:
+        """Check if message reactions are enabled via config/env."""
+        return os.getenv("MATTERMOST_REACTIONS", "true").lower() not in ("false", "0", "no")
+
+    async def _add_reaction(self, post_id: str, emoji: str) -> bool:
+        """Add an emoji reaction to a post. Returns True on success."""
+        try:
+            data = await self._api_post("reactions", {
+                "post_id": post_id,
+                "emoji_name": emoji,
+                "user_id": self._bot_user_id,
+            })
+            return bool(data)
+        except Exception as exc:
+            logger.debug("Mattermost: add_reaction %s failed: %s", emoji, exc)
+            return False
+
+    async def _remove_reaction(self, post_id: str, emoji: str) -> bool:
+        """Remove the bot's own emoji reaction from a post. Returns True on success."""
+        import aiohttp
+        url = (
+            f"{self._base_url}/api/v4/users/{self._bot_user_id}"
+            f"/posts/{post_id}/reactions/{emoji}"
+        )
+        try:
+            async with self._session.delete(
+                url, headers=self._headers(),
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                return resp.status < 400
+        except Exception as exc:
+            logger.debug("Mattermost: remove_reaction %s failed: %s", emoji, exc)
+            return False
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an in-progress reaction when message processing begins."""
+        if not self._reactions_enabled():
+            return
+        post_id = getattr(event, "message_id", None)
+        if post_id:
+            await self._add_reaction(post_id, "eyes")
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Swap the in-progress reaction for a final success/failure reaction."""
+        if not self._reactions_enabled():
+            return
+        post_id = getattr(event, "message_id", None)
+        if not post_id:
+            return
+        await self._remove_reaction(post_id, "eyes")
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self._add_reaction(post_id, "white_check_mark")
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self._add_reaction(post_id, "x")
 
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False
@@ -654,10 +722,16 @@ class MattermostAdapter(BasePlatformAdapter):
         # Thread support: if the post is in a thread, use root_id.
         thread_id = post.get("root_id") or None
 
-        # Determine message type.
+        # Determine message type and rewrite command prefix.
+        # Mattermost blocks unregistered "/" commands client-side, so we
+        # use a configurable prefix (default "!") and translate it to "/"
+        # here so the gateway's standard command dispatch works unchanged.
         file_ids = post.get("file_ids") or []
         msg_type = MessageType.TEXT
-        if message_text.startswith("/"):
+        if self._command_prefix and message_text.startswith(self._command_prefix):
+            message_text = "/" + message_text[len(self._command_prefix):]
+            msg_type = MessageType.COMMAND
+        elif message_text.startswith("/"):
             msg_type = MessageType.COMMAND
 
         # Download file attachments immediately (URLs require auth headers

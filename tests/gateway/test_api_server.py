@@ -18,17 +18,21 @@ import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from multidict import CIMultiDict
+
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+import gateway.platforms.api_server as api_server_module
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
     _CORS_HEADERS,
     _derive_chat_session_id,
+    body_limit_middleware,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -217,6 +221,7 @@ class TestAdapterInit:
                 "port": 9999,
                 "key": "sk-test",
                 "cors_origins": ["http://localhost:3000"],
+                "max_request_bytes": 2_500_000,
             },
         )
         adapter = APIServerAdapter(config)
@@ -224,12 +229,14 @@ class TestAdapterInit:
         assert adapter._port == 9999
         assert adapter._api_key == "sk-test"
         assert adapter._cors_origins == ("http://localhost:3000",)
+        assert adapter._max_request_bytes == 2_500_000
 
     def test_config_from_env(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_HOST", "10.0.0.1")
         monkeypatch.setenv("API_SERVER_PORT", "7777")
         monkeypatch.setenv("API_SERVER_KEY", "sk-env")
         monkeypatch.setenv("API_SERVER_CORS_ORIGINS", "http://localhost:3000, http://127.0.0.1:3000")
+        monkeypatch.setenv("API_SERVER_MAX_REQUEST_BYTES", "3000000")
         config = PlatformConfig(enabled=True)
         adapter = APIServerAdapter(config)
         assert adapter._host == "10.0.0.1"
@@ -239,6 +246,13 @@ class TestAdapterInit:
             "http://localhost:3000",
             "http://127.0.0.1:3000",
         )
+        assert adapter._max_request_bytes == 3_000_000
+
+    @pytest.mark.parametrize("raw_value", ["0", "-1", "not-a-number", "   "])
+    def test_invalid_max_request_bytes_falls_back_to_default(self, raw_value):
+        config = PlatformConfig(enabled=True, extra={"max_request_bytes": raw_value})
+        adapter = APIServerAdapter(config)
+        assert adapter._max_request_bytes == 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -307,8 +321,17 @@ def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
 
 def _create_app(adapter: APIServerAdapter) -> web.Application:
     """Create the aiohttp app from the adapter (without starting the full server)."""
-    mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
-    app = web.Application(middlewares=mws)
+    mws = [
+        mw
+        for mw in (
+            getattr(api_server_module, "request_id_middleware", None),
+            cors_middleware,
+            body_limit_middleware,
+            security_headers_middleware,
+        )
+        if mw is not None
+    ]
+    app = web.Application(middlewares=mws, client_max_size=adapter._max_request_bytes)
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
@@ -318,6 +341,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     return app
 
 
@@ -329,6 +354,33 @@ def adapter():
 @pytest.fixture
 def auth_adapter():
     return _make_adapter(api_key="sk-secret")
+
+
+# ---------------------------------------------------------------------------
+# Body limit middleware
+# ---------------------------------------------------------------------------
+
+
+class TestBodyLimitMiddleware:
+    @pytest.mark.asyncio
+    async def test_http_request_entity_too_large_returns_json_413_with_security_headers(self):
+        adapter = _make_adapter()
+        adapter._max_request_bytes = 64
+        request = MagicMock()
+        request.method = "POST"
+        request.headers = CIMultiDict()
+        request.app = {"api_server_adapter": adapter}
+
+        async def handler(_request):
+            raise web.HTTPRequestEntityTooLarge(max_size=adapter._max_request_bytes, actual_size=128)
+
+        resp = await body_limit_middleware(request, handler)
+        assert resp.status == 413
+        assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+        assert resp.headers.get("Referrer-Policy") == "no-referrer"
+        payload = json.loads(resp.text)
+        assert payload["error"]["code"] == "body_too_large"
+        assert str(adapter._max_request_bytes) in payload["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +549,39 @@ class TestModelsEndpoint:
 
 
 class TestChatCompletionsEndpoint:
+    @pytest.mark.asyncio
+    async def test_request_body_over_limit_returns_413_with_limit_details(self):
+        adapter = _make_adapter()
+        adapter._max_request_bytes = 64
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                data="x" * 65,
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 413
+            assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+            assert resp.headers.get("Referrer-Policy") == "no-referrer"
+            data = await resp.json()
+            assert data["error"]["code"] == "body_too_large"
+            assert str(adapter._max_request_bytes) in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_request_body_over_custom_limit_uses_adapter_setting(self):
+        adapter = _make_adapter()
+        adapter._max_request_bytes = 128
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                data="x" * 129,
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 413
+            data = await resp.json()
+            assert "128" in data["error"]["message"]
+
     @pytest.mark.asyncio
     async def test_invalid_json_returns_400(self, adapter):
         app = _create_app(adapter)
@@ -848,10 +933,12 @@ class TestChatCompletionsEndpoint:
         """Agent exception returns 500."""
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
+                 patch.object(api_server_module, "logger") as mock_logger:
                 mock_run.side_effect = RuntimeError("Provider failed")
                 resp = await cli.post(
                     "/v1/chat/completions",
+                    headers={"X-Request-ID": "req-provider-789"},
                     json={
                         "model": "hermes-agent",
                         "messages": [{"role": "user", "content": "Hello"}],
@@ -861,6 +948,10 @@ class TestChatCompletionsEndpoint:
             assert resp.status == 500
             data = await resp.json()
             assert "Provider failed" in data["error"]["message"]
+            assert data["error"]["request_id"] == "req-provider-789"
+            assert resp.headers.get("X-Request-ID") == "req-provider-789"
+            logged_args = " ".join(str(arg) for arg in mock_logger.error.call_args[0])
+            assert "req-provider-789" in logged_args
 
     @pytest.mark.asyncio
     async def test_stable_session_id_across_turns(self, adapter):
@@ -961,6 +1052,24 @@ class TestDeriveChatSessionId:
 
 
 class TestResponsesEndpoint:
+    @pytest.mark.asyncio
+    async def test_request_body_over_limit_returns_413_with_limit_details(self):
+        adapter = _make_adapter()
+        adapter._max_request_bytes = 64
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/responses",
+                data="x" * 65,
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 413
+            assert resp.headers.get("X-Content-Type-Options") == "nosniff"
+            assert resp.headers.get("Referrer-Policy") == "no-referrer"
+            data = await resp.json()
+            assert data["error"]["code"] == "body_too_large"
+            assert str(adapter._max_request_bytes) in data["error"]["message"]
+
     @pytest.mark.asyncio
     async def test_missing_input_returns_400(self, adapter):
         app = _create_app(adapter)
@@ -2315,3 +2424,75 @@ class TestSessionIdHeader:
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["conversation_history"] == []
             assert call_kwargs["session_id"] == "some-session"
+
+
+# ---------------------------------------------------------------------------
+# X-Request-ID header (request correlation)
+# ---------------------------------------------------------------------------
+
+
+class TestRequestIdTracking:
+    @pytest.mark.asyncio
+    async def test_chat_completion_echoes_supplied_request_id_header(self, adapter):
+        mock_result = {"final_response": "Hello!", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"X-Request-ID": "req-chat-123"},
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
+                )
+
+            assert resp.status == 200
+            assert resp.headers.get("X-Request-ID") == "req-chat-123"
+
+    @pytest.mark.asyncio
+    async def test_auth_failure_returns_generated_request_id_header(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
+            )
+
+            assert resp.status == 401
+            assert resp.headers.get("X-Request-ID")
+            data = await resp.json()
+            assert data["error"]["request_id"] == resp.headers.get("X-Request-ID")
+
+    @pytest.mark.asyncio
+    async def test_run_events_include_request_id_and_response_header(self, auth_adapter):
+        class _FakeAgent:
+            def __init__(self, tool_progress_callback=None):
+                self._tool_progress_callback = tool_progress_callback
+
+            def run_conversation(self, user_message, conversation_history=None, task_id=None):
+                if self._tool_progress_callback:
+                    self._tool_progress_callback("tool.started", tool_name="search_files", preview="trace request")
+                return {"final_response": "done", "messages": []}
+
+        def _fake_create_agent(*args, **kwargs):
+            return _FakeAgent(tool_progress_callback=kwargs.get("tool_progress_callback"))
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent", side_effect=_fake_create_agent):
+                start = await cli.post(
+                    "/v1/runs",
+                    headers={"Authorization": "Bearer sk-secret", "X-Request-ID": "req-run-456"},
+                    json={"input": "Check latest SEO request"},
+                )
+                assert start.status == 202
+                assert start.headers.get("X-Request-ID") == "req-run-456"
+                payload = await start.json()
+                run_id = payload["run_id"]
+
+                events = await cli.get(
+                    f"/v1/runs/{run_id}/events",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert events.status == 200
+                body = await events.text()
+                assert '"request_id": "req-run-456"' in body

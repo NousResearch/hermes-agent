@@ -181,6 +181,23 @@ class TestFallbackTransport:
         assert transport._sticky_ip == "149.154.167.220"
 
     @pytest.mark.asyncio
+    async def test_logs_exception_class_when_error_message_is_blank(self, monkeypatch, caplog):
+        calls = []
+        behavior = {
+            "api.telegram.org": httpx.ConnectError(""),
+            "149.154.167.220": httpx.ConnectTimeout(""),
+        }
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+
+        with pytest.raises(httpx.ConnectTimeout):
+            await transport.handle_async_request(_telegram_request())
+
+        assert "Primary api.telegram.org connection failed (ConnectError)" in caplog.text
+        assert "Fallback IP 149.154.167.220 failed: ConnectTimeout" in caplog.text
+
+    @pytest.mark.asyncio
     async def test_does_not_fallback_on_non_connect_error(self, monkeypatch):
         """Errors like ReadTimeout are not connection issues — don't retry."""
         calls = []

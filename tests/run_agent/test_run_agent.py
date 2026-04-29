@@ -3728,6 +3728,20 @@ class TestSaveSessionLogAtomicWrite:
         assert call_args.kwargs["default"] is str
 
 
+class TestDumpApiRequestDebug:
+    def test_includes_request_id_when_present(self, agent, tmp_path):
+        agent.logs_dir = tmp_path
+        agent.request_id = "req-debug-123"
+        agent.api_mode = "openai"
+        agent.base_url = "https://openrouter.ai/api/v1"
+
+        dump_file = agent._dump_api_request_debug({"model": "test-model", "messages": []}, reason="unit-test")
+
+        assert dump_file is not None
+        payload = json.loads(dump_file.read_text(encoding="utf-8"))
+        assert payload["request_id"] == "req-debug-123"
+
+
 # ===================================================================
 # Anthropic adapter integration fixes
 # ===================================================================

@@ -21,6 +21,14 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_API_HOST = "api.telegram.org"
 
+
+def _format_exception(exc: Exception) -> str:
+    """Return a stable, non-empty string for network exceptions."""
+    message = str(exc).strip()
+    if message:
+        return f"{exc.__class__.__name__}: {message}"
+    return exc.__class__.__name__
+
 # DNS-over-HTTPS providers used to discover Telegram API IPs that may differ
 # from the (potentially unreachable) IP returned by the local system resolver.
 _DOH_TIMEOUT = 4.0  # seconds — bounded so connect() isn't noticeably delayed
@@ -102,11 +110,11 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 if ip is None:
                     logger.warning(
                         "[Telegram] Primary api.telegram.org connection failed (%s); trying fallback IPs %s",
-                        exc,
+                        _format_exception(exc),
                         ", ".join(self._fallback_ips),
                     )
                     continue
-                logger.warning("[Telegram] Fallback IP %s failed: %s", ip, exc)
+                logger.warning("[Telegram] Fallback IP %s failed: %s", ip, _format_exception(exc))
                 continue
 
         if last_error is None:

@@ -388,7 +388,7 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Request-ID",
 }
 
 
@@ -417,31 +417,116 @@ else:
     cors_middleware = None  # type: ignore[assignment]
 
 
-def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> Dict[str, Any]:
+def _openai_error(
+    message: str,
+    err_type: str = "invalid_request_error",
+    param: str = None,
+    code: str = None,
+    request_id: str = None,
+) -> Dict[str, Any]:
     """OpenAI-style error envelope."""
-    return {
-        "error": {
-            "message": message,
-            "type": err_type,
-            "param": param,
-            "code": code,
-        }
+    error = {
+        "message": message,
+        "type": err_type,
+        "param": param,
+        "code": code,
     }
+    normalized_request_id = _normalize_request_id(request_id)
+    if normalized_request_id:
+        error["request_id"] = normalized_request_id
+    return {"error": error}
+
+
+def _parse_positive_int(value: Any, default: int) -> int:
+    """Parse a positive integer config/env value with safe fallback."""
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _request_body_too_large_message(limit_bytes: int, actual_bytes: Optional[int] = None) -> str:
+    """Consistent 413 diagnostics with the effective request-size limit."""
+    base = f"Request body too large. Limit is {limit_bytes} bytes"
+    if actual_bytes is not None and actual_bytes >= 0:
+        return (
+            f"{base}; received {actual_bytes} bytes. "
+            "For larger multi-turn conversations, prefer /v1/responses with previous_response_id or conversation chaining."
+        )
+    return (
+        f"{base}. For larger multi-turn conversations, prefer /v1/responses with previous_response_id or conversation chaining."
+    )
+
+
+def _normalize_request_id(value: Any) -> str:
+    """Return a safe request ID suitable for headers, logs, and event payloads."""
+    request_id = str(value or "").strip()
+    if not request_id:
+        return ""
+    if len(request_id) > 200:
+        return ""
+    if re.search(r"[\r\n\x00]", request_id):
+        return ""
+    return request_id
+
+
+def _get_request_id(request: "web.Request") -> str:
+    """Read the correlation ID assigned by middleware, or generate a fallback."""
+    request_id = _normalize_request_id(request.get("request_id", ""))
+    return request_id or f"req_{uuid.uuid4().hex}"
+
+
+if AIOHTTP_AVAILABLE:
+    @web.middleware
+    async def request_id_middleware(request, handler):
+        """Assign and propagate a stable request correlation ID for every API request."""
+        request_id = _normalize_request_id(request.headers.get("X-Request-ID", "")) or f"req_{uuid.uuid4().hex}"
+        request["request_id"] = request_id
+        response = await handler(request)
+        response.headers.setdefault("X-Request-ID", request_id)
+        return response
+else:
+    request_id_middleware = None  # type: ignore[assignment]
 
 
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
         """Reject overly large request bodies early based on Content-Length."""
+        adapter = request.app.get("api_server_adapter")
+        max_request_bytes = getattr(adapter, "_max_request_bytes", MAX_REQUEST_BYTES)
         if request.method in ("POST", "PUT", "PATCH"):
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
-                        return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
+                    actual_bytes = int(cl)
+                    if actual_bytes > max_request_bytes:
+                        return _apply_security_headers(
+                            web.json_response(
+                                _openai_error(
+                                    _request_body_too_large_message(max_request_bytes, actual_bytes),
+                                    code="body_too_large",
+                                ),
+                                status=413,
+                            )
+                        )
                 except ValueError:
-                    return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
-        return await handler(request)
+                    return _apply_security_headers(
+                        web.json_response(
+                            _openai_error("Invalid Content-Length header.", code="invalid_content_length"),
+                            status=400,
+                        )
+                    )
+        try:
+            return await handler(request)
+        except web.HTTPRequestEntityTooLarge:
+            return _apply_security_headers(
+                web.json_response(
+                    _openai_error(_request_body_too_large_message(max_request_bytes), code="body_too_large"),
+                    status=413,
+                )
+            )
 else:
     body_limit_middleware = None  # type: ignore[assignment]
 
@@ -451,14 +536,19 @@ _SECURITY_HEADERS = {
 }
 
 
+def _apply_security_headers(response: "web.StreamResponse") -> "web.StreamResponse":
+    """Add standard security headers to an aiohttp response in-place."""
+    for k, v in _SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+    return response
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def security_headers_middleware(request, handler):
         """Add security headers to all responses (including errors)."""
         response = await handler(request)
-        for k, v in _SECURITY_HEADERS.items():
-            response.headers.setdefault(k, v)
-        return response
+        return _apply_security_headers(response)
 else:
     security_headers_middleware = None  # type: ignore[assignment]
 
@@ -573,6 +663,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
         self._port: int = int(extra.get("port", os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))))
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._max_request_bytes: int = _parse_positive_int(
+            extra.get("max_request_bytes", os.getenv("API_SERVER_MAX_REQUEST_BYTES", MAX_REQUEST_BYTES)),
+            MAX_REQUEST_BYTES,
+        )
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -678,8 +772,10 @@ class APIServerAdapter(BasePlatformAdapter):
             if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
 
+        request_id = _get_request_id(request)
+        logger.warning("[api_server][request_id=%s] Invalid API key", request_id)
         return web.json_response(
-            {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
+            _openai_error("Invalid API key", code="invalid_api_key", request_id=request_id),
             status=401,
         )
 
@@ -709,6 +805,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self,
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -756,6 +853,8 @@ class APIServerAdapter(BasePlatformAdapter):
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
         )
+        if request_id:
+            agent.request_id = request_id
         return agent
 
     # ------------------------------------------------------------------
@@ -813,6 +912,7 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        request_id = _get_request_id(request)
 
         # Parse request body
         try:
@@ -988,6 +1088,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                request_id=request_id,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -996,18 +1097,18 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                logger.error("[api_server][request_id=%s] Error running agent for chat completions: %s", request_id, e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(f"Internal server error: {e}", err_type="server_error", request_id=request_id),
                     status=500,
                 )
         else:
             try:
                 result, usage = await _compute_completion()
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                logger.error("[api_server][request_id=%s] Error running agent for chat completions: %s", request_id, e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(f"Internal server error: {e}", err_type="server_error", request_id=request_id),
                     status=500,
                 )
 
@@ -1037,7 +1138,8 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
 
-        return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
+        headers = {"X-Hermes-Session-Id": session_id, "X-Request-ID": _get_request_id(request)}
+        return web.json_response(response_data, headers=headers)
 
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
@@ -1064,6 +1166,7 @@ class APIServerAdapter(BasePlatformAdapter):
             sse_headers.update(cors)
         if session_id:
             sse_headers["X-Hermes-Session-Id"] = session_id
+        sse_headers["X-Request-ID"] = _get_request_id(request)
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
@@ -1228,6 +1331,7 @@ class APIServerAdapter(BasePlatformAdapter):
             sse_headers.update(cors)
         if session_id:
             sse_headers["X-Hermes-Session-Id"] = session_id
+        sse_headers["X-Request-ID"] = _get_request_id(request)
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
@@ -1676,13 +1780,14 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        request_id = _get_request_id(request)
 
         # Parse request body
         try:
             body = await request.json()
         except (json.JSONDecodeError, Exception):
             return web.json_response(
-                {"error": {"message": "Invalid JSON in request body", "type": "invalid_request_error"}},
+                _openai_error("Invalid JSON in request body", request_id=request_id),
                 status=400,
             )
 
@@ -1856,6 +1961,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                request_id=request_id,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1867,18 +1973,18 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
             except Exception as e:
-                logger.error("Error running agent for responses: %s", e, exc_info=True)
+                logger.error("[api_server][request_id=%s] Error running agent for responses: %s", request_id, e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(f"Internal server error: {e}", err_type="server_error", request_id=request_id),
                     status=500,
                 )
         else:
             try:
                 result, usage = await _compute_response()
             except Exception as e:
-                logger.error("Error running agent for responses: %s", e, exc_info=True)
+                logger.error("[api_server][request_id=%s] Error running agent for responses: %s", request_id, e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(f"Internal server error: {e}", err_type="server_error", request_id=request_id),
                     status=500,
                 )
 
@@ -1924,13 +2030,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "conversation_history": full_history,
                 "instructions": instructions,
                 "session_id": session_id,
+                "request_id": _get_request_id(request),
             })
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
-        return web.json_response(response_data)
+        return web.json_response(response_data, headers={"X-Request-ID": _get_request_id(request)})
 
     # ------------------------------------------------------------------
     # GET / DELETE response endpoints
@@ -2247,6 +2354,7 @@ class APIServerAdapter(BasePlatformAdapter):
         conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -2270,6 +2378,7 @@ class APIServerAdapter(BasePlatformAdapter):
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
+                request_id=request_id,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
@@ -2298,7 +2407,7 @@ class APIServerAdapter(BasePlatformAdapter):
     _MAX_CONCURRENT_RUNS = 10  # Prevent unbounded resource allocation
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
 
-    def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
+    def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop", request_id: str):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
             q = self._run_streams.get(run_id)
@@ -2315,6 +2424,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _push({
                     "event": "tool.started",
                     "run_id": run_id,
+                    "request_id": request_id,
                     "timestamp": ts,
                     "tool": tool_name,
                     "preview": preview,
@@ -2323,6 +2433,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _push({
                     "event": "tool.completed",
                     "run_id": run_id,
+                    "request_id": request_id,
                     "timestamp": ts,
                     "tool": tool_name,
                     "duration": round(kwargs.get("duration", 0), 3),
@@ -2332,6 +2443,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _push({
                     "event": "reasoning.available",
                     "run_id": run_id,
+                    "request_id": request_id,
                     "timestamp": ts,
                     "text": preview or "",
                 })
@@ -2366,12 +2478,13 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
         run_id = f"run_{uuid.uuid4().hex}"
+        request_id = _get_request_id(request)
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = time.time()
 
-        event_cb = self._make_run_event_callback(run_id, loop)
+        event_cb = self._make_run_event_callback(run_id, loop, request_id)
 
         # Also wire stream_delta_callback so message.delta events flow through
         def _text_cb(delta: Optional[str]) -> None:
@@ -2381,6 +2494,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 loop.call_soon_threadsafe(q.put_nowait, {
                     "event": "message.delta",
                     "run_id": run_id,
+                    "request_id": request_id,
                     "timestamp": time.time(),
                     "delta": delta,
                 })
@@ -2442,6 +2556,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
                     session_id=session_id,
+                    request_id=request_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
                 )
@@ -2464,16 +2579,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 q.put_nowait({
                     "event": "run.completed",
                     "run_id": run_id,
+                    "request_id": request_id,
                     "timestamp": time.time(),
                     "output": final_response,
                     "usage": usage,
                 })
             except Exception as exc:
-                logger.exception("[api_server] run %s failed", run_id)
+                logger.exception("[api_server][request_id=%s] run %s failed", request_id, run_id)
                 try:
                     q.put_nowait({
                         "event": "run.failed",
                         "run_id": run_id,
+                        "request_id": request_id,
                         "timestamp": time.time(),
                         "error": str(exc),
                     })
@@ -2497,7 +2614,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
-        return web.json_response({"run_id": run_id, "status": "started"}, status=202)
+        return web.json_response({"run_id": run_id, "status": "started"}, status=202, headers={"X-Request-ID": request_id})
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
@@ -2614,8 +2731,8 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         try:
-            mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws)
+            mws = [mw for mw in (request_id_middleware, cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
+            self._app = web.Application(middlewares=mws, client_max_size=self._max_request_bytes)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)

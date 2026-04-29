@@ -4077,6 +4077,7 @@ class AIAgent:
             dump_payload: Dict[str, Any] = {
                 "timestamp": datetime.now().isoformat(),
                 "session_id": self.session_id,
+                "request_id": getattr(self, "request_id", None),
                 "reason": reason,
                 "request": {
                     "method": "POST",

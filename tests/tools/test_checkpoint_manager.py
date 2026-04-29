@@ -516,6 +516,19 @@ class TestErrorResilience:
         assert "working directory not found" in stderr
         assert not any("Git executable not found" in r.getMessage() for r in caplog.records)
 
+    def test_ensure_checkpoint_skips_missing_workdir_without_error_log(
+        self, checkpoint_base, monkeypatch, tmp_path, caplog
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        mgr = CheckpointManager(enabled=True)
+        missing = tmp_path / "missing"
+
+        with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
+            result = mgr.ensure_checkpoint(str(missing), "test")
+
+        assert result is False
+        assert not caplog.records
+
     def test_run_git_missing_git_reports_git_not_found(self, tmp_path, monkeypatch, caplog):
         work = tmp_path / "work"
         work.mkdir()

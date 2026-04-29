@@ -323,7 +323,15 @@ class CheckpointManager:
         if not self._git_available:
             return False
 
-        abs_dir = str(_normalize_path(working_dir))
+        normalized_dir = _normalize_path(working_dir)
+        if not normalized_dir.exists():
+            logger.debug("Checkpoint skipped: working directory not found (%s)", normalized_dir)
+            return False
+        if not normalized_dir.is_dir():
+            logger.debug("Checkpoint skipped: working directory is not a directory (%s)", normalized_dir)
+            return False
+
+        abs_dir = str(normalized_dir)
 
         # Skip root, home, and other overly broad directories
         if abs_dir in ("/", str(Path.home())):

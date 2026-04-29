@@ -4519,7 +4519,12 @@ class AIAgent:
                 )
             except Exception:
                 pass
-    
+        try:
+            from agent.outcome_tracker import record_session_outcome
+            record_session_outcome(messages or [])
+        except Exception:
+            pass
+
     def commit_memory_session(self, messages: list = None) -> None:
         """Trigger end-of-session extraction without tearing providers down.
         Called when session_id rotates (e.g. /new, context compression);

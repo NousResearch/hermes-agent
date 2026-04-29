@@ -1510,15 +1510,16 @@ class HindsightMemoryProvider(MemoryProvider):
                 except Exception as e:
                     logger.warning("Hindsight flush-on-switch failed: %s", e, exc_info=True)
 
-            # Match sync_turn's serialization — wait for any prior retain
-            # thread to finish before spawning the flush, so writes
-            # against the old document arrive in order.
-            if self._sync_thread and self._sync_thread.is_alive():
-                self._sync_thread.join(timeout=5.0)
-            self._sync_thread = threading.Thread(
-                target=_flush, daemon=True, name="hindsight-flush-on-switch"
-            )
-            self._sync_thread.start()
+            # Route the flush through the same writer queue sync_turn
+            # uses. That serializes it behind any still-queued retains
+            # from the old session (FIFO by document_id), avoids racing
+            # two threads on aretain_batch against the same document, and
+            # keeps shutdown's drain semantics intact. Skip enqueue if
+            # shutdown has already fired — the writer is draining/gone.
+            if not self._shutting_down.is_set():
+                self._ensure_writer()
+                self._register_atexit()
+                self._retain_queue.put(_flush)
 
         # 2. Drain any in-flight prefetch from the old session and drop
         # its cached result so the new session doesn't see stale recall.

@@ -118,6 +118,31 @@ class SlowSyncBot(FakeBot):
         self.tree = SlowSyncTree()
 
 
+class PrivilegedIntentsRequired(Exception):
+    pass
+
+
+class FailingStartBot(FakeBot):
+    async def start(self, token):
+        raise PrivilegedIntentsRequired(
+            "Shard ID None is requesting privileged intents that have not been explicitly enabled in the developer portal."
+        )
+
+
+class CrashAfterReadyBot(FakeBot):
+    def __init__(self, *, intents, proxy=None, allowed_mentions=None):
+        super().__init__(intents=intents, proxy=proxy, allowed_mentions=allowed_mentions)
+        self._crash_gate = asyncio.Event()
+
+    async def start(self, token):
+        if "on_ready" in self._events:
+            await self._events["on_ready"]()
+        await self._crash_gate.wait()
+        raise PrivilegedIntentsRequired(
+            "Shard ID None is requesting privileged intents that have not been explicitly enabled in the developer portal."
+        )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("allowed_users", "expected_members_intent"),
@@ -182,11 +207,10 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
         ),
     )
 
-    async def fake_wait_for(awaitable, timeout):
-        awaitable.close()
-        raise asyncio.TimeoutError()
+    async def fake_wait(*args, **kwargs):
+        return set(), set()
 
-    monkeypatch.setattr(discord_platform.asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(discord_platform.asyncio, "wait", fake_wait)
 
     ok = await adapter.connect()
 
@@ -225,4 +249,64 @@ async def test_connect_does_not_wait_for_slash_sync(monkeypatch):
 
     created["bot"].tree.allow_finish.set()
     await asyncio.sleep(0)
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_connect_surfaces_background_start_failure_without_asyncio_leak(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(discord_platform.commands, "Bot", lambda **kwargs: FailingStartBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions")))
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    ok = await adapter.connect()
+
+    assert ok is False
+    assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_code == "discord_privileged_intents_required"
+    assert adapter.fatal_error_retryable is False
+    assert "privileged intents" in adapter.fatal_error_message.lower()
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_bot_task_runtime_failure_notifies_fatal_handler(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        bot = CrashAfterReadyBot(intents=intents, proxy=proxy, allowed_mentions=allowed_mentions)
+        created["bot"] = bot
+        return bot
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    fatal_handler = AsyncMock()
+    adapter.set_fatal_error_handler(fatal_handler)
+
+    ok = await adapter.connect()
+    assert ok is True
+
+    created["bot"]._crash_gate.set()
+    with pytest.raises(PrivilegedIntentsRequired):
+        await adapter._bot_task
+    await asyncio.sleep(0)
+
+    assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_code == "discord_privileged_intents_required"
+    fatal_handler.assert_awaited_once_with(adapter)
+
     await adapter.disconnect()

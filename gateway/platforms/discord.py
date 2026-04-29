@@ -528,6 +528,59 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
 
+    def _classify_client_task_exception(self, exc: Exception) -> tuple[str, str, bool]:
+        """Normalize Discord client task failures into stable fatal-error metadata."""
+        raw_message = str(exc).strip() or exc.__class__.__name__
+        message = " ".join(raw_message.split())
+        lower_message = message.lower()
+        exception_name = exc.__class__.__name__.lower()
+
+        if exception_name == "privilegedintentsrequired" or "privileged intents" in lower_message:
+            return (
+                "discord_privileged_intents_required",
+                f"Discord privileged intents are required: {message}",
+                False,
+            )
+        if exception_name == "loginfailure" or "improper token" in lower_message or "401 unauthorized" in lower_message:
+            return (
+                "discord_login_failure",
+                f"Discord login failed: {message}",
+                False,
+            )
+        return (
+            "discord_client_task_failed",
+            f"Discord client task failed: {message}",
+            True,
+        )
+
+    async def _handle_client_task_failure(self, exc: Exception) -> None:
+        """Convert background Discord task crashes into supervised fatal errors."""
+        if self.has_fatal_error:
+            return
+        code, message, retryable = self._classify_client_task_exception(exc)
+        self._set_fatal_error(code, message, retryable=retryable)
+        logger.error("[%s] %s", self.name, message, exc_info=exc)
+        await self._notify_fatal_error()
+
+    def _on_bot_task_done(self, task: asyncio.Task) -> None:
+        """Consume bot-task exceptions so they never become un-retrieved asyncio noise."""
+        if task.cancelled() or self.has_fatal_error:
+            return
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception as callback_error:  # pragma: no cover - defensive logging
+            logger.debug("[%s] Failed inspecting Discord bot task result: %s", self.name, callback_error)
+            return
+        if exc is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._handle_client_task_failure(exc))
+
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
@@ -747,14 +800,40 @@ class DiscordAdapter(BasePlatformAdapter):
             # Register slash commands
             self._register_slash_commands()
 
-            # Start the bot in background
+            # Start the bot in background under supervision so startup/runtime
+            # exceptions are converted into structured fatal errors instead of
+            # leaking as "Task exception was never retrieved" asyncio noise.
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
+            self._bot_task.add_done_callback(self._on_bot_task_done)
 
-            # Wait for ready
-            await asyncio.wait_for(self._ready_event.wait(), timeout=30)
+            ready_wait_task = asyncio.create_task(self._ready_event.wait())
+            try:
+                done, _pending = await asyncio.wait(
+                    {ready_wait_task, self._bot_task},
+                    timeout=30,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                if not ready_wait_task.done():
+                    ready_wait_task.cancel()
+                    try:
+                        await ready_wait_task
+                    except asyncio.CancelledError:
+                        pass
 
-            self._running = True
-            return True
+            if ready_wait_task in done:
+                self._running = True
+                return True
+
+            if self._bot_task in done:
+                try:
+                    await self._bot_task
+                except Exception as e:
+                    await self._handle_client_task_failure(e)
+                self._release_platform_lock()
+                return False
+
+            raise asyncio.TimeoutError()
 
         except asyncio.TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
@@ -780,6 +859,18 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning("[%s] Error during disconnect: %s", self.name, e, exc_info=True)
 
+        if self._bot_task:
+            if not self._bot_task.done():
+                self._bot_task.cancel()
+            try:
+                await self._bot_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                # The supervised done-callback already turns runtime failures into
+                # structured fatal errors; disconnect should just drain the task.
+                pass
+
         if self._post_connect_task and not self._post_connect_task.done():
             self._post_connect_task.cancel()
             try:
@@ -790,6 +881,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._running = False
         self._client = None
         self._ready_event.clear()
+        self._bot_task = None
         self._post_connect_task = None
 
         self._release_platform_lock()

@@ -713,6 +713,7 @@ export function useMainApp(gw: GatewayClient) {
   )
   const thinkingPanelVisible = sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
   const toolsPanelVisible = sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+  const activityPanelVisible = sectionMode('activity', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
 
   const showProgressArea = useTurnSelector(state =>
     anyPanelVisible
@@ -721,14 +722,18 @@ export function useMainApp(gw: GatewayClient) {
           state.outcome ||
           state.streamPendingTools.length ||
           state.streamSegments.some(segment => {
-            const thinking = Boolean(segment.thinking?.trim())
-            const tools = Boolean(segment.tools?.length)
+            const hasThinking = Boolean(segment.thinking?.trim())
+            const hasTrailTools = Boolean(segment.tools?.length)
 
             if (segment.kind === 'trail' && !segment.text) {
-              return (thinkingPanelVisible && thinking) || (toolsPanelVisible && tools)
+              return (thinkingPanelVisible && hasThinking) || ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
             }
 
-            return Boolean(segment.text?.trim()) || (thinkingPanelVisible && thinking) || (toolsPanelVisible && tools)
+            return (
+              Boolean(segment.text?.trim()) ||
+              (thinkingPanelVisible && hasThinking) ||
+              ((toolsPanelVisible || activityPanelVisible) && hasTrailTools)
+            )
           }) ||
           state.subagents.length ||
           state.tools.length ||

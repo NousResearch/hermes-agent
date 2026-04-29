@@ -16,14 +16,16 @@ const RELEVANT_ENV = [
   'HERMES_TUI_THEME',
   'HERMES_TUI_BACKGROUND',
   'COLORFGBG',
-  'TERM_PROGRAM',
+  'TERM_PROGRAM'
 ] as const
 
 async function importThemeWithCleanEnv() {
   for (const key of RELEVANT_ENV) {
     vi.stubEnv(key, '')
   }
+
   vi.resetModules()
+
   return import('../theme.js')
 }
 
@@ -165,9 +167,7 @@ describe('detectLightMode', () => {
     expect(detectLightMode({ TERM_PROGRAM: 'Apple_Terminal' }, allowList)).toBe(true)
 
     // Dark COLORFGBG must beat the allow-list.
-    expect(
-      detectLightMode({ COLORFGBG: '15;0', TERM_PROGRAM: 'Apple_Terminal' }, allowList),
-    ).toBe(false)
+    expect(detectLightMode({ COLORFGBG: '15;0', TERM_PROGRAM: 'Apple_Terminal' }, allowList)).toBe(false)
   })
 })
 

@@ -43,7 +43,7 @@ _TIMEOUT = 30.0
 # ---------------------------------------------------------------------------
 # Process-level atexit safety net — ensures pending sessions are committed
 # even if shutdown_memory_provider is never called (e.g. gateway crash,
-# SIGKILL, or exception in _async_flush_memories preventing shutdown).
+# SIGKILL, or exception in the session expiry watcher preventing shutdown).
 # ---------------------------------------------------------------------------
 _last_active_provider: Optional["OpenVikingMemoryProvider"] = None
 

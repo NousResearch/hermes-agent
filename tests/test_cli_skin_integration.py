@@ -40,14 +40,14 @@ class TestCliSkinPromptIntegration:
         cli = _make_cli_stub()
 
         set_active_skin("ares")
-        assert cli._get_tui_prompt_fragments() == [("class:prompt", "⚔ ❯ ")]
+        assert cli._get_tui_prompt_fragments() == [("class:prompt", "⚔ ")]
 
     def test_secret_prompt_fragments_preserve_secret_state(self):
         cli = _make_cli_stub()
         cli._secret_state = {"response_queue": object()}
 
         set_active_skin("ares")
-        assert cli._get_tui_prompt_fragments() == [("class:sudo-prompt", "🔑 ❯ ")]
+        assert cli._get_tui_prompt_fragments() == [("class:sudo-prompt", "🔑 ⚔ ")]
 
     def test_icon_only_skin_symbol_still_visible_in_special_states(self):
         cli = _make_cli_stub()
@@ -66,6 +66,9 @@ class TestCliSkinPromptIntegration:
         assert style_dict["prompt"] == skin.get_color("prompt")
         assert style_dict["input-rule"] == skin.get_color("input_rule")
         assert style_dict["prompt-working"] == f"{skin.get_color('banner_dim')} italic"
+        assert style_dict["status-bar"] == (
+            f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_text')}"
+        )
         assert style_dict["approval-title"] == f"{skin.get_color('ui_warn')} bold"
 
     def test_apply_tui_skin_style_updates_running_app(self):

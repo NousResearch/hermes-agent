@@ -6,6 +6,36 @@
 @source '../node_modules/@nous-research/ui/dist';
 
 /* ------------------------------------------------------------------ */
+/* JetBrains Mono — bundled for the embedded TUI (/chat tab).          */
+/* Gives the terminal a proper monospace font even on systems where    */
+/* the user doesn't have one installed locally; xterm.js picks it up   */
+/* via ChatPage's `fontFamily` option.                                 */
+/* Apache-2.0.                                                         */
+/* ------------------------------------------------------------------ */
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts-terminal/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts-terminal/JetBrainsMono-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts-terminal/JetBrainsMono-Italic.woff2') format('woff2');
+}
+
+/* ------------------------------------------------------------------ */
 /* Hermes Agent — Nous DS with the LENS_0 (Hermes teal) lens applied   */
 /* statically. Mirrors nousnet-web/(hermes-agent)/layout.tsx so the    */
 /* canonical Hermes palette is the default — teal canvas + cream      */
@@ -29,6 +59,62 @@
   /* Consumed by <Backdrop />; also theme-switchable. */
   --warm-glow: rgba(255, 189, 56, 0.35);
   --noise-opacity-mul: 1;
+
+  /* Typography tokens — rewritten by ThemeProvider. Defaults match the
+     system stack so themes that don't override look native. */
+  --theme-font-sans: system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --theme-font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
+    Consolas, monospace;
+  --theme-font-display: var(--theme-font-sans);
+  --theme-base-size: 15px;
+  --theme-line-height: 1.55;
+  --theme-letter-spacing: 0;
+
+  /* Layout tokens. */
+  --radius: 0.5rem;
+  --theme-radius: 0.5rem;
+  --theme-spacing-mul: 1;
+  --theme-density: comfortable;
+}
+
+/* Theme tokens cascade into the document root so every descendant inherits
+   the font stack, base size, and letter spacing without explicit calls. */
+html {
+  font-family: var(--theme-font-sans);
+  font-size: var(--theme-base-size);
+  line-height: var(--theme-line-height);
+  letter-spacing: var(--theme-letter-spacing);
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--theme-font-sans);
+  min-height: 0;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+code, kbd, pre, samp, .font-mono, .font-mono-ui {
+  font-family: var(--theme-font-mono);
+}
+
+/* Density: scale the shadcn spacing utilities via a multiplier. The DS
+   components use `p-N` / `gap-N` / `space-*` classes which resolve against
+   Tailwind's spacing scale; multiplying `--spacing` at :root scales them
+   all proportionally in Tailwind v4. */
+@theme inline {
+  --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
+}
+
+#root {
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
 }
 
 /* Nousnet's hermes-agent layout bumps `small` and `code` to readable
@@ -65,6 +151,11 @@ code { font-size: 0.875rem; }
   --color-ring: var(--midground);
   --color-popover: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
   --color-popover-foreground: var(--midground);
+
+  --radius-sm: calc(var(--theme-radius) - 4px);
+  --radius-md: calc(var(--theme-radius) - 2px);
+  --radius-lg: var(--theme-radius);
+  --radius-xl: calc(var(--theme-radius) + 4px);
 }
 
 
@@ -76,6 +167,16 @@ code { font-size: 0.875rem; }
 @keyframes toast-out {
   from { opacity: 1; transform: translateX(0); }
   to   { opacity: 0; transform: translateX(16px); }
+}
+
+/* Generic fade + dialog entrance used by popovers and confirm dialogs. */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 /* Hide scrollbar utility — used by the header's overflow-x nav row. */
@@ -94,9 +195,11 @@ code { font-size: 0.875rem; }
 
 /* System UI-monospace stack — distinct from `font-courier` (Courier
    Prime), used for dense data readouts where the display font would
-   break the grid. */
+   break the grid. Routes through the theme's mono stack so themes
+   with a different monospace (JetBrains Mono, IBM Plex Mono, etc.)
+   still apply here. */
 .font-mono-ui {
-  font-family: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+  font-family: var(--theme-font-mono);
 }
 
 /* Subtle grain overlay for badges. */
@@ -111,5 +214,16 @@ code { font-size: 0.875rem; }
   pointer-events: none;
   background: repeating-conic-gradient(currentColor 0% 25%, #0000 0% 50%) 0 0 /
     2px 2px;
+}
+
+/* When a theme provides `assets.bg`, the backdrop's <div> renders it as
+   a CSS background; the default filler <img> is hidden to prevent
+   double-compositing. Unset → initial → empty, so the :not() selector
+   matches and the default image stays visible. */
+:root:not([style*="--theme-asset-bg:"]) .theme-default-filler {
+  display: block;
+}
+:root[style*="--theme-asset-bg:"] .theme-default-filler {
+  display: none;
 }
 

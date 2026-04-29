@@ -82,8 +82,10 @@ CREATE TABLE IF NOT EXISTS messages (
     token_count INTEGER,
     finish_reason TEXT,
     reasoning TEXT,
+    reasoning_content TEXT,
     reasoning_details TEXT,
-    codex_reasoning_items TEXT
+    codex_reasoning_items TEXT,
+    codex_message_items TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
@@ -91,7 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 
 Notes:
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
-- `reasoning_details` and `codex_reasoning_items` are stored as JSON strings
+- `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
 - `reasoning` stores the raw reasoning text for providers that expose it
 - Timestamps are Unix epoch floats (`time.time()`)
 
@@ -128,7 +130,7 @@ END;
 
 ## Schema Version and Migrations
 
-Current schema version: **6**
+Current schema version: **9**
 
 The `schema_version` table stores a single integer. On initialization,
 `_init_schema()` checks the current version and applies migrations sequentially:
@@ -141,6 +143,9 @@ The `schema_version` table stores a single integer. On initialization,
 | 4 | Add unique index on `title` (NULLs allowed, non-NULL must be unique) |
 | 5 | Add billing columns: `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `billing_provider`, `billing_base_url`, `billing_mode`, `estimated_cost_usd`, `actual_cost_usd`, `cost_status`, `cost_source`, `pricing_version` |
 | 6 | Add reasoning columns to messages: `reasoning`, `reasoning_details`, `codex_reasoning_items` |
+| 7 | Add `reasoning_content` column to messages |
+| 8 | Add `api_call_count` column to sessions |
+| 9 | Add `codex_message_items` column to messages for Codex Responses message id/phase replay |
 
 Each migration uses `ALTER TABLE ADD COLUMN` wrapped in try/except to handle
 the column-already-exists case (idempotent). The version number is bumped after

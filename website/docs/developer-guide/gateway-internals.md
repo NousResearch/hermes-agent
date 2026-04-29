@@ -20,7 +20,7 @@ The messaging gateway is the long-running process that connects Hermes to 14+ ex
 | `gateway/hooks.py` | Hook discovery, loading, and lifecycle event dispatch |
 | `gateway/mirror.py` | Cross-session message mirroring for `send_message` |
 | `gateway/status.py` | Token lock management for profile-scoped gateway instances |
-| `gateway/builtin_hooks/` | Always-registered hooks (e.g., BOOT.md system prompt hook) |
+| `gateway/builtin_hooks/` | Extension point for always-registered hooks (none shipped) |
 | `gateway/platforms/` | Platform adapters (one per messaging platform) |
 
 ## Architecture Overview
@@ -46,7 +46,7 @@ The messaging gateway is the long-running process that connects Hermes to 14+ ex
 │                     ▼                           │
 │                 SessionStore                    │
 │              (SQLite persistence)               │
-└─────────────────────────────────────────────────┘
+└───────┴─────────────┴─────────────┴─────────────┘
 ```
 
 ## Message Flow

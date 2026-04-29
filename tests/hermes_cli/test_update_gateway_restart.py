@@ -424,6 +424,152 @@ class TestCmdUpdateLaunchdRestart:
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
+    def test_update_prefers_sigusr1_over_systemctl_restart_when_mainpid_known(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+    ):
+        """Drain-aware update: when systemctl show reports a MainPID, the
+        update path sends SIGUSR1 and waits for graceful exit + respawn,
+        instead of ``systemctl restart`` (which SIGKILLs in-flight agents).
+        """
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        # Track state: before kill → "active" (old PID),
+        # after kill + exit → briefly inactive, then "active" again (new PID).
+        state = {"killed": False}
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+
+            if "rev-parse" in joined and "--abbrev-ref" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-parse" in joined and "--verify" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-list" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="3\n", stderr="")
+
+            # Only expose a user-scope service.
+            if "systemctl" in joined and "list-units" in joined:
+                if "--user" in joined:
+                    return subprocess.CompletedProcess(
+                        cmd, 0,
+                        stdout="hermes-gateway.service loaded active running\n",
+                        stderr="",
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            if "systemctl" in joined and "is-active" in joined:
+                # Pre-kill: active.  Post-kill: active again (respawned by
+                # Restart=on-failure).  The drain loop verifies liveness
+                # separately via os.kill(pid, 0).
+                return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
+
+            # The new code path.
+            if "systemctl" in joined and "show" in joined and "MainPID" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="4242\n", stderr="")
+
+            # If systemctl restart is called, this test fails its intent —
+            # but still let it succeed so we can assert it was NOT called.
+            if "systemctl" in joined and "restart" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+
+        # Track SIGUSR1 delivery and simulate the gateway draining + exiting.
+        sigusr1_sent = {"value": False}
+
+        def fake_kill(pid, sig):
+            import signal as _s
+            if pid == 4242 and sig == _s.SIGUSR1:
+                sigusr1_sent["value"] = True
+                state["killed"] = True
+                return
+            if pid == 4242 and sig == 0:
+                # Liveness probe — report dead once SIGUSR1 has been sent.
+                if state["killed"]:
+                    raise ProcessLookupError()
+                return
+            # For any other PID/sig combination, succeed silently.
+            return
+
+        monkeypatch.setattr("os.kill", fake_kill)
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(mock_args)
+
+        # SIGUSR1 must have been delivered to the gateway MainPID.
+        assert sigusr1_sent["value"], "Expected SIGUSR1 to be sent to MainPID"
+
+        # And `systemctl restart` must NOT have been used (that's the
+        # non-draining kill-everything path we're moving away from).
+        restart_calls = [
+            c for c in mock_run.call_args_list
+            if "systemctl" in " ".join(str(a) for a in c.args[0])
+            and "restart" in " ".join(str(a) for a in c.args[0])
+        ]
+        assert restart_calls == [], (
+            "Graceful SIGUSR1 succeeded; `systemctl restart` should not "
+            f"have been called. Got: {restart_calls}"
+        )
+
+        captured = capsys.readouterr().out
+        assert "draining" in captured.lower()
+        assert "Restarted hermes-gateway" in captured
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_falls_back_to_systemctl_restart_when_sigusr1_times_out(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+    ):
+        """If the gateway doesn't exit within the drain budget (e.g. old unit
+        missing ``Restart=on-failure`` or an agent ignoring SIGUSR1), the
+        update path falls back to ``systemctl restart``.
+        """
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            systemd_active=True,
+        )
+
+        # Patch systemctl show to report MainPID=4242 so cmd_update attempts
+        # the graceful path.
+        orig = mock_run.side_effect
+        def wrapped(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "systemctl" in joined and "show" in joined and "MainPID" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="4242\n", stderr="")
+            return orig(cmd, **kwargs)
+        mock_run.side_effect = wrapped
+
+        # Simulate the drain helper failing to confirm a clean exit — either
+        # because the gateway ignored SIGUSR1 or the drain budget was
+        # exceeded.  cmd_update() should detect this and escalate.
+        monkeypatch.setattr(
+            "hermes_cli.gateway._graceful_restart_via_sigusr1",
+            lambda pid, drain_timeout: False,
+        )
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(mock_args)
+
+        # Fallback kicked in → systemctl restart was called.
+        restart_calls = [
+            c for c in mock_run.call_args_list
+            if "systemctl" in " ".join(str(a) for a in c.args[0])
+            and "restart" in " ".join(str(a) for a in c.args[0])
+        ]
+        assert len(restart_calls) >= 1, (
+            "Drain path failed; expected fallback `systemctl restart`."
+        )
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
     def test_update_no_gateway_running_skips_restart(
         self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
     ):

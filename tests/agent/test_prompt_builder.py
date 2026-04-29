@@ -807,6 +807,24 @@ class TestPromptBuilderConstants:
         # check that this test is calibrated correctly).
         assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
 
+    def test_platform_hints_mattermost(self):
+        hint = PLATFORM_HINTS["mattermost"]
+        assert "Mattermost" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_matrix(self):
+        hint = PLATFORM_HINTS["matrix"]
+        assert "Matrix" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_feishu(self):
+        hint = PLATFORM_HINTS["feishu"]
+        assert "Feishu" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
 
 # =========================================================================
 # Environment hints

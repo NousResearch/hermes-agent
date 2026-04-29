@@ -23,26 +23,52 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 
+# Matches Codex/Harmony tool-call serialization that occasionally leaks into
+# assistant-message content when the model fails to emit a structured
+# ``function_call`` item.  Accepts the common forms:
+#
+#   to=functions.exec_command
+#   assistant to=functions.exec_command
+#   <|channel|>commentary to=functions.exec_command
+#
+# ``to=functions.<name>`` is the stable marker — the optional ``assistant`` or
+# Harmony channel prefix varies by degeneration mode.  Case-insensitive to
+# cover lowercase/uppercase ``assistant`` variants.
+_TOOL_CALL_LEAK_PATTERN = re.compile(
+    r"(?:^|[\s>|])to=functions\.[A-Za-z_][\w.]*",
+    re.IGNORECASE,
+)
+
+
 # ---------------------------------------------------------------------------
 # Multimodal content helpers
 # ---------------------------------------------------------------------------
 
-def _chat_content_to_responses_parts(content: Any) -> List[Dict[str, Any]]:
+def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> List[Dict[str, Any]]:
     """Convert chat-style multimodal content to Responses API input parts.
 
     Input:  ``[{"type":"text"|"image_url", ...}]`` (native OpenAI Chat format)
-    Output: ``[{"type":"input_text"|"input_image", ...}]`` (Responses format)
+    Output: ``[{"type":"input_text"|"output_text"|"input_image", ...}]`` (Responses format)
+
+    The ``role`` parameter controls the text content type:
+    - ``"user"`` (default) → ``"input_text"``
+    - ``"assistant"`` → ``"output_text"``
+
+    The Responses API rejects ``input_text`` inside assistant messages and
+    ``output_text`` inside user messages, so callers MUST pass the correct
+    role for the message being converted.
 
     Returns an empty list when ``content`` is not a list or contains no
     recognized parts — callers fall back to the string path.
     """
+    text_type = "output_text" if role == "assistant" else "input_text"
     if not isinstance(content, list):
         return []
     converted: List[Dict[str, Any]] = []
     for part in content:
         if isinstance(part, str):
             if part:
-                converted.append({"type": "input_text", "text": part})
+                converted.append({"type": text_type, "text": part})
             continue
         if not isinstance(part, dict):
             continue
@@ -50,7 +76,7 @@ def _chat_content_to_responses_parts(content: Any) -> List[Dict[str, Any]]:
         if ptype in {"text", "input_text", "output_text"}:
             text = part.get("text")
             if isinstance(text, str) and text:
-                converted.append({"type": "input_text", "text": text})
+                converted.append({"type": text_type, "text": text})
             continue
         if ptype in {"image_url", "input_image"}:
             image_ref = part.get("image_url")
@@ -201,6 +227,23 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
 # Message format conversion
 # ---------------------------------------------------------------------------
 
+_RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
+
+
+def _normalize_responses_message_status(value: Any, *, default: str = "completed") -> str:
+    """Normalize a Responses assistant message status for replay.
+
+    The API accepts completed/incomplete/in_progress on replayed assistant
+    output messages.  Preserve those exactly (modulo case/hyphen spelling) so
+    incomplete Codex continuation turns don't get falsely marked completed.
+    """
+    if isinstance(value, str):
+        status = value.strip().lower().replace("-", "_").replace(" ", "_")
+        if status in _RESPONSE_MESSAGE_STATUSES:
+            return status
+    return default
+
+
 def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items."""
     items: List[Dict[str, Any]] = []
@@ -216,9 +259,10 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
         if role in {"user", "assistant"}:
             content = msg.get("content", "")
             if isinstance(content, list):
-                content_parts = _chat_content_to_responses_parts(content)
+                content_parts = _chat_content_to_responses_parts(content, role=role)
+                text_type = "output_text" if role == "assistant" else "input_text"
                 content_text = "".join(
-                    p.get("text", "") for p in content_parts if p.get("type") == "input_text"
+                    p.get("text", "") for p in content_parts if p.get("type") == text_type
                 )
             else:
                 content_parts = []
@@ -245,7 +289,57 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
                                 seen_item_ids.add(item_id)
                             has_codex_reasoning = True
 
-                if content_parts:
+                # Replay exact assistant message items (with id/phase) from
+                # previous turns so the API can maintain prefix-cache hits.
+                # OpenAI docs: "preserve and resend phase on all assistant
+                # messages — dropping it can degrade performance."
+                codex_message_items = msg.get("codex_message_items")
+                replayed_message_items = 0
+                if isinstance(codex_message_items, list):
+                    for raw_item in codex_message_items:
+                        if not isinstance(raw_item, dict):
+                            continue
+                        if raw_item.get("type") != "message" or raw_item.get("role") != "assistant":
+                            continue
+                        raw_content_parts = raw_item.get("content")
+                        if not isinstance(raw_content_parts, list):
+                            continue
+
+                        normalized_content_parts = []
+                        for part in raw_content_parts:
+                            if not isinstance(part, dict):
+                                continue
+                            part_type = str(part.get("type") or "").strip()
+                            if part_type not in {"output_text", "text"}:
+                                continue
+                            text = part.get("text", "")
+                            if text is None:
+                                text = ""
+                            if not isinstance(text, str):
+                                text = str(text)
+                            normalized_content_parts.append({"type": "output_text", "text": text})
+
+                        if not normalized_content_parts:
+                            continue
+
+                        replay_item = {
+                            "type": "message",
+                            "role": "assistant",
+                            "status": _normalize_responses_message_status(raw_item.get("status")),
+                            "content": normalized_content_parts,
+                        }
+                        item_id = raw_item.get("id")
+                        if isinstance(item_id, str) and item_id.strip():
+                            replay_item["id"] = item_id.strip()
+                        phase = raw_item.get("phase")
+                        if isinstance(phase, str) and phase.strip():
+                            replay_item["phase"] = phase.strip()
+                        items.append(replay_item)
+                        replayed_message_items += 1
+
+                if replayed_message_items > 0:
+                    pass
+                elif content_parts:
                     items.append({"role": "assistant", "content": content_parts})
                 elif content_text.strip():
                     items.append({"role": "assistant", "content": content_text})
@@ -405,6 +499,47 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 normalized.append(reasoning_item)
             continue
 
+        if item_type == "message":
+            role = item.get("role")
+            if role != "assistant":
+                raise ValueError(f"Codex Responses input[{idx}] message items must have role='assistant'.")
+            content = item.get("content")
+            if not isinstance(content, list):
+                raise ValueError(f"Codex Responses input[{idx}] message item must have content list.")
+            normalized_content = []
+            for part_idx, part in enumerate(content):
+                if not isinstance(part, dict):
+                    raise ValueError(
+                        f"Codex Responses input[{idx}] message content[{part_idx}] must be an object."
+                    )
+                part_type = part.get("type")
+                if part_type not in {"output_text", "text"}:
+                    raise ValueError(
+                        f"Codex Responses input[{idx}] message content[{part_idx}] has unsupported type {part_type!r}."
+                    )
+                text = part.get("text", "")
+                if text is None:
+                    text = ""
+                if not isinstance(text, str):
+                    text = str(text)
+                normalized_content.append({"type": "output_text", "text": text})
+            if not normalized_content:
+                raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
+            normalized_item: Dict[str, Any] = {
+                "type": "message",
+                "role": "assistant",
+                "status": _normalize_responses_message_status(item.get("status")),
+                "content": normalized_content,
+            }
+            item_id = item.get("id")
+            if isinstance(item_id, str) and item_id.strip():
+                normalized_item["id"] = item_id.strip()
+            phase = item.get("phase")
+            if isinstance(phase, str) and phase.strip():
+                normalized_item["phase"] = phase.strip()
+            normalized.append(normalized_item)
+            continue
+
         role = item.get("role")
         if role in {"user", "assistant"}:
             content = item.get("content", "")
@@ -412,13 +547,16 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 content = ""
             if isinstance(content, list):
                 # Multimodal content from ``_chat_messages_to_responses_input``
-                # is already in Responses format (``input_text`` / ``input_image``).
-                # Validate each part and pass through.
+                # is already in Responses format (``input_text`` / ``output_text``
+                # / ``input_image``).  Validate each part and pass through.
+                # Use the correct text type for the role — ``output_text`` for
+                # assistant messages, ``input_text`` for user messages.
+                text_type = "output_text" if role == "assistant" else "input_text"
                 validated: List[Dict[str, Any]] = []
                 for part_idx, part in enumerate(content):
                     if isinstance(part, str):
                         if part:
-                            validated.append({"type": "input_text", "text": part})
+                            validated.append({"type": text_type, "text": part})
                         continue
                     if not isinstance(part, dict):
                         raise ValueError(
@@ -429,7 +567,7 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                         text = part.get("text", "")
                         if not isinstance(text, str):
                             text = str(text or "")
-                        validated.append({"type": "input_text", "text": text})
+                        validated.append({"type": text_type, "text": text})
                     elif ptype in {"input_image", "image_url"}:
                         image_ref = part.get("image_url", "")
                         detail = part.get("detail")
@@ -686,6 +824,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     content_parts: List[str] = []
     reasoning_parts: List[str] = []
     reasoning_items_raw: List[Dict[str, Any]] = []
+    message_items_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
     saw_commentary_phase = False
@@ -704,6 +843,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
 
         if item_type == "message":
             item_phase = getattr(item, "phase", None)
+            normalized_phase = None
             if isinstance(item_phase, str):
                 normalized_phase = item_phase.strip().lower()
                 if normalized_phase in {"commentary", "analysis"}:
@@ -713,6 +853,18 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             message_text = _extract_responses_message_text(item)
             if message_text:
                 content_parts.append(message_text)
+                raw_message_item: Dict[str, Any] = {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": _normalize_responses_message_status(item_status),
+                    "content": [{"type": "output_text", "text": message_text}],
+                }
+                item_id = getattr(item, "id", None)
+                if isinstance(item_id, str) and item_id:
+                    raw_message_item["id"] = item_id
+                if normalized_phase:
+                    raw_message_item["phase"] = normalized_phase
+                message_items_raw.append(raw_message_item)
         elif item_type == "reasoning":
             reasoning_text = _extract_responses_reasoning_text(item)
             if reasoning_text:
@@ -787,6 +939,37 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         if isinstance(out_text, str):
             final_text = out_text.strip()
 
+    # ── Tool-call leak recovery ──────────────────────────────────
+    # gpt-5.x on the Codex Responses API sometimes degenerates and emits
+    # what should be a structured `function_call` item as plain assistant
+    # text using the Harmony/Codex serialization (``to=functions.foo
+    # {json}`` or ``assistant to=functions.foo {json}``). The model
+    # intended to call a tool, but the intent never made it into
+    # ``response.output`` as a ``function_call`` item, so ``tool_calls``
+    # is empty here. If we pass this through, the parent sees a
+    # confident-looking summary with no audit trail (empty ``tool_trace``)
+    # and no tools actually ran — the Taiwan-embassy-email incident.
+    #
+    # Detection: leaked tokens always contain ``to=functions.<name>`` and
+    # the assistant message has no real tool calls. Treat it as incomplete
+    # so the existing Codex-incomplete continuation path (3 retries,
+    # handled in run_agent.py) gets a chance to re-elicit a proper
+    # ``function_call`` item. The existing loop already handles message
+    # append, dedup, and retry budget.
+    leaked_tool_call_text = False
+    if final_text and not tool_calls and _TOOL_CALL_LEAK_PATTERN.search(final_text):
+        leaked_tool_call_text = True
+        logger.warning(
+            "Codex response contains leaked tool-call text in assistant content "
+            "(no structured function_call items). Treating as incomplete so the "
+            "continuation path can re-elicit a proper tool call. Leaked snippet: %r",
+            final_text[:300],
+        )
+        # Clear the text so downstream code doesn't surface the garbage as
+        # a summary. The encrypted reasoning items (if any) are preserved
+        # so the model keeps its chain-of-thought on the retry.
+        final_text = ""
+
     assistant_message = SimpleNamespace(
         content=final_text,
         tool_calls=tool_calls,
@@ -794,10 +977,13 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         reasoning_content=None,
         reasoning_details=None,
         codex_reasoning_items=reasoning_items_raw or None,
+        codex_message_items=message_items_raw or None,
     )
 
     if tool_calls:
         finish_reason = "tool_calls"
+    elif leaked_tool_call_text:
+        finish_reason = "incomplete"
     elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
         finish_reason = "incomplete"
     elif reasoning_items_raw and not final_text:

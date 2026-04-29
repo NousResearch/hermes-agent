@@ -6,6 +6,7 @@ export const en: Translations = {
     saving: "Saving...",
     cancel: "Cancel",
     close: "Close",
+    confirm: "Confirm",
     delete: "Delete",
     refresh: "Refresh",
     retry: "Retry",
@@ -42,26 +43,49 @@ export const en: Translations = {
     expand: "Expand",
     general: "General",
     messaging: "Messaging",
+    pluginLoadFailed:
+      "Could not load this plugin’s script. Check the Network tab (dashboard-plugins/…) and the server’s plugin path.",
+    pluginNotRegistered:
+      "The plugin’s script did not call register(), or the script errored. Open the browser console for details.",
   },
 
   app: {
     brand: "Hermes Agent",
     brandShort: "HA",
-    webUi: "Web UI",
+    closeNavigation: "Close navigation",
+    closeModelTools: "Close model and tools",
     footer: {
-      name: "Hermes Agent",
       org: "Nous Research",
     },
-    nav: {
-      status: "Status",
-      sessions: "Sessions",
-      analytics: "Analytics",
-      logs: "Logs",
-      cron: "Cron",
-      skills: "Skills",
-      config: "Config",
-      keys: "Keys",
+    activeSessionsLabel: "Active Sessions:",
+    gatewayStatusLabel: "Gateway Status:",
+    gatewayStrip: {
+      failed: "Start failed",
+      off: "Off",
+      running: "Running",
+      starting: "Starting",
+      stopped: "Stopped",
     },
+    nav: {
+      analytics: "Analytics",
+      chat: "Chat",
+      config: "Config",
+      cron: "Cron",
+      documentation: "Documentation",
+      keys: "Keys",
+      logs: "Logs",
+      sessions: "Sessions",
+      skills: "Skills",
+    },
+    modelToolsSheetSubtitle: "& tools",
+    modelToolsSheetTitle: "Model",
+    navigation: "Navigation",
+    openDocumentation: "Open documentation in a new tab",
+    openNavigation: "Open navigation",
+    sessionsActiveCount: "{count} active",
+    statusOverview: "Status overview",
+    system: "System",
+    webUi: "Web UI",
   },
 
   status: {
@@ -106,6 +130,12 @@ export const en: Translations = {
     noMessages: "No messages",
     untitledSession: "Untitled session",
     deleteSession: "Delete session",
+    confirmDeleteTitle: "Delete session?",
+    confirmDeleteMessage:
+      "This permanently removes the conversation and all of its messages. This cannot be undone.",
+    sessionDeleted: "Session deleted",
+    failedToDelete: "Failed to delete session",
+    resumeInChat: "Resume in Chat",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {
@@ -153,6 +183,9 @@ export const en: Translations = {
   },
 
   cron: {
+    confirmDeleteMessage:
+      "This removes the job from the schedule. This cannot be undone.",
+    confirmDeleteTitle: "Delete scheduled job?",
     newJob: "New Cron Job",
     nameOptional: "Name (optional)",
     namePlaceholder: "e.g. Daily summary",
@@ -182,6 +215,8 @@ export const en: Translations = {
     searchPlaceholder: "Search skills and toolsets...",
     enabledOf: "{enabled}/{total} enabled",
     all: "All",
+    categories: "Categories",
+    filters: "Filters",
     noSkills: "No skills found. Skills are loaded from ~/.hermes/skills/",
     noSkillsMatch: "No skills match your search or filter.",
     skillCount: "{count} skill{s}",
@@ -197,9 +232,14 @@ export const en: Translations = {
 
   config: {
     configPath: "~/.hermes/config.yaml",
+    filters: "Filters",
+    sections: "Sections",
     exportConfig: "Export config as JSON",
     importConfig: "Import config from JSON",
     resetDefaults: "Reset to defaults",
+    resetScopeTooltip: "Reset {scope} to defaults",
+    confirmResetScope: "Reset all {scope} settings to their defaults? This only updates the form — changes aren't written to config.yaml until you press Save.",
+    resetScopeToast: "{scope} reset to defaults — review and Save to persist",
     rawYaml: "Raw YAML Configuration",
     searchResults: "Search Results",
     fields: "field{s}",
@@ -231,8 +271,11 @@ export const en: Translations = {
   },
 
   env: {
-    description: "Manage API keys and secrets stored in",
     changesNote: "Changes are saved to disk immediately. Active sessions pick up new keys automatically.",
+    confirmClearMessage:
+      "The stored value for this variable will be removed from your .env file. This cannot be undone from the UI.",
+    confirmClearTitle: "Clear this key?",
+    description: "Manage API keys and secrets stored in",
     hideAdvanced: "Hide Advanced",
     showAdvanced: "Show Advanced",
     llmProviders: "LLM Providers",

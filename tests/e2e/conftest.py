@@ -125,13 +125,13 @@ from gateway.platforms.slack import SlackAdapter  # noqa: E402
 
 # Platform-generic factories
 
-def make_source(platform: Platform, chat_id: str = "e2e-chat-1", user_id: str = "e2e-user-1") -> SessionSource:
+def make_source(platform: Platform, chat_id: str = "e2e-chat-1", user_id: str = "e2e-user-1", chat_type: str = "dm") -> SessionSource:
     return SessionSource(
         platform=platform,
         chat_id=chat_id,
         user_id=user_id,
         user_name="e2e_tester",
-        chat_type="dm",
+        chat_type=chat_type,
     )
 
 
@@ -147,10 +147,16 @@ def make_session_entry(platform: Platform, source: SessionSource = None) -> Sess
     )
 
 
-def make_event(platform: Platform, text: str = "/help", chat_id: str = "e2e-chat-1", user_id: str = "e2e-user-1") -> MessageEvent:
+def make_event(
+    platform: Platform,
+    text: str = "/help",
+    chat_id: str = "e2e-chat-1",
+    user_id: str = "e2e-user-1",
+    chat_type: str = "dm",
+) -> MessageEvent:
     return MessageEvent(
         text=text,
-        source=make_source(platform, chat_id, user_id),
+        source=make_source(platform, chat_id, user_id, chat_type),
         message_id=f"msg-{uuid.uuid4().hex[:8]}",
     )
 
@@ -185,6 +191,23 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
+    runner._shutdown_event = asyncio.Event()
+    runner._exit_reason = None
+    runner._exit_code = None
+    runner._background_tasks = set()
+    runner._draining = False
+    runner._restart_requested = False
+    runner._restart_task_started = False
+    runner._restart_detached = False
+    runner._restart_via_service = False
+    from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    runner._stop_task = None
+    runner._busy_input_mode = "interrupt"
+    runner._running_agents_ts = {}
+    runner._pending_model_notes = {}
+    runner._update_prompt_pending = {}
+    runner._voice_mode = {}
     runner._session_db = None
     runner._reasoning_config = None
     runner._provider_routing = {}
@@ -193,6 +216,7 @@ def make_runner(platform: Platform, session_entry: SessionEntry = None) -> "Gate
 
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
+    runner._handle_message_with_agent = AsyncMock(return_value="agent-handled-default")
     runner._should_send_voice_reply = lambda *_a, **_kw: False
     runner._send_voice_reply = AsyncMock()
     runner._capture_gateway_honcho_if_configured = lambda *a, **kw: None
@@ -346,6 +370,7 @@ def make_discord_message(
 
     return SimpleNamespace(
         id=message_id, content=content, author=author, channel=channel,
+        guild=getattr(channel, "guild", None),
         mentions=mentions, attachments=attachments,
         type=getattr(discord, "MessageType", SimpleNamespace()).default,
         reference=None, created_at=datetime.now(timezone.utc),

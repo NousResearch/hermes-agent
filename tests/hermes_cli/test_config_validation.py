@@ -136,6 +136,40 @@ class TestFallbackModelValidation:
         fb_issues = [i for i in issues if "fallback" in i.message.lower()]
         assert len(fb_issues) == 0
 
+    def test_valid_fallback_list(self):
+        """List-form fallback_model (chain) should validate when every entry has provider+model."""
+        issues = validate_config_structure({
+            "fallback_model": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+                {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+            ],
+        })
+        fb_issues = [i for i in issues if "fallback" in i.message.lower()]
+        assert len(fb_issues) == 0
+
+    def test_fallback_list_entry_missing_provider(self):
+        issues = validate_config_structure({
+            "fallback_model": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+                {"model": "claude-sonnet-4-6"},
+            ],
+        })
+        assert any("fallback_model[1]" in i.message and "provider" in i.message for i in issues)
+
+    def test_fallback_list_entry_missing_model(self):
+        issues = validate_config_structure({
+            "fallback_model": [
+                {"provider": "openrouter"},
+            ],
+        })
+        assert any("fallback_model[0]" in i.message and "model" in i.message for i in issues)
+
+    def test_fallback_list_entry_not_a_dict(self):
+        issues = validate_config_structure({
+            "fallback_model": ["openrouter:anthropic/claude-sonnet-4"],
+        })
+        assert any("fallback_model[0]" in i.message and "should be a dict" in i.message for i in issues)
+
 
 class TestMissingModelSection:
     """Warn when custom_providers exists but model section is missing."""

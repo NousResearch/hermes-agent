@@ -175,6 +175,60 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
+def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
+    """Send SIGUSR1 to a gateway PID and wait for it to exit gracefully.
+
+    SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``
+    which drains in-flight agent runs (up to ``agent.restart_drain_timeout``
+    seconds), then exits with code 75.  Both systemd (``Restart=on-failure``
+    + ``RestartForceExitStatus=75``) and launchd (``KeepAlive.SuccessfulExit
+    = false``) relaunch the process after the graceful exit.
+
+    This is the drain-aware alternative to ``systemctl restart`` / ``SIGTERM``,
+    which SIGKILL in-flight agents after a short timeout.
+
+    Args:
+        pid: Gateway process PID (systemd MainPID, launchd PID, or bare
+            process PID).
+        drain_timeout: Seconds to wait for the process to exit after sending
+            SIGUSR1.  Should be slightly larger than the gateway's
+            ``agent.restart_drain_timeout`` to allow the drain loop to
+            finish cleanly.
+
+    Returns:
+        True if the PID was signalled and exited within the timeout.
+        False if SIGUSR1 couldn't be sent or the process didn't exit in
+        time (caller should fall back to a harder restart path).
+    """
+    if not hasattr(signal, "SIGUSR1"):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, signal.SIGUSR1)
+    except ProcessLookupError:
+        # Already gone — nothing to drain.
+        return True
+    except (PermissionError, OSError):
+        return False
+
+    import time as _time
+
+    deadline = _time.monotonic() + max(drain_timeout, 1.0)
+    while _time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)  # signal 0 — probe liveness
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            # Process still exists but we can't signal it.  Treat as alive
+            # so the caller falls back.
+            pass
+        _time.sleep(0.5)
+    # Drain didn't finish in time.
+    return False
+
+
 def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int]) -> None:
     if pid is None or pid <= 0:
         return
@@ -333,6 +387,147 @@ def _probe_systemd_service_running(system: bool = False) -> tuple[bool, bool]:
     return selected_system, result.stdout.strip() == "active"
 
 
+def _read_systemd_unit_properties(
+    system: bool = False,
+    properties: tuple[str, ...] = (
+        "ActiveState",
+        "SubState",
+        "Result",
+        "ExecMainStatus",
+    ),
+) -> dict[str, str]:
+    """Return selected ``systemctl show`` properties for the gateway unit."""
+    selected_system = _select_systemd_scope(system)
+    try:
+        result = _run_systemctl(
+            [
+                "show",
+                get_service_name(),
+                "--no-pager",
+                "--property",
+                ",".join(properties),
+            ],
+            system=selected_system,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (RuntimeError, subprocess.TimeoutExpired, OSError):
+        return {}
+
+    if result.returncode != 0:
+        return {}
+
+    parsed: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        parsed[key] = value.strip()
+    return parsed
+
+
+def _wait_for_systemd_service_restart(
+    *,
+    system: bool = False,
+    previous_pid: int | None = None,
+    timeout: float = 60.0,
+) -> bool:
+    """Wait for the gateway service to become active after a restart handoff."""
+    import time
+
+    svc = get_service_name()
+    scope_label = _service_scope_label(system).capitalize()
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        props = _read_systemd_unit_properties(system=system)
+        active_state = props.get("ActiveState", "")
+        sub_state = props.get("SubState", "")
+        new_pid = None
+        try:
+            from gateway.status import get_running_pid
+
+            new_pid = get_running_pid()
+        except Exception:
+            new_pid = None
+
+        if active_state == "active":
+            if new_pid and (previous_pid is None or new_pid != previous_pid):
+                print(f"✓ {scope_label} service restarted (PID {new_pid})")
+                return True
+            if previous_pid is None:
+                print(f"✓ {scope_label} service restarted")
+                return True
+
+        if active_state == "activating" and sub_state == "auto-restart":
+            time.sleep(1)
+            continue
+
+        time.sleep(2)
+
+    print(
+        f"⚠ {scope_label} service did not become active within {int(timeout)}s.\n"
+        f"  Check status: {'sudo ' if system else ''}hermes gateway status\n"
+        f"  Check logs:   journalctl {'--user ' if not system else ''}-u {svc} -l --since '2 min ago'"
+    )
+    return False
+
+
+def _recover_pending_systemd_restart(system: bool = False, previous_pid: int | None = None) -> bool:
+    """Recover a planned service restart that is stuck in systemd state."""
+    props = _read_systemd_unit_properties(system=system)
+    if not props:
+        return False
+
+    try:
+        from gateway.status import read_runtime_status
+    except Exception:
+        return False
+
+    runtime_state = read_runtime_status() or {}
+    if not runtime_state.get("restart_requested"):
+        return False
+
+    active_state = props.get("ActiveState", "")
+    sub_state = props.get("SubState", "")
+    exec_main_status = props.get("ExecMainStatus", "")
+    result = props.get("Result", "")
+
+    if active_state == "activating" and sub_state == "auto-restart":
+        print("⏳ Service restart already pending — waiting for systemd relaunch...")
+        return _wait_for_systemd_service_restart(
+            system=system,
+            previous_pid=previous_pid,
+        )
+
+    if active_state == "failed" and (
+        exec_main_status == str(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+        or result == "exit-code"
+    ):
+        svc = get_service_name()
+        scope_label = _service_scope_label(system).capitalize()
+        print(f"↻ Clearing failed state for pending {scope_label.lower()} service restart...")
+        _run_systemctl(
+            ["reset-failed", svc],
+            system=system,
+            check=False,
+            timeout=30,
+        )
+        _run_systemctl(
+            ["start", svc],
+            system=system,
+            check=False,
+            timeout=90,
+        )
+        return _wait_for_systemd_service_restart(
+            system=system,
+            previous_pid=previous_pid,
+        )
+
+    return False
+
+
 def _probe_launchd_service_running() -> bool:
     if not get_launchd_plist_path().exists():
         return False
@@ -470,7 +665,8 @@ def stop_profile_gateway() -> bool:
         except (ProcessLookupError, PermissionError):
             break
 
-    remove_pid_file()
+    if get_running_pid() is None:
+        remove_pid_file()
     return True
 
 
@@ -619,6 +815,21 @@ def get_systemd_unit_path(system: bool = False) -> Path:
     return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"
 
 
+class UserSystemdUnavailableError(RuntimeError):
+    """Raised when ``systemctl --user`` cannot reach the user D-Bus session.
+
+    Typically hit on fresh RHEL/Debian SSH sessions where linger is disabled
+    and no user@.service is running, so ``/run/user/$UID/bus`` never exists.
+    Carries a user-facing remediation message in ``args[0]``.
+    """
+
+
+def _user_dbus_socket_path() -> Path:
+    """Return the expected per-user D-Bus socket path (regardless of existence)."""
+    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(xdg) / "bus"
+
+
 def _ensure_user_systemd_env() -> None:
     """Ensure DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR are set for systemctl --user.
 
@@ -639,6 +850,126 @@ def _ensure_user_systemd_env() -> None:
         bus_path = Path(xdg_runtime) / "bus"
         if bus_path.exists():
             os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+
+
+def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
+    """Poll for the user D-Bus socket to appear, up to ``timeout`` seconds.
+
+    Linger-enabled user@.service can take a second or two to spawn the socket
+    after ``loginctl enable-linger`` runs.  Returns True once the socket exists.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _user_dbus_socket_path().exists():
+            _ensure_user_systemd_env()
+            return True
+        time.sleep(0.2)
+    return _user_dbus_socket_path().exists()
+
+
+def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
+    """Ensure ``systemctl --user`` will reach the user D-Bus session bus.
+
+    No-op when the bus socket is already there (the common case on desktops
+    and linger-enabled servers).  On fresh SSH sessions where the socket is
+    missing:
+
+    * If linger is already enabled, wait briefly for user@.service to spawn
+      the socket.
+    * If linger is disabled and ``auto_enable_linger`` is True, try
+      ``loginctl enable-linger $USER`` (works as non-root when polkit permits
+      it, otherwise needs sudo).
+    * If the socket is still missing afterwards, raise
+      :class:`UserSystemdUnavailableError` with a precise remediation message.
+
+    Callers should treat the exception as a terminal condition for user-scope
+    systemd operations and surface the message to the user.
+    """
+    _ensure_user_systemd_env()
+    bus_path = _user_dbus_socket_path()
+    if bus_path.exists():
+        return
+
+    import getpass
+
+    username = getpass.getuser()
+    linger_enabled, linger_detail = get_systemd_linger_status()
+
+    if linger_enabled is True:
+        if _wait_for_user_dbus_socket(timeout=3.0):
+            return
+        # Linger is on but socket still missing — unusual; fall through to error.
+        _raise_user_systemd_unavailable(
+            username,
+            reason="User D-Bus socket is missing even though linger is enabled.",
+            fix_hint=(
+                f"  systemctl start user@{os.getuid()}.service\n"
+                "  (may require sudo; try again after the command succeeds)"
+            ),
+        )
+
+    if auto_enable_linger and shutil.which("loginctl"):
+        try:
+            result = subprocess.run(
+                ["loginctl", "enable-linger", username],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        except Exception as exc:
+            _raise_user_systemd_unavailable(
+                username,
+                reason=f"loginctl enable-linger failed ({exc}).",
+                fix_hint=f"  sudo loginctl enable-linger {username}",
+            )
+        else:
+            if result.returncode == 0:
+                if _wait_for_user_dbus_socket(timeout=5.0):
+                    print(f"✓ Enabled linger for {username} — user D-Bus now available")
+                    return
+                # enable-linger succeeded but the socket never appeared.
+                _raise_user_systemd_unavailable(
+                    username,
+                    reason="Linger was enabled, but the user D-Bus socket did not appear.",
+                    fix_hint=(
+                        "  Log out and log back in, then re-run the command.\n"
+                        f"  Or reboot and run: systemctl --user start {get_service_name()}"
+                    ),
+                )
+            detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+            _raise_user_systemd_unavailable(
+                username,
+                reason=f"loginctl enable-linger was denied: {detail}",
+                fix_hint=f"  sudo loginctl enable-linger {username}",
+            )
+
+    _raise_user_systemd_unavailable(
+        username,
+        reason=(
+            "User D-Bus session is not available "
+            f"({linger_detail or 'linger disabled'})."
+        ),
+        fix_hint=f"  sudo loginctl enable-linger {username}",
+    )
+
+
+def _raise_user_systemd_unavailable(username: str, *, reason: str, fix_hint: str) -> None:
+    """Build a user-facing error message and raise UserSystemdUnavailableError."""
+    msg = (
+        f"{reason}\n"
+        "  systemctl --user cannot reach the user D-Bus session in this shell.\n"
+        "\n"
+        "  To fix:\n"
+        f"{fix_hint}\n"
+        "\n"
+        "  Alternative: run the gateway in the foreground (stays up until\n"
+        "  you exit / close the terminal):\n"
+        "    hermes gateway run"
+    )
+    raise UserSystemdUnavailableError(msg)
 
 
 def _systemctl_cmd(system: bool = False) -> list[str]:
@@ -1192,7 +1523,14 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
             path_entries.append(resolved_node_dir)
 
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
-    restart_timeout = max(60, int(_get_restart_drain_timeout() or 0))
+    # systemd's TimeoutStopSec must exceed the gateway's drain_timeout so
+    # there's budget left for post-interrupt cleanup (tool subprocess kill,
+    # adapter disconnect, session DB close) before systemd escalates to
+    # SIGKILL on the cgroup — otherwise bash/sleep tool-call children left
+    # by a force-interrupted agent get reaped by systemd instead of us
+    # (#8202). 30s of headroom covers the worst case we've observed.
+    _drain_timeout = int(_get_restart_drain_timeout() or 0)
+    restart_timeout = max(60, _drain_timeout) + 30
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -1481,6 +1819,11 @@ def systemd_start(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("start")
+    else:
+        # Fail fast with actionable guidance if the user D-Bus session is not
+        # reachable (common on fresh RHEL/Debian SSH sessions without linger).
+        # Raises UserSystemdUnavailableError with a remediation message.
+        _preflight_user_systemd()
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
@@ -1500,19 +1843,16 @@ def systemd_restart(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("restart")
+    else:
+        _preflight_user_systemd()
     refresh_systemd_unit_if_needed(system=system)
     from gateway.status import get_running_pid
 
     pid = get_running_pid()
     if pid is not None and _request_gateway_self_restart(pid):
-        # SIGUSR1 sent — the gateway will drain active agents, exit with
-        # code 75, and systemd will restart it after RestartSec (30s).
-        # Wait for the old process to die and the new one to become active
-        # so the CLI doesn't return while the service is still restarting.
         import time
         scope_label = _service_scope_label(system).capitalize()
         svc = get_service_name()
-        scope_cmd = _systemctl_cmd(system)
 
         # Phase 1: wait for old process to exit (drain + shutdown)
         print(f"⏳ {scope_label} service draining active work...")
@@ -1526,48 +1866,41 @@ def systemd_restart(system: bool = False):
         else:
             print(f"⚠ Old process (PID {pid}) still alive after 90s")
 
-        # Phase 2: wait for systemd to start the new process
-        print(f"⏳ Waiting for {svc} to restart...")
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            try:
-                result = subprocess.run(
-                    scope_cmd + ["is-active", svc],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if result.stdout.strip() == "active":
-                    # Verify it's a NEW process, not the old one somehow
-                    new_pid = get_running_pid()
-                    if new_pid and new_pid != pid:
-                        print(f"✓ {scope_label} service restarted (PID {new_pid})")
-                        return
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                pass
-            time.sleep(2)
-
-        # Timed out — check final state
-        try:
-            result = subprocess.run(
-                scope_cmd + ["is-active", svc],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.stdout.strip() == "active":
-                print(f"✓ {scope_label} service restarted")
-                return
-        except Exception:
-            pass
-        print(
-            f"⚠ {scope_label} service did not become active within 60s.\n"
-            f"  Check status: {'sudo ' if system else ''}hermes gateway status\n"
-            f"  Check logs:   journalctl {'--user ' if not system else ''}-u {svc} --since '2 min ago'"
+        # The gateway exits with code 75 for a planned service restart.
+        # systemd can sit in the RestartSec window or even wedge itself into a
+        # failed/rate-limited state if the operator asks for another restart in
+        # the middle of that handoff. Clear any stale failed state and kick the
+        # unit immediately so `hermes gateway restart` behaves idempotently.
+        _run_systemctl(
+            ["reset-failed", svc],
+            system=system,
+            check=False,
+            timeout=30,
         )
+        _run_systemctl(
+            ["start", svc],
+            system=system,
+            check=False,
+            timeout=90,
+        )
+        _wait_for_systemd_service_restart(system=system, previous_pid=pid)
         return
+
+    if _recover_pending_systemd_restart(system=system, previous_pid=pid):
+        return
+
+    _run_systemctl(
+        ["reset-failed", get_service_name()],
+        system=system,
+        check=False,
+        timeout=30,
+    )
     _run_systemctl(["reload-or-restart", get_service_name()], system=system, check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
 
 
 
-def systemd_status(deep: bool = False, system: bool = False):
+def systemd_status(deep: bool = False, system: bool = False, full: bool = False):
     system = _select_systemd_scope(system)
     unit_path = get_systemd_unit_path(system=system)
     scope_flag = " --system" if system else ""
@@ -1590,8 +1923,12 @@ def systemd_status(deep: bool = False, system: bool = False):
         print(f"  Run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}  # auto-refreshes the unit")
         print()
 
+    status_cmd = ["status", get_service_name(), "--no-pager"]
+    if full:
+        status_cmd.append("-l")
+
     _run_systemctl(
-        ["status", get_service_name(), "--no-pager"],
+        status_cmd,
         system=system,
         capture_output=False,
         timeout=10,
@@ -1624,6 +1961,19 @@ def systemd_status(deep: bool = False, system: bool = False):
         for line in runtime_lines:
             print(f"  {line}")
 
+    unit_props = _read_systemd_unit_properties(system=system)
+    active_state = unit_props.get("ActiveState", "")
+    sub_state = unit_props.get("SubState", "")
+    exec_main_status = unit_props.get("ExecMainStatus", "")
+    result_code = unit_props.get("Result", "")
+    if active_state == "activating" and sub_state == "auto-restart":
+        print("  ⏳ Restart pending: systemd is waiting to relaunch the gateway")
+    elif active_state == "failed" and exec_main_status == str(GATEWAY_SERVICE_RESTART_EXIT_CODE):
+        print("  ⚠ Planned restart is stuck in systemd failed state (exit 75)")
+        print(f"  Run: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()} && {'sudo ' if system else ''}hermes gateway start{scope_flag}")
+    elif active_state == "failed" and result_code:
+        print(f"  ⚠ Systemd unit result: {result_code}")
+
     if system:
         print("✓ System service starts at boot without requiring systemd linger")
     elif deep:
@@ -1639,7 +1989,10 @@ def systemd_status(deep: bool = False, system: bool = False):
     if deep:
         print()
         print("Recent logs:")
-        subprocess.run(_journalctl_cmd(system) + ["-u", get_service_name(), "-n", "20", "--no-pager"], timeout=10)
+        log_cmd = _journalctl_cmd(system) + ["-u", get_service_name(), "-n", "20", "--no-pager"]
+        if full:
+            log_cmd.append("-l")
+        subprocess.run(log_cmd, timeout=10)
 
 
 # =============================================================================
@@ -2371,6 +2724,24 @@ _PLATFORMS = [
              "help": "OpenID to deliver cron results and notifications to."},
         ],
     },
+    {
+        "key": "yuanbao",
+        "label": "Yuanbao",
+        "emoji": "💎",
+        "token_var": "YUANBAO_APP_ID",
+        "setup_instructions": [
+            "1. Download the Yuanbao app from https://yuanbao.tencent.com/",
+            "2. In the app, go to PAI → My Bot and create a new bot",
+            "3. After the bot is created, copy the App ID and App Secret",
+            "4. Enter them below and Hermes will connect automatically over WebSocket",
+        ],
+        "vars": [
+            {"name": "YUANBAO_APP_ID", "prompt": "App ID", "password": False,
+             "help": "The App ID from your Yuanbao IM Bot credentials."},
+            {"name": "YUANBAO_APP_SECRET", "prompt": "App Secret", "password": True,
+             "help": "The App Secret (used for HMAC signing) from your Yuanbao IM Bot."},
+        ],
+    },
 ]
 
 
@@ -2582,7 +2953,7 @@ def _setup_sms():
 def _setup_dingtalk():
     """Configure DingTalk — QR scan (recommended) or manual credential entry."""
     from hermes_cli.setup import (
-        prompt_choice, prompt_yes_no, print_info, print_success, print_warning,
+        prompt_choice, prompt_yes_no, print_success, print_warning,
     )
 
     dingtalk_platform = next(p for p in _PLATFORMS if p["key"] == "dingtalk")
@@ -2753,6 +3124,12 @@ def _setup_wecom():
 
     print()
     print_success("💬 WeCom configured!")
+
+
+def _setup_yuanbao():
+    """Configure Yuanbao via the standard platform setup."""
+    yuanbao_platform = next(p for p in _PLATFORMS if p["key"] == "yuanbao")
+    _setup_standard_platform(yuanbao_platform)
 
 
 def _is_service_installed() -> bool:
@@ -3127,7 +3504,6 @@ def _setup_qqbot():
     method_idx = prompt_choice("  How would you like to set up QQ Bot?", method_choices, 0)
 
     credentials = None
-    used_qr = False
 
     if method_idx == 0:
         # ── QR scan-to-configure ──
@@ -3138,8 +3514,6 @@ def _setup_qqbot():
             print()
             print_warning("  QQ Bot setup cancelled.")
             return
-        if credentials:
-            used_qr = True
         if not credentials:
             print_info("  QR setup did not complete. Continuing with manual input.")
 
@@ -3366,6 +3740,10 @@ def gateway_setup():
                     systemd_start()
                 elif is_macos():
                     launchd_start()
+            except UserSystemdUnavailableError as e:
+                print_error("  Failed to start — user systemd not reachable:")
+                for line in str(e).splitlines():
+                    print(f"  {line}")
             except subprocess.CalledProcessError as e:
                 print_error(f"  Failed to start: {e}")
     else:
@@ -3430,6 +3808,10 @@ def gateway_setup():
                     else:
                         stop_profile_gateway()
                         print_info("Start manually: hermes gateway")
+                except UserSystemdUnavailableError as e:
+                    print_error("  Restart failed — user systemd not reachable:")
+                    for line in str(e).splitlines():
+                        print(f"  {line}")
                 except subprocess.CalledProcessError as e:
                     print_error(f"  Restart failed: {e}")
         elif service_installed:
@@ -3439,6 +3821,10 @@ def gateway_setup():
                         systemd_start()
                     elif is_macos():
                         launchd_start()
+                except UserSystemdUnavailableError as e:
+                    print_error("  Start failed — user systemd not reachable:")
+                    for line in str(e).splitlines():
+                        print(f"  {line}")
                 except subprocess.CalledProcessError as e:
                     print_error(f"  Start failed: {e}")
         else:
@@ -3462,6 +3848,10 @@ def gateway_setup():
                                     systemd_start(system=installed_scope == "system")
                                 else:
                                     launchd_start()
+                            except UserSystemdUnavailableError as e:
+                                print_error("  Start failed — user systemd not reachable:")
+                                for line in str(e).splitlines():
+                                    print(f"  {line}")
                             except subprocess.CalledProcessError as e:
                                 print_error(f"  Start failed: {e}")
                     except subprocess.CalledProcessError as e:
@@ -3499,6 +3889,18 @@ def gateway_setup():
 
 def gateway_command(args):
     """Handle gateway subcommands."""
+    try:
+        return _gateway_command_inner(args)
+    except UserSystemdUnavailableError as e:
+        # Clean, actionable message instead of a traceback when the user D-Bus
+        # session is unreachable (fresh SSH shell, no linger, container, etc.).
+        print_error("User systemd not reachable:")
+        for line in str(e).splitlines():
+            print(f"  {line}")
+        sys.exit(1)
+
+
+def _gateway_command_inner(args):
     subcmd = getattr(args, 'gateway_command', None)
     
     # Default to run if no subcommand
@@ -3762,12 +4164,13 @@ def gateway_command(args):
     
     elif subcmd == "status":
         deep = getattr(args, 'deep', False)
+        full = getattr(args, 'full', False)
         system = getattr(args, 'system', False)
         snapshot = get_gateway_runtime_snapshot(system=system)
         
         # Check for service first
         if supports_systemd_services() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
-            systemd_status(deep, system=system)
+            systemd_status(deep, system=system, full=full)
             _print_gateway_process_mismatch(snapshot)
         elif is_macos() and get_launchd_plist_path().exists():
             launchd_status(deep)

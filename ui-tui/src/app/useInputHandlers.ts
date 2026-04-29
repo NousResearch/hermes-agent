@@ -1,20 +1,24 @@
-import { useInput } from '@hermes/ink'
+import { forceRedraw, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
+import { useEffect, useRef } from 'react'
 
+import { TYPING_IDLE_MS } from '../config/timing.js'
 import type {
   ApprovalRespondResponse,
+  ConfigSetResponse,
   SecretRespondResponse,
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isMac } from '../lib/platform.js'
+import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
-import { getUiState, patchUiState } from './uiStore.js'
+import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 
@@ -25,15 +29,32 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const overlay = useStore($overlayState)
   const isBlocked = useStore($isBlocked)
   const pagerPageSize = Math.max(5, (terminal.stdout?.rows ?? 24) - 6)
+  const scrollIdleTimer = useRef<null | ReturnType<typeof setTimeout>>(null)
+
+  // Wheel accel ported from claude-code: inter-event timing drives step size,
+  // direction flips reset. wheelStep (WHEEL_SCROLL_STEP) is the base; final
+  // rows = wheelStep × accelMult. State mutates in place across renders.
+  const wheelAccelRef = useRef(initWheelAccelForHost())
+
+  useEffect(() => () => clearTimeout(scrollIdleTimer.current ?? undefined), [])
+
+  const scrollTranscript = (delta: number) => {
+    if (getUiState().busy) {
+      turnController.boostStreamingForScroll()
+      clearTimeout(scrollIdleTimer.current ?? undefined)
+      scrollIdleTimer.current = setTimeout(() => {
+        scrollIdleTimer.current = null
+        turnController.relaxStreaming()
+      }, TYPING_IDLE_MS)
+    }
+
+    terminal.scrollWithSelection(delta)
+  }
 
   const copySelection = () => {
     // ink's copySelection() already calls setClipboard() which handles
     // pbcopy (macOS), wl-copy/xclip (Linux), tmux, and OSC 52 fallback.
-    const text = terminal.selection.copySelection()
-
-    if (text) {
-      actions.sys(`copied ${text.length} chars`)
-    }
+    terminal.selection.copySelection()
   }
 
   const clearSelection = () => {
@@ -73,6 +94,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (overlay.picker) {
       return patchOverlayState({ picker: false })
+    }
+
+    if (overlay.agents) {
+      return patchOverlayState({ agents: false })
     }
   }
 
@@ -129,44 +154,40 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
   }
 
-  const voiceStop = () => {
-    voice.setRecording(false)
-    voice.setProcessing(true)
+  // CLI parity: Ctrl+B toggles the VAD-driven continuous recording loop
+  // (NOT the voice-mode umbrella bit). The mode is enabled via /voice on;
+  // Ctrl+B while the mode is off sys-nudges the user. While the mode is
+  // on, the first press starts a continuous loop (gateway → start_continuous,
+  // VAD auto-stop → transcribe → auto-restart), a subsequent press stops it.
+  // The gateway publishes voice.status + voice.transcript events that
+  // createGatewayEventHandler turns into UI badges and composer injection.
+  const voiceRecordToggle = () => {
+    if (!voice.enabled) {
+      return actions.sys('voice: mode is off — enable with /voice on')
+    }
 
-    gateway
-      .rpc<VoiceRecordResponse>('voice.record', { action: 'stop' })
-      .then(r => {
-        if (!r) {
-          return
-        }
+    const starting = !voice.recording
+    const action = starting ? 'start' : 'stop'
 
-        const transcript = String(r.text || '').trim()
+    // Optimistic UI — flip the REC badge immediately so the user gets
+    // feedback while the RPC round-trips; the voice.status event is the
+    // authoritative source and may correct us.
+    if (starting) {
+      voice.setRecording(true)
+    } else {
+      voice.setRecording(false)
+      voice.setProcessing(false)
+    }
 
-        if (!transcript) {
-          return actions.sys('voice: no speech detected')
-        }
+    gateway.rpc<VoiceRecordResponse>('voice.record', { action }).catch((e: Error) => {
+      // Revert optimistic UI on failure.
+      if (starting) {
+        voice.setRecording(false)
+      }
 
-        cActions.setInput(prev => (prev ? `${prev}${/\s$/.test(prev) ? '' : ' '}${transcript}` : transcript))
-      })
-      .catch((e: Error) => actions.sys(`voice error: ${e.message}`))
-      .finally(() => {
-        voice.setProcessing(false)
-        patchUiState({ status: 'ready' })
-      })
+      actions.sys(`voice error: ${e.message}`)
+    })
   }
-
-  const voiceStart = () =>
-    gateway
-      .rpc<VoiceRecordResponse>('voice.record', { action: 'start' })
-      .then(r => {
-        if (!r) {
-          return
-        }
-
-        voice.setRecording(true)
-        patchUiState({ status: 'recording…' })
-      })
-      .catch((e: Error) => actions.sys(`voice error: ${e.message}`))
 
   useInput((ch, key) => {
     const live = getUiState()
@@ -180,6 +201,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         if (isCtrl(key, ch, 'c')) {
           cancelOverlayFromCtrlC()
         }
+
         return
       }
 
@@ -260,27 +282,36 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (key.wheelUp) {
-      return terminal.scrollWithSelection(-wheelStep)
-    }
+    if (key.wheelUp || key.wheelDown) {
+      const dir: -1 | 1 = key.wheelUp ? -1 : 1
+      // 0 = direction-flip bounce deferred; skip the no-op scroll.
+      const rows = computeWheelStep(wheelAccelRef.current, dir, Date.now())
 
-    if (key.wheelDown) {
-      return terminal.scrollWithSelection(wheelStep)
+      return rows ? scrollTranscript(dir * rows * wheelStep) : undefined
     }
 
     if (key.shift && key.upArrow) {
-      return terminal.scrollWithSelection(-1)
+      return scrollTranscript(-1)
     }
 
     if (key.shift && key.downArrow) {
-      return terminal.scrollWithSelection(1)
+      return scrollTranscript(1)
     }
 
     if (key.pageUp || key.pageDown) {
+      // Half-viewport keeps 50% continuity and stays under Ink's
+      // `delta < innerHeight` DECSTBM fast-path threshold.
       const viewport = terminal.scrollRef.current?.getViewportHeight() ?? Math.max(6, (terminal.stdout?.rows ?? 24) - 8)
-      const step = Math.max(4, viewport - 2)
+      const step = Math.max(4, Math.floor(viewport / 2))
 
-      return terminal.scrollWithSelection(key.pageUp ? -step : step)
+      return scrollTranscript(key.pageUp ? -step : step)
+    }
+
+    // Queue-edit cancel beats selection-clear: the queue header explicitly
+    // promises "Esc cancel", so honoring it takes priority over the implicit
+    // selection-dismissal convention. Without an active edit, fall through.
+    if (key.escape && cState.queueEditIdx !== null) {
+      return cActions.clearIn()
     }
 
     if (key.escape && terminal.hasSelection) {
@@ -290,6 +321,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (key.upArrow && !cState.inputBuf.length) {
       const inputSel = getInputSelection()
       const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
+
       const noLineAbove =
         !cState.input || (cursor !== null && cState.input.lastIndexOf('\n', Math.max(0, cursor - 1)) < 0)
 
@@ -312,7 +344,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
-    if (isAction(key, ch, 'c')) {
+    if (isCopyShortcut(key, ch)) {
       if (terminal.hasSelection) {
         return copySelection()
       }
@@ -330,6 +362,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       if (isMac) {
         return
       }
+    }
+
+    if (isCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {
+      cActions.removeQueue(cState.queueEditIdx)
+      return cActions.clearIn()
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {
@@ -354,21 +391,45 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isAction(key, ch, 'l')) {
-      if (actions.guardBusySessionSwitch()) {
-        return
+      clearSelection()
+      forceRedraw(terminal.stdout ?? process.stdout)
+      return
+    }
+
+    if (isVoiceToggleKey(key, ch)) {
+      return voiceRecordToggle()
+    }
+
+    // Cmd/Ctrl+G, plus Alt+G fallback for VSCode/Cursor (they bind the
+    // primary keystroke to "Find Next" before the TUI sees it; Alt+G
+    // arrives as meta+g across platforms).
+    if (ch.toLowerCase() === 'g' && (isAction(key, ch, 'g') || key.meta)) {
+      return void cActions.openEditor().catch((err: unknown) => {
+        actions.sys(err instanceof Error ? `failed to open editor: ${err.message}` : 'failed to open editor')
+      })
+    }
+
+    // shift-tab flips yolo without spending a turn (claude-code parity)
+    if (key.shift && key.tab && !cState.completions.length) {
+      if (!live.sid) {
+        return void actions.sys('yolo needs an active session')
       }
 
-      patchUiState({ status: 'forging session…' })
+      // gateway.rpc swallows errors with its own sys() message and resolves to null,
+      // so we only speak when it came back with a real shape. null = rpc already spoke.
+      return void gateway.rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid }).then(r => {
+        if (r?.value === '1') {
+          return actions.sys('yolo on')
+        }
 
-      return actions.newSession()
-    }
+        if (r?.value === '0') {
+          return actions.sys('yolo off')
+        }
 
-    if (isAction(key, ch, 'b')) {
-      return voice.recording ? voiceStop() : voiceStart()
-    }
-
-    if (isAction(key, ch, 'g')) {
-      return cActions.openEditor()
+        if (r) {
+          actions.sys('failed to toggle yolo')
+        }
+      })
     }
 
     if (key.tab && cState.completions.length) {

@@ -6,7 +6,7 @@ Shows the status of all Hermes Agent components.
 
 import os
 import sys
-import subprocess
+import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -164,19 +164,26 @@ def show_status(args):
         qwen_status = {}
 
     nous_logged_in = bool(nous_status.get("logged_in"))
+    nous_error = nous_status.get("error")
+    nous_label = "logged in" if nous_logged_in else "not logged in (run: hermes auth add nous --type oauth)"
     print(
         f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
-        f"{'logged in' if nous_logged_in else 'not logged in (run: hermes model)'}"
+        f"{nous_label}"
     )
-    if nous_logged_in:
-        portal_url = nous_status.get("portal_base_url") or "(unknown)"
-        access_exp = _format_iso_timestamp(nous_status.get("access_expires_at"))
-        key_exp = _format_iso_timestamp(nous_status.get("agent_key_expires_at"))
-        refresh_label = "yes" if nous_status.get("has_refresh_token") else "no"
+    portal_url = nous_status.get("portal_base_url") or "(unknown)"
+    access_exp = _format_iso_timestamp(nous_status.get("access_expires_at"))
+    key_exp = _format_iso_timestamp(nous_status.get("agent_key_expires_at"))
+    refresh_label = "yes" if nous_status.get("has_refresh_token") else "no"
+    if nous_logged_in or portal_url != "(unknown)" or nous_error:
         print(f"    Portal URL: {portal_url}")
+    if nous_logged_in or nous_status.get("access_expires_at"):
         print(f"    Access exp: {access_exp}")
+    if nous_logged_in or nous_status.get("agent_key_expires_at"):
         print(f"    Key exp:    {key_exp}")
+    if nous_logged_in or nous_status.get("has_refresh_token"):
         print(f"    Refresh:    {refresh_label}")
+    if nous_error and not nous_logged_in:
+        print(f"    Error:      {nous_error}")
 
     codex_logged_in = bool(codex_status.get("logged_in"))
     print(
@@ -267,6 +274,23 @@ def show_status(args):
         label = "configured" if configured else "not configured (run: hermes model)"
         print(f"  {pname:<16} {check_mark(configured)} {label}")
 
+    # LM Studio reachability — only probe when it's the active provider so
+    # users with foreign configs don't see noise. Auth rejection vs. silent
+    # empty list is the most common LM Studio support case.
+    if _effective_provider_label() == "LM Studio":
+        from hermes_cli.models import probe_lmstudio_models
+        model_cfg = config.get("model")
+        base = (model_cfg.get("base_url") if isinstance(model_cfg, dict) else None) or get_env_value("LM_BASE_URL") or "http://127.0.0.1:1234/v1"
+        try:
+            models = probe_lmstudio_models(api_key=get_env_value("LM_API_KEY") or "", base_url=base, timeout=1.5)
+            if models is None:
+                ok, msg = False, f"unreachable at {base}"
+            else:
+                ok, msg = True, f"reachable ({len(models)} model(s)) at {base}"
+        except AuthError:
+            ok, msg = False, "auth rejected — set LM_API_KEY"
+        print(f"  {'LM Studio':<16} {check_mark(ok)} {msg}")
+
     # =========================================================================
     # Terminal Configuration
     # =========================================================================
@@ -319,7 +343,8 @@ def show_status(args):
         "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None),
         "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
         "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
-        "QQBot": ("QQ_APP_ID", "QQBOT_HOME_CHANNEL"),
+        "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
+        "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():

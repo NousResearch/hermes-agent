@@ -89,6 +89,7 @@ MAX_CONSECUTIVE_FAILURES = 3
 RETRY_DELAY_SECONDS = 2
 BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
+RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
 MEDIA_IMAGE = 1
@@ -1113,7 +1114,7 @@ async def qr_login(
 class WeixinAdapter(BasePlatformAdapter):
     """Native Hermes adapter for Weixin personal accounts."""
 
-    MAX_MESSAGE_LENGTH = 4000
+    MAX_MESSAGE_LENGTH = 2000
 
     # WeChat does not support editing sent messages — streaming must use the
     # fallback "send-final-only" path so the cursor (▉) is never left visible.
@@ -1138,10 +1139,10 @@ class WeixinAdapter(BasePlatformAdapter):
             extra.get("cdn_base_url") or os.getenv("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)
         ).strip().rstrip("/")
         self._send_chunk_delay_seconds = float(
-            extra.get("send_chunk_delay_seconds") or os.getenv("WEIXIN_SEND_CHUNK_DELAY_SECONDS", "0.35")
+            extra.get("send_chunk_delay_seconds") or os.getenv("WEIXIN_SEND_CHUNK_DELAY_SECONDS", "1.5")
         )
         self._send_chunk_retries = int(
-            extra.get("send_chunk_retries") or os.getenv("WEIXIN_SEND_CHUNK_RETRIES", "2")
+            extra.get("send_chunk_retries") or os.getenv("WEIXIN_SEND_CHUNK_RETRIES", "4")
         )
         self._send_chunk_retry_delay_seconds = float(
             extra.get("send_chunk_retry_delay_seconds")
@@ -1530,6 +1531,28 @@ class WeixinAdapter(BasePlatformAdapter):
                                 "[%s] session expired for %s; retrying without context_token",
                                 self.name, _safe_id(chat_id),
                             )
+                            continue
+                        # Rate limit (-2) — backoff and retry
+                        is_rate_limited = (
+                            ret == RATE_LIMIT_ERRCODE
+                            or errcode == RATE_LIMIT_ERRCODE
+                        )
+                        if is_rate_limited:
+                            errmsg = resp.get("errmsg") or resp.get("msg") or "rate limited"
+                            # Record the error so we raise a descriptive
+                            # RuntimeError (instead of AssertionError) if the
+                            # loop exhausts with the server still rate-limiting.
+                            last_error = RuntimeError(
+                                f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg}"
+                            )
+                            if attempt >= self._send_chunk_retries:
+                                break
+                            wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
+                            logger.warning(
+                                "[%s] rate limited for %s; backing off %.1fs before retry",
+                                self.name, _safe_id(chat_id), wait,
+                            )
+                            await asyncio.sleep(wait)
                             continue
                         errmsg = resp.get("errmsg") or resp.get("msg") or "unknown error"
                         raise RuntimeError(

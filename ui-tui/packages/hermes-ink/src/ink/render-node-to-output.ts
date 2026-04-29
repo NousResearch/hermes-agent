@@ -67,6 +67,37 @@ export function resetScrollHint(): void {
   absoluteRectsCur = []
 }
 
+// Fast-path diagnostics. Bumped from the ScrollBox fast-path branch
+// whenever a scroll hint was captured. Reveals why a fast path was
+// declined (heightDelta mismatch, no prevScreen, etc.) so we can chase
+// the last mile of PageUp/wheel latency. Zero cost when no reader —
+// it's all integer bumps. Exposed as a counter object so external
+// probes can snapshot + diff.
+export type ScrollFastPathStats = {
+  captured: number
+  taken: number
+  declined: {
+    noPrevScreen: number
+    heightDeltaMismatch: number
+    other: number
+  }
+  lastDeclineReason?: string
+  lastHeightDelta?: number
+  lastHintDelta?: number
+  lastScrollHeight?: number
+  lastPrevHeight?: number
+}
+
+export const scrollFastPathStats: ScrollFastPathStats = {
+  captured: 0,
+  taken: 0,
+  declined: {
+    noPrevScreen: 0,
+    heightDeltaMismatch: 0,
+    other: 0
+  }
+}
+
 export function getScrollHint(): ScrollHint | null {
   return scrollHint
 }
@@ -343,7 +374,7 @@ function wrapWithSoftWrap(
   maxWidth: number,
   textWrap: Parameters<typeof wrapText>[2]
 ): { wrapped: string; softWrap: boolean[] | undefined } {
-  if (textWrap !== 'wrap' && textWrap !== 'wrap-trim') {
+  if (textWrap !== 'wrap' && textWrap !== 'wrap-char' && textWrap !== 'wrap-trim') {
     return {
       wrapped: wrapText(plainText, maxWidth, textWrap),
       softWrap: undefined
@@ -761,6 +792,7 @@ function renderNodeToOutput(
         // active text selection by the same delta (native terminal behavior:
         // view keeps scrolling, highlight walks up with the text).
         const scrollTopBeforeFollow = node.scrollTop ?? 0
+        const stickyBeforeFollow = node.stickyScroll
 
         const sticky = node.stickyScroll ?? Boolean(node.attributes['stickyScroll'])
 
@@ -863,6 +895,10 @@ function renderNodeToOutput(
           scrollDrainNode = node
         }
 
+        if ((node.scrollTop ?? 0) !== scrollTopBeforeFollow || node.stickyScroll !== stickyBeforeFollow) {
+          node.notifyScrollChange?.()
+        }
+
         scrollTop = clamped
 
         if (content && contentYoga) {
@@ -921,6 +957,27 @@ function renderNodeToOutput(
           const heightDelta = scrollHeight - prevHeight
 
           const safeForFastPath = !hint || heightDelta === 0 || (hint.delta > 0 && heightDelta === hint.delta)
+
+          // Diagnostics (opt-in via scrollFastPathStats reader).  Only
+          // counts when a hint was captured — cases where nothing scrolled
+          // (hint === null) are not declines, just idle frames.
+          if (hint) {
+            scrollFastPathStats.captured++
+            scrollFastPathStats.lastHintDelta = hint.delta
+            scrollFastPathStats.lastScrollHeight = scrollHeight
+            scrollFastPathStats.lastPrevHeight = prevHeight
+            scrollFastPathStats.lastHeightDelta = heightDelta
+
+            if (!safeForFastPath) {
+              scrollFastPathStats.declined.heightDeltaMismatch++
+              scrollFastPathStats.lastDeclineReason = `heightDelta=${heightDelta} hintDelta=${hint.delta}`
+            } else if (!prevScreen) {
+              scrollFastPathStats.declined.noPrevScreen++
+              scrollFastPathStats.lastDeclineReason = 'noPrevScreen'
+            } else {
+              scrollFastPathStats.taken++
+            }
+          }
 
           // scrollHint is set above when hint is captured. If safeForFastPath
           // is false the full path renders a next.screen that doesn't match

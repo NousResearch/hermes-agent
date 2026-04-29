@@ -76,6 +76,45 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('applies /reasoning hide to the thinking section immediately', async () => {
+    patchUiState({ sections: { thinking: 'expanded' }, showReasoning: true, sid: 'sid-abc' })
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'hide' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/reasoning hide')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(getUiState().showReasoning).toBe(false)
+      expect(getUiState().sections.thinking).toBe('hidden')
+    })
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      session_id: 'sid-abc',
+      value: 'hide'
+    })
+  })
+
+  it('applies /reasoning show to the thinking section immediately', async () => {
+    patchUiState({ sections: { thinking: 'hidden' }, showReasoning: false, sid: 'sid-abc' })
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'show' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/reasoning show')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(getUiState().showReasoning).toBe(true)
+      expect(getUiState().sections.thinking).toBe('expanded')
+    })
+  })
+
   it('opens the skills hub locally for bare /skills', () => {
     const ctx = buildCtx()
 

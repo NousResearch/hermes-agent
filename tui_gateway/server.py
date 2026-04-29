@@ -861,9 +861,99 @@ def _load_tool_progress_mode() -> str:
 
 
 def _load_enabled_toolsets() -> list[str] | None:
+    explicit = [
+        item.strip()
+        for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",")
+        if item.strip()
+    ]
+    cfg = None
+    fallback_notice = None
+
+    try:
+        from toolsets import validate_toolset
+    except Exception:
+        validate_toolset = None
+
+    if explicit and validate_toolset is not None:
+        built_in = [name for name in explicit if validate_toolset(name)]
+        unresolved = [name for name in explicit if name not in built_in]
+
+        if unresolved:
+            try:
+                from hermes_cli.plugins import discover_plugins
+
+                discover_plugins()
+                plugin_valid = [name for name in unresolved if validate_toolset(name)]
+            except Exception:
+                plugin_valid = []
+
+            if plugin_valid:
+                built_in.extend(plugin_valid)
+                unresolved = [name for name in unresolved if name not in plugin_valid]
+
+        if any(name in {"all", "*"} for name in built_in):
+            ignored = [name for name in explicit if name not in {"all", "*"}]
+            if ignored:
+                print(
+                    "[tui] HERMES_TUI_TOOLSETS=all enables every toolset; "
+                    f"ignoring additional entries: {', '.join(ignored)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return None
+
+        if not unresolved:
+            return built_in
+
+        mcp_names: set[str] = set()
+        mcp_disabled: set[str] = set()
+        try:
+            from hermes_cli.config import read_raw_config
+            from hermes_cli.tools_config import _parse_enabled_flag
+
+            raw_cfg = read_raw_config()
+            mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
+            for name, server_cfg in mcp_servers.items():
+                if not isinstance(server_cfg, dict):
+                    continue
+                if _parse_enabled_flag(server_cfg.get("enabled", True), default=True):
+                    mcp_names.add(str(name))
+                else:
+                    mcp_disabled.add(str(name))
+        except Exception:
+            mcp_names = set()
+            mcp_disabled = set()
+
+        mcp_valid = [name for name in unresolved if name in mcp_names]
+        disabled = [name for name in unresolved if name in mcp_disabled]
+        unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
+        valid = built_in + mcp_valid
+
+        if unknown:
+            print(
+                f"[tui] ignoring unknown HERMES_TUI_TOOLSETS entries: {', '.join(unknown)}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if disabled:
+            print(
+                "[tui] ignoring disabled MCP servers in HERMES_TUI_TOOLSETS "
+                "(set enabled: true in config.yaml to use): "
+                f"{', '.join(disabled)}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        if valid:
+            return valid
+
+        fallback_notice = "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
+
     try:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
+
+        cfg = cfg if cfg is not None else load_config()
 
         # Runtime toolset resolution must include default MCP servers so the
         # agent can actually call them. Passing ``False`` here is the
@@ -872,10 +962,18 @@ def _load_enabled_toolsets() -> list[str] | None:
         # variant at agent creation time makes MCP tools silently missing
         # from the TUI. See PR #3252 for the original design split.
         enabled = sorted(
-            _get_platform_tools(load_config(), "cli", include_default_mcp_servers=True)
+            _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         )
+        if fallback_notice is not None:
+            print(fallback_notice, file=sys.stderr, flush=True)
         return enabled or None
     except Exception:
+        if fallback_notice is not None:
+            print(
+                "[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets",
+                file=sys.stderr,
+                flush=True,
+            )
         return None
 
 

@@ -490,8 +490,8 @@ class TestGatewaySystemServiceRouting:
             if "reset-failed" in cmd:
                 calls.append(("reset-failed", cmd))
                 return SimpleNamespace(stdout="", returncode=0)
-            if "start" in cmd:
-                calls.append(("start", cmd))
+            if "restart" in cmd:
+                calls.append(("restart", cmd))
                 return SimpleNamespace(stdout="", returncode=0)
             if "show" in cmd:
                 new_pid[0] = 999
@@ -513,7 +513,92 @@ class TestGatewaySystemServiceRouting:
 
         assert ("self", 654) in calls
         assert any(call[0] == "reset-failed" for call in calls)
-        assert any(call[0] == "start" for call in calls)
+        assert any(call[0] == "restart" for call in calls)
+        out = capsys.readouterr().out.lower()
+        assert "restarted" in out
+
+    def test_systemd_restart_force_kills_unresponsive_gateway(self, monkeypatch, capsys):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh",)))
+
+        # Gateway has a running PID
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda: 654,
+        )
+
+        # SIGUSR1 sent successfully but process never dies (hung event loop)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: calls.append(("self", pid)) or True,
+        )
+
+        # os.kill(PID, 0) always succeeds → drain loop times out after 90s
+        monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+
+        # Trap terminate_pid (force=True) call
+        terminate_pid_calls = []
+        real_terminate_pid = gateway_cli.terminate_pid if hasattr(gateway_cli, "terminate_pid") else None
+        monkeypatch.setattr(
+            "gateway.status.terminate_pid",
+            lambda pid, *, force=False: terminate_pid_calls.append((pid, force)),
+        )
+
+        # Speed up the 90s drain loop so the test doesn't actually wait
+        import time as time_module
+        real_time = time_module.time
+        start_time = [0.0]
+
+        def fake_time():
+            if not start_time[0]:
+                start_time[0] = real_time()
+            # After a few iterations, jump past the 90s deadline
+            elapsed = real_time() - start_time[0]
+            if elapsed > 0.5:
+                return start_time[0] + 120  # well past 90s
+            return start_time[0]
+
+        monkeypatch.setattr(time_module, "time", fake_time)
+
+        # Mock systemctl calls
+        def fake_subprocess_run(cmd, **kwargs):
+            if "reset-failed" in cmd:
+                calls.append(("reset-failed", cmd))
+                return SimpleNamespace(stdout="", returncode=0)
+            if "restart" in cmd:
+                calls.append(("restart", cmd))
+                return SimpleNamespace(stdout="", returncode=0)
+            if "show" in cmd:
+                return SimpleNamespace(
+                    stdout="ActiveState=active\nSubState=running\nResult=success\nExecMainStatus=0\n",
+                    returncode=0,
+                )
+            raise AssertionError(f"Unexpected systemctl call: {cmd}")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_subprocess_run)
+
+        # Simulate service becomes active with new PID
+        pid_calls = [0]
+        def fake_get_pid():
+            pid_calls[0] += 1
+            return 999 if pid_calls[0] > 1 else 654
+        monkeypatch.setattr("gateway.status.get_running_pid", fake_get_pid)
+
+        gateway_cli.systemd_restart()
+
+        # Verify force-kill was attempted on the stuck process
+        assert any(c == (654, True) for c in terminate_pid_calls), (
+            f"Expected terminate_pid(654, force=True) but got: {terminate_pid_calls}"
+        )
+
+        # Verify systemctl restart was used (not start)
+        assert any(call[0] == "restart" for call in calls), (
+            f"Expected systemctl restart but got calls: {calls}"
+        )
         out = capsys.readouterr().out.lower()
         assert "restarted" in out
 

@@ -1865,6 +1865,12 @@ def systemd_restart(system: bool = False):
                 break  # old process is gone
         else:
             print(f"⚠ Old process (PID {pid}) still alive after 90s")
+            # Gateway is stuck (crashed, hung event loop, etc.). SIGUSR1 was
+            # sent but never handled. Force-kill so systemd can relaunch.
+            from gateway.status import terminate_pid
+
+            terminate_pid(pid, force=True)
+            time.sleep(0.5)
 
         # The gateway exits with code 75 for a planned service restart.
         # systemd can sit in the RestartSec window or even wedge itself into a
@@ -1878,7 +1884,7 @@ def systemd_restart(system: bool = False):
             timeout=30,
         )
         _run_systemctl(
-            ["start", svc],
+            ["restart", svc],
             system=system,
             check=False,
             timeout=90,

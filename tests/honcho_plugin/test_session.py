@@ -488,6 +488,27 @@ class TestConcludeToolDispatch:
         )
         provider._manager.get_peer_card.assert_called_once_with("telegram:123", peer="user")
 
+    def test_honcho_profile_ai_card_write_round_trips_through_handler(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.set_peer_card.return_value = ["Role: Assistant"]
+        provider._manager.get_peer_card.return_value = ["Role: Assistant"]
+
+        update_result = provider.handle_tool_call(
+            "honcho_profile",
+            {"peer": "ai", "card": ["Role: Assistant"]},
+        )
+        read_result = provider.handle_tool_call("honcho_profile", {"peer": "ai"})
+
+        assert "Peer card updated (1 facts)." in update_result
+        assert "Role: Assistant" in read_result
+        provider._manager.set_peer_card.assert_called_once_with(
+            "telegram:123", ["Role: Assistant"], peer="ai"
+        )
+        provider._manager.get_peer_card.assert_called_once_with("telegram:123", peer="ai")
+
     def test_honcho_profile_schema_warns_card_overwrites_entire_card(self):
         schema = HonchoMemoryProvider().get_tool_schemas()[0]
         description = schema["parameters"]["properties"]["card"]["description"]

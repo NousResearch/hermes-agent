@@ -254,10 +254,8 @@ class TestSessionOps:
         assert len(replay_calls) == 2
         assert isinstance(replay_calls[0].kwargs["update"], UserMessageChunk)
         assert replay_calls[0].kwargs["update"].content.text == "what controls the / slash commands?"
-        assert replay_calls[0].kwargs["update"].message_id
         assert isinstance(replay_calls[1].kwargs["update"], AgentMessageChunk)
         assert replay_calls[1].kwargs["update"].content.text.startswith("HermesACPAgent")
-        assert replay_calls[1].kwargs["update"].message_id
 
     @pytest.mark.asyncio
     async def test_resume_session_replays_persisted_history_to_client(self, agent):

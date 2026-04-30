@@ -6,7 +6,6 @@ import asyncio
 import contextvars
 import logging
 import os
-import uuid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Deque, Optional
@@ -403,25 +402,20 @@ class HermesACPAgent(acp.Agent):
     @staticmethod
     def _history_message_update(
         *,
-        session_id: str,
-        index: int,
         role: str,
         text: str,
     ) -> UserMessageChunk | AgentMessageChunk | None:
         """Build an ACP history replay update for a user/assistant message."""
-        message_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"hermes-acp:{session_id}:{index}:{role}"))
         block = TextContentBlock(type="text", text=text)
         if role == "user":
             return UserMessageChunk(
                 session_update="user_message_chunk",
                 content=block,
-                message_id=message_id,
             )
         if role == "assistant":
             return AgentMessageChunk(
                 session_update="agent_message_chunk",
                 content=block,
-                message_id=message_id,
             )
         return None
 
@@ -437,19 +431,14 @@ class HermesACPAgent(acp.Agent):
         if not self._conn or not state.history:
             return
 
-        for index, message in enumerate(state.history):
+        for message in state.history:
             role = str(message.get("role") or "")
             if role not in {"user", "assistant"}:
                 continue
             text = self._history_message_text(message)
             if not text:
                 continue
-            update = self._history_message_update(
-                session_id=state.session_id,
-                index=index,
-                role=role,
-                text=text,
-            )
+            update = self._history_message_update(role=role, text=text)
             if update is None:
                 continue
             try:

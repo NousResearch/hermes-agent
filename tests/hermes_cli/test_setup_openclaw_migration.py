@@ -419,7 +419,12 @@ class TestGetSectionConfigSummary:
                 return "disc456"
             return ""
 
-        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+        # Also patch gateway module's binding since _platform_status()
+        # reads from hermes_cli.gateway.get_env_value after the setup
+        # flows were unified via platform_registry.
+        import hermes_cli.gateway as gateway_mod
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
+             patch.object(gateway_mod, "get_env_value", side_effect=env_side):
             result = setup_mod._get_section_config_summary({}, "gateway")
         assert "Telegram" in result
         assert "Discord" in result
@@ -471,7 +476,9 @@ class TestGetSectionConfigSummary:
         def env_side(key):
             return "true" if key == "WHATSAPP_ENABLED" else ""
 
-        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+        import hermes_cli.gateway as gateway_mod
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
+             patch.object(gateway_mod, "get_env_value", side_effect=env_side):
             result = setup_mod._get_section_config_summary({}, "gateway")
         assert result is not None
         assert "WhatsApp" in result
@@ -481,7 +488,9 @@ class TestGetSectionConfigSummary:
         def env_side(key):
             return "http://signal.local" if key == "SIGNAL_HTTP_URL" else ""
 
-        with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+        import hermes_cli.gateway as gateway_mod
+        with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
+             patch.object(gateway_mod, "get_env_value", side_effect=env_side):
             result = setup_mod._get_section_config_summary({}, "gateway")
         assert result is not None
         assert "Signal" in result
@@ -539,9 +548,18 @@ class TestGetSectionConfigSummary:
             env_var = plat.get("token_var")
             if not env_var:
                 continue
+            # Some platforms require a specific value shape (e.g. WhatsApp
+            # needs the literal "true"). Use a sentinel that satisfies every
+            # real validator _platform_status() currently checks.
             def env_side(key, _target=env_var):
-                return "x" if key == _target else ""
-            with patch.object(setup_mod, "get_env_value", side_effect=env_side):
+                if key != _target:
+                    return ""
+                if _target == "WHATSAPP_ENABLED":
+                    return "true"
+                return "x"
+            import hermes_cli.gateway as gateway_mod
+            with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
+                 patch.object(gateway_mod, "get_env_value", side_effect=env_side):
                 result = setup_mod._get_section_config_summary({}, "gateway")
             expected = setup_mod._gateway_platform_short_label(label)
             assert result is not None, f"{label} ({env_var}) not recognised"

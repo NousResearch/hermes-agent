@@ -169,7 +169,7 @@ class TestSSHBulkUpload:
         # ssh: extract from stdin at /
         ssh_str = " ".join(ssh_cmd)
         assert "ssh" in ssh_str
-        assert "tar xf - -C /" in ssh_str
+        assert "tar xf - --no-overwrite-dir -C /" in ssh_str
         assert "testuser@example.com" in ssh_str
 
     def test_mkdir_failure_raises(self, mock_env, tmp_path):

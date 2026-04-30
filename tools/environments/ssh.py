@@ -182,7 +182,7 @@ class SSHEnvironment(BaseEnvironment):
 
             tar_cmd = ["tar", "-chf", "-", "-C", staging, "."]
             ssh_cmd = self._build_ssh_command()
-            ssh_cmd.append("tar xf - -C /")
+            ssh_cmd.append("tar xf - --no-overwrite-dir -C /")
 
             tar_proc = subprocess.Popen(
                 tar_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE

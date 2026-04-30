@@ -25,7 +25,6 @@ pkgs.buildNpmPackage (npm // {
     mkdir -p $out/lib/hermes-tui
 
     # Single self-contained bundle built by scripts/build.mjs (esbuild).
-    # No runtime node_modules needed.
     cp -r dist $out/lib/hermes-tui/dist
 
     # package.json kept for "type": "module" resolution on `node dist/entry.js`.

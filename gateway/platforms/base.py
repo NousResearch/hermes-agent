@@ -484,13 +484,40 @@ def _looks_like_image(data: bytes) -> bool:
     return False
 
 
+def _detect_image_ext(data: bytes) -> Optional[str]:
+    """Return the canonical extension for *data* based on magic bytes, or None.
+
+    Returns lowercase, dot-prefixed: ".png", ".jpg", ".gif", ".webp", ".bmp".
+    """
+    if len(data) < 4:
+        return None
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if data[:3] == b"\xff\xd8\xff":
+        return ".jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return ".gif"
+    if data[:2] == b"BM":
+        return ".bmp"
+    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
 def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     """
     Save raw image bytes to the cache and return the absolute file path.
 
+    The extension is auto-corrected to match the actual image format detected
+    from magic bytes. This prevents downstream MIME-type mismatches (e.g.
+    Anthropic API rejecting a file declared as image/jpeg whose payload is
+    actually PNG — a common case when Discord mis-reports Content-Type for
+    clipboard-pasted images).
+
     Args:
         data: Raw image bytes.
-        ext:  File extension including the dot (e.g. ".jpg", ".png").
+        ext:  Hint extension including the dot (e.g. ".jpg", ".png"). Used
+              only as a fallback if magic bytes don't yield a known format.
 
     Returns:
         Absolute path to the cached image file as a string.
@@ -505,6 +532,11 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
             f"Refusing to cache non-image data as {ext} "
             f"(starts with: {snippet!r})"
         )
+    # Trust magic bytes over caller hint — Discord/CDNs frequently mis-report
+    # Content-Type for clipboard-pasted screenshots and converted images.
+    real_ext = _detect_image_ext(data)
+    if real_ext is not None:
+        ext = real_ext
     cache_dir = get_image_cache_dir()
     filename = f"img_{uuid.uuid4().hex[:12]}{ext}"
     filepath = cache_dir / filename

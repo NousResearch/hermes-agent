@@ -355,6 +355,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Cache: room_id → bool (is DM)
         self._dm_rooms: Dict[str, bool] = {}
+        self._dm_cache_loaded = False
         # Set of room IDs we've joined
         self._joined_rooms: Set[str] = set()
         # Event deduplication (bounded deque keeps newest entries)
@@ -2384,8 +2385,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _resolve_room_identity(self, room_id: str) -> MatrixRoomIdentity:
         """Resolve Matrix room identity before Hermes session routing."""
-        if room_id not in self._dm_rooms:
-            await self._refresh_dm_cache()
+        await self._ensure_dm_cache_loaded()
 
         is_direct = bool(self._dm_rooms.get(room_id, False))
         room_name = await self._matrix_state_value(
@@ -2417,9 +2417,16 @@ class MatrixAdapter(BasePlatformAdapter):
         identity = await self._resolve_room_identity(room_id)
         return identity.chat_type == "dm"
 
+    async def _ensure_dm_cache_loaded(self) -> None:
+        """Load m.direct account data once so non-DM rooms cache negatively."""
+        if self._dm_cache_loaded or self._dm_rooms:
+            return
+        await self._refresh_dm_cache()
+
     async def _refresh_dm_cache(self) -> None:
         """Refresh the DM room cache from m.direct account data."""
         if not self._client:
+            self._dm_cache_loaded = True
             return
 
         dm_data: Optional[Dict] = None
@@ -2433,15 +2440,14 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("Matrix: get_account_data('m.direct') failed: %s", exc)
 
-        if dm_data is None:
-            return
-
         dm_room_ids: Set[str] = set()
-        for user_id, rooms in dm_data.items():
-            if isinstance(rooms, list):
-                dm_room_ids.update(str(r) for r in rooms)
+        if isinstance(dm_data, dict):
+            for user_id, rooms in dm_data.items():
+                if isinstance(rooms, list):
+                    dm_room_ids.update(str(r) for r in rooms)
 
         self._dm_rooms = {rid: (rid in dm_room_ids) for rid in self._joined_rooms}
+        self._dm_cache_loaded = True
 
     # ------------------------------------------------------------------
     # Mention detection helpers

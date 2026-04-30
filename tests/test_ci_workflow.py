@@ -41,3 +41,11 @@ def test_pr_template_points_contributors_to_canonical_test_runner() -> None:
 
     assert "scripts/run_tests.sh" in template
     assert "pytest tests/ -q" not in template
+
+
+def test_contributing_guide_points_to_canonical_test_runner() -> None:
+    """Keep contributor docs aligned with CI's test entry point."""
+    guide = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+    assert "scripts/run_tests.sh" in guide
+    assert "pytest tests/ -v" not in guide

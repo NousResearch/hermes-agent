@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Optional
+from utils import atomic_json_write
 
 if sys.platform == "win32":
     import msvcrt
@@ -34,6 +35,10 @@ _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
 _gateway_lock_handle = None
+# Windows byte-range locks are mandatory for other readers. Lock a byte well
+# past the JSON payload so runtime status / PID readers can still read the file
+# while another process holds the mutual-exclusion lock.
+_WINDOWS_LOCK_OFFSET = 1024 * 1024
 
 
 def _get_pid_path() -> Path:
@@ -205,8 +210,7 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
 
 
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload))
+    atomic_json_write(path, payload, indent=None, separators=(",", ":"))
 
 
 def _read_pid_record(pid_path: Optional[Path] = None) -> Optional[dict]:
@@ -286,7 +290,7 @@ def _try_acquire_file_lock(handle) -> bool:
             if handle.tell() == 0:
                 handle.write("\n")
                 handle.flush()
-            handle.seek(0)
+            handle.seek(_WINDOWS_LOCK_OFFSET)
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -298,7 +302,7 @@ def _try_acquire_file_lock(handle) -> bool:
 def _release_file_lock(handle) -> None:
     try:
         if _IS_WINDOWS:
-            handle.seek(0)
+            handle.seek(_WINDOWS_LOCK_OFFSET)
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         else:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

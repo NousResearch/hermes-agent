@@ -1425,7 +1425,7 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     monkeypatch.setattr(
         server,
         "_compress_session_history",
-        lambda session, focus_topic=None: (2, {"total": 42}),
+        lambda session, focus_topic=None, **_kw: (2, {"total": 42}),
     )
     monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
 

@@ -1004,7 +1004,9 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
 
 
 def _compress_session_history(
-    session: dict, focus_topic: str | None = None
+    session: dict,
+    focus_topic: str | None = None,
+    approx_tokens: int | None = None,
 ) -> tuple[int, dict]:
     from agent.model_metadata import estimate_messages_tokens_rough
 
@@ -1012,7 +1014,8 @@ def _compress_session_history(
     history = list(session.get("history", []))
     if len(history) < 4:
         return 0, _get_usage(agent)
-    approx_tokens = estimate_messages_tokens_rough(history)
+    if approx_tokens is None:
+        approx_tokens = estimate_messages_tokens_rough(history)
     compressed, _ = agent._compress_context(
         history,
         getattr(agent, "_cached_system_prompt", "") or "",
@@ -2063,7 +2066,9 @@ def _(rid, params: dict) -> dict:
             )
 
         with session["history_lock"]:
-            removed, usage = _compress_session_history(session, focus_topic)
+            removed, usage = _compress_session_history(
+                session, focus_topic, approx_tokens=before_tokens
+            )
             messages = list(session.get("history", []))
         after_count = len(messages)
         after_tokens = (

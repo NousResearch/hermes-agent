@@ -155,9 +155,9 @@ export const sessionCommands: SlashCommand[] = [
             }
 
             if (r.summary?.headline) {
-              const icon = r.summary.noop ? '·' : '✓'
+              const prefix = r.summary.noop ? '' : '✓ '
 
-              ctx.transcript.sys(`${icon} ${r.summary.headline}`)
+              ctx.transcript.sys(`${prefix}${r.summary.headline}`)
 
               if (r.summary.token_line) {
                 ctx.transcript.sys(`  ${r.summary.token_line}`)

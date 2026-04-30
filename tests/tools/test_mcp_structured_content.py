@@ -18,6 +18,23 @@ class _FakeContentBlock:
         self.type = block_type
 
 
+class _FakeTextResource:
+    """Minimal TextResourceContents stand-in."""
+
+    def __init__(self, text: str, uri: str = "qmd://Docs/file.md"):
+        self.text = text
+        self.uri = uri
+        self.mimeType = "text/markdown"
+
+
+class _FakeEmbeddedResourceBlock:
+    """Minimal EmbeddedResource content block."""
+
+    def __init__(self, text: str, uri: str = "qmd://Docs/file.md"):
+        self.type = "resource"
+        self.resource = _FakeTextResource(text=text, uri=uri)
+
+
 class _FakeCallToolResult:
     """Minimal CallToolResult stand-in.
 
@@ -76,6 +93,41 @@ class TestStructuredContentPreservation:
         raw = handler({})
         data = json.loads(raw)
         assert data == {"result": "hello"}
+
+    def test_embedded_resource_result_text_is_preserved(self, _patch_mcp_server):
+        """EmbeddedResource blocks expose document text via resource.text."""
+        session = _patch_mcp_server
+        body = "# QMD\n\nThis document came back as an MCP resource."
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[
+                    _FakeEmbeddedResourceBlock(
+                        body,
+                        uri="qmd://Hermes%20Ops%20Wiki/systems/qmd.md",
+                    )
+                ],
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "get", 30.0)
+        raw = handler({"file": "systems/qmd.md"})
+        data = json.loads(raw)
+        assert data == {"result": body}
+
+    def test_mixed_text_and_embedded_resource_blocks_are_joined(self, _patch_mcp_server):
+        """Mixed text/resource tool results keep both model-visible parts."""
+        session = _patch_mcp_server
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[
+                    _FakeContentBlock("Intro"),
+                    _FakeEmbeddedResourceBlock("Resource body"),
+                ],
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "multi_get", 30.0)
+        raw = handler({"pattern": "systems/*.md"})
+        data = json.loads(raw)
+        assert data == {"result": "Intro\nResource body"}
 
     def test_both_content_and_structured(self, _patch_mcp_server):
         """When both content and structuredContent are present, combine them."""

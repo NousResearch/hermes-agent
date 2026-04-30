@@ -301,6 +301,50 @@ def _sanitize_error(text: str) -> str:
     return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
 
 
+def _extract_text_from_mcp_content_block(block: Any) -> str:
+    """Extract model-visible text from an MCP content block.
+
+    Tool results can contain more than plain ``TextContent``.  MCP servers may
+    return ``EmbeddedResource`` blocks whose actual payload is nested under
+    ``block.resource.text``.  Treat those as text too; otherwise valid tool
+    results appear empty to Hermes even though the server returned a document.
+    """
+    text = getattr(block, "text", None)
+    if text is not None:
+        return str(text)
+
+    resource = getattr(block, "resource", None)
+    if resource is not None:
+        resource_text = getattr(resource, "text", None)
+        if resource_text is not None:
+            return str(resource_text)
+        blob = getattr(resource, "blob", None)
+        if blob is not None:
+            try:
+                size = len(blob)
+            except TypeError:
+                size = "unknown"
+            return f"[binary resource, {size} bytes]"
+        uri = getattr(resource, "uri", None)
+        if uri is not None:
+            return f"[resource: {uri}]"
+
+    blob = getattr(block, "blob", None)
+    if blob is not None:
+        try:
+            size = len(blob)
+        except TypeError:
+            size = "unknown"
+        return f"[binary data, {size} bytes]"
+
+    # MCP ResourceLink blocks point to a resource but do not embed body text.
+    uri = getattr(block, "uri", None)
+    if uri is not None:
+        return f"[resource: {uri}]"
+
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # MCP tool description content scanning
 # ---------------------------------------------------------------------------
@@ -2016,8 +2060,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             if result.isError:
                 error_text = ""
                 for block in (result.content or []):
-                    if hasattr(block, "text"):
-                        error_text += block.text
+                    error_text += _extract_text_from_mcp_content_block(block)
                 return json.dumps({
                     "error": _sanitize_error(
                         error_text or "MCP tool returned an error"
@@ -2027,8 +2070,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # Collect text from content blocks
             parts: List[str] = []
             for block in (result.content or []):
-                if hasattr(block, "text"):
-                    parts.append(block.text)
+                block_text = _extract_text_from_mcp_content_block(block)
+                if block_text:
+                    parts.append(block_text)
             text_result = "\n".join(parts) if parts else ""
 
             # Combine content + structuredContent when both are present.

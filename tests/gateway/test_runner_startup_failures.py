@@ -1,3 +1,6 @@
+import asyncio
+import signal
+
 import pytest
 from unittest.mock import AsyncMock
 
@@ -5,6 +8,40 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner
 from gateway.status import read_runtime_status
+
+
+def test_install_gateway_signal_handler_falls_back_to_signal_signal(monkeypatch):
+    from gateway import run as gateway_run
+
+    calls = []
+    installed = {}
+
+    class _LoopWithoutAsyncioSignals:
+        def add_signal_handler(self, *args, **kwargs):
+            raise NotImplementedError()
+
+        def call_soon_threadsafe(self, callback, *args):
+            calls.append((callback, args))
+
+    def callback(sig):
+        return sig
+
+    monkeypatch.setattr(gateway_run.signal, "getsignal", lambda sig: signal.SIG_DFL)
+    monkeypatch.setattr(
+        gateway_run.signal,
+        "signal",
+        lambda sig, handler: installed.setdefault(sig, handler),
+    )
+
+    assert gateway_run._install_gateway_signal_handler(
+        _LoopWithoutAsyncioSignals(),
+        signal.SIGINT,
+        callback,
+    ) is True
+
+    installed[signal.SIGINT](signal.SIGINT, None)
+
+    assert calls == [(callback, (signal.SIGINT,))]
 
 
 class _RetryableFailureAdapter(BasePlatformAdapter):
@@ -163,6 +200,114 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
     ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=1)
 
     assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_sigint_enters_clean_shutdown_path(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    handlers = {}
+    stop_calls = []
+
+    class _SignalRunner:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = False
+            self.should_exit_with_failure = False
+            self.exit_reason = None
+            self.exit_code = None
+            self._restart_requested = False
+            self.adapters = {}
+            self._shutdown = None
+
+        async def start(self):
+            self._shutdown = asyncio.Event()
+            asyncio.get_running_loop().call_soon(handlers[signal.SIGINT], signal.SIGINT)
+            return True
+
+        async def wait_for_shutdown(self):
+            await self._shutdown.wait()
+
+        async def stop(self):
+            stop_calls.append("stop")
+            self._shutdown.set()
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", lambda: None)
+    monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", lambda: None)
+    monkeypatch.setattr("gateway.run._start_cron_ticker", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "gateway.run._install_gateway_signal_handler",
+        lambda loop, sig, callback: handlers.setdefault(sig, callback) or True,
+    )
+    monkeypatch.setattr("gateway.run.GatewayRunner", _SignalRunner)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+
+    assert ok is True
+    assert stop_calls == ["stop"]
+    assert "Gateway stopped." in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_sigterm_still_exits_with_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    handlers = {}
+
+    class _SignalRunner:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = False
+            self.should_exit_with_failure = False
+            self.exit_reason = None
+            self.exit_code = None
+            self._restart_requested = False
+            self.adapters = {}
+            self._shutdown = None
+
+        async def start(self):
+            self._shutdown = asyncio.Event()
+            asyncio.get_running_loop().call_soon(handlers[signal.SIGTERM], signal.SIGTERM)
+            return True
+
+        async def wait_for_shutdown(self):
+            await self._shutdown.wait()
+
+        async def stop(self):
+            self._shutdown.set()
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("gateway.status.acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr("gateway.status.write_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", lambda: None)
+    monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", lambda: None)
+    monkeypatch.setattr("gateway.run._start_cron_ticker", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "gateway.run._install_gateway_signal_handler",
+        lambda loop, sig, callback: handlers.setdefault(sig, callback) or True,
+    )
+    monkeypatch.setattr("gateway.run.GatewayRunner", _SignalRunner)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=None)
+
+    assert ok is False
 
 
 @pytest.mark.asyncio

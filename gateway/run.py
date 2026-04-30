@@ -69,6 +69,37 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 
 
+def _install_gateway_signal_handler(loop, sig, callback) -> bool:
+    """Install an asyncio-compatible gateway signal handler.
+
+    ``loop.add_signal_handler`` is unavailable on Windows. In that case,
+    fall back to ``signal.signal`` and bounce the callback onto the running
+    event loop so Ctrl+C still enters the normal gateway shutdown path.
+    """
+    try:
+        loop.add_signal_handler(sig, callback, sig)
+        return True
+    except NotImplementedError:
+        pass
+
+    try:
+        previous_handler = signal.getsignal(sig)
+
+        def _fallback_handler(signum, frame):
+            try:
+                loop.call_soon_threadsafe(callback, signum)
+            except RuntimeError:
+                if callable(previous_handler):
+                    previous_handler(signum, frame)
+                elif previous_handler == signal.SIG_DFL and signum == signal.SIGINT:
+                    raise KeyboardInterrupt
+
+        signal.signal(sig, _fallback_handler)
+        return True
+    except (AttributeError, OSError, RuntimeError, ValueError):
+        return False
+
+
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
     """Best-effort conversion of stored gateway timestamps to epoch seconds.
 
@@ -12511,15 +12542,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     runner = GatewayRunner(config)
     
     # Track whether a signal initiated the shutdown (vs. internal request).
-    # When an unexpected SIGTERM kills the gateway, we exit non-zero so
-    # systemd's Restart=on-failure revives the process.  systemctl stop
-    # is safe: systemd tracks stop-requested state independently of exit
-    # code, so Restart= never fires for a deliberate stop.
+    # Unexpected SIGTERM exits non-zero so systemd's Restart=on-failure revives
+    # the process. Ctrl+C/SIGINT is a foreground user stop and exits cleanly.
+    # systemctl stop is safe: systemd tracks stop-requested state independently
+    # of exit code, so Restart= never fires for a deliberate stop.
     _signal_initiated_shutdown = False
+    _shutdown_signal: Optional[int] = None
 
     # Set up signal handlers
-    def shutdown_signal_handler():
-        nonlocal _signal_initiated_shutdown
+    def shutdown_signal_handler(sig: Optional[int] = None):
+        nonlocal _signal_initiated_shutdown, _shutdown_signal
         # Planned --replace takeover check: when a sibling gateway is
         # taking over via --replace, it wrote a marker naming this PID
         # before sending SIGTERM. If present, treat the signal as a
@@ -12540,7 +12572,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
         else:
             _signal_initiated_shutdown = True
-            logger.info("Received SIGTERM/SIGINT — initiating shutdown")
+            _shutdown_signal = sig
+            try:
+                sig_name = signal.Signals(sig).name if sig is not None else "signal"
+            except (TypeError, ValueError):
+                sig_name = str(sig)
+            logger.info("Received %s — initiating shutdown", sig_name)
         # Diagnostic: log all hermes-related processes so we can identify
         # what triggered the signal (hermes update, hermes gateway restart,
         # a stale detached subprocess, etc.).
@@ -12572,10 +12609,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     loop = asyncio.get_running_loop()
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, shutdown_signal_handler)
-            except NotImplementedError:
-                pass
+            if not _install_gateway_signal_handler(loop, sig, shutdown_signal_handler):
+                logger.debug("Could not install gateway signal handler for %s", sig)
         if hasattr(signal, "SIGUSR1"):
             try:
                 loop.add_signal_handler(signal.SIGUSR1, restart_signal_handler)
@@ -12671,8 +12706,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if runner.exit_code is not None:
         raise SystemExit(runner.exit_code)
 
-    # When a signal (SIGTERM/SIGINT) caused the shutdown and it wasn't a
-    # planned restart (/restart, /update, SIGUSR1), exit non-zero so
+    # When SIGTERM caused the shutdown and it wasn't a planned restart
+    # (/restart, /update, SIGUSR1), exit non-zero so
     # systemd's Restart=on-failure revives the process.  This covers:
     #   - hermes update killing the gateway mid-work
     #   - External kill commands
@@ -12680,6 +12715,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # systemctl stop is safe: systemd tracks "stop requested" state
     # independently of exit code, so Restart= never fires for it.
     if _signal_initiated_shutdown and not runner._restart_requested:
+        if _shutdown_signal == signal.SIGINT:
+            print()
+            print("Gateway stopped.")
+            logger.info("Exiting cleanly after SIGINT user interrupt.")
+            return True
         logger.info(
             "Exiting with code 1 (signal-initiated shutdown without restart "
             "request) so systemd Restart=on-failure can revive the gateway."

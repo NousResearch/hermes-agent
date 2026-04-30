@@ -1,8 +1,8 @@
 import { writeSync } from 'node:fs'
 
 export const TERMINAL_MODE_RESET =
-  "\x1b[0'z" + // DEC locator reporting
-  "\x1b[0'{" + // selectable locator events
+  '\x1b[0\'z' + // DEC locator reporting
+  '\x1b[0\'{' + // selectable locator events
   '\x1b[?2029l' + // passive mouse
   '\x1b[?1016l' + // SGR-pixels mouse
   '\x1b[?1015l' + // urxvt decimal mouse

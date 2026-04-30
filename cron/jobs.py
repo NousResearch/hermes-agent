@@ -543,9 +543,10 @@ def create_job(
         "workdir": normalized_workdir,
     }
 
-    jobs = load_jobs()
-    jobs.append(job)
-    save_jobs(jobs)
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        jobs.append(job)
+        save_jobs(jobs)
 
     return job
 
@@ -569,50 +570,51 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
-    jobs = load_jobs()
-    for i, job in enumerate(jobs):
-        if job["id"] != job_id:
-            continue
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] != job_id:
+                continue
 
-        # Validate / normalize workdir if present in updates.  Empty string or
-        # None both mean "clear the field" (restore old behaviour).
-        if "workdir" in updates:
-            _wd = updates["workdir"]
-            if _wd in (None, "", False):
-                updates["workdir"] = None
-            else:
-                updates["workdir"] = _normalize_workdir(_wd)
+            # Validate / normalize workdir if present in updates.  Empty string or
+            # None both mean "clear the field" (restore old behaviour).
+            if "workdir" in updates:
+                _wd = updates["workdir"]
+                if _wd in (None, "", False):
+                    updates["workdir"] = None
+                else:
+                    updates["workdir"] = _normalize_workdir(_wd)
 
-        updated = _apply_skill_fields({**job, **updates})
-        schedule_changed = "schedule" in updates
+            updated = _apply_skill_fields({**job, **updates})
+            schedule_changed = "schedule" in updates
 
-        if "skills" in updates or "skill" in updates:
-            normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
-            updated["skills"] = normalized_skills
-            updated["skill"] = normalized_skills[0] if normalized_skills else None
+            if "skills" in updates or "skill" in updates:
+                normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
+                updated["skills"] = normalized_skills
+                updated["skill"] = normalized_skills[0] if normalized_skills else None
 
-        if schedule_changed:
-            updated_schedule = updated["schedule"]
-            # The API may pass schedule as a raw string (e.g. "every 10m")
-            # instead of a pre-parsed dict.  Normalize it the same way
-            # create_job() does so downstream code can call .get() safely.
-            if isinstance(updated_schedule, str):
-                updated_schedule = parse_schedule(updated_schedule)
-                updated["schedule"] = updated_schedule
-            updated["schedule_display"] = updates.get(
-                "schedule_display",
-                updated_schedule.get("display", updated.get("schedule_display")),
-            )
-            if updated.get("state") != "paused":
-                updated["next_run_at"] = compute_next_run(updated_schedule)
+            if schedule_changed:
+                updated_schedule = updated["schedule"]
+                # The API may pass schedule as a raw string (e.g. "every 10m")
+                # instead of a pre-parsed dict.  Normalize it the same way
+                # create_job() does so downstream code can call .get() safely.
+                if isinstance(updated_schedule, str):
+                    updated_schedule = parse_schedule(updated_schedule)
+                    updated["schedule"] = updated_schedule
+                updated["schedule_display"] = updates.get(
+                    "schedule_display",
+                    updated_schedule.get("display", updated.get("schedule_display")),
+                )
+                if updated.get("state") != "paused":
+                    updated["next_run_at"] = compute_next_run(updated_schedule)
 
-        if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
-            updated["next_run_at"] = compute_next_run(updated["schedule"])
+            if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
+                updated["next_run_at"] = compute_next_run(updated["schedule"])
 
-        jobs[i] = updated
-        save_jobs(jobs)
-        return _apply_skill_fields(jobs[i])
-    return None
+            jobs[i] = updated
+            save_jobs(jobs)
+            return _apply_skill_fields(jobs[i])
+        return None
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -666,13 +668,14 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 def remove_job(job_id: str) -> bool:
     """Remove a job by ID."""
-    jobs = load_jobs()
-    original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != job_id]
-    if len(jobs) < original_len:
-        save_jobs(jobs)
-        return True
-    return False
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        original_len = len(jobs)
+        jobs = [j for j in jobs if j["id"] != job_id]
+        if len(jobs) < original_len:
+            save_jobs(jobs)
+            return True
+        return False
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
@@ -786,72 +789,73 @@ def get_due_jobs() -> List[Dict[str, Any]]:
     immediately.  This prevents a burst of missed jobs on gateway restart.
     """
     now = _hermes_now()
-    raw_jobs = load_jobs()
-    jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
-    due = []
-    needs_save = False
+    with _jobs_file_lock:
+        raw_jobs = load_jobs()
+        jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
+        due = []
+        needs_save = False
 
-    for job in jobs:
-        if not job.get("enabled", True):
-            continue
-
-        next_run = job.get("next_run_at")
-        if not next_run:
-            recovered_next = _recoverable_oneshot_run_at(
-                job.get("schedule", {}),
-                now,
-                last_run_at=job.get("last_run_at"),
-            )
-            if not recovered_next:
+        for job in jobs:
+            if not job.get("enabled", True):
                 continue
 
-            job["next_run_at"] = recovered_next
-            next_run = recovered_next
-            logger.info(
-                "Job '%s' had no next_run_at; recovering one-shot run at %s",
-                job.get("name", job["id"]),
-                recovered_next,
-            )
-            for rj in raw_jobs:
-                if rj["id"] == job["id"]:
-                    rj["next_run_at"] = recovered_next
-                    needs_save = True
-                    break
+            next_run = job.get("next_run_at")
+            if not next_run:
+                recovered_next = _recoverable_oneshot_run_at(
+                    job.get("schedule", {}),
+                    now,
+                    last_run_at=job.get("last_run_at"),
+                )
+                if not recovered_next:
+                    continue
 
-        next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
-        if next_run_dt <= now:
-            schedule = job.get("schedule", {})
-            kind = schedule.get("kind")
+                job["next_run_at"] = recovered_next
+                next_run = recovered_next
+                logger.info(
+                    "Job '%s' had no next_run_at; recovering one-shot run at %s",
+                    job.get("name", job["id"]),
+                    recovered_next,
+                )
+                for rj in raw_jobs:
+                    if rj["id"] == job["id"]:
+                        rj["next_run_at"] = recovered_next
+                        needs_save = True
+                        break
 
-            # For recurring jobs, check if the scheduled time is stale
-            # (gateway was down and missed the window). Fast-forward to
-            # the next future occurrence instead of firing a stale run.
-            grace = _compute_grace_seconds(schedule)
-            if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > grace:
-                # Job is past its catch-up grace window — this is a stale missed run.
-                # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
-                new_next = compute_next_run(schedule, now.isoformat())
-                if new_next:
-                    logger.info(
-                        "Job '%s' missed its scheduled time (%s, grace=%ds). "
-                        "Fast-forwarding to next run: %s",
-                        job.get("name", job["id"]),
-                        next_run,
-                        grace,
-                        new_next,
-                    )
-                    # Update the job in storage
-                    for rj in raw_jobs:
-                        if rj["id"] == job["id"]:
-                            rj["next_run_at"] = new_next
-                            needs_save = True
-                            break
-                    continue  # Skip this run
+            next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
+            if next_run_dt <= now:
+                schedule = job.get("schedule", {})
+                kind = schedule.get("kind")
 
-            due.append(job)
+                # For recurring jobs, check if the scheduled time is stale
+                # (gateway was down and missed the window). Fast-forward to
+                # the next future occurrence instead of firing a stale run.
+                grace = _compute_grace_seconds(schedule)
+                if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > grace:
+                    # Job is past its catch-up grace window — this is a stale missed run.
+                    # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
+                    new_next = compute_next_run(schedule, now.isoformat())
+                    if new_next:
+                        logger.info(
+                            "Job '%s' missed its scheduled time (%s, grace=%ds). "
+                            "Fast-forwarding to next run: %s",
+                            job.get("name", job["id"]),
+                            next_run,
+                            grace,
+                            new_next,
+                        )
+                        # Update the job in storage
+                        for rj in raw_jobs:
+                            if rj["id"] == job["id"]:
+                                rj["next_run_at"] = new_next
+                                needs_save = True
+                                break
+                        continue  # Skip this run
 
-    if needs_save:
-        save_jobs(raw_jobs)
+                due.append(job)
+
+        if needs_save:
+            save_jobs(raw_jobs)
 
     return due
 

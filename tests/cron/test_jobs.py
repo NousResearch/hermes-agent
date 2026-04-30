@@ -452,6 +452,144 @@ class TestMarkJobRun:
         assert updated["state"] == "completed"
 
 
+class TestJobsConcurrency:
+    """Regression tests for issue #18003: load-modify-save in create/update/remove
+    must hold ``_jobs_file_lock`` across the full transaction.  Without the lock,
+    two callers can each load the same snapshot, mutate disjoint entries, then
+    race their writes — last-writer-wins, silently dropping the other update.
+    """
+
+    def test_concurrent_updates_do_not_lose_writes(self, tmp_cron_dir, monkeypatch):
+        import threading
+        import time
+        from cron import jobs as cron_jobs
+
+        job_a = create_job(prompt="A", schedule="every 1h")
+        job_b = create_job(prompt="B", schedule="every 1h")
+
+        # Widen the load → save window so the lost-update shape is reliably
+        # reproduced if _jobs_file_lock is missing from update_job.
+        real_save = cron_jobs.save_jobs
+
+        def slow_save(jobs):
+            time.sleep(0.1)
+            real_save(jobs)
+
+        monkeypatch.setattr(cron_jobs, "save_jobs", slow_save)
+
+        errors = []
+
+        def updater(jid, name):
+            try:
+                update_job(jid, {"name": name})
+            except Exception as e:  # pragma: no cover — surfaced via assertion below
+                errors.append(e)
+
+        t1 = threading.Thread(target=updater, args=(job_a["id"], "A_NEW"))
+        t2 = threading.Thread(target=updater, args=(job_b["id"], "B_NEW"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert not errors, f"updater raised: {errors}"
+        assert get_job(job_a["id"])["name"] == "A_NEW", "update to A was lost"
+        assert get_job(job_b["id"])["name"] == "B_NEW", "update to B was lost"
+
+    def test_concurrent_create_does_not_lose_writes(self, tmp_cron_dir, monkeypatch):
+        import threading
+        import time
+        from cron import jobs as cron_jobs
+
+        real_save = cron_jobs.save_jobs
+
+        def slow_save(jobs):
+            time.sleep(0.1)
+            real_save(jobs)
+
+        monkeypatch.setattr(cron_jobs, "save_jobs", slow_save)
+
+        errors = []
+        created_ids = []
+
+        def creator(label):
+            try:
+                created_ids.append(create_job(prompt=label, schedule="every 1h")["id"])
+            except Exception as e:  # pragma: no cover
+                errors.append(e)
+
+        threads = [threading.Thread(target=creator, args=(f"job_{i}",)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, f"creator raised: {errors}"
+        persisted_ids = {j["id"] for j in load_jobs()}
+        assert set(created_ids) == persisted_ids, (
+            f"create_job lost writes — created={sorted(created_ids)}, "
+            f"persisted={sorted(persisted_ids)}"
+        )
+
+    def test_get_due_jobs_does_not_resurrect_removed_job(self, tmp_cron_dir, monkeypatch):
+        """``get_due_jobs`` enters its fast-forward / one-shot recovery branch
+        only when ``needs_save`` flips True; that branch performs a full
+        load → mutate → save against ``raw_jobs``.  Without the lock around
+        the whole transaction, a concurrent ``remove_job`` that lands between
+        ``get_due_jobs``'s load and save is silently undone — the removed
+        job reappears in ``get_due_jobs``'s stale snapshot.
+        """
+        import threading
+        import time
+        from datetime import timedelta
+        from cron import jobs as cron_jobs
+        from cron.jobs import _hermes_now
+
+        job_a = create_job(prompt="A", schedule="every 1m")
+        job_b = create_job(prompt="B", schedule="every 1m")
+
+        # Push both jobs past the fast-forward grace window so get_due_jobs
+        # commits to a save (needs_save=True).  Done before patching load_jobs
+        # so update_job's own lookups don't trigger the hook.
+        stale = (_hermes_now() - timedelta(hours=1)).isoformat()
+        update_job(job_a["id"], {"next_run_at": stale})
+        update_job(job_b["id"], {"next_run_at": stale})
+
+        real_load = cron_jobs.load_jobs
+        triggered = threading.Event()
+        remove_threads = []
+
+        def hooked_load():
+            # Only the first call (get_due_jobs's top-of-body load) triggers
+            # the racing remove; later calls (including the spawned thread's
+            # own remove_job → load_jobs) bypass the hook.
+            if triggered.is_set():
+                return real_load()
+            triggered.set()
+            result = real_load()
+            t = threading.Thread(target=lambda: remove_job(job_b["id"]))
+            remove_threads.append(t)
+            t.start()
+            # Window in which the unfixed get_due_jobs would let remove_job
+            # run to completion before it reaches its own save_jobs call.
+            time.sleep(0.2)
+            return result
+
+        monkeypatch.setattr(cron_jobs, "load_jobs", hooked_load)
+
+        get_due_jobs()
+
+        for t in remove_threads:
+            t.join(timeout=5)
+
+        persisted_ids = {j["id"] for j in load_jobs()}
+        assert job_b["id"] not in persisted_ids, (
+            f"remove_job was silently undone by get_due_jobs's stale-snapshot "
+            f"save — persisted={sorted(persisted_ids)}"
+        )
+        assert job_a["id"] in persisted_ids
+
+
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""
 

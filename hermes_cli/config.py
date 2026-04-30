@@ -772,6 +772,16 @@ DEFAULT_CONFIG = {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
     },
 
+    # User-facing response style guardrails. Disabled by default; when enabled,
+    # Hermes injects a style prompt and can lightly reformat gateway replies.
+    "response_style": {
+        "enabled": False,
+        "profile": "secretary",
+        "platforms": ["telegram"],
+        "require_labels": True,
+        "max_chars": 700,
+    },
+
     # Privacy settings
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
@@ -2698,7 +2708,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "context", "memory", "gateway",
+    "response_style", "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",
 }
 

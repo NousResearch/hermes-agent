@@ -239,6 +239,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
+from agent.response_style import apply_response_style_guard
 from utils import atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -5429,6 +5430,13 @@ class GatewayRunner:
                     "results. This can happen with some models — try again or "
                     "rephrase your question."
                 )
+            response_style_config = _load_gateway_config()
+            response = apply_response_style_guard(
+                response,
+                response_style_config,
+                platform=source.platform.value if source.platform else None,
+                user_message=message_text,
+            )
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)

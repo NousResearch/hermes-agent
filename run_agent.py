@@ -147,6 +147,7 @@ from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.response_style import build_response_style_prompt
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -4959,6 +4960,10 @@ class AIAgent:
                     prompt_parts.append(_entry.platform_hint)
             except Exception:
                 pass
+
+        response_style_prompt = build_response_style_prompt(self._agent_config, platform_key)
+        if response_style_prompt:
+            prompt_parts.append(response_style_prompt)
 
         return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
 

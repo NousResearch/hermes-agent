@@ -54,6 +54,7 @@ class FailoverReason(enum.Enum):
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
+    oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -448,6 +449,25 @@ def classify_api_error(
             FailoverReason.long_context_tier,
             retryable=True,
             should_compress=True,
+        )
+
+    # Anthropic OAuth subscription rejects the 1M-context beta header.
+    # Observed error body: "The long context beta is not yet available for
+    # this subscription." Returned as HTTP 400 from native Anthropic when
+    # the subscription doesn't include 1M context, even though the request
+    # carries ``anthropic-beta: context-1m-2025-08-07``. The recovery path
+    # in run_agent.py rebuilds the Anthropic client with the beta stripped
+    # and retries once. Pattern is narrow enough that it won't collide with
+    # the 429 tier-gate pattern above (different status, different phrase).
+    if (
+        status_code == 400
+        and "long context beta" in error_msg
+        and "not yet available" in error_msg
+    ):
+        return _result(
+            FailoverReason.oauth_long_context_beta_forbidden,
+            retryable=True,
+            should_compress=False,
         )
 
     # ── 2. HTTP status code classification ──────────────────────────

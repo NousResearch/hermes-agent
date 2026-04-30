@@ -1023,10 +1023,16 @@ def run_doctor(args):
         print("  Checking Anthropic API...", end="", flush=True)
         try:
             import httpx
-            from agent.anthropic_adapter import _is_oauth_token, _COMMON_BETAS, _OAUTH_ONLY_BETAS
+            from agent.anthropic_adapter import (
+                _is_oauth_token,
+                _COMMON_BETAS,
+                _OAUTH_ONLY_BETAS,
+                _CONTEXT_1M_BETA,
+            )
 
             headers = {"anthropic-version": "2023-06-01"}
-            if _is_oauth_token(anthropic_key):
+            is_oauth = _is_oauth_token(anthropic_key)
+            if is_oauth:
                 headers["Authorization"] = f"Bearer {anthropic_key}"
                 headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
             else:
@@ -1036,6 +1042,25 @@ def run_doctor(args):
                 headers=headers,
                 timeout=10
             )
+            # Reactive recovery: OAuth subscriptions that don't include 1M
+            # context reject the request with 400 "long context beta is not
+            # yet available for this subscription". Retry once with that
+            # beta stripped so the doctor check doesn't falsely report the
+            # Anthropic API as unreachable for those users.
+            if (
+                is_oauth
+                and response.status_code == 400
+                and "long context beta" in response.text.lower()
+                and "not yet available" in response.text.lower()
+            ):
+                headers["anthropic-beta"] = ",".join(
+                    [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS)
+                )
+                response = httpx.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers=headers,
+                    timeout=10,
+                )
             if response.status_code == 200:
                 print(f"\r  {color('✓', Colors.GREEN)} Anthropic API                           ")
             elif response.status_code == 401:

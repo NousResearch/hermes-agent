@@ -669,8 +669,8 @@ class HindsightMemoryProvider(MemoryProvider):
         provider_config.setdefault("bank_id", "hermes")
         provider_config.setdefault("recall_budget", "mid")
         # Read existing timeout from config if present, otherwise use default.
-        # Preserve explicit 0 values instead of treating them as blank.
-        existing_timeout = provider_config.get("timeout")
+        # Use `is not None` so that an explicit timeout=0 (no timeout) is preserved.
+        existing_timeout = self._config.get("timeout") if self._config else None
         timeout_val = existing_timeout if existing_timeout is not None else _DEFAULT_TIMEOUT
         provider_config["timeout"] = timeout_val
         env_writes["HINDSIGHT_TIMEOUT"] = str(timeout_val)

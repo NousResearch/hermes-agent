@@ -892,6 +892,12 @@ class GatewayRunner:
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
 
+        # Track why each session was interrupted so the agent can be informed
+        # on the next message.  Populated at every interrupt site; consumed
+        # (and cleared) once in _handle_message_with_agent().
+        # Key: session_key, Value: interrupt reason string
+        self._session_interrupt_reasons: Dict[str, str] = {}
+
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
         # per-message AIAgent instances.
@@ -2038,6 +2044,11 @@ class GatewayRunner:
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
+            # Record the interrupt reason for the next message in this session,
+            # but only for control-level interrupts (shutdown, restart, stop,
+            # timeout) — not for transient internal signals.
+            if hasattr(self, "_session_interrupt_reasons") and _is_control_interrupt_message(reason):
+                self._session_interrupt_reasons[session_key] = reason
 
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send a notification to every chat with an active agent.
@@ -4651,7 +4662,19 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        
+
+        # If the previous agent run was interrupted, prepend a system note so
+        # the agent is aware of the interruption and can resume gracefully.
+        # The reason is consumed (popped) here so it is shown exactly once.
+        _interrupt_reasons = getattr(self, "_session_interrupt_reasons", None)
+        if isinstance(_interrupt_reasons, dict) and session_key in _interrupt_reasons:
+            _prior_reason = _interrupt_reasons.pop(session_key)
+            _interrupt_note = (
+                f"\n[System: The previous agent run was interrupted ({_prior_reason}). "
+                f"Resuming from where you left off.]\n"
+            )
+            context_prompt = _interrupt_note + (context_prompt or "")
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):
@@ -9497,6 +9520,9 @@ class GatewayRunner:
         running_agent = self._running_agents.get(session_key)
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             running_agent.interrupt(interrupt_reason)
+        # Record the interrupt reason so the next message can inform the agent.
+        if hasattr(self, "_session_interrupt_reasons") and _is_control_interrupt_message(interrupt_reason):
+            self._session_interrupt_reasons[session_key] = interrupt_reason
         self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
         adapter = self.adapters.get(source.platform)
         if adapter and hasattr(adapter, "interrupt_session_activity"):
@@ -9513,6 +9539,11 @@ class GatewayRunner:
         if _lock:
             with _lock:
                 self._agent_cache.pop(session_key, None)
+        # Eviction is a session boundary — discard any pending interrupt reason
+        # that was never consumed (e.g. session interrupted then reset/expired
+        # without a follow-up message).
+        if hasattr(self, "_session_interrupt_reasons"):
+            self._session_interrupt_reasons.pop(session_key, None)
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
@@ -11430,6 +11461,9 @@ class GatewayRunner:
                 # pool worker is freed.
                 if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
                     _timed_out_agent.interrupt(_INTERRUPT_REASON_TIMEOUT)
+                # Record the timeout reason for the next message in this session.
+                if hasattr(self, "_session_interrupt_reasons") and _is_control_interrupt_message(_INTERRUPT_REASON_TIMEOUT):
+                    self._session_interrupt_reasons[session_key] = _INTERRUPT_REASON_TIMEOUT
 
                 _timeout_mins = int(_agent_timeout // 60) or 1
 

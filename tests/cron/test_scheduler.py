@@ -3,6 +3,8 @@
 import json
 import logging
 import os
+import threading
+import time
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -762,6 +764,103 @@ class TestRunJobSessionPersistence:
         assert success is False
         assert final_response == ""
         assert "RuntimeError: boom" in error
+        mock_agent.close.assert_called_once()
+
+    def test_timed_out_noncooperative_worker_blocks_overlapping_same_job(self, tmp_path, monkeypatch):
+        class NonCooperativeAgent:
+            def __init__(self, release_event):
+                self.release_event = release_event
+                self.interrupted = False
+                self.close = MagicMock()
+
+            def get_activity_summary(self):
+                return {
+                    "seconds_since_activity": 999.0,
+                    "last_activity_desc": "blocked_tool",
+                    "current_tool": "terminal",
+                    "api_call_count": 1,
+                    "max_iterations": 90,
+                }
+
+            def interrupt(self, msg):
+                self.interrupted = True
+
+            def run_conversation(self, prompt):
+                self.release_event.wait(timeout=5)
+                return {"final_response": "late"}
+
+        job = {"id": "timeout-job", "name": "timeout", "prompt": "hello"}
+        fake_db = MagicMock()
+        release_event = threading.Event()
+        first_agent = NonCooperativeAgent(release_event)
+        second_agent = MagicMock()
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0.01")
+        monkeypatch.setenv("HERMES_CRON_POLL_INTERVAL", "0.01")
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT_STOP_GRACE", "0")
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", side_effect=[first_agent, second_agent]) as mock_agent_cls:
+            success, _output, final_response, error = run_job(job)
+            assert success is False
+            assert final_response == ""
+            assert "interruption requested" in error
+            assert first_agent.interrupted is True
+
+            second_success, _second_output, _second_response, second_error = run_job(job)
+
+        assert second_success is False
+        assert "previous timed-out execution" in second_error
+        assert mock_agent_cls.call_count == 1
+
+        release_event.set()
+        deadline = time.time() + 2
+        while not first_agent.close.called and time.time() < deadline:
+            time.sleep(0.01)
+        first_agent.close.assert_called_once()
+
+    def test_normal_cron_job_execution_still_succeeds(self, tmp_path, monkeypatch):
+        job = {"id": "normal-job", "name": "normal", "prompt": "hello"}
+        fake_db = MagicMock()
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1")
+        monkeypatch.setenv("HERMES_CRON_POLL_INTERVAL", "0.01")
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
         mock_agent.close.assert_called_once()
 
     def test_run_job_reaps_stale_auxiliary_clients_per_tick(self, tmp_path):

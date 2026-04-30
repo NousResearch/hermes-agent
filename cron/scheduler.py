@@ -16,6 +16,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -39,6 +40,19 @@ from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+# A timed-out cron run may continue after we request interruption because
+# Python threads cannot be killed safely. Track those soft-cancelled workers
+# by job id so later ticks do not start another run of the same job until the
+# previous worker has actually returned.
+_TIMED_OUT_RUNS_LOCK = threading.RLock()
+_TIMED_OUT_RUNS: dict[str, concurrent.futures.Future] = {}
+
+
+def _clear_timed_out_run(job_id: str, future: concurrent.futures.Future) -> None:
+    with _TIMED_OUT_RUNS_LOCK:
+        if _TIMED_OUT_RUNS.get(job_id) is future:
+            _TIMED_OUT_RUNS.pop(job_id, None)
 
 
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
@@ -816,6 +830,31 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     job_id = job["id"]
     job_name = job["name"]
 
+    with _TIMED_OUT_RUNS_LOCK:
+        _previous_timeout = _TIMED_OUT_RUNS.get(job_id)
+        if _previous_timeout is not None:
+            if _previous_timeout.done():
+                _TIMED_OUT_RUNS.pop(job_id, None)
+            else:
+                error_msg = (
+                    "previous timed-out execution is still active after "
+                    "interruption requested; skipping overlapping run"
+                )
+                logger.warning("Job '%s': %s", job_id, error_msg)
+                output = f"""# Cron Job: {job_name} (SKIPPED)
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Error
+
+```
+{error_msg}
+```
+"""
+                return False, output, "", error_msg
+
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
     # the whole agent run. We pass the result into _build_job_prompt so
@@ -1077,7 +1116,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         else:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-        _POLL_INTERVAL = 5.0
+        try:
+            _POLL_INTERVAL = max(float(os.getenv("HERMES_CRON_POLL_INTERVAL", "5.0")), 0.01)
+        except (ValueError, TypeError):
+            logger.warning("Invalid HERMES_CRON_POLL_INTERVAL; using default 5s")
+            _POLL_INTERVAL = 5.0
+        try:
+            _STOP_GRACE = max(float(os.getenv("HERMES_CRON_TIMEOUT_STOP_GRACE", "1.0")), 0.0)
+        except (ValueError, TypeError):
+            logger.warning("Invalid HERMES_CRON_TIMEOUT_STOP_GRACE; using default 1s")
+            _STOP_GRACE = 1.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
         # env passthrough registrations) when the cron run hops into the worker
@@ -1085,6 +1133,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cron_context = contextvars.copy_context()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
+        _defer_agent_close = False
         try:
             if _cron_inactivity_limit is None:
                 # Unlimited — just wait for the result.
@@ -1138,10 +1187,40 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             )
             if hasattr(agent, "interrupt"):
                 agent.interrupt("Cron job timed out (inactivity)")
+            try:
+                _cron_future.result(timeout=_STOP_GRACE)
+            except concurrent.futures.TimeoutError:
+                _defer_agent_close = True
+
+                def _cleanup_timed_out_worker(_future: concurrent.futures.Future) -> None:
+                    _clear_timed_out_run(job_id, _future)
+                    try:
+                        agent.close()
+                    except (Exception, KeyboardInterrupt) as close_exc:
+                        logger.debug("Job '%s': failed to close timed-out agent: %s", job_id, close_exc)
+                    try:
+                        _cron_pool.shutdown(wait=False, cancel_futures=True)
+                    except Exception as pool_exc:
+                        logger.debug("Job '%s': failed to shutdown timed-out worker pool: %s", job_id, pool_exc)
+
+                with _TIMED_OUT_RUNS_LOCK:
+                    _TIMED_OUT_RUNS[job_id] = _cron_future
+                _cron_future.add_done_callback(_cleanup_timed_out_worker)
+                raise TimeoutError(
+                    f"Cron job '{job_name}' idle for "
+                    f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
+                    f"— last activity: {_last_desc}; interruption requested, "
+                    "worker still active"
+                )
+            except Exception:
+                # The worker stopped after interruption but did not produce a
+                # successful result. Keep reporting the timeout instead of
+                # implying a normal agent failure.
+                pass
             raise TimeoutError(
                 f"Cron job '{job_name}' idle for "
                 f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
-                f"— last activity: {_last_desc}"
+                f"— last activity: {_last_desc}; interruption requested"
             )
 
         # Guard against non-dict returns from run_conversation under error conditions
@@ -1240,7 +1319,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # this, a gateway that ticks cron every N minutes leaks fds per job
         # until it hits EMFILE (#10200 / "too many open files").
         try:
-            if agent is not None:
+            if agent is not None and not locals().get("_defer_agent_close", False):
                 agent.close()
         except (Exception, KeyboardInterrupt) as e:
             logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)

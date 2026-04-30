@@ -4362,6 +4362,202 @@ class HermesCLI:
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
         self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _code_mode_dashboard_url(self) -> str:
+        dashboard = self.config.get("dashboard", {}) if isinstance(self.config, dict) else {}
+        host = str(dashboard.get("host") or "127.0.0.1")
+        port = int(dashboard.get("port") or 9119)
+        return f"http://{host}:{port}"
+
+    def _code_mode_backend_probe(self) -> tuple[str, dict[str, Any] | None]:
+        url = f"{self._code_mode_dashboard_url()}/api/code/status"
+        try:
+            import urllib.request
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=0.75) as resp:
+                if resp.status == 200:
+                    return "online", json.loads(resp.read().decode("utf-8"))
+                return f"http {resp.status}", None
+        except Exception:
+            return "offline", None
+
+    def _code_mode_git_branch(self, cwd: str) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            branch = result.stdout.strip()
+            return branch or "(detached or unavailable)"
+        except Exception:
+            return "(not a git repo)"
+
+    def _code_mode_state_status(self) -> dict[str, Any]:
+        if self._session_db:
+            try:
+                return self._session_db.code_mode_status()
+            except Exception as exc:
+                return {"mode": "unavailable", "error": str(exc)}
+        return {"mode": "unavailable", "error": "state database not available"}
+
+    def _handle_code_command(self, _cmd: str):
+        """Show the current Code Mode console summary."""
+        from hermes_cli.profiles import get_active_profile_name
+
+        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        backend_status, backend_payload = self._code_mode_backend_probe()
+        state_status = (backend_payload or {}).get("state") if backend_payload else self._code_mode_state_status()
+        if not isinstance(state_status, dict):
+            state_status = self._code_mode_state_status()
+        schema_version = state_status.get("schema_version", "(unknown)")
+        counts = state_status.get("counts") or {}
+
+        lines = [
+            "Hermes Code Mode",
+            "",
+            f"Provider: {getattr(self, 'provider', None) or 'unknown'}",
+            f"Model: {getattr(self, 'model', None) or '(unknown)'}",
+            f"Profile: {get_active_profile_name()}",
+            f"Workspace: {cwd}",
+            f"Git Branch: {self._code_mode_git_branch(cwd)}",
+            f"Backend: {backend_status}",
+            f"Web/Cockpit: {self._code_mode_dashboard_url()}",
+            f"Schema: {schema_version}",
+            (
+                "State: "
+                f"{counts.get('code_workspaces', 0)} workspace(s), "
+                f"{counts.get('code_sessions', 0)} session(s), "
+                f"{counts.get('code_events', 0)} event(s)"
+            ),
+            "",
+            "Commands: /workspace, /session, /web, /approvals, /skills-code",
+        ]
+        if state_status.get("error"):
+            lines.insert(-2, f"State Note: {state_status['error']}")
+        self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_web_command(self, _cmd: str):
+        """Show dashboard launch hints for Code Mode."""
+        backend_status, _payload = self._code_mode_backend_probe()
+        url = self._code_mode_dashboard_url()
+        lines = [
+            "Hermes Web / Code Cockpit",
+            "",
+            f"URL: {url}",
+            f"Backend: {backend_status}",
+            "",
+            "Launch: python -m hermes_cli.main dashboard --port 9119",
+            "Note: hermesWeb is not present in this checkout; UI expansion is deferred.",
+        ]
+        self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_workspace_command(self, cmd: str):
+        """List known Code Mode workspaces, falling back to current cwd."""
+        query = ""
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            query = parts[1].strip()
+
+        workspaces = []
+        if self._session_db:
+            try:
+                workspaces = self._session_db.list_code_workspaces(q=query, limit=20)
+            except Exception:
+                workspaces = []
+
+        if not workspaces:
+            cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+            lines = [
+                "Code Mode Workspaces",
+                "",
+                "No stored Code Mode workspaces found.",
+                f"Current Path: {cwd}",
+                f"Git Branch: {self._code_mode_git_branch(cwd)}",
+            ]
+            self._console_print("\n".join(lines), highlight=False, markup=False)
+            return
+
+        lines = ["Code Mode Workspaces", ""]
+        for workspace in workspaces:
+            name = workspace.get("name") or workspace.get("id") or "(unnamed)"
+            repo = workspace.get("repo_url") or workspace.get("git_remote") or workspace.get("repo") or ""
+            path = workspace.get("path") or ""
+            lines.append(f"- {name}")
+            if repo:
+                lines.append(f"  Repo: {repo}")
+            if path:
+                lines.append(f"  Path: {path}")
+        self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_code_session_command(self, cmd: str):
+        """List known Code Mode sessions."""
+        workspace_id = None
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            workspace_id = parts[1].strip() or None
+
+        sessions = []
+        if self._session_db:
+            try:
+                sessions = self._session_db.list_code_sessions(workspace_id=workspace_id, limit=20)
+            except Exception:
+                sessions = []
+
+        if not sessions:
+            self._console_print(
+                "Code Mode Sessions\n\nNo stored Code Mode sessions found.",
+                highlight=False,
+                markup=False,
+            )
+            return
+
+        lines = ["Code Mode Sessions", ""]
+        for session in sessions:
+            sid = session.get("id") or "(unknown)"
+            status = session.get("status") or "(unknown)"
+            workspace = session.get("workspace_id") or "(none)"
+            branch = session.get("branch") or "(unknown)"
+            lines.append(f"- {sid}: {status} workspace={workspace} branch={branch}")
+        self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_code_approvals_command(self, _cmd: str):
+        self._console_print(
+            "\n".join([
+                "Code Mode Approvals",
+                "",
+                "P0 execution policy is available.",
+                "Risk classes include safe_readonly, network, git_write, secret_sensitive, destructive.",
+                "Use /code for backend status; policy assessments are exposed via /api/code/policy/assess-command.",
+            ]),
+            highlight=False,
+            markup=False,
+        )
+
+    def _handle_skills_code_command(self, _cmd: str):
+        discovered = []
+        workspace_skills = 0
+        workspace_path = Path(os.getenv("TERMINAL_CWD", os.getcwd()))
+        try:
+            from hermes_cli.code.skill_discovery import SkillDiscoveryService
+
+            service = SkillDiscoveryService()
+            discovered = service.list_skills(workspace_path=workspace_path)
+            workspace_skills = sum(1 for s in discovered if str(s.get("source", "")).startswith("workspace:"))
+        except Exception:
+            discovered = []
+
+        lines = [
+            "Code Mode Skills",
+            "",
+            f"Installed slash skills visible to this CLI: {len(_skill_commands)}",
+            f"Discovered skills (builtin/global/workspace): {len(discovered)}",
+            f"Workspace-local SKILL.md skills: {workspace_skills}",
+            "Skill folders supported: SKILL.md, scripts/, resources/",
+        ]
+        self._console_print("\n".join(lines), highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:
         try:
@@ -6251,6 +6447,18 @@ class HermesCLI:
             self._show_gateway_status()
         elif canonical == "status":
             self._show_session_status()
+        elif canonical == "code":
+            self._handle_code_command(cmd_original)
+        elif canonical == "web":
+            self._handle_web_command(cmd_original)
+        elif canonical == "workspace":
+            self._handle_workspace_command(cmd_original)
+        elif canonical == "session":
+            self._handle_code_session_command(cmd_original)
+        elif canonical == "approvals":
+            self._handle_code_approvals_command(cmd_original)
+        elif canonical == "skills-code":
+            self._handle_skills_code_command(cmd_original)
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"

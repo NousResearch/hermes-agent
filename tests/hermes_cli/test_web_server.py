@@ -328,6 +328,188 @@ class TestWebServerEndpoints:
         resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
 
+    def test_code_status_is_public(self):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauth_client = TestClient(app)
+        resp = unauth_client.get("/api/code/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["mode"] == "code_mode"
+        assert data["schema_version"] == 13
+        assert "state" in data
+
+    def test_code_workspaces_requires_auth(self):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauth_client = TestClient(app)
+        resp = unauth_client.get("/api/code/workspaces")
+
+        assert resp.status_code == 401
+
+    def test_code_workspaces_endpoint(self):
+        import time
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            now = time.time()
+            db._conn.execute(
+                """
+                INSERT INTO code_workspaces
+                    (id, name, owner, repo, path, git_remote, repo_url, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ws-1",
+                    "Hermes Agent",
+                    "nous",
+                    "hermes-agent",
+                    "/tmp/hermes-agent",
+                    "git@github.com:nous/hermes-agent.git",
+                    "https://github.com/nous/hermes-agent",
+                    now,
+                    now,
+                ),
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/code/workspaces?q=Hermes")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["workspaces"][0]["id"] == "ws-1"
+
+    def test_code_sessions_endpoint(self):
+        import time
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            now = time.time()
+            db._conn.execute(
+                """
+                INSERT INTO code_sessions
+                    (id, workspace_id, status, provider, branch, created_at, updated_at, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("cs-1", None, "active", "openrouter", "main", now, now, "{}"),
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/code/sessions")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["sessions"][0]["id"] == "cs-1"
+
+    def test_code_artifacts_create_and_list(self):
+        create_resp = self.client.post(
+            "/api/code/artifacts",
+            json={
+                "artifact_type": "task_intake",
+                "title": "Task",
+                "content": "Implement feature X",
+                "content_type": "markdown",
+                "workspace_id": None,
+                "code_session_id": "cs-42",
+                "metadata": {"priority": "high"},
+            },
+        )
+        assert create_resp.status_code == 200
+        created = create_resp.json()["artifact"]
+        assert created["artifact_type"] == "task_intake"
+
+        list_resp = self.client.get("/api/code/artifacts?code_session_id=cs-42")
+        assert list_resp.status_code == 200
+        artifacts = list_resp.json()["artifacts"]
+        assert any(a["id"] == created["id"] for a in artifacts)
+
+    def test_orchestrator_create_get_and_transition(self):
+        create_resp = self.client.post(
+            "/api/code/orchestrator/runs",
+            json={
+                "title": "Run A",
+                "goal": "Refactor parser",
+                "workspace_id": None,
+                "code_session_id": "cs-77",
+                "metadata": {"source": "test"},
+                "create_intake_artifact": True,
+            },
+        )
+        assert create_resp.status_code == 200
+        run = create_resp.json()["run"]
+        assert run["state"] == "intake"
+
+        get_resp = self.client.get(f"/api/code/orchestrator/runs/{run['id']}")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["run"]["id"] == run["id"]
+
+        transition_resp = self.client.post(
+            f"/api/code/orchestrator/runs/{run['id']}/transition",
+            json={"to_state": "discovery", "reason": "begin"},
+        )
+        assert transition_resp.status_code == 200
+        assert transition_resp.json()["run"]["state"] == "discovery"
+
+    def test_policy_assess_command_endpoint(self):
+        resp = self.client.post(
+            "/api/code/policy/assess-command",
+            json={"command": "rm -rf /tmp/x"},
+        )
+        assert resp.status_code == 200
+        assessment = resp.json()["assessment"]
+        assert assessment["risk_class"] == "destructive"
+        assert assessment["blocked"] is True
+
+    def test_code_skills_discovered_endpoint(self):
+        resp = self.client.get("/api/code/skills/discovered")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert "skills" in payload
+        assert isinstance(payload["skills"], list)
+
+    def test_repo_knowledge_endpoints(self, tmp_path):
+        import time
+        from hermes_state import SessionDB
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "AGENTS.md").write_text("# Agents\n\nUse pytest.\n", encoding="utf-8")
+
+        db = SessionDB()
+        try:
+            now = time.time()
+            db._conn.execute(
+                """
+                INSERT INTO code_workspaces
+                    (id, name, owner, repo, path, git_remote, repo_url, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("ws-rk", "Repo", "owner", "repo", str(repo), "", "", now, now),
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        get_resp = self.client.get("/api/code/workspaces/ws-rk/repo-knowledge")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["manifest"]["agents_md"] is not None
+
+        bootstrap_resp = self.client.post(
+            "/api/code/workspaces/ws-rk/repo-knowledge/bootstrap",
+            json={"project_summary": "My test repo"},
+        )
+        assert bootstrap_resp.status_code == 200
+        assert bootstrap_resp.json()["result"]["created"] is False
+
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""
         # %2e%2e = ..

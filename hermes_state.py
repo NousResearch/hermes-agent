@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -33,7 +34,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -88,6 +89,139 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT,
     codex_message_items TEXT
 );
+
+CREATE TABLE IF NOT EXISTS code_workspaces (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    owner TEXT,
+    repo TEXT,
+    path TEXT,
+    git_remote TEXT,
+    repo_url TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_code_workspaces_id
+    ON code_workspaces(id);
+
+CREATE INDEX IF NOT EXISTS idx_code_workspaces_owner
+    ON code_workspaces(owner);
+
+CREATE INDEX IF NOT EXISTS idx_code_workspaces_repo
+    ON code_workspaces(owner, repo);
+
+CREATE TABLE IF NOT EXISTS code_sessions (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    status TEXT DEFAULT 'active',
+    provider TEXT,
+    branch TEXT,
+    last_synced_at REAL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    metadata_json TEXT,
+    FOREIGN KEY (workspace_id) REFERENCES code_workspaces(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_sessions_workspace
+    ON code_sessions(workspace_id);
+
+CREATE INDEX IF NOT EXISTS idx_code_sessions_status
+    ON code_sessions(status);
+
+CREATE TABLE IF NOT EXISTS code_events (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    session_id TEXT,
+    event_type TEXT NOT NULL,
+    sender_login TEXT,
+    source TEXT,
+    level TEXT DEFAULT 'info',
+    payload_json TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    FOREIGN KEY (workspace_id) REFERENCES code_workspaces(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_events_workspace
+    ON code_events(workspace_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_code_events_session
+    ON code_events(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS code_artifacts (
+    id TEXT PRIMARY KEY,
+    artifact_type TEXT NOT NULL,
+    title TEXT,
+    content TEXT NOT NULL,
+    content_type TEXT DEFAULT 'markdown',
+    workspace_id TEXT,
+    code_session_id TEXT,
+    orchestrated_run_id TEXT,
+    command_id TEXT,
+    metadata_json TEXT DEFAULT '{}',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_artifacts_workspace
+    ON code_artifacts(workspace_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_code_artifacts_session
+    ON code_artifacts(code_session_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_code_artifacts_run
+    ON code_artifacts(orchestrated_run_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS code_orchestrated_runs (
+    id TEXT PRIMARY KEY,
+    title TEXT,
+    goal TEXT,
+    state TEXT NOT NULL DEFAULT 'intake',
+    workspace_id TEXT,
+    code_session_id TEXT,
+    current_phase TEXT,
+    metadata_json TEXT DEFAULT '{}',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    completed_at REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_orchestrated_runs_workspace
+    ON code_orchestrated_runs(workspace_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_code_orchestrated_runs_session
+    ON code_orchestrated_runs(code_session_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_code_orchestrated_runs_state
+    ON code_orchestrated_runs(state, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS code_run_transitions (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    reason TEXT,
+    created_at REAL NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES code_orchestrated_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_run_transitions_run
+    ON code_run_transitions(run_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS code_checkpoints (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    name TEXT,
+    git_branch TEXT,
+    git_commit TEXT,
+    dirty INTEGER DEFAULT 0,
+    metadata_json TEXT DEFAULT '{}',
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_checkpoints_workspace
+    ON code_checkpoints(workspace_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
@@ -481,6 +615,162 @@ class SessionDB:
                     "COALESCE(tool_calls, '') "
                     "FROM messages"
                 )
+
+            if current_version < 12:
+                # v12: introduce minimal code-mode tables used by the
+                # Code Mode foundation (workspace/sessions/events metadata).
+                try:
+                    cursor.executescript(
+                        """
+                        CREATE TABLE IF NOT EXISTS code_workspaces (
+                            id TEXT PRIMARY KEY,
+                            name TEXT NOT NULL,
+                            owner TEXT,
+                            repo TEXT,
+                            path TEXT,
+                            git_remote TEXT,
+                            repo_url TEXT,
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL
+                        );
+
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_code_workspaces_id
+                            ON code_workspaces(id);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_workspaces_owner
+                            ON code_workspaces(owner);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_workspaces_repo
+                            ON code_workspaces(owner, repo);
+
+                        CREATE TABLE IF NOT EXISTS code_sessions (
+                            id TEXT PRIMARY KEY,
+                            workspace_id TEXT,
+                            status TEXT DEFAULT 'active',
+                            provider TEXT,
+                            branch TEXT,
+                            last_synced_at REAL,
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL,
+                            metadata_json TEXT,
+                            FOREIGN KEY (workspace_id) REFERENCES code_workspaces(id)
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_code_sessions_workspace
+                            ON code_sessions(workspace_id);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_sessions_status
+                            ON code_sessions(status);
+
+                        CREATE TABLE IF NOT EXISTS code_events (
+                            id TEXT PRIMARY KEY,
+                            workspace_id TEXT,
+                            session_id TEXT,
+                            event_type TEXT NOT NULL,
+                            sender_login TEXT,
+                            source TEXT,
+                            level TEXT DEFAULT 'info',
+                            payload_json TEXT NOT NULL,
+                            created_at REAL NOT NULL,
+                            FOREIGN KEY (workspace_id) REFERENCES code_workspaces(id) ON DELETE CASCADE
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_code_events_workspace
+                            ON code_events(workspace_id, created_at DESC);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_events_session
+                            ON code_events(session_id, created_at DESC);
+                        """
+                    )
+                except Exception:
+                    # If the process lacks required migration privileges or the
+                    # DB is in a transient bad state, continue with the
+                    # existing migration path after creating schema in future reads.
+                    pass
+
+            if current_version < 13:
+                # v13: add P0 engineering control-plane tables.
+                try:
+                    cursor.executescript(
+                        """
+                        CREATE TABLE IF NOT EXISTS code_artifacts (
+                            id TEXT PRIMARY KEY,
+                            artifact_type TEXT NOT NULL,
+                            title TEXT,
+                            content TEXT NOT NULL,
+                            content_type TEXT DEFAULT 'markdown',
+                            workspace_id TEXT,
+                            code_session_id TEXT,
+                            orchestrated_run_id TEXT,
+                            command_id TEXT,
+                            metadata_json TEXT DEFAULT '{}',
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_code_artifacts_workspace
+                            ON code_artifacts(workspace_id, created_at DESC);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_artifacts_session
+                            ON code_artifacts(code_session_id, created_at DESC);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_artifacts_run
+                            ON code_artifacts(orchestrated_run_id, created_at DESC);
+
+                        CREATE TABLE IF NOT EXISTS code_orchestrated_runs (
+                            id TEXT PRIMARY KEY,
+                            title TEXT,
+                            goal TEXT,
+                            state TEXT NOT NULL DEFAULT 'intake',
+                            workspace_id TEXT,
+                            code_session_id TEXT,
+                            current_phase TEXT,
+                            metadata_json TEXT DEFAULT '{}',
+                            created_at REAL NOT NULL,
+                            updated_at REAL NOT NULL,
+                            completed_at REAL
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_code_orchestrated_runs_workspace
+                            ON code_orchestrated_runs(workspace_id, created_at DESC);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_orchestrated_runs_session
+                            ON code_orchestrated_runs(code_session_id, created_at DESC);
+
+                        CREATE INDEX IF NOT EXISTS idx_code_orchestrated_runs_state
+                            ON code_orchestrated_runs(state, updated_at DESC);
+
+                        CREATE TABLE IF NOT EXISTS code_run_transitions (
+                            id TEXT PRIMARY KEY,
+                            run_id TEXT NOT NULL,
+                            from_state TEXT,
+                            to_state TEXT NOT NULL,
+                            reason TEXT,
+                            created_at REAL NOT NULL,
+                            FOREIGN KEY (run_id) REFERENCES code_orchestrated_runs(id) ON DELETE CASCADE
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_code_run_transitions_run
+                            ON code_run_transitions(run_id, created_at ASC);
+
+                        CREATE TABLE IF NOT EXISTS code_checkpoints (
+                            id TEXT PRIMARY KEY,
+                            workspace_id TEXT,
+                            name TEXT,
+                            git_branch TEXT,
+                            git_commit TEXT,
+                            dirty INTEGER DEFAULT 0,
+                            metadata_json TEXT DEFAULT '{}',
+                            created_at REAL NOT NULL
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_code_checkpoints_workspace
+                            ON code_checkpoints(workspace_id, created_at DESC);
+                        """
+                    )
+                except Exception:
+                    pass
+
             if current_version < SCHEMA_VERSION:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -1083,6 +1373,427 @@ class SessionDB:
         else:
             s["preview"] = ""
         return s
+
+    # =========================================================================
+    # Code Mode support
+    # =========================================================================
+
+    def _code_tables_exist(self) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_workspaces'"
+            )
+            return bool(cursor.fetchone())
+
+    def code_mode_status(self) -> Dict[str, Any]:
+        """Return light-weight code mode state summary for console/dashboard."""
+        if not self._code_tables_exist():
+            return {
+                "mode": "unconfigured",
+                "schema_version": None,
+                "tables": {"code_workspaces": False, "code_sessions": False, "code_events": False},
+            }
+        with self._lock:
+            counts = {}
+            for name in ("code_workspaces", "code_sessions", "code_events"):
+                cursor = self._conn.execute(f"SELECT COUNT(1) AS c FROM {name}")
+                counts[name] = int(cursor.fetchone()["c"])
+            cursor = self._conn.execute("SELECT version FROM schema_version LIMIT 1")
+            row = cursor.fetchone()
+        return {
+            "mode": "enabled" if counts else "unknown",
+            "schema_version": row["version"] if row else None,
+            "tables": {
+                "code_workspaces": True,
+                "code_sessions": True,
+                "code_events": True,
+            },
+            "counts": counts,
+            "workspace_count": counts.get("code_workspaces", 0),
+            "session_count": counts.get("code_sessions", 0),
+            "event_count": counts.get("code_events", 0),
+        }
+
+    def _code_list_rows(
+        self,
+        table: str,
+        *,
+        query: str,
+        params: tuple = (),
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        if not self._code_tables_exist():
+            return []
+        with self._lock:
+            cursor = self._conn.execute(query, params + (limit, offset))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def list_code_workspaces(
+        self,
+        owner: str | None = None,
+        q: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        filters = []
+        params: list[Any] = []
+        if owner:
+            filters.append("owner = ?")
+            params.append(owner)
+        if q:
+            filters.append("(name LIKE ? OR path LIKE ? OR repo_url LIKE ? OR repo LIKE ?)")
+            pattern = f"%{q}%"
+            params.extend([pattern, pattern, pattern, pattern])
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+        query = (
+            f"SELECT * FROM code_workspaces {where_sql} "
+            "ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        )
+        return self._code_list_rows("code_workspaces", query=query, params=tuple(params), limit=limit, offset=offset)
+
+    def get_code_workspace(self, workspace_id: str) -> Optional[dict[str, Any]]:
+        if not self._code_tables_exist():
+            return None
+        with self._lock:
+            cursor = self._conn.execute("SELECT * FROM code_workspaces WHERE id = ? LIMIT 1", (workspace_id,))
+            row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def list_code_sessions(
+        self,
+        workspace_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        filters = []
+        params: list[Any] = []
+        if workspace_id:
+            filters.append("workspace_id = ?")
+            params.append(workspace_id)
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+        query = (
+            f"SELECT * FROM code_sessions {where_sql} "
+            "ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        )
+        return self._code_list_rows("code_sessions", query=query, params=tuple(params), limit=limit, offset=offset)
+
+    def list_code_events(
+        self,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        filters = []
+        params: list[Any] = []
+        if workspace_id:
+            filters.append("workspace_id = ?")
+            params.append(workspace_id)
+        if session_id:
+            filters.append("session_id = ?")
+            params.append(session_id)
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+        query = (
+            f"SELECT * FROM code_events {where_sql} "
+            "ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        )
+        return self._code_list_rows("code_events", query=query, params=tuple(params), limit=limit, offset=offset)
+
+    def append_code_event(
+        self,
+        *,
+        event_type: str,
+        payload: dict[str, Any],
+        workspace_id: str | None = None,
+        code_session_id: str | None = None,
+        sender_login: str | None = None,
+        source: str | None = "code_mode",
+        level: str = "info",
+    ) -> str:
+        event_id = str(uuid.uuid4())
+        payload_json = json.dumps(payload or {})
+        created_at = time.time()
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO code_events (
+                    id, workspace_id, session_id, event_type, sender_login,
+                    source, level, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    workspace_id,
+                    code_session_id,
+                    event_type,
+                    sender_login,
+                    source,
+                    level,
+                    payload_json,
+                    created_at,
+                ),
+            )
+            return event_id
+
+        return self._execute_write(_do)
+
+    def create_code_artifact(self, artifact: dict[str, Any]) -> str:
+        artifact_id = artifact["id"]
+        metadata_json = json.dumps(artifact.get("metadata") or {})
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO code_artifacts (
+                    id, artifact_type, title, content, content_type,
+                    workspace_id, code_session_id, orchestrated_run_id, command_id,
+                    metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    artifact_id,
+                    artifact["artifact_type"],
+                    artifact.get("title"),
+                    artifact.get("content", ""),
+                    artifact.get("content_type", "markdown"),
+                    artifact.get("workspace_id"),
+                    artifact.get("code_session_id"),
+                    artifact.get("orchestrated_run_id"),
+                    artifact.get("command_id"),
+                    metadata_json,
+                    artifact["created_at"],
+                    artifact["updated_at"],
+                ),
+            )
+            return artifact_id
+
+        return self._execute_write(_do)
+
+    def list_code_artifacts(
+        self,
+        *,
+        workspace_id: str | None = None,
+        code_session_id: str | None = None,
+        orchestrated_run_id: str | None = None,
+        artifact_type: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        filters = []
+        params: list[Any] = []
+        if workspace_id:
+            filters.append("workspace_id = ?")
+            params.append(workspace_id)
+        if code_session_id:
+            filters.append("code_session_id = ?")
+            params.append(code_session_id)
+        if orchestrated_run_id:
+            filters.append("orchestrated_run_id = ?")
+            params.append(orchestrated_run_id)
+        if artifact_type:
+            filters.append("artifact_type = ?")
+            params.append(artifact_type)
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT * FROM code_artifacts {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                tuple(params + [limit, offset]),
+            )
+            rows = [dict(row) for row in cursor.fetchall()]
+        for row in rows:
+            raw = row.pop("metadata_json", "{}")
+            try:
+                row["metadata"] = json.loads(raw) if raw else {}
+            except Exception:
+                row["metadata"] = {}
+        return rows
+
+    def create_code_orchestrated_run(self, run: dict[str, Any]) -> str:
+        metadata_json = json.dumps(run.get("metadata") or {})
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO code_orchestrated_runs (
+                    id, title, goal, state, workspace_id, code_session_id,
+                    current_phase, metadata_json, created_at, updated_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run["id"],
+                    run.get("title"),
+                    run.get("goal"),
+                    run.get("state", "intake"),
+                    run.get("workspace_id"),
+                    run.get("code_session_id"),
+                    run.get("current_phase"),
+                    metadata_json,
+                    run["created_at"],
+                    run["updated_at"],
+                    run.get("completed_at"),
+                ),
+            )
+            return run["id"]
+
+        return self._execute_write(_do)
+
+    def get_code_orchestrated_run(self, run_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM code_orchestrated_runs WHERE id = ? LIMIT 1",
+                (run_id,),
+            )
+            row = cursor.fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        raw = result.pop("metadata_json", "{}")
+        try:
+            result["metadata"] = json.loads(raw) if raw else {}
+        except Exception:
+            result["metadata"] = {}
+        return result
+
+    def list_code_orchestrated_runs(
+        self,
+        *,
+        workspace_id: str | None = None,
+        code_session_id: str | None = None,
+        state: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        filters = []
+        params: list[Any] = []
+        if workspace_id:
+            filters.append("workspace_id = ?")
+            params.append(workspace_id)
+        if code_session_id:
+            filters.append("code_session_id = ?")
+            params.append(code_session_id)
+        if state:
+            filters.append("state = ?")
+            params.append(state)
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT * FROM code_orchestrated_runs {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                tuple(params + [limit, offset]),
+            )
+            rows = [dict(row) for row in cursor.fetchall()]
+        for row in rows:
+            raw = row.pop("metadata_json", "{}")
+            try:
+                row["metadata"] = json.loads(raw) if raw else {}
+            except Exception:
+                row["metadata"] = {}
+        return rows
+
+    def update_code_orchestrated_run(self, run_id: str, updates: dict[str, Any]) -> bool:
+        if not updates:
+            return False
+        fields = []
+        params: list[Any] = []
+        for key, value in updates.items():
+            if key == "metadata":
+                fields.append("metadata_json = ?")
+                params.append(json.dumps(value or {}))
+            else:
+                fields.append(f"{key} = ?")
+                params.append(value)
+        params.append(run_id)
+
+        def _do(conn):
+            conn.execute(
+                f"UPDATE code_orchestrated_runs SET {', '.join(fields)} WHERE id = ?",
+                tuple(params),
+            )
+            return True
+
+        return bool(self._execute_write(_do))
+
+    def add_code_run_transition(self, transition: dict[str, Any]) -> str:
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO code_run_transitions (
+                    id, run_id, from_state, to_state, reason, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    transition["id"],
+                    transition["run_id"],
+                    transition.get("from_state"),
+                    transition["to_state"],
+                    transition.get("reason"),
+                    transition["created_at"],
+                ),
+            )
+            return transition["id"]
+
+        return self._execute_write(_do)
+
+    def list_code_run_transitions(self, *, run_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM code_run_transitions WHERE run_id = ? ORDER BY created_at ASC",
+                (run_id,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def create_code_checkpoint(self, checkpoint: dict[str, Any]) -> str:
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO code_checkpoints (
+                    id, workspace_id, name, git_branch, git_commit, dirty,
+                    metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    checkpoint["id"],
+                    checkpoint.get("workspace_id"),
+                    checkpoint.get("name"),
+                    checkpoint.get("git_branch"),
+                    checkpoint.get("git_commit"),
+                    1 if checkpoint.get("dirty") else 0,
+                    json.dumps(checkpoint.get("metadata") or {}),
+                    checkpoint["created_at"],
+                ),
+            )
+            return checkpoint["id"]
+
+        return self._execute_write(_do)
+
+    def list_code_checkpoints(
+        self,
+        *,
+        workspace_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        filters = []
+        params: list[Any] = []
+        if workspace_id:
+            filters.append("workspace_id = ?")
+            params.append(workspace_id)
+        where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
+        with self._lock:
+            cursor = self._conn.execute(
+                f"SELECT * FROM code_checkpoints {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                tuple(params + [limit, offset]),
+            )
+            rows = [dict(row) for row in cursor.fetchall()]
+        for row in rows:
+            row["dirty"] = bool(row.get("dirty"))
+            raw = row.pop("metadata_json", "{}")
+            try:
+                row["metadata"] = json.loads(raw) if raw else {}
+            except Exception:
+                row["metadata"] = {}
+        return rows
 
     # =========================================================================
     # Message storage
@@ -2091,4 +2802,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

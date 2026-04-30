@@ -161,6 +161,20 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 
+    # Code Mode
+    CommandDef("code", "Show Hermes Code Mode status and local workspace context",
+               "Code Mode", cli_only=True),
+    CommandDef("web", "Show Hermes Web dashboard and Code Cockpit launch hints",
+               "Code Mode", cli_only=True),
+    CommandDef("workspace", "Show Code Mode workspace metadata",
+               "Code Mode", cli_only=True, args_hint="[owner|search]"),
+    CommandDef("session", "Show Code Mode session metadata",
+               "Code Mode", cli_only=True, args_hint="[workspace_id]"),
+    CommandDef("approvals", "Show Code Mode approval status and deferred policy scope",
+               "Code Mode", cli_only=True),
+    CommandDef("skills-code", "Show Code Mode skill integration status",
+               "Code Mode", cli_only=True, aliases=("skillscode",)),
+
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),

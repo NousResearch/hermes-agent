@@ -15,7 +15,7 @@ session-picker flow.
 Environment overrides:
   HERMES_PERF_LOG     (default ~/.hermes/perf.log)
   HERMES_PERF_NODE    (default node from $PATH)
-  HERMES_TUI_DIR      (default /home/bb/hermes-agent/ui-tui)
+  HERMES_TUI_DIR      (default: <repo>/ui-tui relative to this script)
 
 Exit code is 0 if the harness ran and parsed results, 2 if the TUI crashed
 or produced no perf data (suggests HERMES_DEV_PERF wiring is broken).
@@ -36,7 +36,10 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_TUI_DIR = Path(os.environ.get("HERMES_TUI_DIR", "/home/bb/hermes-agent/ui-tui"))
+DEFAULT_TUI_DIR = Path(
+    os.environ.get("HERMES_TUI_DIR")
+    or str(Path(__file__).resolve().parent.parent / "ui-tui")
+)
 DEFAULT_LOG = Path(os.environ.get("HERMES_PERF_LOG", str(Path.home() / ".hermes" / "perf.log")))
 DEFAULT_STATE_DB = Path.home() / ".hermes" / "state.db"
 

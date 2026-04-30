@@ -21,6 +21,7 @@ from typing import Optional, Dict, List, Any, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
+from utils import atomic_replace
 
 try:
     from croniter import croniter
@@ -311,8 +312,22 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
     elif schedule["kind"] == "cron":
         if not HAS_CRONITER:
+            logger.warning(
+                "Cannot compute next run for cron schedule %r: 'croniter' is "
+                "not installed. croniter is a core dependency as of v0.9.x; "
+                "reinstall hermes-agent or run 'pip install croniter' in your "
+                "runtime env.",
+                schedule.get("expr"),
+            )
             return None
-        cron = croniter(schedule["expr"], now)
+        # Use last_run_at as the croniter base when available, consistent
+        # with interval jobs.  This ensures that after a crash/restart,
+        # the next run is anchored to the actual last execution time
+        # rather than to an arbitrary restart time.
+        base_time = now
+        if last_run_at:
+            base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
+        cron = croniter(schedule["expr"], base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
 
@@ -361,7 +376,7 @@ def save_jobs(jobs: List[Dict[str, Any]]):
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, JOBS_FILE)
+        atomic_replace(tmp_path, JOBS_FILE)
         _secure_file(JOBS_FILE)
     except BaseException:
         try:
@@ -698,10 +713,32 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # Compute next run
                 job["next_run_at"] = compute_next_run(job["schedule"], now)
 
-                # If no next run (one-shot completed), disable
+                # If no next run, decide whether this is terminal completion
+                # (one-shot) or a transient failure (recurring schedule couldn't
+                # compute — e.g. 'croniter' missing from the runtime env).
+                # Recurring jobs must NEVER be silently disabled: that turns a
+                # missing runtime dep into "job completed" and the user's
+                # schedule quietly goes off. See issue #16265.
                 if job["next_run_at"] is None:
-                    job["enabled"] = False
-                    job["state"] = "completed"
+                    kind = job.get("schedule", {}).get("kind")
+                    if kind in ("cron", "interval"):
+                        job["state"] = "error"
+                        if not job.get("last_error"):
+                            job["last_error"] = (
+                                "Failed to compute next run for recurring "
+                                "schedule (is the 'croniter' package "
+                                "installed in the gateway's Python env?)"
+                            )
+                        logger.error(
+                            "Job '%s' (%s) could not compute next_run_at; "
+                            "leaving enabled and marking state=error so the "
+                            "job is not silently disabled.",
+                            job.get("name", job["id"]),
+                            kind,
+                        )
+                    else:
+                        job["enabled"] = False
+                        job["state"] = "completed"
                 elif job.get("state") != "paused":
                     job["state"] = "scheduled"
 
@@ -835,7 +872,7 @@ def save_job_output(job_id: str, output: str):
             f.write(output)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, output_file)
+        atomic_replace(tmp_path, output_file)
         _secure_file(output_file)
     except BaseException:
         try:

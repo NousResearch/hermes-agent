@@ -3,7 +3,9 @@
 Long-term memory with knowledge graph, entity resolution, and multi-strategy
 retrieval. Supports cloud (API key) and local modes.
 
-Configurable timeout via HINDSIGHT_TIMEOUT env var or config.json.
+Configurable request timeout via HINDSIGHT_TIMEOUT env var or config.json.
+Configurable embedded daemon idle timeout via HINDSIGHT_IDLE_TIMEOUT env var
+or config.json idle_timeout.
 
 Original PR #1811 by benfrank241, adapted to MemoryProvider ABC.
 
@@ -14,6 +16,7 @@ Config via environment variables:
   HINDSIGHT_API_URL                — API endpoint
   HINDSIGHT_MODE                   — cloud or local (default: cloud)
   HINDSIGHT_TIMEOUT                — API request timeout in seconds (default: 120)
+  HINDSIGHT_IDLE_TIMEOUT           — embedded daemon idle timeout seconds; 0 disables shutdown (default: 300)
   HINDSIGHT_RETAIN_TAGS            — comma-separated tags attached to retained memories
   HINDSIGHT_RETAIN_SOURCE          — metadata source value attached to retained memories
   HINDSIGHT_RETAIN_USER_PREFIX     — label used before user turns in retained transcripts
@@ -26,10 +29,12 @@ Or via $HERMES_HOME/hindsight/config.json (profile-scoped), falling back to
 from __future__ import annotations
 
 import asyncio
+import atexit
 import importlib
 import json
 import logging
 import os
+import queue
 import threading
 
 from datetime import datetime, timezone
@@ -38,6 +43,7 @@ from typing import Any, Dict, List
 from agent.memory_provider import MemoryProvider
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +51,7 @@ _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.4.22"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
+_DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 _VALID_BUDGETS = {"low", "mid", "high"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
@@ -57,6 +64,17 @@ _PROVIDER_DEFAULT_MODELS = {
     "lmstudio": "local-model",
     "openai_compatible": "your-model-name",
 }
+
+
+def _parse_int_setting(value: Any, default: int) -> int:
+    """Parse an integer config/env value, falling back on invalid input."""
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid integer Hindsight setting %r; using default %s", value, default)
+        return default
 
 
 def _check_local_runtime() -> tuple[bool, str | None]:
@@ -83,6 +101,10 @@ def _check_local_runtime() -> tuple[bool, str | None]:
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
 _loop_lock = threading.Lock()
+
+# Sentinel pushed to the per-provider retain queue to wake the writer for a
+# clean exit. A unique object so it can never collide with a real job.
+_WRITER_SENTINEL = object()
 
 
 def _get_loop() -> asyncio.AbstractEventLoop:
@@ -203,6 +225,8 @@ def _load_config() -> dict:
     return {
         "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
         "apiKey": os.environ.get("HINDSIGHT_API_KEY", ""),
+        "timeout": _parse_int_setting(os.environ.get("HINDSIGHT_TIMEOUT"), _DEFAULT_TIMEOUT),
+        "idle_timeout": _parse_int_setting(os.environ.get("HINDSIGHT_IDLE_TIMEOUT"), _DEFAULT_IDLE_TIMEOUT),
         "retain_tags": os.environ.get("HINDSIGHT_RETAIN_TAGS", ""),
         "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", ""),
         "retain_user_prefix": os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
@@ -304,6 +328,16 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     }
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
+
+    idle_timeout = (
+        config.get("idle_timeout")
+        if config.get("idle_timeout") is not None
+        else os.environ.get("HINDSIGHT_IDLE_TIMEOUT")
+    )
+    if idle_timeout is not None and idle_timeout != "":
+        env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
+            _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
+        )
     return env_values
 
 
@@ -412,9 +446,20 @@ class HindsightMemoryProvider(MemoryProvider):
         self._turn_index = 0
         self._client = None
         self._timeout = _DEFAULT_TIMEOUT
+        self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
+        # Single-writer model for retain. sync_turn() enqueues; the writer
+        # thread drains sequentially. Avoids spawning ad-hoc threads that
+        # can race the interpreter shutdown and emit "cannot schedule new
+        # futures after interpreter shutdown" / "Unclosed client session".
+        self._retain_queue: queue.Queue = queue.Queue()
+        self._writer_thread: threading.Thread | None = None
+        self._shutting_down = threading.Event()
+        self._atexit_registered = False
+        # Legacy alias — older tests/callers reference _sync_thread directly.
+        # Points at _writer_thread once the writer is running.
         self._sync_thread = None
         self._session_id = ""
         self._parent_session_id = ""
@@ -498,16 +543,24 @@ class HindsightMemoryProvider(MemoryProvider):
 
         print("\n  Configuring Hindsight memory:\n")
 
+        existing_config = self._config if isinstance(self._config, dict) else _load_config()
+        if not isinstance(existing_config, dict):
+            existing_config = {}
+
         # Step 1: Mode selection
+        mode_values = ["cloud", "local_embedded", "local_external"]
         mode_items = [
             ("Cloud", "Hindsight Cloud API (lightweight, just needs an API key)"),
             ("Local Embedded", "Run Hindsight locally (downloads ~200MB, needs LLM key)"),
             ("Local External", "Connect to an existing Hindsight instance"),
         ]
-        mode_idx = _curses_select("  Select mode", mode_items, default=0)
-        mode = ["cloud", "local_embedded", "local_external"][mode_idx]
+        existing_mode = existing_config.get("mode")
+        mode_default_idx = mode_values.index(existing_mode) if existing_mode in mode_values else 0
+        mode_idx = _curses_select("  Select mode", mode_items, default=mode_default_idx)
+        mode = mode_values[mode_idx]
 
-        provider_config: dict = {"mode": mode}
+        provider_config: dict = dict(existing_config)
+        provider_config["mode"] = mode
         env_writes: dict = {}
 
         # Step 2: Install/upgrade deps for selected mode
@@ -573,38 +626,59 @@ class HindsightMemoryProvider(MemoryProvider):
                 (p, f"default model: {_PROVIDER_DEFAULT_MODELS[p]}")
                 for p in providers_list
             ]
-            llm_idx = _curses_select("  Select LLM provider", llm_items, default=0)
+            existing_llm_provider = provider_config.get("llm_provider")
+            llm_default_idx = providers_list.index(existing_llm_provider) if existing_llm_provider in providers_list else 0
+            llm_idx = _curses_select("  Select LLM provider", llm_items, default=llm_default_idx)
             llm_provider = providers_list[llm_idx]
 
             provider_config["llm_provider"] = llm_provider
 
             if llm_provider == "openai_compatible":
-                val = input("  LLM endpoint URL (e.g. http://192.168.1.10:8080/v1): ").strip()
+                existing_base_url = provider_config.get("llm_base_url", "")
+                prompt = "  LLM endpoint URL (e.g. http://192.168.1.10:8080/v1)"
+                if existing_base_url:
+                    prompt += f" [{existing_base_url}]"
+                prompt += ": "
+                val = input(prompt).strip()
                 if val:
                     provider_config["llm_base_url"] = val
             elif llm_provider == "openrouter":
                 provider_config["llm_base_url"] = "https://openrouter.ai/api/v1"
 
-            default_model = _PROVIDER_DEFAULT_MODELS.get(llm_provider, "gpt-4o-mini")
-            val = input(f"  LLM model [{default_model}]: ").strip()
-            provider_config["llm_model"] = val or default_model
+            provider_default_model = _PROVIDER_DEFAULT_MODELS.get(llm_provider, "gpt-4o-mini")
+            current_model = provider_config.get("llm_model") or provider_default_model
+            val = input(f"  LLM model [{current_model}]: ").strip()
+            provider_config["llm_model"] = val or current_model
 
             sys.stdout.write("  LLM API key: ")
             sys.stdout.flush()
             llm_key = getpass.getpass(prompt="") if sys.stdin.isatty() else sys.stdin.readline().strip()
-            # Always write explicitly (including empty) so the provider sees ""
-            # rather than a missing variable.  The daemon reads from .env at
-            # startup and fails when HINDSIGHT_LLM_API_KEY is unset.
-            env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
+            if llm_key:
+                env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
+            else:
+                env_path = Path(hermes_home) / ".env"
+                existing_llm_key = ""
+                if env_path.exists():
+                    for line in env_path.read_text().splitlines():
+                        if line.startswith("HINDSIGHT_LLM_API_KEY="):
+                            existing_llm_key = line.split("=", 1)[1]
+                            break
+                env_writes["HINDSIGHT_LLM_API_KEY"] = existing_llm_key
 
         # Step 4: Save everything
-        provider_config["bank_id"] = "hermes"
-        provider_config["recall_budget"] = "mid"
-        # Read existing timeout from config if present, otherwise use default
-        existing_timeout = self._config.get("timeout") if self._config else None
-        timeout_val = existing_timeout if existing_timeout else _DEFAULT_TIMEOUT
+        provider_config.setdefault("bank_id", "hermes")
+        provider_config.setdefault("recall_budget", "mid")
+        # Read existing timeout from config if present, otherwise use default.
+        # Preserve explicit 0 values instead of treating them as blank.
+        existing_timeout = provider_config.get("timeout")
+        timeout_val = existing_timeout if existing_timeout is not None else _DEFAULT_TIMEOUT
         provider_config["timeout"] = timeout_val
         env_writes["HINDSIGHT_TIMEOUT"] = str(timeout_val)
+        if mode == "local_embedded":
+            existing_idle_timeout = provider_config.get("idle_timeout")
+            idle_timeout_val = existing_idle_timeout if existing_idle_timeout is not None else _DEFAULT_IDLE_TIMEOUT
+            provider_config["idle_timeout"] = idle_timeout_val
+            env_writes["HINDSIGHT_IDLE_TIMEOUT"] = str(idle_timeout_val)
         config["memory"]["provider"] = "hindsight"
         save_config(config)
 
@@ -693,6 +767,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
+            {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
         ]
 
     def _get_client(self):
@@ -720,6 +795,14 @@ class HindsightMemoryProvider(MemoryProvider):
                 )
                 if self._llm_base_url:
                     kwargs["llm_base_url"] = self._llm_base_url
+                idle_timeout = _parse_int_setting(
+                    self._config.get("idle_timeout")
+                    if self._config.get("idle_timeout") is not None
+                    else os.environ.get("HINDSIGHT_IDLE_TIMEOUT", self._idle_timeout),
+                    _DEFAULT_IDLE_TIMEOUT,
+                )
+                self._idle_timeout = idle_timeout
+                kwargs["idle_timeout"] = idle_timeout
                 self._client = HindsightEmbedded(**kwargs)
             else:
                 from hindsight_client import Hindsight
@@ -735,6 +818,105 @@ class HindsightMemoryProvider(MemoryProvider):
     def _run_sync(self, coro):
         """Schedule *coro* on the shared loop using the configured timeout."""
         return _run_sync(coro, timeout=self._timeout)
+
+    def _is_retriable_embedded_connection_error(self, exc: Exception) -> bool:
+        """Return True for stale embedded-daemon connection failures."""
+        if self._mode != "local_embedded":
+            return False
+        text = f"{type(exc).__name__}: {exc}".lower()
+        return any(
+            marker in text
+            for marker in (
+                "cannot connect to host",
+                "connection refused",
+                "connect call failed",
+                "clientconnectorerror",
+            )
+        )
+
+    def _ensure_writer(self) -> None:
+        """Lazy-start the single retain-writer thread.
+
+        We don't start the writer in initialize() so providers that never
+        retain (e.g. tools-only mode) don't pay for an idle thread.
+        """
+        thread = self._writer_thread
+        if thread is not None and thread.is_alive():
+            return
+        # If the previous writer exited (e.g. after a prior shutdown), reset
+        # the flag so this fresh writer is allowed to drain new jobs.
+        self._shutting_down.clear()
+        thread = threading.Thread(
+            target=self._writer_loop,
+            daemon=True,
+            name="hindsight-writer",
+        )
+        self._writer_thread = thread
+        # Keep the legacy _sync_thread alias pointing at the writer so any
+        # external code that joins _sync_thread keeps working.
+        self._sync_thread = thread
+        thread.start()
+
+    def _writer_loop(self) -> None:
+        """Drain the retain queue serially. Exits on sentinel.
+
+        Each job() is wrapped so a single failure can't kill the writer.
+        task_done() always fires so queue.join() works in tests.
+        """
+        while True:
+            try:
+                job = self._retain_queue.get(timeout=1.0)
+            except queue.Empty:
+                if self._shutting_down.is_set():
+                    return
+                continue
+            try:
+                if job is _WRITER_SENTINEL:
+                    return
+                try:
+                    job()
+                except Exception as exc:
+                    logger.warning("Hindsight retain failed: %s", exc, exc_info=True)
+            finally:
+                self._retain_queue.task_done()
+
+    def _register_atexit(self) -> None:
+        """Register an idempotent atexit hook to drain the writer.
+
+        Without this, a CLI exit that doesn't go through MemoryManager.
+        shutdown_all() would leave in-flight retain jobs racing interpreter
+        teardown, producing "cannot schedule new futures" warnings and
+        unclosed aiohttp sessions.
+        """
+        if self._atexit_registered:
+            return
+        self._atexit_registered = True
+        atexit.register(self._atexit_shutdown)
+
+    def _atexit_shutdown(self) -> None:
+        if self._shutting_down.is_set():
+            return
+        try:
+            self.shutdown()
+        except Exception as exc:
+            logger.debug("Hindsight atexit shutdown failed: %s", exc)
+
+    def _run_hindsight_operation(self, operation):
+        """Run an async Hindsight client operation, retrying once after idle shutdown."""
+        client = self._get_client()
+        try:
+            return self._run_sync(operation(client))
+        except Exception as exc:
+            if not self._is_retriable_embedded_connection_error(exc):
+                raise
+            logger.info(
+                "Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s",
+                exc,
+            )
+            self._client = None
+            client = self._get_client()
+            self._client = client
+            return self._run_sync(operation(client))
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._session_id = str(session_id or "").strip()
@@ -790,7 +972,14 @@ class HindsightMemoryProvider(MemoryProvider):
         self._session_turns = []
         self._mode = self._config.get("mode", "cloud")
         # Read timeout from config or env var, fall back to default
-        self._timeout = self._config.get("timeout") or int(os.environ.get("HINDSIGHT_TIMEOUT", str(_DEFAULT_TIMEOUT)))
+        self._timeout = _parse_int_setting(
+            self._config.get("timeout") if self._config.get("timeout") is not None else os.environ.get("HINDSIGHT_TIMEOUT"),
+            _DEFAULT_TIMEOUT,
+        )
+        self._idle_timeout = _parse_int_setting(
+            self._config.get("idle_timeout") if self._config.get("idle_timeout") is not None else os.environ.get("HINDSIGHT_IDLE_TIMEOUT"),
+            _DEFAULT_IDLE_TIMEOUT,
+        )
         # "local" is a legacy alias for "local_embedded"
         if self._mode == "local":
             self._mode = "local_embedded"
@@ -808,7 +997,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)
         self._llm_base_url = self._config.get("llm_base_url", "")
 
-        banks = self._config.get("banks", {}).get("hermes", {})
+        banks = cfg_get(self._config, "banks", "hermes", default={})
         static_bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
         self._bank_id_template = self._config.get("bank_id_template", "") or ""
         self._bank_id = _resolve_bank_id_template(
@@ -975,16 +1164,18 @@ class HindsightMemoryProvider(MemoryProvider):
         if not self._auto_recall:
             logger.debug("Prefetch: skipped (auto_recall disabled)")
             return
+        if self._shutting_down.is_set():
+            logger.debug("Prefetch: skipped (shutting down)")
+            return
         # Truncate query to max chars
         if self._recall_max_input_chars and len(query) > self._recall_max_input_chars:
             query = query[:self._recall_max_input_chars]
 
         def _run():
             try:
-                client = self._get_client()
                 if self._prefetch_method == "reflect":
                     logger.debug("Prefetch: calling reflect (bank=%s, query_len=%d)", self._bank_id, len(query))
-                    resp = self._run_sync(client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
+                    resp = self._run_hindsight_operation(lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget))
                     text = resp.text or ""
                 else:
                     recall_kwargs: dict = {
@@ -998,7 +1189,7 @@ class HindsightMemoryProvider(MemoryProvider):
                         recall_kwargs["types"] = self._recall_types
                     logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
                                  self._bank_id, len(query), self._budget)
-                    resp = self._run_sync(client.arecall(**recall_kwargs))
+                    resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                     num_results = len(resp.results) if resp.results else 0
                     logger.debug("Prefetch: recall returned %d results", num_results)
                     text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
@@ -1084,12 +1275,18 @@ class HindsightMemoryProvider(MemoryProvider):
         return kwargs
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Retain conversation turn in background (non-blocking).
+        """Enqueue a retain for the current turn. Non-blocking.
 
-        Respects retain_every_n_turns for batching.
+        The actual aretain_batch runs on a single long-lived writer thread
+        that drains an in-memory queue. Once shutdown() has been called,
+        further sync_turn() calls are dropped — this prevents post-exit
+        retains from reaching aiohttp after interpreter shutdown begins.
         """
         if not self._auto_retain:
             logger.debug("sync_turn: skipped (auto_retain disabled)")
+            return
+        if self._shutting_down.is_set():
+            logger.debug("sync_turn: skipped (shutting down)")
             return
 
         if session_id:
@@ -1115,36 +1312,42 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._parent_session_id:
             lineage_tags.append(f"parent:{self._parent_session_id}")
 
-        def _sync():
-            try:
-                client = self._get_client()
-                item = self._build_retain_kwargs(
-                    content,
-                    context=self._retain_context,
-                    metadata=self._build_metadata(
-                        message_count=len(self._session_turns) * 2,
-                        turn_index=self._turn_index,
-                    ),
-                    tags=lineage_tags or None,
-                )
-                item.pop("bank_id", None)
-                item.pop("retain_async", None)
-                logger.debug("Hindsight retain: bank=%s, doc=%s, async=%s, content_len=%d, num_turns=%d",
-                             self._bank_id, self._document_id, self._retain_async, len(content), len(self._session_turns))
-                self._run_sync(client.aretain_batch(
-                    bank_id=self._bank_id,
-                    items=[item],
-                    document_id=self._document_id,
-                    retain_async=self._retain_async,
-                ))
-                logger.debug("Hindsight retain succeeded")
-            except Exception as e:
-                logger.warning("Hindsight sync failed: %s", e, exc_info=True)
+        # Snapshot the state needed for the retain. The writer may run after
+        # _session_turns / _turn_index are mutated by a later sync_turn().
+        metadata_snapshot = self._build_metadata(
+            message_count=len(self._session_turns) * 2,
+            turn_index=self._turn_index,
+        )
+        num_turns = len(self._session_turns)
+        document_id = self._document_id
+        bank_id = self._bank_id
+        retain_async_flag = self._retain_async
+        retain_context = self._retain_context
 
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
-        self._sync_thread = threading.Thread(target=_sync, daemon=True, name="hindsight-sync")
-        self._sync_thread.start()
+        def _do_retain() -> None:
+            item = self._build_retain_kwargs(
+                content,
+                context=retain_context,
+                metadata=metadata_snapshot,
+                tags=lineage_tags or None,
+            )
+            item.pop("bank_id", None)
+            item.pop("retain_async", None)
+            logger.debug("Hindsight retain: bank=%s, doc=%s, async=%s, content_len=%d, num_turns=%d",
+                         bank_id, document_id, retain_async_flag, len(content), num_turns)
+            self._run_hindsight_operation(
+                lambda client: client.aretain_batch(
+                    bank_id=bank_id,
+                    items=[item],
+                    document_id=document_id,
+                    retain_async=retain_async_flag,
+                )
+            )
+            logger.debug("Hindsight retain succeeded")
+
+        self._ensure_writer()
+        self._register_atexit()
+        self._retain_queue.put(_do_retain)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
@@ -1152,12 +1355,6 @@ class HindsightMemoryProvider(MemoryProvider):
         return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
-        try:
-            client = self._get_client()
-        except Exception as e:
-            logger.warning("Hindsight client init failed: %s", e)
-            return tool_error(f"Hindsight client unavailable: {e}")
-
         if tool_name == "hindsight_retain":
             content = args.get("content", "")
             if not content:
@@ -1171,7 +1368,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 )
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
-                self._run_sync(client.aretain(**retain_kwargs))
+                self._run_hindsight_operation(lambda client: client.aretain(**retain_kwargs))
                 logger.debug("Tool hindsight_retain: success")
                 return json.dumps({"result": "Memory stored successfully."})
             except Exception as e:
@@ -1194,7 +1391,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     recall_kwargs["types"] = self._recall_types
                 logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
                              self._bank_id, len(query), self._budget)
-                resp = self._run_sync(client.arecall(**recall_kwargs))
+                resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                 num_results = len(resp.results) if resp.results else 0
                 logger.debug("Tool hindsight_recall: %d results", num_results)
                 if not resp.results:
@@ -1212,9 +1409,11 @@ class HindsightMemoryProvider(MemoryProvider):
             try:
                 logger.debug("Tool hindsight_reflect: bank=%s, query_len=%d, budget=%s",
                              self._bank_id, len(query), self._budget)
-                resp = self._run_sync(client.areflect(
-                    bank_id=self._bank_id, query=query, budget=self._budget
-                ))
+                resp = self._run_hindsight_operation(
+                    lambda client: client.areflect(
+                        bank_id=self._bank_id, query=query, budget=self._budget
+                    )
+                )
                 logger.debug("Tool hindsight_reflect: response_len=%d", len(resp.text or ""))
                 return json.dumps({"result": resp.text or "No relevant memories found."})
             except Exception as e:
@@ -1223,17 +1422,165 @@ class HindsightMemoryProvider(MemoryProvider):
 
         return tool_error(f"Unknown tool: {tool_name}")
 
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Refresh cached per-session state when the agent rotates session_id.
+
+        Fires on /resume, /branch, /reset, /new, and context compression.
+        Without this hook, initialize()-cached state (``_session_id``,
+        ``_document_id``, ``_session_turns``, ``_turn_counter``) would keep
+        pointing at the previous session and writes would land in the wrong
+        document. See hermes-agent#6672.
+
+        Always update ``_session_id`` so metadata and tags on subsequent
+        retains reflect the active session. Always mint a fresh
+        ``_document_id`` so the new session's retain doesn't overwrite the
+        old session's document on vectorize-io/hindsight#1303. Always clear
+        the accumulated batch buffers (``_session_turns``, ``_turn_counter``,
+        ``_turn_index``) — even for /resume and /branch, the new session's
+        batching must start from zero so an in-flight retain doesn't flush
+        under the wrong ``_document_id``.
+
+        Before clearing, flush any buffered turns under the *old*
+        ``_document_id``. Users who set ``retain_every_n_turns > 1`` would
+        otherwise silently lose whatever's in ``_session_turns`` at the
+        moment of switch — the same data-loss class as the shutdown race,
+        just at a different lifecycle event.
+
+        Also wait for any in-flight prefetch from the old session and drop
+        its cached result; otherwise the new session's first ``prefetch()``
+        could read stale recall text from before the switch.
+
+        ``parent_session_id`` is recorded for lineage tags on future retains.
+        ``reset`` is accepted but not needed for Hindsight's state model —
+        buffer clearing is correct for every session switch, not only /reset.
+        """
+        new_id = str(new_session_id or "").strip()
+        if not new_id:
+            return
+
+        # 1. Flush any buffered turns under the OLD identifiers. Snapshot
+        # everything before mutating self._* so metadata + tags + doc_id
+        # all reference the old session consistently.
+        if self._session_turns:
+            old_turns = list(self._session_turns)
+            old_session_id = self._session_id
+            old_document_id = self._document_id
+            old_parent_session_id = self._parent_session_id
+            old_turn_index = self._turn_index
+            old_metadata = self._build_metadata(
+                message_count=len(old_turns) * 2,
+                turn_index=old_turn_index,
+            )
+            old_lineage_tags: list[str] = []
+            if old_session_id:
+                old_lineage_tags.append(f"session:{old_session_id}")
+            if old_parent_session_id:
+                old_lineage_tags.append(f"parent:{old_parent_session_id}")
+            old_content = "[" + ",".join(old_turns) + "]"
+
+            def _flush():
+                try:
+                    item = self._build_retain_kwargs(
+                        old_content,
+                        context=self._retain_context,
+                        metadata=old_metadata,
+                        tags=old_lineage_tags or None,
+                    )
+                    item.pop("bank_id", None)
+                    item.pop("retain_async", None)
+                    logger.debug(
+                        "Hindsight flush-on-switch: bank=%s, doc=%s, num_turns=%d",
+                        self._bank_id, old_document_id, len(old_turns),
+                    )
+                    self._run_hindsight_operation(
+                        lambda client: client.aretain_batch(
+                            bank_id=self._bank_id,
+                            items=[item],
+                            document_id=old_document_id,
+                            retain_async=self._retain_async,
+                        )
+                    )
+                except Exception as e:
+                    logger.warning("Hindsight flush-on-switch failed: %s", e, exc_info=True)
+
+            # Route the flush through the same writer queue sync_turn
+            # uses. That serializes it behind any still-queued retains
+            # from the old session (FIFO by document_id), avoids racing
+            # two threads on aretain_batch against the same document, and
+            # keeps shutdown's drain semantics intact. Skip enqueue if
+            # shutdown has already fired — the writer is draining/gone.
+            if not self._shutting_down.is_set():
+                self._ensure_writer()
+                self._register_atexit()
+                self._retain_queue.put(_flush)
+
+        # 2. Drain any in-flight prefetch from the old session and drop
+        # its cached result so the new session doesn't see stale recall.
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=3.0)
+        with self._prefetch_lock:
+            self._prefetch_result = ""
+
+        # 3. Now rotate to the new session.
+        if parent_session_id:
+            self._parent_session_id = str(parent_session_id).strip()
+        self._session_id = new_id
+        start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self._document_id = f"{self._session_id}-{start_ts}"
+        self._session_turns = []
+        self._turn_counter = 0
+        self._turn_index = 0
+        logger.debug(
+            "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
+            self._session_id, self._parent_session_id, reset, self._document_id,
+        )
+
     def shutdown(self) -> None:
-        logger.debug("Hindsight shutdown: waiting for background threads")
-        for t in (self._prefetch_thread, self._sync_thread):
-            if t and t.is_alive():
-                t.join(timeout=5.0)
+        logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
+        # Stop accepting new retain jobs first so anyone still calling
+        # sync_turn() during teardown is dropped, not enqueued.
+        self._shutting_down.set()
+        # Drain the writer: it will finish in-flight work, then exit on
+        # the sentinel. Bounded join keeps shutdown predictable even if
+        # the daemon is wedged.
+        writer = self._writer_thread
+        if writer is not None and writer.is_alive():
+            try:
+                self._retain_queue.put(_WRITER_SENTINEL)
+            except Exception:
+                pass
+            writer.join(timeout=10.0)
+            if writer.is_alive():
+                logger.warning(
+                    "Hindsight writer did not stop within 10s; "
+                    "abandoning %d pending retain(s)",
+                    self._retain_queue.qsize(),
+                )
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=5.0)
         if self._client is not None:
             try:
                 if self._mode == "local_embedded":
-                    # Use the public close() API. The RuntimeError from
-                    # aiohttp's "attached to a different loop" is expected
-                    # and harmless — the daemon keeps running independently.
+                    # HindsightEmbedded.close() delegates to its sync client.close().
+                    # When Hermes created/used that client on the shared async loop,
+                    # closing it from this thread can raise "attached to a different
+                    # loop" before aiohttp releases the session. Close the embedded
+                    # inner async client on the shared loop first, then let the
+                    # wrapper clean up daemon/UI bookkeeping.
+                    inner_client = getattr(self._client, "_client", None)
+                    if inner_client is not None and hasattr(inner_client, "aclose"):
+                        _run_sync(inner_client.aclose())
+                        try:
+                            self._client._client = None
+                        except Exception:
+                            pass
                     try:
                         self._client.close()
                     except RuntimeError:

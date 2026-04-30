@@ -73,6 +73,7 @@ export const zh: Translations = {
       documentation: "文档",
       keys: "密钥",
       logs: "日志",
+      models: "模型",
       sessions: "会话",
       skills: "技能",
     },
@@ -170,6 +171,18 @@ export const zh: Translations = {
     inOut: "输入 {input} / 输出 {output}",
   },
 
+  models: {
+    modelsUsed: "使用模型数",
+    estimatedCost: "预估费用",
+    tokens: "Token",
+    sessions: "会话",
+    avgPerSession: "平均/会话",
+    apiCalls: "API 调用",
+    toolCalls: "工具调用",
+    noModelsData: "该时间段暂无模型使用数据",
+    startSession: "开始会话后将在此显示模型数据",
+  },
+
   logs: {
     title: "日志",
     autoRefresh: "自动刷新",
@@ -234,6 +247,9 @@ export const zh: Translations = {
     exportConfig: "导出配置为 JSON",
     importConfig: "从 JSON 导入配置",
     resetDefaults: "恢复默认值",
+    resetScopeTooltip: "将{scope}恢复为默认值",
+    confirmResetScope: "确定要将{scope}的所有设置恢复为默认值吗？此操作仅更新表单，在按下「保存」按钮前不会写入 config.yaml。",
+    resetScopeToast: "{scope}已恢复为默认值 — 请检查并保存以生效",
     rawYaml: "原始 YAML 配置",
     searchResults: "搜索结果",
     fields: "个字段",

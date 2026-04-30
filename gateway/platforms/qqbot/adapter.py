@@ -976,6 +976,18 @@ class QQAdapter(BasePlatformAdapter):
         if not channel_id:
             return
 
+        # Apply group_policy ACL — guild channels are group-like contexts.
+        # Without this check any member of any guild the bot is in could
+        # bypass the configured allowlist.
+        guild_id = str(d.get("guild_id", ""))
+        author_id = str(author.get("id", ""))
+        if not self._is_group_allowed(guild_id or channel_id, author_id):
+            logger.debug(
+                "[%s] Guild message blocked by ACL: channel=%s user=%s",
+                self._log_tag, channel_id, author_id,
+            )
+            return
+
         member = d.get("member") if isinstance(d.get("member"), dict) else {}
         nick = str(member.get("nick", "")) or str(author.get("username", ""))
 
@@ -1030,6 +1042,17 @@ class QQAdapter(BasePlatformAdapter):
         """Handle a guild DM message event."""
         guild_id = str(d.get("guild_id", ""))
         if not guild_id:
+            return
+
+        # Apply dm_policy ACL — guild DMs were previously unauthenticated.
+        # Without this check any member of any guild the bot is in could
+        # bypass the configured allowlist via direct messages.
+        author_id = str(author.get("id", ""))
+        if not self._is_dm_allowed(author_id):
+            logger.debug(
+                "[%s] Guild DM blocked by ACL: guild=%s user=%s",
+                self._log_tag, guild_id, author_id,
+            )
             return
 
         text = content
@@ -1957,7 +1980,7 @@ class QQAdapter(BasePlatformAdapter):
             self, openid: str, content: str, reply_to: Optional[str] = None
     ) -> SendResult:
         """Send text to a C2C user via REST API."""
-        msg_seq = self._next_msg_seq(reply_to or openid)
+        self._next_msg_seq(reply_to or openid)
         body = self._build_text_body(content, reply_to)
         if reply_to:
             body["msg_id"] = reply_to
@@ -1970,7 +1993,7 @@ class QQAdapter(BasePlatformAdapter):
             self, group_openid: str, content: str, reply_to: Optional[str] = None
     ) -> SendResult:
         """Send text to a group via REST API."""
-        msg_seq = self._next_msg_seq(reply_to or group_openid)
+        self._next_msg_seq(reply_to or group_openid)
         body = self._build_text_body(content, reply_to)
         if reply_to:
             body["msg_id"] = reply_to
@@ -2135,11 +2158,6 @@ class QQAdapter(BasePlatformAdapter):
 
             # Route
             chat_type = self._guess_chat_type(chat_id)
-            target_path = (
-                f"/v2/users/{chat_id}/files"
-                if chat_type == "c2c"
-                else f"/v2/groups/{chat_id}/files"
-            )
 
             if chat_type == "guild":
                 # Guild channels don't support native media upload in the same way

@@ -1,9 +1,15 @@
-import { type MutableRefObject, useCallback, useRef } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { TYPING_IDLE_MS } from '../config/timing.js'
 import { attachedImageNotice } from '../domain/messages.js'
 import { looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { InputDetectDropResponse, PromptSubmitResponse, ShellExecResponse } from '../gatewayTypes.js'
+import type {
+  InputDetectDropResponse,
+  PromptSubmitResponse,
+  SessionSteerResponse,
+  ShellExecResponse
+} from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
@@ -14,6 +20,9 @@ import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
+const SESSION_BUSY_RE = /session busy|waiting for model response/i
+
+const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
 
 const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
@@ -44,12 +53,42 @@ export function useSubmission(opts: UseSubmissionOptions) {
   } = opts
 
   const lastEmptyAt = useRef(0)
+  const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (typingIdleTimer.current) {
+      clearTimeout(typingIdleTimer.current)
+      typingIdleTimer.current = null
+    }
+
+    if (!composerState.input && !composerState.inputBuf.length) {
+      turnController.relaxStreaming()
+
+      return
+    }
+
+    if (getUiState().busy) {
+      turnController.boostStreamingForTyping()
+    }
+
+    typingIdleTimer.current = setTimeout(() => {
+      typingIdleTimer.current = null
+      turnController.relaxStreaming()
+    }, TYPING_IDLE_MS)
+
+    return () => {
+      if (typingIdleTimer.current) {
+        clearTimeout(typingIdleTimer.current)
+        typingIdleTimer.current = null
+      }
+    }
+  }, [composerState.input, composerState.inputBuf])
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, showUserMessage = true) => {
       const expand = expandSnips(composerState.pasteSnips)
 
-      const startSubmit = (displayText: string, submitText: string) => {
+      const startSubmit = (displayText: string, submitText: string, showUserMessage = true) => {
         const sid = getUiState().sid
 
         if (!sid) {
@@ -59,12 +98,23 @@ export function useSubmission(opts: UseSubmissionOptions) {
         turnController.clearStatusTimer()
         maybeGoodVibes(submitText)
         setLastUserMsg(text)
-        appendMessage({ role: 'user', text: displayText })
+
+        if (showUserMessage) {
+          appendMessage({ role: 'user', text: displayText })
+        }
+
         patchUiState({ busy: true, status: 'running…' })
         turnController.bufRef = ''
         turnController.interrupted = false
 
         gw.request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
+          if (isSessionBusyError(e)) {
+            composerActions.enqueue(submitText)
+            patchUiState({ busy: true, status: 'queued for next turn' })
+
+            return sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
+          }
+
           sys(`error: ${e.message}`)
           patchUiState({ busy: false, status: 'ready' })
         })
@@ -76,10 +126,17 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return sys('session not ready yet')
       }
 
+      // Plain prompts are the common path and should not pay an extra RPC
+      // before prompt.submit. File-drop detection still runs for absolute,
+      // tilde, file://, and explicit relative paths.
+      if (!looksLikeSlashCommand(text) && !/(?:^|\s)(?:file:\/\/|~\/|\.?\.\/|\/)[^\s]+/.test(text)) {
+        return startSubmit(text, expand(text), showUserMessage)
+      }
+
       gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
         .then(r => {
           if (!r?.matched) {
-            return startSubmit(text, expand(text))
+            return startSubmit(text, expand(text), showUserMessage)
           }
 
           if (r.is_image) {
@@ -88,11 +145,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
             turnController.pushActivity(`detected file: ${r.name}`)
           }
 
-          startSubmit(r.text || text, expand(r.text || text))
+          startSubmit(r.text || text, expand(r.text || text), showUserMessage)
         })
-        .catch(() => startSubmit(text, expand(text)))
+        .catch(() => startSubmit(text, expand(text), showUserMessage))
     },
-    [appendMessage, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
+    [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
   )
 
   const shellExec = useCallback(
@@ -162,6 +219,72 @@ export function useSubmission(opts: UseSubmissionOptions) {
     [interpolate, send, shellExec]
   )
 
+  // Honors `display.busy_input_mode` from config.yaml (CLI parity):
+  //   - 'queue'     (legacy): append to queueRef; drains on busy → false
+  //   - 'steer'     : inject into the current turn via session.steer; falls
+  //                   back to queue when steer is rejected (no agent / no
+  //                   tool window).
+  //   - 'interrupt' (default): cancel the in-flight turn, then send the
+  //                   new text as a fresh prompt so it actually moves.
+  //
+  // `opts.fallbackToFront` controls whether a steer fallback re-inserts
+  // at the front of the queue (used by the queue-edit path to preserve
+  // a picked item's position); the mainline submit path always appends.
+  const handleBusyInput = useCallback(
+    (full: string, opts: { fallbackToFront?: boolean } = {}) => {
+      const live = getUiState()
+      const mode = live.busyInputMode
+
+      const fallback = (note: string) => {
+        if (opts.fallbackToFront) {
+          composerRefs.queueRef.current.unshift(full)
+          composerActions.syncQueue()
+        } else {
+          composerActions.enqueue(full)
+        }
+
+        sys(note)
+      }
+
+      if (mode === 'queue') {
+        return composerActions.enqueue(full)
+      }
+
+      if (mode === 'steer' && live.sid) {
+        gw.request<SessionSteerResponse>('session.steer', { session_id: live.sid, text: full })
+          .then(raw => {
+            const r = asRpcResult<SessionSteerResponse>(raw)
+
+            if (r?.status !== 'queued') {
+              fallback('steer rejected — message queued for next turn')
+            }
+          })
+          .catch(() => fallback('steer failed — message queued for next turn'))
+
+        return
+      }
+
+      // 'interrupt' (default): tear down the current turn, then send.
+      // `interruptTurn` fires `session.interrupt` without awaiting; if
+      // the gateway is still mid-response when `prompt.submit` lands,
+      // `send()`'s catch path re-queues with a "queued: ..." sys note
+      // (`isSessionBusyError`) — so a lost race degrades to queue
+      // semantics, not a dropped message.
+      if (live.sid) {
+        turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys })
+      }
+
+      if (hasInterpolation(full)) {
+        patchUiState({ busy: true })
+
+        return interpolate(full, send)
+      }
+
+      send(full)
+    },
+    [appendMessage, composerActions, composerRefs, gw, interpolate, send, sys]
+  )
+
   const dispatchSubmission = useCallback(
     (full: string) => {
       if (!full.trim()) {
@@ -207,9 +330,16 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
 
         if (getUiState().busy) {
-          composerRefs.queueRef.current.unshift(picked)
+          // 'interrupt' / 'steer' should reach the live turn instead of
+          // silently going back to the queue.  handleBusyInput resolves
+          // mode-specific behavior (interrupt-and-send, steer, or queue).
+          if (getUiState().busyInputMode === 'queue') {
+            composerRefs.queueRef.current.unshift(picked)
 
-          return composerActions.syncQueue()
+            return composerActions.syncQueue()
+          }
+
+          return handleBusyInput(picked, { fallbackToFront: true })
         }
 
         return sendQueued(picked)
@@ -218,7 +348,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       composerActions.pushHistory(full)
 
       if (getUiState().busy) {
-        return composerActions.enqueue(full)
+        return handleBusyInput(full)
       }
 
       if (hasInterpolation(full)) {
@@ -229,7 +359,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       send(full)
     },
-    [appendMessage, composerActions, composerRefs, interpolate, send, sendQueued, shellExec, slashRef]
+    [appendMessage, composerActions, composerRefs, handleBusyInput, interpolate, send, sendQueued, shellExec, slashRef]
   )
 
   const submit = useCallback(
@@ -260,6 +390,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
         if (doubleTap && live.sid && composerRefs.queueRef.current.length) {
           const next = composerActions.dequeue()
 
+          composerActions.syncQueue()
+
           if (next) {
             composerActions.setQueueEdit(null)
             dispatchSubmission(next)
@@ -284,7 +416,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   submitRef.current = submit
 
-  return { dispatchSubmission, send, sendQueued, shellExec, submit }
+  return { dispatchSubmission, send, sendQueued, submit }
 }
 
 export interface UseSubmissionOptions {

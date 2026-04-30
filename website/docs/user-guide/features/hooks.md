@@ -89,26 +89,6 @@ Handlers registered for `command:*` fire for any `command:` event (`command:mode
 
 ### Examples
 
-#### Boot Checklist (BOOT.md) — Built-in
-
-The gateway ships with a built-in `boot-md` hook that looks for `~/.hermes/BOOT.md` on every startup. If the file exists, the agent runs its instructions in a background session. No installation needed — just create the file.
-
-**Create `~/.hermes/BOOT.md`:**
-
-```markdown
-# Startup Checklist
-
-1. Check if any cron jobs failed overnight — run `hermes cron list`
-2. Send a message to Discord #general saying "Gateway restarted, all systems go"
-3. Check if /opt/app/deploy.log has any errors from the last 24 hours
-```
-
-The agent runs these instructions in a background thread so it doesn't block gateway startup. If nothing needs attention, the agent replies with `[SILENT]` and no message is delivered.
-
-:::tip
-No BOOT.md? The hook silently skips — zero overhead. Create the file whenever you need startup automation, delete it when you don't.
-:::
-
 #### Telegram Alert on Long Tasks
 
 Send yourself a message when the agent takes more than 10 steps:
@@ -202,6 +182,161 @@ async def handle(event_type: str, context: dict):
         }, timeout=5)
 ```
 
+### Tutorial: BOOT.md — Run a Startup Checklist on Every Gateway Boot
+
+A popular pattern from the community: drop a Markdown checklist at `~/.hermes/BOOT.md`, and have the agent run it once every time the gateway starts. Useful for "on every boot, check overnight cron failures and ping me on Discord if anything failed," or "summarize the last 24h of deploy.log and post it to Slack #ops."
+
+This tutorial shows how to build it yourself as a user-defined hook. Hermes does not ship a built-in BOOT.md hook — you wire up exactly the behavior you want.
+
+#### What we're building
+
+1. A file at `~/.hermes/BOOT.md` with natural-language startup instructions.
+2. A gateway hook that fires on `gateway:startup`, spawns a one-shot agent with your gateway's resolved model/credentials, and runs the BOOT.md instructions.
+3. A `[SILENT]` convention so the agent can opt out of sending a message when there's nothing to report.
+
+#### Step 1: Write your checklist
+
+Create `~/.hermes/BOOT.md`. Write it as if you were giving instructions to a human assistant:
+
+```markdown
+# Startup Checklist
+
+1. Run `hermes cron list` and check if any scheduled jobs failed overnight.
+2. If any failed, send a summary to Discord #ops using the `send_message` tool.
+3. Check if `/opt/app/deploy.log` has any ERROR lines from the last 24 hours. If yes, summarize them and include in the same Discord message.
+4. If nothing went wrong, reply with only `[SILENT]` so no message is sent.
+```
+
+The agent sees this as part of its prompt, so anything you can describe in plain language works — tool calls, shell commands, sending messages, summarizing files.
+
+#### Step 2: Create the hook
+
+```text
+~/.hermes/hooks/boot-md/
+├── HOOK.yaml
+└── handler.py
+```
+
+**`~/.hermes/hooks/boot-md/HOOK.yaml`**
+
+```yaml
+name: boot-md
+description: Run ~/.hermes/BOOT.md on gateway startup
+events:
+  - gateway:startup
+```
+
+**`~/.hermes/hooks/boot-md/handler.py`**
+
+```python
+"""Run ~/.hermes/BOOT.md on every gateway startup."""
+
+import logging
+import threading
+from pathlib import Path
+
+logger = logging.getLogger("hooks.boot-md")
+
+BOOT_FILE = Path.home() / ".hermes" / "BOOT.md"
+
+
+def _build_prompt(content: str) -> str:
+    return (
+        "You are running a startup boot checklist. Follow the instructions "
+        "below exactly.\n\n"
+        "---\n"
+        f"{content}\n"
+        "---\n\n"
+        "Execute each instruction. Use the send_message tool to deliver any "
+        "messages to platforms like Discord or Slack.\n"
+        "If nothing needs attention and there is nothing to report, reply "
+        "with ONLY: [SILENT]"
+    )
+
+
+def _run_boot_agent(content: str) -> None:
+    """Spawn a one-shot agent and execute the checklist.
+
+    Uses the gateway's resolved model and runtime credentials so this works
+    against custom endpoints, aggregators, and OAuth-based providers alike.
+    """
+    try:
+        from gateway.run import _resolve_gateway_model, _resolve_runtime_agent_kwargs
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model=_resolve_gateway_model(),
+            **_resolve_runtime_agent_kwargs(),
+            platform="gateway",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            max_iterations=20,
+        )
+        result = agent.run_conversation(_build_prompt(content))
+        response = result.get("final_response", "")
+        if response and "[SILENT]" not in response:
+            logger.info("boot-md completed: %s", response[:200])
+        else:
+            logger.info("boot-md completed (nothing to report)")
+    except Exception as e:
+        logger.error("boot-md agent failed: %s", e)
+
+
+async def handle(event_type: str, context: dict) -> None:
+    if not BOOT_FILE.exists():
+        return
+    content = BOOT_FILE.read_text(encoding="utf-8").strip()
+    if not content:
+        return
+
+    logger.info("Running BOOT.md (%d chars)", len(content))
+
+    # Background thread so gateway startup isn't blocked on a full agent turn.
+    thread = threading.Thread(
+        target=_run_boot_agent,
+        args=(content,),
+        name="boot-md",
+        daemon=True,
+    )
+    thread.start()
+```
+
+The two key lines:
+
+- `_resolve_gateway_model()` reads the gateway's currently-configured model.
+- `_resolve_runtime_agent_kwargs()` resolves provider credentials the same way a normal gateway turn does — including API keys, base URLs, OAuth tokens, and credential pools.
+
+Without these, a bare `AIAgent()` falls back to built-in defaults and will 401 against any non-default endpoint.
+
+#### Step 3: Test it
+
+Restart the gateway:
+
+```bash
+hermes gateway restart
+```
+
+Watch the logs:
+
+```bash
+hermes logs --follow --level INFO | grep boot-md
+```
+
+You should see `Running BOOT.md (N chars)` followed by either `boot-md completed: ...` (summary of what the agent did) or `boot-md completed (nothing to report)` when the agent replied `[SILENT]`.
+
+Delete `~/.hermes/BOOT.md` to disable the checklist — the hook stays loaded but silently skips when the file isn't there.
+
+#### Extending the pattern
+
+- **Schedule-aware checklists:** key off `datetime.now().weekday()` inside BOOT.md's instructions ("if it's Monday, also check the weekly deploy log"). The instructions are free-form text, so anything the agent can reason about is fair game.
+- **Multiple checklists:** point the hook at a different file (`STARTUP.md`, `MORNING.md`, etc.) and register separate hook directories for each.
+- **Non-agent variant:** if you don't need a full agent loop, skip `AIAgent` entirely and have the handler post a fixed notification directly via `httpx`. Cheaper, faster, and has no provider dependency.
+
+#### Why this isn't a built-in
+
+An earlier version of Hermes shipped this as a built-in hook and silently spawned an agent with bare defaults on every gateway boot. That surprised users with custom endpoints and made the feature invisible to users who didn't know it was running. Keeping it as a documented pattern — built by you, in your hooks directory — means you see exactly what it does and opt in by writing the files.
+
 ### How It Works
 
 1. On gateway startup, `HookRegistry.discover_and_load()` scans `~/.hermes/hooks/`
@@ -248,6 +383,10 @@ def register(ctx):
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
+| [`pre_approval_request`](#pre_approval_request) | Dangerous command needs user approval, before the prompt/notification is sent | ignored |
+| [`post_approval_response`](#post_approval_response) | User responded to an approval prompt (or it timed out) | ignored |
+| [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
+| [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
 
 ---
 
@@ -772,6 +911,185 @@ def buffer_or_rewrite(event, **kwargs):
 def register(ctx):
     ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
 ```
+
+---
+
+### `pre_approval_request`
+
+Fires **immediately before** an approval request is shown to the user — covers every surface: interactive CLI, the Ink TUI, gateway platforms (Telegram, Discord, Slack, WhatsApp, Matrix, etc.), and ACP clients (VS Code, Zed, JetBrains).
+
+This is the right place to wire a custom notifier — for example, a macOS menu-bar app that pops an allow/deny notification, or an audit log that records every approval request with context.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    command: str,
+    description: str,
+    pattern_key: str,
+    pattern_keys: list[str],
+    session_key: str,
+    surface: str,
+    **kwargs,
+):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `command` | `str` | The shell command awaiting approval |
+| `description` | `str` | Human-readable reason(s) the command is flagged (combined when multiple patterns match) |
+| `pattern_key` | `str` | Primary pattern key that triggered the approval (e.g. `"rm_rf"`, `"sudo"`) |
+| `pattern_keys` | `list[str]` | All pattern keys that matched |
+| `session_key` | `str` | Session identifier, useful for scoping notifications per-chat |
+| `surface` | `str` | `"cli"` for interactive CLI/TUI prompts, `"gateway"` for async platform approvals |
+
+**Return value:** ignored. Hooks here are observer-only; they cannot veto or pre-answer the approval. Use [`pre_tool_call`](#pre_tool_call) to block a tool before it reaches the approval system.
+
+**Use cases:** Desktop notifications, push alerts, audit logging, Slack webhooks, escalation routing, metrics.
+
+**Example — desktop notification on macOS:**
+
+```python
+import subprocess
+
+def notify_approval(command, description, session_key, **kwargs):
+    title = "Hermes needs approval"
+    body = f"{description}: {command[:80]}"
+    subprocess.Popen([
+        "osascript", "-e",
+        f'display notification "{body}" with title "{title}"',
+    ])
+
+def register(ctx):
+    ctx.register_hook("pre_approval_request", notify_approval)
+```
+
+---
+
+### `post_approval_response`
+
+Fires **after** the user responds to an approval prompt (or the prompt times out).
+
+**Callback signature:**
+
+```python
+def my_callback(
+    command: str,
+    description: str,
+    pattern_key: str,
+    pattern_keys: list[str],
+    session_key: str,
+    surface: str,
+    choice: str,
+    **kwargs,
+):
+```
+
+Same kwargs as `pre_approval_request`, plus:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `choice` | `str` | One of `"once"`, `"session"`, `"always"`, `"deny"`, or `"timeout"` |
+
+**Return value:** ignored.
+
+**Use cases:** Close the matching desktop notification, record the final decision in an audit log, update metrics, roll forward a rate limiter.
+
+```python
+def log_decision(command, choice, session_key, **kwargs):
+    logger.info("approval %s: %s for session %s", choice, command[:60], session_key)
+
+def register(ctx):
+    ctx.register_hook("post_approval_response", log_decision)
+```
+
+---
+
+### `transform_tool_result`
+
+Fires **after** a tool returns and **before** the result is appended to the conversation. Lets a plugin rewrite ANY tool's result string — not just terminal output — before the model sees it.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    tool_name: str,
+    arguments: dict,
+    result: str,
+    task_id: str | None,
+    **kwargs,
+) -> str | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tool_name` | `str` | Tool that produced the result (`read_file`, `web_extract`, `delegate_task`, …). |
+| `arguments` | `dict` | Arguments the model called the tool with. |
+| `result` | `str` | The tool's raw result string, post-truncation and post-ANSI-strip. |
+| `task_id` | `str \| None` | Task/session ID when running inside RL/benchmark environments. |
+
+**Return value:** `str` to replace the result (the returned string is what the model sees), `None` to leave it unchanged.
+
+**Use cases:** Redact organization-specific PII from `web_extract` output, wrap long JSON tool responses in a summary header, inject retrieval-augmented hints into `read_file` results, rewrite `delegate_task` subagent reports into a project-specific schema.
+
+```python
+import re
+SECRET = re.compile(r"sk-[A-Za-z0-9]{32,}")
+
+def redact_secrets(tool_name, result, **kwargs):
+    if SECRET.search(result):
+        return SECRET.sub("[REDACTED]", result)
+    return None
+
+def register(ctx):
+    ctx.register_hook("transform_tool_result", redact_secrets)
+```
+
+Applies to every tool. For terminal-only rewriting see `transform_terminal_output` below — it's narrower and runs earlier in the pipeline (pre-truncation, pre-redaction).
+
+---
+
+### `transform_terminal_output`
+
+Fires inside the `terminal` tool's foreground-output pipeline, **before** the default 50 KB truncation, ANSI strip, and secret redaction. Lets plugins rewrite the raw stdout/stderr of a shell command before any downstream processing touches it.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    command: str,
+    output: str,
+    exit_code: int,
+    cwd: str,
+    task_id: str | None,
+    **kwargs,
+) -> str | None:
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `command` | `str` | The shell command that produced the output. |
+| `output` | `str` | Raw combined stdout/stderr (may be very large — truncation happens after the hook). |
+| `exit_code` | `int` | Process exit code. |
+| `cwd` | `str` | Working directory the command ran in. |
+
+**Return value:** `str` to replace the output, `None` to leave it unchanged.
+
+**Use cases:** Inject summaries for commands that produce massive output (`du -ah`, `find`, `tree`), tag output with a project-specific marker so downstream hooks know how to handle it, strip timing noise that flaps between runs and defeats prompt caching.
+
+```python
+def summarize_find(command, output, **kwargs):
+    if command.startswith("find ") and len(output) > 50_000:
+        lines = output.count("\n")
+        head = "\n".join(output.splitlines()[:40])
+        return f"{head}\n\n[summary: {lines} paths total, showing first 40]"
+    return None
+
+def register(ctx):
+    ctx.register_hook("transform_terminal_output", summarize_find)
+```
+
+Pairs well with `transform_tool_result` (which covers every other tool).
 
 ---
 

@@ -77,7 +77,7 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot",
+    "qqbot", "yuanbao",
 })
 
 # Platforms that support a configured cron/notification home target, mapped to
@@ -198,7 +198,9 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             if resolved:
                 parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
                 if resolved_is_explicit:
-                    chat_id, thread_id = parsed_chat_id, parsed_thread_id
+                    chat_id = parsed_chat_id
+                    if parsed_thread_id is not None:
+                        thread_id = parsed_thread_id
                 else:
                     chat_id = resolved
         except Exception:
@@ -231,12 +233,32 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     }
 
 
+def _normalize_deliver_value(deliver) -> str:
+    """Normalize a stored/submitted ``deliver`` value to its canonical string form.
+
+    The contract is that ``deliver`` is a string (``"local"``, ``"origin"``,
+    ``"telegram"``, ``"telegram:-1001:17"``, or comma-separated combinations).
+    Historically some callers — MCP clients passing an array, direct edits of
+    ``jobs.json``, or stale code paths — have stored a list/tuple like
+    ``["telegram"]``.  ``str(["telegram"])`` would serialize to the literal
+    string ``"['telegram']"``, which is not a known platform and fails
+    resolution silently.  Flatten lists/tuples into a comma-separated string
+    so both forms work.  Returns ``"local"`` for anything falsy.
+    """
+    if deliver is None or deliver == "":
+        return "local"
+    if isinstance(deliver, (list, tuple)):
+        parts = [str(p).strip() for p in deliver if str(p).strip()]
+        return ",".join(parts) if parts else "local"
+    return str(deliver)
+
+
 def _resolve_delivery_targets(job: dict) -> List[dict]:
     """Resolve all concrete auto-delivery targets for a cron job (supports comma-separated deliver)."""
-    deliver = job.get("deliver", "local")
+    deliver = _normalize_deliver_value(job.get("deliver", "local"))
     if deliver == "local":
         return []
-    parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
+    parts = [p.strip() for p in deliver.split(",") if p.strip()]
     seen = set()
     targets = []
     for part in parts:
@@ -337,6 +359,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "sms": Platform.SMS,
         "bluebubbles": Platform.BLUEBUBBLES,
         "qqbot": Platform.QQBOT,
+        "yuanbao": Platform.YUANBAO,
     }
 
     # Optionally wrap the content with a header/footer so the user knows this
@@ -715,7 +738,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
     cron_hint = (
-        "[SYSTEM: You are running as a scheduled cron job. "
+        "[IMPORTANT: You are running as a scheduled cron job. "
         "DELIVERY: Your final response will be automatically delivered "
         "to the user — do NOT use send_message or try to deliver "
         "the output yourself. Just produce your report/output as your "
@@ -751,7 +774,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             parts.append("")
         parts.extend(
             [
-                f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+                f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
                 "",
                 content,
             ]
@@ -759,7 +782,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     if skipped:
         notice = (
-            f"[SYSTEM: The following skill(s) were listed for this job but could not be found "
+            f"[IMPORTANT: The following skill(s) were listed for this job but could not be found "
             f"and were skipped: {', '.join(skipped)}. "
             f"Start your response with a brief notice so the user is aware, e.g.: "
             f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
@@ -821,6 +844,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
+    agent = None
+
     # Mark this as a cron session so the approval system can apply cron_mode.
     # This env var is process-wide and persists for the lifetime of the
     # scheduler process — every job this process runs is a cron job.
@@ -835,6 +860,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         chat_id=str(origin["chat_id"]) if origin else "",
         chat_name=origin.get("chat_name", "") if origin else "",
     )
+    _cron_delivery_vars = (
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+        "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+        "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+    )
+    for _var_name in _cron_delivery_vars:
+        _VAR_MAP[_var_name].set("")
 
     # Per-job working directory.  When set (and validated at create/update
     # time), we point TERMINAL_CWD at it so:
@@ -873,8 +905,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         if delivery_target:
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
-            if delivery_target.get("thread_id") is not None:
-                _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(str(delivery_target["thread_id"]))
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(
+                ""
+                if delivery_target.get("thread_id") is None
+                else str(delivery_target["thread_id"])
+            )
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
@@ -1008,10 +1043,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
-            # When a workdir is configured, inject AGENTS.md / CLAUDE.md /
-            # .cursorrules from that directory; otherwise preserve the old
-            # behaviour (don't inject SOUL.md/AGENTS.md from the scheduler cwd).
+            # Cron jobs should always inherit the user's SOUL.md identity from
+            # HERMES_HOME. When a workdir is configured, also inject project
+            # context files (AGENTS.md / CLAUDE.md / .cursorrules) from there.
+            # Without a workdir, keep cwd context discovery disabled.
             skip_context_files=not bool(_job_workdir),
+            load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
             platform="cron",
             session_id=_cron_session_id,
@@ -1026,7 +1063,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
-        _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
+        _raw_cron_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+        if _raw_cron_timeout:
+            try:
+                _cron_timeout = float(_raw_cron_timeout)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid HERMES_CRON_TIMEOUT=%r; using default 600s",
+                    _raw_cron_timeout,
+                )
+                _cron_timeout = 600.0
+        else:
+            _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -1160,6 +1208,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
+        for _var_name in _cron_delivery_vars:
+            _VAR_MAP[_var_name].set("")
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
@@ -1169,6 +1219,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
+        # Release subprocesses, terminal sandboxes, browser daemons, and the
+        # main OpenAI/httpx client held by this ephemeral cron agent. Without
+        # this, a gateway that ticks cron every N minutes leaks fds per job
+        # until it hits EMFILE (#10200 / "too many open files").
+        try:
+            if agent is not None:
+                agent.close()
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
+        # Each cron run spins up a short-lived worker thread whose event loop
+        # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
+        # httpx clients cached under that loop are now unusable — reap them
+        # so their transports don't accumulate in the process-global cache.
+        try:
+            from agent.auxiliary_client import cleanup_stale_async_clients
+            cleanup_stale_async_clients()
+        except Exception as e:
+            logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
@@ -1307,6 +1375,17 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     _ctx = contextvars.copy_context()
                     _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
                 _results.extend(f.result() for f in _futures)
+
+        # Best-effort sweep of MCP stdio subprocesses that survived their
+        # session teardown during this tick.  Runs AFTER every job has
+        # finished so active sessions (including live user chats) are
+        # never touched — only PIDs explicitly detected as orphans in
+        # tools.mcp_tool._run_stdio's finally block are reaped.
+        try:
+            from tools.mcp_tool import _kill_orphaned_mcp_children
+            _kill_orphaned_mcp_children()
+        except Exception as _e:
+            logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
 
         return sum(_results)
     finally:

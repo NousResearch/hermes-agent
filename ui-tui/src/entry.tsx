@@ -1,4 +1,10 @@
 #!/usr/bin/env -S node --max-old-space-size=8192 --expose-gc
+// Must be first import. If the user explicitly opts into truecolor, this
+// nudges chalk / supports-color before either package is initialized.
+import './lib/forceTruecolor.js'
+
+import type { FrameEvent } from '@hermes/ink'
+
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
@@ -41,6 +47,21 @@ if (process.env.HERMES_HEAPDUMP_ON_START === '1') {
 
 process.on('beforeExit', () => stopMemoryMonitor())
 
-const [{ render }, { App }] = await Promise.all([import('@hermes/ink'), import('./app.js')])
+const [ink, { App }, { logFrameEvent }, { trackFrame }] = await Promise.all([
+  import('@hermes/ink'),
+  import('./app.js'),
+  import('./lib/perfPane.js'),
+  import('./lib/fpsStore.js')
+])
 
-render(<App gw={gw} />, { exitOnCtrlC: false })
+// Both consumers are undefined when their env flags are off; only attach
+// onFrame when at least one is on so ink skips timing in the default case.
+const onFrame =
+  logFrameEvent || trackFrame
+    ? (event: FrameEvent) => {
+        logFrameEvent?.(event)
+        trackFrame?.(event.durationMs)
+      }
+    : undefined
+
+ink.render(<App gw={gw} />, { exitOnCtrlC: false, onFrame })

@@ -144,6 +144,36 @@ class TestBuildApiKwargsOpenRouter:
         assert messages[1]["tool_calls"][0]["response_item_id"] == "fc_123"
         assert "codex_reasoning_items" in messages[1]
 
+    def test_gemini_native_passes_base_url_for_top_level_thinking_config(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            model="gemini-3-flash-preview",
+        )
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+            "thinkingLevel": "high",
+        }
+        assert "extra_body" not in kwargs["extra_body"]
+
+    def test_gemini_openai_compat_passes_base_url_for_nested_google_thinking_config(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-3.1-pro-preview",
+        )
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "thinking_config" not in kwargs["extra_body"]
+        assert kwargs["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_level": "high",
+        }
+
     def test_should_sanitize_tool_calls_codex_vs_chat(self, monkeypatch):
         """Codex API should NOT sanitize, all other APIs should sanitize."""
         # Codex mode should NOT need sanitization
@@ -247,6 +277,14 @@ class TestBuildApiKwargsChatCompletionsServiceTier:
         agent = _make_agent(monkeypatch, "openrouter")
         agent.model = "gpt-4.1"
         agent.request_overrides = {}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "service_tier" not in kwargs
+
+    def test_no_crash_when_request_overrides_is_none(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = "gpt-4.1"
+        agent.request_overrides = None
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "service_tier" not in kwargs

@@ -6,7 +6,8 @@ Shows the status of all Hermes Agent components.
 
 import os
 import sys
-import subprocess
+import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
+import importlib.util
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
@@ -17,6 +18,7 @@ from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load
 from hermes_cli.models import provider_label
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_cli.runtime_provider import resolve_requested_provider
+from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
@@ -26,12 +28,15 @@ def check_mark(ok: bool) -> str:
     return color("✗", Colors.RED)
 
 def redact_key(key: str) -> str:
-    """Redact an API key for display."""
-    if not key:
-        return "(not set)"
-    if len(key) < 12:
-        return "***"
-    return key[:4] + "..." + key[-4:]
+    """Redact an API key for display.
+
+    Thin wrapper over :func:`agent.redact.mask_secret`. Preserves the
+    "(not set)" placeholder in dim color to match ``hermes config``'s
+    output (previously this variant was missing the DIM color —
+    consolidated via PR that also introduced ``mask_secret``).
+    """
+    from agent.redact import mask_secret
+    return mask_secret(key, empty=color("(not set)", Colors.DIM))
 
 
 def _format_iso_timestamp(value) -> str:
@@ -154,14 +159,21 @@ def show_status(args):
     print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
 
     try:
-        from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status, get_qwen_auth_status
+        from hermes_cli.auth import (
+            get_nous_auth_status,
+            get_codex_auth_status,
+            get_qwen_auth_status,
+            get_minimax_oauth_auth_status,
+        )
         nous_status = get_nous_auth_status()
         codex_status = get_codex_auth_status()
         qwen_status = get_qwen_auth_status()
+        minimax_status = get_minimax_oauth_auth_status()
     except Exception:
         nous_status = {}
         codex_status = {}
         qwen_status = {}
+        minimax_status = {}
 
     nous_logged_in = bool(nous_status.get("logged_in"))
     nous_error = nous_status.get("error")
@@ -213,6 +225,20 @@ def show_status(args):
         print(f"    Access exp: {datetime.fromtimestamp(int(qwen_exp) / 1000, tz=timezone.utc).isoformat()}")
     if qwen_status.get("error") and not qwen_logged_in:
         print(f"    Error:      {qwen_status.get('error')}")
+
+    minimax_logged_in = bool(minimax_status.get("logged_in"))
+    print(
+        f"  {'MiniMax OAuth':<12}  {check_mark(minimax_logged_in)} "
+        f"{'logged in' if minimax_logged_in else 'not logged in (run: hermes auth add minimax-oauth)'}"
+    )
+    minimax_region = minimax_status.get("region")
+    if minimax_logged_in and minimax_region:
+        print(f"    Region:     {minimax_region}")
+    minimax_exp = minimax_status.get("expires_at")
+    if minimax_exp:
+        print(f"    Access exp: {minimax_exp}")
+    if minimax_status.get("error") and not minimax_logged_in:
+        print(f"    Error:      {minimax_status.get('error')}")
 
     # =========================================================================
     # Nous Subscription Features
@@ -274,21 +300,33 @@ def show_status(args):
         label = "configured" if configured else "not configured (run: hermes model)"
         print(f"  {pname:<16} {check_mark(configured)} {label}")
 
+    # LM Studio reachability — only probe when it's the active provider so
+    # users with foreign configs don't see noise. Auth rejection vs. silent
+    # empty list is the most common LM Studio support case.
+    if _effective_provider_label() == "LM Studio":
+        from hermes_cli.models import probe_lmstudio_models
+        model_cfg = config.get("model")
+        base = (model_cfg.get("base_url") if isinstance(model_cfg, dict) else None) or get_env_value("LM_BASE_URL") or "http://127.0.0.1:1234/v1"
+        try:
+            models = probe_lmstudio_models(api_key=get_env_value("LM_API_KEY") or "", base_url=base, timeout=1.5)
+            if models is None:
+                ok, msg = False, f"unreachable at {base}"
+            else:
+                ok, msg = True, f"reachable ({len(models)} model(s)) at {base}"
+        except AuthError:
+            ok, msg = False, "auth rejected — set LM_API_KEY"
+        print(f"  {'LM Studio':<16} {check_mark(ok)} {msg}")
+
     # =========================================================================
     # Terminal Configuration
     # =========================================================================
     print()
     print(color("◆ Terminal Backend", Colors.CYAN, Colors.BOLD))
     
+    terminal_cfg = config.get("terminal", {}) if isinstance(config.get("terminal"), dict) else {}
     terminal_env = os.getenv("TERMINAL_ENV", "")
     if not terminal_env:
-        # Fall back to config file value when env var isn't set
-        # (hermes status doesn't go through cli.py's config loading)
-        try:
-            _cfg = load_config()
-            terminal_env = _cfg.get("terminal", {}).get("backend", "local")
-        except Exception:
-            terminal_env = "local"
+        terminal_env = terminal_cfg.get("backend", "local")
     print(f"  Backend:      {terminal_env}")
     
     if terminal_env == "ssh":
@@ -302,6 +340,23 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+    elif terminal_env == "vercel_sandbox":
+        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME") or terminal_cfg.get("vercel_runtime") or "node24"
+        persist = os.getenv("TERMINAL_CONTAINER_PERSISTENT")
+        if persist is None:
+            persist_enabled = bool(terminal_cfg.get("container_persistent", True))
+        else:
+            persist_enabled = persist.lower() in ("1", "true", "yes", "on")
+        auth_status = describe_vercel_auth()
+        sdk_ok = importlib.util.find_spec("vercel") is not None
+        sdk_label = "installed" if sdk_ok else "missing (install: pip install 'hermes-agent[vercel]')"
+        print(f"  Runtime:      {runtime}")
+        print(f"  SDK:          {check_mark(sdk_ok)} {sdk_label}")
+        print(f"  Auth:         {check_mark(auth_status.ok)} {auth_status.label}")
+        for line in auth_status.detail_lines:
+            print(f"  Auth detail:  {line}")
+        print(f"  Persistence:  {'snapshot filesystem' if persist_enabled else 'ephemeral filesystem'}")
+        print("  Processes:    live processes do not survive cleanup, snapshots, or sandbox recreation")
     
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
@@ -326,7 +381,8 @@ def show_status(args):
         "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None),
         "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
         "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
-        "QQBot": ("QQ_APP_ID", "QQBOT_HOME_CHANNEL"),
+        "QQBot": ("QQ_APP_ID", "QQ_HOME_CHANNEL"),
+        "Yuanbao": ("YUANBAO_APP_ID", "YUANBAO_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():

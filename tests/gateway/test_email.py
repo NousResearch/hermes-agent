@@ -488,6 +488,7 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["Subject"], "Re: Project question")
             self.assertEqual(send_call["In-Reply-To"], "<original@test.com>")
             self.assertEqual(send_call["References"], "<original@test.com>")
+            self.assertIn("Date", send_call)
 
     def test_reply_does_not_double_re(self):
         """If subject already has Re:, don't add another."""
@@ -519,6 +520,7 @@ class TestThreadContext(unittest.TestCase):
 
             send_call = mock_server.send_message.call_args[0][0]
             self.assertEqual(send_call["Subject"], "Re: Hermes Agent")
+            self.assertIn("Date", send_call)
 
 
 class TestSendMethods(unittest.TestCase):
@@ -889,6 +891,11 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertEqual(result["platform"], "email")
             _, kwargs = mock_server.starttls.call_args
             self.assertIsInstance(kwargs["context"], ssl.SSLContext)
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Hermes Agent")
+            self.assertIn("Date", send_call)
+            self.assertEqual(send_call["To"], "user@test.com")
+            self.assertEqual(send_call["From"], "hermes@test.com")
 
     @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "hermes@test.com",

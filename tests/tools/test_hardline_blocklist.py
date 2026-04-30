@@ -241,7 +241,7 @@ def test_container_backends_still_bypass(clean_session):
 
     Hardline only protects environments with real host impact (local, ssh).
     """
-    for env in ("docker", "singularity", "modal", "daytona"):
+    for env in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         r1 = check_dangerous_command("rm -rf /", env)
         assert r1["approved"] is True, f"container {env} should still bypass"
         r2 = check_all_command_guards("rm -rf /", env)

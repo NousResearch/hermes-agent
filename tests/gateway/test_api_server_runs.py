@@ -1,7 +1,8 @@
-"""Tests for /v1/runs endpoints: start, events, and stop.
+"""Tests for /v1/runs endpoints: start, status, events, and stop.
 
 Covers:
 - POST /v1/runs — start a run (202)
+- GET /v1/runs/{run_id} — poll run status
 - GET /v1/runs/{run_id}/events — SSE event stream
 - POST /v1/runs/{run_id}/stop — interrupt a running agent
 - Auth, error handling, and cleanup
@@ -46,6 +47,7 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application(middlewares=mws)
     app["api_server_adapter"] = adapter
     app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
     return app
@@ -116,6 +118,13 @@ class TestStartRun:
                 assert data["status"] == "started"
                 assert data["run_id"].startswith("run_")
 
+                status_resp = await cli.get(f"/v1/runs/{data['run_id']}")
+                assert status_resp.status == 200
+                status = await status_resp.json()
+                assert status["run_id"] == data["run_id"]
+                assert status["status"] in {"queued", "running", "completed"}
+                assert status["object"] == "hermes.run"
+
     @pytest.mark.asyncio
     async def test_start_invalid_json_returns_400(self, adapter):
         app = _create_runs_app(adapter)
@@ -144,6 +153,18 @@ class TestStartRun:
         assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_start_invalid_history_does_not_allocate_run(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"input": "hello", "conversation_history": {"role": "user"}},
+            )
+        assert resp.status == 400
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+
+    @pytest.mark.asyncio
     async def test_start_requires_auth(self, auth_adapter):
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -168,6 +189,89 @@ class TestStartRun:
                     headers={"Authorization": "Bearer sk-secret"},
                 )
                 assert resp.status == 202
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/runs/{run_id} — poll run status
+# ---------------------------------------------------------------------------
+
+
+class TestRunStatus:
+    @pytest.mark.asyncio
+    async def test_status_completed_run_includes_output_and_usage(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 4
+                mock_agent.session_completion_tokens = 2
+                mock_agent.session_total_tokens = 6
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    assert status_resp.status == 200
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert status["status"] == "completed"
+                assert status["output"] == "done"
+                assert status["usage"]["total_tokens"] == 6
+                assert status["last_event"] == "run.completed"
+
+    @pytest.mark.asyncio
+    async def test_status_reflects_explicit_session_id(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "space-session"},
+                )
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                mock_agent.run_conversation.assert_called_once()
+                # task_id stays "default" so the Runs API shares one sandbox
+                # container with CLI/gateway; session_id is surfaced in status
+                # for external UIs to correlate runs with their own session IDs.
+                assert mock_agent.run_conversation.call_args.kwargs["task_id"] == "default"
+                assert status["session_id"] == "space-session"
+
+    @pytest.mark.asyncio
+    async def test_status_not_found_returns_404(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/runs/run_nonexistent")
+        assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_status_requires_auth(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/runs/run_any")
+        assert resp.status == 401
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +360,11 @@ class TestStopRun:
 
                 # Agent interrupt should have been called
                 mock_agent.interrupt.assert_called_once_with("Stop requested via API")
+
+                status_resp = await cli.get(f"/v1/runs/{run_id}")
+                assert status_resp.status == 200
+                status_data = await status_resp.json()
+                assert status_data["status"] in {"stopping", "cancelled"}
 
                 # Refs should be cleaned up
                 await asyncio.sleep(0.5)

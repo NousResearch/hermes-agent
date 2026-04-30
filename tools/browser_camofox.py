@@ -32,7 +32,7 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from hermes_cli.config import load_config
+from hermes_cli.config import cfg_get, load_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 
@@ -544,7 +544,7 @@ def camofox_vision(question: str, annotate: bool = False,
 
         try:
             _cfg = load_config()
-            _vision_cfg = _cfg.get("auxiliary", {}).get("vision", {})
+            _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
             _vision_timeout = float(_vision_cfg.get("timeout", 120))
             _vision_temperature = float(_vision_cfg.get("temperature", 0.1))
         except Exception:

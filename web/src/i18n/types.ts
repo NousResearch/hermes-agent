@@ -74,6 +74,7 @@ export interface Translations {
       documentation: string;
       keys: string;
       logs: string;
+      models: string;
       sessions: string;
       skills: string;
     };
@@ -174,6 +175,19 @@ export interface Translations {
     inOut: string;
   };
 
+  // ── Models page ──
+  models: {
+    modelsUsed: string;
+    estimatedCost: string;
+    tokens: string;
+    sessions: string;
+    avgPerSession: string;
+    apiCalls: string;
+    toolCalls: string;
+    noModelsData: string;
+    startSession: string;
+  };
+
   // ── Logs page ──
   logs: {
     title: string;
@@ -242,6 +256,9 @@ export interface Translations {
     exportConfig: string;
     importConfig: string;
     resetDefaults: string;
+    resetScopeTooltip: string;
+    confirmResetScope: string;
+    resetScopeToast: string;
     rawYaml: string;
     searchResults: string;
     fields: string;

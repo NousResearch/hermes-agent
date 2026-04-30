@@ -74,6 +74,7 @@ export const en: Translations = {
       documentation: "Documentation",
       keys: "Keys",
       logs: "Logs",
+      models: "Models",
       sessions: "Sessions",
       skills: "Skills",
     },
@@ -172,6 +173,18 @@ export const en: Translations = {
     inOut: "{input} in / {output} out",
   },
 
+  models: {
+    modelsUsed: "Models Used",
+    estimatedCost: "Est. Cost",
+    tokens: "tokens",
+    sessions: "sessions",
+    avgPerSession: "avg/session",
+    apiCalls: "API calls",
+    toolCalls: "tool calls",
+    noModelsData: "No model usage data for this period",
+    startSession: "Start a session to see model data here",
+  },
+
   logs: {
     title: "Logs",
     autoRefresh: "Auto-refresh",
@@ -237,6 +250,9 @@ export const en: Translations = {
     exportConfig: "Export config as JSON",
     importConfig: "Import config from JSON",
     resetDefaults: "Reset to defaults",
+    resetScopeTooltip: "Reset {scope} to defaults",
+    confirmResetScope: "Reset all {scope} settings to their defaults? This only updates the form — changes aren't written to config.yaml until you press Save.",
+    resetScopeToast: "{scope} reset to defaults — review and Save to persist",
     rawYaml: "Raw YAML Configuration",
     searchResults: "Search Results",
     fields: "field{s}",

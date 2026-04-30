@@ -45,6 +45,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
+from hermes_cli.config import cfg_get
 
 try:
     import yaml
@@ -79,6 +80,20 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
+    # command needs user approval -- fires BOTH for CLI-interactive prompts
+    # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
+    # Observers only: return values are ignored. Plugins cannot veto or
+    # pre-answer an approval from these hooks (use pre_tool_call to block
+    # a tool before it reaches approval).
+    #
+    # Kwargs for pre_approval_request:
+    #   command: str, description: str, pattern_key: str, pattern_keys: list[str],
+    #   session_key: str, surface: "cli" | "gateway"
+    # Kwargs for post_approval_response: same as above plus
+    #   choice: "once" | "session" | "always" | "deny" | "timeout"
+    "pre_approval_request",
+    "post_approval_response",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -101,7 +116,7 @@ def _get_disabled_plugins() -> set:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        disabled = config.get("plugins", {}).get("disabled", [])
+        disabled = cfg_get(config, "plugins", "disabled", default=[])
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
         return set()

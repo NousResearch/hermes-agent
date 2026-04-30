@@ -78,17 +78,23 @@ describe('sectionMode', () => {
     expect(sectionMode('subagents', 'hidden', {})).toBe('hidden')
   })
 
-  it('streams thinking + tools expanded by default regardless of global mode', () => {
+  it('streams thinking + tools expanded by default for persisted config values', () => {
     expect(sectionMode('thinking', 'collapsed', {})).toBe('expanded')
     expect(sectionMode('thinking', 'hidden', undefined)).toBe('expanded')
     expect(sectionMode('tools', 'collapsed', {})).toBe('expanded')
     expect(sectionMode('tools', 'hidden', undefined)).toBe('expanded')
   })
 
-  it('hides the activity panel by default regardless of global mode', () => {
+  it('hides the activity panel by default for persisted config values', () => {
     expect(sectionMode('activity', 'collapsed', {})).toBe('hidden')
     expect(sectionMode('activity', 'expanded', undefined)).toBe('hidden')
     expect(sectionMode('activity', 'hidden', {})).toBe('hidden')
+  })
+
+  it('applies in-session /details mode globally over built-in defaults', () => {
+    expect(sectionMode('thinking', 'collapsed', {}, true)).toBe('collapsed')
+    expect(sectionMode('tools', 'hidden', {}, true)).toBe('hidden')
+    expect(sectionMode('activity', 'expanded', undefined, true)).toBe('expanded')
   })
 
   it('honours per-section overrides over both the section default and global mode', () => {

@@ -177,6 +177,53 @@ class TestHandleVoiceCommand:
 
         assert adapter._auto_tts_disabled_chats == {"123"}
 
+    def test_sync_populates_enabled_chats_from_voice_modes(self, runner):
+        """Issue #16007: sync also restores per-chat /voice on|tts opt-ins.
+
+        The adapter's ``_auto_tts_enabled_chats`` must mirror chats whose
+        persisted voice_mode is ``voice_only`` or ``all`` — without this,
+        ``/voice on`` was relying on a "not in disabled set" default that
+        silently enabled auto-TTS for every chat.
+        """
+        from gateway.config import Platform
+        runner._voice_mode = {
+            "telegram:off_chat": "off",
+            "telegram:on_chat": "voice_only",
+            "telegram:tts_chat": "all",
+            "slack:999": "voice_only",  # wrong platform, must be ignored
+        }
+        adapter = SimpleNamespace(
+            _auto_tts_default=False,
+            _auto_tts_disabled_chats=set(),
+            _auto_tts_enabled_chats=set(),
+            platform=Platform.TELEGRAM,
+        )
+
+        runner._sync_voice_mode_state_to_adapter(adapter)
+
+        assert adapter._auto_tts_disabled_chats == {"off_chat"}
+        assert adapter._auto_tts_enabled_chats == {"on_chat", "tts_chat"}
+
+    def test_sync_pushes_config_default_onto_adapter(self, runner, monkeypatch):
+        """Issue #16007: ``voice.auto_tts`` must propagate to ``_auto_tts_default``."""
+        from gateway.config import Platform
+
+        fake_cfg = {"voice": {"auto_tts": True}}
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: fake_cfg,
+        )
+        adapter = SimpleNamespace(
+            _auto_tts_default=False,
+            _auto_tts_disabled_chats=set(),
+            _auto_tts_enabled_chats=set(),
+            platform=Platform.TELEGRAM,
+        )
+
+        runner._sync_voice_mode_state_to_adapter(adapter)
+
+        assert adapter._auto_tts_default is True
+
     def test_restart_restores_voice_off_state(self, runner, tmp_path):
         from gateway.config import Platform
         runner._VOICE_MODE_PATH.write_text(json.dumps({"telegram:123": "off"}))
@@ -2706,3 +2753,56 @@ class TestUDPKeepalive:
             mock_conn.send_packet.assert_called_with(b'\xf8\xff\xfe')
         finally:
             DiscordAdapter._KEEPALIVE_INTERVAL = original_interval
+
+
+# =====================================================================
+# BasePlatformAdapter._should_auto_tts_for_chat — gate for auto-TTS
+# on voice input. Regression test for Issue #16007.
+# =====================================================================
+
+class TestShouldAutoTtsForChat:
+    """Three-layer gate: per-chat enable > per-chat disable > config default."""
+
+    def _make_adapter(self, *, default: bool, enabled=(), disabled=()):
+        """Build a bare adapter with only the attrs the gate reads."""
+        adapter = SimpleNamespace(
+            _auto_tts_default=default,
+            _auto_tts_enabled_chats=set(enabled),
+            _auto_tts_disabled_chats=set(disabled),
+        )
+        # Bind the unbound method — _should_auto_tts_for_chat only reads the
+        # three attrs above via ``self.``, so an unbound call works.
+        from gateway.platforms.base import BasePlatformAdapter
+        return BasePlatformAdapter._should_auto_tts_for_chat, adapter
+
+    def test_default_false_no_override_suppresses(self):
+        """Issue #16007: voice.auto_tts=False and no per-chat state → no TTS."""
+        fn, adapter = self._make_adapter(default=False)
+        assert fn(adapter, "chat1") is False
+
+    def test_default_true_no_override_fires(self):
+        fn, adapter = self._make_adapter(default=True)
+        assert fn(adapter, "chat1") is True
+
+    def test_explicit_enable_overrides_false_default(self):
+        """``/voice on`` with config auto_tts=False still fires."""
+        fn, adapter = self._make_adapter(default=False, enabled={"chat1"})
+        assert fn(adapter, "chat1") is True
+
+    def test_explicit_disable_overrides_true_default(self):
+        """``/voice off`` with config auto_tts=True still suppresses."""
+        fn, adapter = self._make_adapter(default=True, disabled={"chat1"})
+        assert fn(adapter, "chat1") is False
+
+    def test_enabled_wins_over_disabled(self):
+        """An explicit enable beats an explicit disable (enable takes priority)."""
+        fn, adapter = self._make_adapter(
+            default=False, enabled={"chat1"}, disabled={"chat1"}
+        )
+        assert fn(adapter, "chat1") is True
+
+    def test_per_chat_isolation(self):
+        """Enable for chat1 doesn't leak to chat2."""
+        fn, adapter = self._make_adapter(default=False, enabled={"chat1"})
+        assert fn(adapter, "chat1") is True
+        assert fn(adapter, "chat2") is False

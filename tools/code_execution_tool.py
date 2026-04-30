@@ -73,7 +73,24 @@ MAX_STDERR_BYTES = 10_000    # 10 KB
 
 def check_sandbox_requirements() -> bool:
     """Code execution sandbox requires a POSIX OS for Unix domain sockets."""
-    return SANDBOX_AVAILABLE
+    if not SANDBOX_AVAILABLE:
+        return False
+
+    try:
+        from tools.terminal_tool import (
+            _check_vercel_sandbox_requirements,
+            _get_env_config,
+        )
+
+        config = _get_env_config()
+    except Exception:
+        logger.debug("Could not resolve terminal config for execute_code availability", exc_info=True)
+        return False
+
+    if config.get("env_type") == "vercel_sandbox":
+        return _check_vercel_sandbox_requirements(config)
+
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -440,9 +457,10 @@ def _get_or_create_env(task_id: str):
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _task_env_overrides,
+        _resolve_container_task_id,
     )
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _resolve_container_task_id(task_id)
 
     # Fast path: environment already exists
     with _env_lock:
@@ -480,13 +498,15 @@ def _get_or_create_env(task_id: str):
         cwd = overrides.get("cwd") or config["cwd"]
 
         container_config = None
-        if env_type in ("docker", "singularity", "modal", "daytona"):
+        if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
                 "container_disk": config.get("container_disk", 51200),
                 "container_persistent": config.get("container_persistent", True),
+                "vercel_runtime": config.get("vercel_runtime", ""),
                 "docker_volumes": config.get("docker_volumes", []),
+                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
             }
 
         ssh_config = None
@@ -1308,10 +1328,20 @@ def _kill_process_group(proc, escalate: bool = False):
 
 
 def _load_config() -> dict:
-    """Load code_execution config from CLI_CONFIG if available."""
+    """Load code_execution config without importing the interactive CLI.
+
+    This helper is called while building the module-level execute_code schema
+    during tool discovery.  Importing ``cli`` here pulls prompt_toolkit/Rich and
+    a large chunk of the classic REPL onto every agent startup path, including
+    ``hermes --tui`` where it is never used.  Read the lightweight raw config
+    instead; the config layer already caches by (mtime, size), and an absent
+    key cleanly falls back to DEFAULT_EXECUTION_MODE.
+    """
     try:
-        from cli import CLI_CONFIG
-        return CLI_CONFIG.get("code_execution", {})
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config().get("code_execution", {})
+        return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}
 

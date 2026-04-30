@@ -70,3 +70,4 @@ mini-swe-agent/
 result
 nix-install.sh
 website/static/api/skills-index.json
+models-dev-upstream/

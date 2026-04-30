@@ -215,6 +215,84 @@ class TestHandleUpdateCommand:
         assert not (hermes_home / ".update_exit_code").exists()
 
     @pytest.mark.asyncio
+    async def test_rejects_duplicate_update_when_pending_marker_exists(self, tmp_path):
+        """A second /update must not overwrite the active update metadata."""
+        runner = _make_runner()
+        event = _make_event(platform=Platform.TELEGRAM, chat_id="99999")
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending_path = hermes_home / ".update_pending.json"
+        pending_path.write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "11111",
+            "user_id": "orig-user",
+            "session_key": "agent:main:telegram:dm:11111",
+            "timestamp": "2026-04-25T10:00:00",
+        }))
+
+        mock_watch = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch.object(runner, "_schedule_update_notification_watch", mock_watch), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen") as mock_popen:
+            result = await runner._handle_update_command(event)
+
+        assert "already running" in result.lower()
+        mock_popen.assert_not_called()
+        mock_watch.assert_called_once()
+        data = json.loads(pending_path.read_text())
+        assert data["chat_id"] == "11111"
+        assert data["user_id"] == "orig-user"
+
+    @pytest.mark.asyncio
+    async def test_rejects_duplicate_update_when_claimed_marker_exists(self, tmp_path):
+        """A claimed in-flight update must also block a second /update."""
+        runner = _make_runner()
+        event = _make_event(platform=Platform.TELEGRAM, chat_id="99999")
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        claimed_path = hermes_home / ".update_pending.claimed.json"
+        claimed_path.write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "22222",
+            "user_id": "orig-user",
+            "session_key": "agent:main:telegram:dm:22222",
+            "timestamp": "2026-04-25T10:00:00",
+        }))
+
+        mock_watch = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch.object(runner, "_schedule_update_notification_watch", mock_watch), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen") as mock_popen:
+            result = await runner._handle_update_command(event)
+
+        assert "already running" in result.lower()
+        mock_popen.assert_not_called()
+        mock_watch.assert_called_once()
+        data = json.loads(claimed_path.read_text())
+        assert data["chat_id"] == "22222"
+        assert data["user_id"] == "orig-user"
+
+    @pytest.mark.asyncio
     async def test_spawns_setsid(self, tmp_path):
         """Uses setsid when available."""
         runner = _make_runner()

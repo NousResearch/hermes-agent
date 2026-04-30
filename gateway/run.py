@@ -8983,9 +8983,18 @@ class GatewayRunner:
             )
 
         pending_path = _hermes_home / ".update_pending.json"
+        claimed_path = _hermes_home / ".update_pending.claimed.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
         session_key = self._session_key_for_source(event.source)
+
+        if pending_path.exists() or claimed_path.exists():
+            self._schedule_update_notification_watch()
+            return (
+                "⚕ Hermes update is already running for this profile. "
+                "I'll keep streaming progress in the original chat."
+            )
+
         pending = {
             "platform": event.source.platform.value,
             "chat_id": event.source.chat_id,

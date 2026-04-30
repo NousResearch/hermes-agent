@@ -1473,17 +1473,49 @@ class AIAgent:
                                 _env_hint = _pcfg.api_key_env_vars[0]
                         except Exception:
                             pass
+                        # --- Init-time fallback (#17929) ---
+                        _fb_entries = []
+                        if isinstance(fallback_model, list):
+                            _fb_entries = [
+                                f for f in fallback_model
+                                if isinstance(f, dict) and f.get("provider") and f.get("model")
+                            ]
+                        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+                            _fb_entries = [fallback_model]
+                        _fb_resolved = False
+                        for _fb in _fb_entries:
+                            _fb_client, _fb_model = resolve_provider_client(
+                                _fb["provider"], model=_fb["model"], raw_codex=True,
+                                explicit_base_url=_fb.get("base_url"),
+                                explicit_api_key=_fb.get("api_key"),
+                            )
+                            if _fb_client is not None:
+                                self.provider = _fb["provider"]
+                                self.model = _fb_model or _fb["model"]
+                                self._fallback_activated = True
+                                client_kwargs = {
+                                    "api_key": _fb_client.api_key,
+                                    "base_url": str(_fb_client.base_url),
+                                }
+                                if _provider_timeout is not None:
+                                    client_kwargs["timeout"] = _provider_timeout
+                                if hasattr(_fb_client, "_default_headers") and _fb_client._default_headers:
+                                    client_kwargs["default_headers"] = dict(_fb_client._default_headers)
+                                _fb_resolved = True
+                                break
+                        if not _fb_resolved:
+                            raise RuntimeError(
+                                f"Provider '{_explicit}' is set in config.yaml but no API key "
+                                f"was found. Set the {_env_hint} environment "
+                                f"variable, or switch to a different provider with `hermes model`."
+                            )
+                    if not getattr(self, "_fallback_activated", False):
+                        # No provider configured — reject with a clear message.
                         raise RuntimeError(
-                            f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_env_hint} environment "
-                            f"variable, or switch to a different provider with `hermes model`."
+                            "No LLM provider configured. Run `hermes model` to "
+                            "select a provider, or run `hermes setup` for first-time "
+                            "configuration."
                         )
-                    # No provider configured — reject with a clear message.
-                    raise RuntimeError(
-                        "No LLM provider configured. Run `hermes model` to "
-                        "select a provider, or run `hermes setup` for first-time "
-                        "configuration."
-                    )
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
@@ -1536,7 +1568,7 @@ class AIAgent:
         else:
             self._fallback_chain = []
         self._fallback_index = 0
-        self._fallback_activated = False
+        self._fallback_activated = getattr(self, "_fallback_activated", False)
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
         if self._fallback_chain and not self.quiet_mode:

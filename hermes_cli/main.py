@@ -7137,6 +7137,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 supports_systemd_services,
                 _ensure_user_systemd_env,
                 find_gateway_pids,
+                find_profile_gateway_processes,
+                launch_detached_profile_gateway_restart,
                 _get_service_pids,
                 _graceful_restart_via_sigusr1,
             )
@@ -7240,6 +7242,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             restarted_services = []
             killed_pids = set()
+            relaunched_profiles = []
 
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles)
@@ -7429,7 +7432,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
             manual_pids = find_gateway_pids(
                 exclude_pids=service_pids, all_profiles=True
             )
+            profile_processes = {
+                proc.pid: proc
+                for proc in find_profile_gateway_processes(exclude_pids=service_pids)
+                if proc.pid in manual_pids
+            }
+            for pid, proc in profile_processes.items():
+                if launch_detached_profile_gateway_restart(proc.profile, pid):
+                    try:
+                        os.kill(pid, _signal.SIGTERM)
+                        killed_pids.add(pid)
+                        relaunched_profiles.append(proc.profile)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+
             for pid in manual_pids:
+                if pid in profile_processes:
+                    continue
                 try:
                     os.kill(pid, _signal.SIGTERM)
                     killed_pids.add(pid)
@@ -7440,11 +7459,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print()
                 for svc in restarted_services:
                     print(f"  ✓ Restarted {svc}")
-                if killed_pids:
-                    print(f"  → Stopped {len(killed_pids)} manual gateway process(es)")
+                if relaunched_profiles:
+                    names = ", ".join(relaunched_profiles)
+                    print(f"  ✓ Restarting manual gateway profile(s): {names}")
+                unmapped_count = len(killed_pids) - len(relaunched_profiles)
+                if unmapped_count:
+                    print(f"  → Stopped {unmapped_count} manual gateway process(es)")
                     print("    Restart manually: hermes gateway run")
-                    # Also restart for each profile if needed
-                    if len(killed_pids) > 1:
+                    if unmapped_count > 1:
                         print(
                             "    (or: hermes -p <profile> gateway run  for each profile)"
                         )

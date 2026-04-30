@@ -1104,6 +1104,24 @@ DEFAULT_CONFIG = {
         "max_parallel_jobs": None,
     },
 
+    # Kanban multi-agent coordination — controls the dispatcher loop that
+    # spawns workers for ready tasks. The dispatcher ticks every N seconds
+    # (default 60), reclaims stale claims, promotes dependency-satisfied
+    # todos to ready, and fires `hermes -p <assignee> chat -q ...` for
+    # each claimable ready task. One dispatcher per profile is sufficient;
+    # running more than one on the same kanban.db will race for claims.
+    "kanban": {
+        # Run the dispatcher inside the gateway process. On by default —
+        # the cost is ~300µs every `dispatch_interval_seconds` when idle,
+        # and gateway is the supervisor users already have. Set to false
+        # only if you run the dispatcher as a separate systemd unit or
+        # don't want the gateway to spawn workers.
+        "dispatch_in_gateway": True,
+        # Seconds between dispatcher ticks (idle or not). Lower = snappier
+        # pickup of newly-ready tasks; higher = less SQL pressure.
+        "dispatch_interval_seconds": 60,
+    },
+
     # execute_code settings — controls the tool used for programmatic tool calls.
     "code_execution": {
         # Execution mode:

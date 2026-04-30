@@ -117,6 +117,7 @@ AUTHOR_MAP = {
     "abner.the.foreman@agentmail.to": "Abnertheforeman",
     "adam.manning@pro-serveinc.com": "amanning3390",
     "thomasgeorgevii09@gmail.com": "tochukwuada",
+    "sb@wmc.sh": "zicochaos",
     "harryykyle1@gmail.com": "hharry11",
     "kshitijk4poor@gmail.com": "kshitijk4poor",
     "1294707+Tosko4@users.noreply.github.com": "Tosko4",

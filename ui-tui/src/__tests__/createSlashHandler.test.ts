@@ -352,7 +352,6 @@ describe('createSlashHandler', () => {
   it.each([
     ['/browser status', 'browser.manage', { action: 'status', session_id: null }],
     ['/browser connect', 'browser.manage', { action: 'connect', session_id: null, url: 'http://127.0.0.1:9222' }],
-    ['/reload-mcp', 'reload.mcp', { session_id: null }],
     ['/reload', 'reload.env', {}],
     ['/stop', 'process.stop', {}],
     ['/fast status', 'config.get', { key: 'fast', session_id: null }],
@@ -676,6 +675,26 @@ describe('createSlashHandler', () => {
 
     expect(rpc).not.toHaveBeenCalled()
     expect(ctx.transcript.sys).toHaveBeenCalledWith('no active session — nothing to rollback')
+  })
+
+  it('routes /reload-mcp through native RPC when a session is active', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/reload-mcp')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('reload.mcp', { session_id: 'sid-abc' })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('/reload-mcp without an active session tells the user instead of hitting the RPC', () => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    createSlashHandler(ctx)('/reload-mcp')
+
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('/reload-mcp requires an active session')
   })
 
   it('/title <name> uses session.title RPC and bypasses slash.exec', async () => {

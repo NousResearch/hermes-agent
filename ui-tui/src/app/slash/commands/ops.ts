@@ -84,6 +84,10 @@ export const opsCommands: SlashCommand[] = [
     help: 'reload MCP servers in the live session (warns about prompt cache invalidation)',
     name: 'reload-mcp',
     run: (arg, ctx) => {
+      if (!ctx.sid) {
+        return ctx.transcript.sys('/reload-mcp requires an active session')
+      }
+
       // Parse arg: `now` / `always` skip the confirmation gate.
       // `always` additionally persists approvals.mcp_reload_confirm=false.
       const a = (arg || '').trim().toLowerCase()

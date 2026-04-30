@@ -3907,7 +3907,8 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        thread_id = (metadata or {}).get("thread_id")
+        reply_in_thread = bool(thread_id)
         if reply_to:
             body = self._build_reply_message_body(
                 content=payload,
@@ -3918,13 +3919,15 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
+        receive_id = str(thread_id) if thread_id else chat_id
+        receive_id_type = "thread_id" if thread_id else "chat_id"
         body = self._build_create_message_body(
-            receive_id=chat_id,
+            receive_id=receive_id,
             msg_type=msg_type,
             content=payload,
             uuid_value=str(uuid.uuid4()),
         )
-        request = self._build_create_message_request("chat_id", body)
+        request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
     @staticmethod

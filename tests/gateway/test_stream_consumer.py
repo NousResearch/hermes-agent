@@ -190,6 +190,56 @@ class TestSendOrEditMediaStripping:
         assert "Here is your image" in sent_text
 
     @pytest.mark.asyncio
+    async def test_first_send_uses_initial_reply_to_id(self):
+        """Initial streaming send replies to the inbound message/thread root."""
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            initial_reply_to_id="om_inbound",
+        )
+        await consumer._send_or_edit("Starting streamed response")
+
+        adapter.send.assert_called_once()
+        assert adapter.send.call_args[1]["reply_to"] == "om_inbound"
+
+    @pytest.mark.asyncio
+    async def test_first_send_without_initial_reply_to_stays_unanchored(self):
+        """Default streaming behavior should not force reply anchoring."""
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        await consumer._send_or_edit("Starting streamed response")
+
+        adapter.send.assert_called_once()
+        assert adapter.send.call_args[1].get("reply_to") is None
+
+    @pytest.mark.asyncio
+    async def test_first_overflow_chunk_uses_initial_reply_to_id(self):
+        """Overflow first chunks should also preserve the inbound thread."""
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            initial_reply_to_id="om_inbound",
+        )
+        await consumer._send_new_chunk("chunk text", None)
+
+        adapter.send.assert_called_once()
+        assert adapter.send.call_args[1]["reply_to"] == "om_inbound"
+
+    @pytest.mark.asyncio
     async def test_edit_strips_media(self):
         """Edit call removes MEDIA: tags from visible text."""
         adapter = MagicMock()

@@ -10316,6 +10316,11 @@ class GatewayRunner:
                         chat_id=source.chat_id,
                         config=_consumer_cfg,
                         metadata=_thread_metadata,
+                        initial_reply_to_id=(
+                            event_message_id
+                            if source.platform == Platform.FEISHU and source.thread_id
+                            else None
+                        ),
                     )
             except Exception as _sc_err:
                 logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
@@ -11063,6 +11068,11 @@ class GatewayRunner:
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
                             metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            initial_reply_to_id=(
+                                event_message_id
+                                if source.platform == Platform.FEISHU and source.thread_id
+                                else None
+                            ),
                             on_new_message=(
                                 (lambda: progress_queue.put(("__reset__",)))
                                 if progress_queue is not None

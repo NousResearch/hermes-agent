@@ -204,6 +204,10 @@ class TestMacosOsascript:
 # ── WSL detection ────────────────────────────────────────────────────────
 
 class TestIsWsl:
+    def _patch_proc_version(self, content=None, side_effect=None):
+        opener = mock_open(read_data=content) if side_effect is None else MagicMock(side_effect=side_effect)
+        return patch.dict(_is_wsl.__globals__, {"open": opener})
+
     def setup_method(self):
         # _is_wsl is hermes_constants.is_wsl; reset the function's own module
         # globals so this stays stable even if hermes_constants was imported
@@ -218,15 +222,16 @@ class TestIsWsl:
         import hermes_constants
         hermes_constants._wsl_detected = None
         _is_wsl.__globals__["_wsl_detected"] = None
+        _is_wsl.__globals__.pop("open", None)
 
     def test_wsl2_detected(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
+        with self._patch_proc_version(content):
             assert _is_wsl() is True
 
     def test_wsl1_detected(self):
         content = "Linux version 4.4.0-microsoft-standard"
-        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
+        with self._patch_proc_version(content):
             assert _is_wsl() is True
 
     def test_regular_linux(self):
@@ -238,20 +243,20 @@ class TestIsWsl:
         # short-circuits on the cache. setup_method resets, so we just
         # need to be sure the patched `open` is actually reached.
         content = "Linux version 6.14.0-37-generic (buildd@lcy02-amd64-049)"
-        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
+        with self._patch_proc_version(content):
             assert _is_wsl() is False
 
     def test_proc_version_missing(self):
-        with patch.dict(_is_wsl.__globals__, {"open": MagicMock(side_effect=FileNotFoundError)}):
+        with self._patch_proc_version(side_effect=FileNotFoundError):
             assert _is_wsl() is False
 
     def test_result_is_cached(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        opener = mock_open(read_data=content)
-        with patch.dict(_is_wsl.__globals__, {"open": opener}):
+        with self._patch_proc_version(content) as patched_globals:
+            m = patched_globals["open"]
             assert _is_wsl() is True
             assert _is_wsl() is True
-            opener.assert_called_once()  # only read once
+            m.assert_called_once()  # only read once
 
 
 # ── WSL (powershell.exe) ────────────────────────────────────────────────

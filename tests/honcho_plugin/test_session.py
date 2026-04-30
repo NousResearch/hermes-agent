@@ -942,6 +942,37 @@ class TestBaseContextSummary:
         assert "Session Summary" not in formatted
 
 
+class TestHonchoSystemPrompt:
+    """System prompt should keep auto-injected memory out of user-facing prose."""
+
+    @staticmethod
+    def _make_provider(recall_mode: str) -> HonchoMemoryProvider:
+        provider = HonchoMemoryProvider()
+        provider._manager = object()
+        provider._session_key = "test-session"
+        provider._recall_mode = recall_mode
+        return provider
+
+    def test_context_mode_requires_silent_injected_memory(self):
+        block = self._make_provider("context").system_prompt_block()
+        assert "Use injected memory silently" in block
+        assert "not user-authored message text" in block
+        assert "Never say the user pasted" in block
+        assert "Do not mention <memory-context>" in block
+
+    def test_hybrid_mode_requires_silent_injected_memory(self):
+        block = self._make_provider("hybrid").system_prompt_block()
+        assert "Use injected memory silently" in block
+        assert "not user-authored message text" in block
+        assert "Never say the user pasted" in block
+        assert "Do not mention <memory-context>" in block
+
+    def test_tools_mode_does_not_add_injection_rule(self):
+        block = self._make_provider("tools").system_prompt_block()
+        assert "No automatic context injection" in block
+        assert "Use injected memory silently" not in block
+
+
 class TestDialecticDepth:
     """Tests for the dialecticDepth multi-pass system."""
 

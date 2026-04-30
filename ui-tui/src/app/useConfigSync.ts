@@ -151,7 +151,7 @@ export function useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid }: U
 
         mtimeRef.current = next
 
-        quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid }).then(
+        quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
           r => r && turnController.pushActivity('MCP reloaded after config change')
         )
         quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' }).then(r => applyDisplay(r, setBellOnComplete))

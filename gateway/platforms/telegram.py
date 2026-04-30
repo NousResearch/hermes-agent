@@ -286,6 +286,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
+        # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
+        self._slash_confirm_state: Dict[str, str] = {}
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -1411,6 +1414,48 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_slash_confirm(
+        self, chat_id: str, title: str, message: str, session_key: str,
+        confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a three-button slash-command confirmation prompt."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            # Message body: render as plain text (message already contains
+            # markdown formatting from the gateway primitive).
+            preview = message if len(message) <= 3800 else message[:3800] + "..."
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
+                    InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}"),
+                ],
+                [
+                    InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}"),
+                ],
+            ])
+
+            thread_id = self._metadata_thread_id(metadata)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": preview,
+                "parse_mode": ParseMode.MARKDOWN,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            message_thread_id = self._message_thread_id_for_send(thread_id)
+            if message_thread_id is not None:
+                kwargs["message_thread_id"] = message_thread_id
+
+            msg = await self._bot.send_message(**kwargs)
+            self._slash_confirm_state[confirm_id] = session_key
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_slash_confirm failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -1777,6 +1822,68 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+            return
+
+        # --- Slash-confirm callbacks (sc:choice:confirm_id) ---
+        if data.startswith("sc:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                choice = parts[1]  # once, always, cancel
+                confirm_id = parts[2]
+
+                caller_id = str(getattr(query.from_user, "id", "")) 
+                if not self._is_callback_user_authorized(caller_id):
+                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    return
+
+                session_key = self._slash_confirm_state.pop(confirm_id, None)
+                if not session_key:
+                    await query.answer(text="This prompt has already been resolved.")
+                    return
+
+                label_map = {
+                    "once": "✅ Approved once",
+                    "always": "🔒 Always approve",
+                    "cancel": "❌ Cancelled",
+                }
+                user_display = getattr(query.from_user, "first_name", "User")
+                label = label_map.get(choice, "Resolved")
+
+                await query.answer(text=label)
+
+                try:
+                    await query.edit_message_text(
+                        text=f"{label} by {user_display}",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+
+                # Resolve via the module-level primitive.  The runner stored
+                # a handler keyed by session_key; we run it on the event
+                # loop and (if it returns a string) send it as a follow-up
+                # message in the same chat.
+                try:
+                    from tools import slash_confirm as _slash_confirm_mod
+                    result_text = await _slash_confirm_mod.resolve(
+                        session_key, confirm_id, choice,
+                    )
+                    if result_text and query.message:
+                        # Inherit the prompt message's thread so the reply
+                        # lands in the same supergroup topic / reply chain.
+                        thread_id = getattr(query.message, "message_thread_id", None)
+                        send_kwargs: Dict[str, Any] = {
+                            "chat_id": int(query.message.chat_id),
+                            "text": result_text,
+                            "parse_mode": ParseMode.MARKDOWN,
+                            **self._link_preview_kwargs(),
+                        }
+                        if thread_id is not None:
+                            send_kwargs["message_thread_id"] = thread_id
+                        await self._bot.send_message(**send_kwargs)
+                except Exception as exc:
+                    logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
             return
 
         # --- Update prompt callbacks ---

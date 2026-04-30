@@ -2910,6 +2910,43 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_slash_confirm(
+        self, chat_id: str, title: str, message: str, session_key: str,
+        confirm_id: str, metadata: Optional[dict] = None,
+    ) -> SendResult:
+        """Send a three-button slash-command confirmation prompt."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            # Embed description limit is 4096; message usually fits easily.
+            max_desc = 4088
+            body = message if len(message) <= max_desc else message[: max_desc - 3] + "..."
+            embed = discord.Embed(
+                title=title or "Confirm",
+                description=body,
+                color=discord.Color.orange(),
+            )
+
+            view = SlashConfirmView(
+                session_key=session_key,
+                confirm_id=confirm_id,
+                allowed_user_ids=self._allowed_user_ids,
+            )
+
+            msg = await channel.send(embed=embed, view=view)
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
@@ -3639,6 +3676,103 @@ if DISCORD_AVAILABLE:
 
         async def on_timeout(self):
             """Handle view timeout -- disable buttons and mark as expired."""
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+
+    class SlashConfirmView(discord.ui.View):
+        """Three-button view for generic slash-command confirmations.
+
+        Used by ``/reload-mcp`` and any future slash command routed through
+        ``GatewayRunner._request_slash_confirm``.  Buttons map to the
+        gateway's three choices:
+
+          * "Approve Once"   → ``choice="once"``
+          * "Always Approve" → ``choice="always"``
+          * "Cancel"         → ``choice="cancel"``
+
+        Clicking calls the module-level
+        ``tools.slash_confirm.resolve(session_key, confirm_id, choice)``
+        which runs the handler the runner stored for this ``session_key``.
+        Only users in the adapter's allowlist can click.  Times out after
+        5 minutes (matches the gateway primitive's timeout).
+        """
+
+        def __init__(self, session_key: str, confirm_id: str, allowed_user_ids: set):
+            super().__init__(timeout=300)
+            self.session_key = session_key
+            self.confirm_id = confirm_id
+            self.allowed_user_ids = allowed_user_ids
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            if not self.allowed_user_ids:
+                return True
+            return str(interaction.user.id) in self.allowed_user_ids
+
+        async def _resolve(
+            self, interaction: discord.Interaction, choice: str,
+            color: discord.Color, label: str,
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This prompt has already been resolved~", ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to answer this prompt~", ephemeral=True,
+                )
+                return
+
+            self.resolved = True
+
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+
+            for child in self.children:
+                child.disabled = True
+
+            await interaction.response.edit_message(embed=embed, view=self)
+
+            # Resolve via the module-level primitive.  If the handler
+            # returns a follow-up message, post it in the same channel.
+            try:
+                from tools import slash_confirm as _slash_confirm_mod
+                result_text = await _slash_confirm_mod.resolve(
+                    self.session_key, self.confirm_id, choice,
+                )
+                if result_text:
+                    await interaction.followup.send(result_text)
+                logger.info(
+                    "Discord button resolved slash-confirm for session %s "
+                    "(choice=%s, user=%s)",
+                    self.session_key, choice, interaction.user.display_name,
+                )
+            except Exception as exc:
+                logger.error("Discord slash-confirm resolve failed: %s", exc, exc_info=True)
+
+        @discord.ui.button(label="Approve Once", style=discord.ButtonStyle.green)
+        async def approve_once(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
+
+        @discord.ui.button(label="Always Approve", style=discord.ButtonStyle.blurple)
+        async def approve_always(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "always", discord.Color.purple(), "Always approved")
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
+        async def cancel(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "cancel", discord.Color.greyple(), "Cancelled")
+
+        async def on_timeout(self):
             self.resolved = True
             for child in self.children:
                 child.disabled = True

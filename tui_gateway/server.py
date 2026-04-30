@@ -3744,6 +3744,40 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
     try:
+        # Gate: /reload-mcp invalidates the prompt cache for this session.
+        # Respect the ``approvals.mcp_reload_confirm`` config toggle — if
+        # set (default true) AND the caller did not pass ``confirm=true``
+        # in params, surface a warning to the transcript instead of just
+        # reloading silently.  Users pass confirm=true either by
+        # re-invoking after reading the warning, or by setting the
+        # config key to false permanently.
+        user_confirm = bool(params.get("confirm", False))
+        if not user_confirm:
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config()
+                _approvals = _cfg.get("approvals") if isinstance(_cfg, dict) else None
+                _confirm_required = True
+                if isinstance(_approvals, dict):
+                    _confirm_required = bool(_approvals.get("mcp_reload_confirm", True))
+            except Exception:
+                _confirm_required = True
+            if _confirm_required:
+                # Return a structured response the Ink client can surface
+                # as a warning/confirmation without actually reloading yet.
+                # Ink's ops.ts reads ``status`` and prints ``message`` to
+                # the transcript; a follow-up invocation with confirm=true
+                # (or an `always` choice that flips the config) proceeds.
+                return _ok(rid, {
+                    "status": "confirm_required",
+                    "message": (
+                        "⚠️  /reload-mcp invalidates the prompt cache (next "
+                        "message re-sends full input tokens). Reply `/reload-mcp "
+                        "now` to proceed, or `/reload-mcp always` to proceed and "
+                        "silence this prompt permanently."
+                    ),
+                })
+
         from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
 
         shutdown_mcp_servers()
@@ -3753,6 +3787,15 @@ def _(rid, params: dict) -> dict:
             if hasattr(agent, "refresh_tools"):
                 agent.refresh_tools()
             _emit("session.info", params.get("session_id", ""), _session_info(agent))
+
+        # Honor `always=true` by persisting the opt-out to config.
+        if bool(params.get("always", False)):
+            try:
+                from cli import save_config_value as _save_cfg
+                _save_cfg("approvals.mcp_reload_confirm", False)
+            except Exception as _exc:
+                logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
+
         return _ok(rid, {"status": "reloaded"})
     except Exception as e:
         return _err(rid, 5015, str(e))

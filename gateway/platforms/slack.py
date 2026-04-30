@@ -514,6 +514,15 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_approval_action)
 
+            # Register Block Kit action handlers for slash-confirm buttons
+            # (generic three-option prompts; see tools/slash_confirm.py).
+            for _action_id in (
+                "hermes_confirm_once",
+                "hermes_confirm_always",
+                "hermes_confirm_cancel",
+            ):
+                self._app.action(_action_id)(self._handle_slash_confirm_action)
+
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
             _apply_slack_proxy(self._handler.client, proxy_url)
@@ -1930,6 +1939,168 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[Slack] send_exec_approval failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def send_slash_confirm(
+        self, chat_id: str, title: str, message: str, session_key: str,
+        confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Block Kit three-option slash-command confirmation prompt."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            body = message[:2900] + "..." if len(message) > 2900 else message
+            thread_ts = self._resolve_thread_ts(None, metadata)
+            # Encode session_key and confirm_id into the button value so the
+            # callback handler can resolve without extra bookkeeping.
+            value = f"{session_key}|{confirm_id}"
+
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*{title or 'Confirm'}*\n\n{body}",
+                    },
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Approve Once"},
+                            "style": "primary",
+                            "action_id": "hermes_confirm_once",
+                            "value": value,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Always Approve"},
+                            "action_id": "hermes_confirm_always",
+                            "value": value,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Cancel"},
+                            "style": "danger",
+                            "action_id": "hermes_confirm_cancel",
+                            "value": value,
+                        },
+                    ],
+                },
+            ]
+
+            kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "text": f"{title or 'Confirm'}: {body[:100]}",
+                "blocks": blocks,
+            }
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+
+            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            return SendResult(success=True, message_id=result.get("ts", ""), raw_response=result)
+        except Exception as e:
+            logger.error("[Slack] send_slash_confirm failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_slash_confirm_action(self, ack, body, action) -> None:
+        """Handle a slash-confirm button click from Block Kit."""
+        await ack()
+
+        action_id = action.get("action_id", "")
+        value = action.get("value", "")
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+
+        # Authorization — reuse the exec-approval allowlist.
+        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and user_id not in allowed_ids:
+                logger.warning(
+                    "[Slack] Unauthorized slash-confirm click by %s (%s) — ignoring",
+                    user_name, user_id,
+                )
+                return
+
+        # Parse session_key|confirm_id back out
+        if "|" not in value:
+            logger.warning("[Slack] Malformed slash-confirm value: %s", value)
+            return
+        session_key, confirm_id = value.split("|", 1)
+
+        choice_map = {
+            "hermes_confirm_once": "once",
+            "hermes_confirm_always": "always",
+            "hermes_confirm_cancel": "cancel",
+        }
+        choice = choice_map.get(action_id, "cancel")
+
+        label_map = {
+            "once": f"✅ Approved once by {user_name}",
+            "always": f"🔒 Always approved by {user_name}",
+            "cancel": f"❌ Cancelled by {user_name}",
+        }
+        decision_text = label_map.get(choice, f"Resolved by {user_name}")
+
+        # Pull original prompt body out of the section block so we can show
+        # the decision inline without losing context.
+        original_text = ""
+        for block in message.get("blocks", []):
+            if block.get("type") == "section":
+                original_text = block.get("text", {}).get("text", "")
+                break
+
+        updated_blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": original_text or "Confirmation prompt",
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": decision_text},
+                ],
+            },
+        ]
+
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=decision_text,
+                blocks=updated_blocks,
+            )
+        except Exception as e:
+            logger.warning("[Slack] Failed to update slash-confirm message: %s", e)
+
+        # Resolve via the module-level primitive and post any follow-up.
+        try:
+            from tools import slash_confirm as _slash_confirm_mod
+            result_text = await _slash_confirm_mod.resolve(session_key, confirm_id, choice)
+            if result_text:
+                post_kwargs: Dict[str, Any] = {
+                    "channel": channel_id,
+                    "text": result_text,
+                }
+                # Inherit the thread so the reply stays in the same place.
+                thread_ts = message.get("thread_ts") or msg_ts
+                if thread_ts:
+                    post_kwargs["thread_ts"] = thread_ts
+                await self._get_client(channel_id).chat_postMessage(**post_kwargs)
+            logger.info(
+                "Slack button resolved slash-confirm for session %s (choice=%s, user=%s)",
+                session_key, choice, user_name,
+            )
+        except Exception as exc:
+            logger.error("Failed to resolve slash-confirm from Slack button: %s", exc, exc_info=True)
 
     async def _handle_approval_action(self, ack, body, action) -> None:
         """Handle an approval button click from Block Kit."""

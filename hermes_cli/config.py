@@ -440,6 +440,13 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "mcporter": {
+        "enabled": "auto",
+        "command": "npx",
+        "args": ["-y", "mcporter"],
+        "config_path": "config/mcporter.json",
+        "timeout": 60,
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

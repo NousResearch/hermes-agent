@@ -545,6 +545,29 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return uri[: -len(suffix)] or "viking://"
         return uri
 
+    def _is_directory_uri(self, uri: str) -> bool | None:
+        """Probe fs/stat to decide if a URI is a directory.
+
+        Returns True/False when the server answers cleanly, and None when the
+        probe itself fails (network error, unexpected shape). Callers should
+        treat None as "unknown" and fall back to the exception-based path.
+        """
+        try:
+            resp = self._client.get("/api/v1/fs/stat", params={"uri": uri})
+        except Exception:
+            return None
+        result = self._unwrap_result(resp)
+        if isinstance(result, dict):
+            if "isDir" in result:
+                return bool(result.get("isDir"))
+            if "is_dir" in result:
+                return bool(result.get("is_dir"))
+            if result.get("type") == "dir":
+                return True
+            if result.get("type") == "file":
+                return False
+        return None
+
     def _tool_search(self, args: dict) -> str:
         query = args.get("query", "")
         if not query:
@@ -600,19 +623,32 @@ class OpenVikingMemoryProvider(MemoryProvider):
         resolved_uri = self._normalize_summary_uri(uri) if summary_level else uri
         used_fallback = False
 
+        # abstract/overview endpoints are directory-only on OpenViking
+        # (v0.3.x returns 500/412 for file URIs). When the caller asks for a
+        # summary level on a non-pseudo URI, probe fs/stat first and route
+        # file URIs straight to /content/read instead of eating a failing
+        # round-trip. The pseudo-URI path already points at a directory, so
+        # skip the probe there.
+        if summary_level and resolved_uri == uri:
+            is_dir = self._is_directory_uri(uri)
+            if is_dir is False:
+                resolved_uri = uri
+                used_fallback = True
+
         # Map our level names to OpenViking GET endpoints.
         endpoint = "/api/v1/content/read"
-        if level == "abstract":
-            endpoint = "/api/v1/content/abstract"
-        elif level == "overview":
-            endpoint = "/api/v1/content/overview"
+        if not used_fallback:
+            if level == "abstract":
+                endpoint = "/api/v1/content/abstract"
+            elif level == "overview":
+                endpoint = "/api/v1/content/overview"
 
         try:
             resp = self._client.get(endpoint, params={"uri": resolved_uri})
         except Exception:
             # OpenViking may return HTTP 500 for abstract/overview reads on normal
             # file URIs (mem_*.md). For those, gracefully fallback to full read.
-            if not summary_level or resolved_uri != uri:
+            if not summary_level or resolved_uri != uri or used_fallback:
                 raise
             resp = self._client.get("/api/v1/content/read", params={"uri": uri})
             used_fallback = True

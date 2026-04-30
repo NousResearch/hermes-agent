@@ -20,7 +20,7 @@ patches:
           - "_pending_justifications"
       - path: tools/terminal_tool.py
         markers:
-          - "justification: Optional[str]"
+          - "justification: Optional[str] = None"
           - "justification_required"
           - "justification_denied"
       - path: gateway/run.py

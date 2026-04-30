@@ -567,6 +567,14 @@ def clear_session(session_key: str) -> None:
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
         _gateway_queues.pop(session_key, None)
+        # Clean up any pending justification/approval entries for this session
+        # (entries are keyed by (session_key, cmd_hash) tuples)
+        _pending_approvals = {
+            k: v for k, v in _pending_approvals.items() if k[0] != session_key
+        }
+        _pending_justifications = {
+            k: v for k, v in _pending_justifications.items() if k[0] != session_key
+        }
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:

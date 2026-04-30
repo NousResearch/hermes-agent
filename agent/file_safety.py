@@ -136,7 +136,23 @@ def is_write_denied(path: str) -> bool:
 
 
 def get_read_block_error(path: str) -> Optional[str]:
-    """Return an error message when a read targets internal Hermes cache files."""
+    """Return an error message when a read targets a denied Hermes path.
+
+    Two categories are blocked:
+      * Internal Hermes cache files under ``HERMES_HOME/skills/.hub`` —
+        readable metadata that an attacker could use as a prompt-injection
+        carrier.
+      * Credential stores at the top of ``HERMES_HOME`` (``auth.json``,
+        ``auth.lock``, ``.anthropic_oauth.json``) — plaintext provider
+        keys / OAuth tokens that the agent never needs to read directly.
+
+    Callers that resolve relative paths against a non-process cwd
+    (e.g. ``TERMINAL_CWD`` in ``tools/file_tools.py``) MUST pre-resolve
+    and pass the absolute path string.  This function's own ``resolve()``
+    is anchored at the Python process cwd, so a relative input like
+    ``"auth.json"`` would otherwise miss the denylist when the task's
+    terminal cwd differs from the process cwd.
+    """
     resolved = Path(path).expanduser().resolve()
     hermes_home = _hermes_home_path().resolve()
     blocked_dirs = [

@@ -92,11 +92,18 @@ class GatewayStreamConsumer:
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
         on_new_message: Optional[callable] = None,
+        initial_reply_to_id: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
+        # Message ID that triggered this stream. The first platform send
+        # must reply to it so topic/thread-aware adapters (e.g. Feishu)
+        # do not create a top-level message before an editable message ID
+        # exists. Once the first send succeeds, this is consumed and
+        # subsequent sends use the platform-returned message ID for edits.
+        self._initial_reply_to_id = initial_reply_to_id
         # Fired whenever a fresh content bubble is created on the platform
         # (first-send of a new message, commentary, overflow chunk, or
         # fallback continuation). The gateway uses this to linearize the
@@ -650,6 +657,7 @@ class GatewayStreamConsumer:
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=chunk,
+                    reply_to=self._initial_reply_to_id,
                     metadata=self.metadata,
                 )
                 if result.success:
@@ -762,6 +770,7 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
+                reply_to=self._initial_reply_to_id,
                 metadata=self.metadata,
             )
             # Note: do NOT set _already_sent = True here.
@@ -979,10 +988,16 @@ class GatewayStreamConsumer:
                     # The final response will be sent by the fallback path.
                     return False
             else:
-                # First message — send new
+                # First message — send new.
+                # Use initial_reply_to_id if available so topic/thread-aware
+                # adapters (Feishu) reply into the originating thread instead
+                # of creating a new top-level message.
+                _first_reply_to = self._initial_reply_to_id
+                self._initial_reply_to_id = None  # consume after first use
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
+                    reply_to=_first_reply_to,
                     metadata=self.metadata,
                 )
                 if result.success:

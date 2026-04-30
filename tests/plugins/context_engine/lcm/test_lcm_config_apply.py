@@ -298,3 +298,75 @@ class TestSummarizerModelPropagation:
         assert engine._engine.summarizer.config.model == "pre-set-model", (
             "summarizer.config.model was overwritten despite no summary_model in config"
         )
+
+
+# ---------------------------------------------------------------------------
+# Fix: runtime enable→disable transition logs a warning about tool retraction
+# ---------------------------------------------------------------------------
+
+class TestRuntimeDisableTransitionWarning:
+    """When on_session_start detects enabled→disabled, a warning must be logged.
+
+    The agent tool list cannot be retracted at runtime (it was populated once
+    at startup).  The warning tells the user to restart for the change to take
+    effect.  All LCM tool calls already return {"error": "LCM is disabled"} so
+    the behaviour is safe; this is purely a visibility fix.
+    """
+
+    def test_warning_logged_on_enabled_to_disabled_transition(self, caplog):
+        """A warning containing 'restart' must be emitted when transitioning
+        from enabled to disabled via config reload."""
+        import logging
+        engine = LcmContextEngine(lcm_config={"enabled": True})
+        assert engine._disabled is False, "precondition: engine starts enabled"
+
+        fake_cfg = {"lcm": {"enabled": "false"}}
+        with patch("hermes_cli.config.load_config", return_value=fake_cfg):
+            with caplog.at_level(logging.WARNING, logger="plugins.context_engine.lcm"):
+                engine.on_session_start("s-warn-test")
+
+        assert engine._disabled is True, "precondition: engine is now disabled"
+        assert any(
+            "restart" in record.message.lower()
+            for record in caplog.records
+        ), (
+            "Expected a warning containing 'restart' when LCM transitions "
+            f"enabled→disabled at runtime; got: {[r.message for r in caplog.records]!r}"
+        )
+
+    def test_no_warning_when_already_disabled(self, caplog):
+        """No spurious warning when the engine was already disabled before reload."""
+        import logging
+        engine = LcmContextEngine(lcm_config={"enabled": False})
+        assert engine._disabled is True
+
+        fake_cfg = {"lcm": {"enabled": "false"}}
+        with patch("hermes_cli.config.load_config", return_value=fake_cfg):
+            with caplog.at_level(logging.WARNING, logger="plugins.context_engine.lcm"):
+                engine.on_session_start("s-no-warn-test")
+
+        restart_warnings = [
+            r for r in caplog.records if "restart" in r.message.lower()
+        ]
+        assert restart_warnings == [], (
+            "Unexpected 'restart' warning when engine was already disabled: "
+            f"{[r.message for r in restart_warnings]!r}"
+        )
+
+    def test_no_warning_on_disable_to_enable_transition(self, caplog):
+        """Enabling an already-disabled engine must not emit a 'restart' warning."""
+        import logging
+        engine = LcmContextEngine(lcm_config={"enabled": False})
+
+        fake_cfg = {"lcm": {"enabled": "true"}}
+        with patch("hermes_cli.config.load_config", return_value=fake_cfg):
+            with caplog.at_level(logging.WARNING, logger="plugins.context_engine.lcm"):
+                engine.on_session_start("s-enable-no-warn")
+
+        restart_warnings = [
+            r for r in caplog.records if "restart" in r.message.lower()
+        ]
+        assert restart_warnings == [], (
+            "Unexpected 'restart' warning on disabled→enabled transition: "
+            f"{[r.message for r in restart_warnings]!r}"
+        )

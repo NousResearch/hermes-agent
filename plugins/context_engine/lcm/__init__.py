@@ -220,6 +220,9 @@ class LcmContextEngine(ContextEngine):
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Load persisted state and config for the session."""
+        # Capture pre-reload enabled state so we can detect transitions.
+        _was_disabled = self._disabled
+
         # Try to load LCM config from config.yaml
         try:
             from hermes_cli.config import load_config
@@ -244,6 +247,19 @@ class LcmContextEngine(ContextEngine):
                     self._engine.summarizer.config.model = self._config.summary_model
         except Exception:
             pass  # Config not available, use defaults
+
+        # Warn when the engine transitions enabled→disabled at runtime.
+        # The agent's tool list is populated once at startup and cannot be
+        # retracted without a restart; tool calls against a now-disabled engine
+        # return {"error": "LCM is disabled"} (handled in handle_tool_call), but
+        # the model will still see the stale schemas until the process restarts.
+        if _was_disabled is False and self._disabled is True:
+            logger.warning(
+                "LCM was disabled via config reload (lcm.enabled=false). "
+                "LCM tool schemas already advertised to the model will not be "
+                "retracted until the agent is restarted. All LCM tool calls "
+                "will return an error in the meantime."
+            )
 
         # Update context length from kwargs or config
         context_length = kwargs.get("context_length")

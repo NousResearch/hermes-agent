@@ -703,6 +703,39 @@ class TestTypingLifecycle:
         adapter._create_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_send_typing_inherits_inbound_thread(self, adapter):
+        """The typing card must be created in the same thread as the
+        user's message, otherwise send() will patch a top-level card and
+        the bot's whole reply ends up outside the user's thread (Chat
+        messages.patch cannot change thread — it's immutable). Regression
+        test for the 'reply lands at top-level instead of in my thread'
+        UX bug."""
+        adapter._last_inbound_thread["spaces/S"] = "spaces/S/threads/USER_THREAD"
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True,
+                                        "message_id": "spaces/S/messages/THINK",
+                                        "error": None})()
+        )
+        await adapter.send_typing("spaces/S")
+        # Verify the body sent to _create_message included the thread.
+        sent_body = adapter._create_message.call_args.args[1]
+        assert sent_body.get("thread") == {"name": "spaces/S/threads/USER_THREAD"}
+
+    @pytest.mark.asyncio
+    async def test_send_typing_no_thread_when_cache_empty(self, adapter):
+        """If no inbound thread has been seen yet, typing card creates
+        without thread (Chat will assign a default). Defensive — first
+        bot push without prior user message."""
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True,
+                                        "message_id": "spaces/S/messages/THINK",
+                                        "error": None})()
+        )
+        await adapter.send_typing("spaces/S")
+        sent_body = adapter._create_message.call_args.args[1]
+        assert "thread" not in sent_body
+
+    @pytest.mark.asyncio
     async def test_stop_typing_is_noop_for_live_card(self, adapter):
         """Anti-tombstone: stop_typing leaves a real msg_id in place so
         send() can patch it. Deleting would create a "Message deleted by

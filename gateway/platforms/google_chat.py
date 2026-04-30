@@ -1518,12 +1518,26 @@ class GoogleChatAdapter(BasePlatformAdapter):
         with the real response (no deletion tombstone). The typing card is
         either patched by ``send()`` (success) or by
         ``on_processing_complete`` (failure / cancellation).
+
+        IMPORTANT — must place the typing card in the user's thread:
+        ``messages.patch`` cannot change a message's ``thread`` (it's
+        immutable on update). If we create the typing card at top-level
+        and the user is replying inside thread T, send() will patch the
+        top-level card in place — leaving the bot's whole response
+        stranded outside the user's thread. We resolve the thread the
+        same way send() does (metadata override + last-inbound-thread
+        cache) so the typing card and the patched reply share a thread.
         """
         # If already showing a typing marker, do nothing.
         if chat_id in self._typing_messages:
             return
 
-        body = {"text": "Hermes is thinking…"}
+        thread_id = self._resolve_thread_id(
+            reply_to=None, metadata=metadata, chat_id=chat_id,
+        )
+        body: Dict[str, Any] = {"text": "Hermes is thinking…"}
+        if thread_id:
+            body["thread"] = {"name": thread_id}
         try:
             result = await self._create_message(chat_id, body)
         except Exception:

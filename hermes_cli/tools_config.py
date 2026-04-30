@@ -1426,10 +1426,12 @@ IMAGEGEN_BACKENDS = {
 
 def _format_imagegen_model_row(model_id: str, meta: dict, widths: dict) -> str:
     """Format a single picker row with column-aligned speed / strengths / price."""
+    from hermes_cli.text_width import ljust_display
+
     return (
-        f"{model_id:<{widths['model']}}  "
-        f"{meta.get('speed', ''):<{widths['speed']}}  "
-        f"{meta.get('strengths', ''):<{widths['strengths']}}  "
+        f"{ljust_display(model_id, widths['model'])}  "
+        f"{ljust_display(meta.get('speed', ''), widths['speed'])}  "
+        f"{ljust_display(meta.get('strengths', ''), widths['strengths'])}  "
         f"{meta.get('price', '')}"
     )
 
@@ -1462,18 +1464,21 @@ def _configure_imagegen_model(backend_name: str, config: dict) -> None:
     # Put current model at the top so the cursor lands on it by default.
     ordered = [current_model] + [m for m in model_ids if m != current_model]
 
-    # Column widths
+    from hermes_cli.text_width import display_width, ljust_display
+
+    # Column widths use terminal display cells so CJK/full-width model metadata
+    # remains aligned in standard monospace terminals.
     widths = {
-        "model": max(len(m) for m in model_ids),
-        "speed": max((len(catalog[m].get("speed", "")) for m in model_ids), default=6),
-        "strengths": max((len(catalog[m].get("strengths", "")) for m in model_ids), default=0),
+        "model": max(display_width(m) for m in model_ids),
+        "speed": max((display_width(catalog[m].get("speed", "")) for m in model_ids), default=6),
+        "strengths": max((display_width(catalog[m].get("strengths", "")) for m in model_ids), default=0),
     }
 
     print()
     header = (
-        f"  {'Model':<{widths['model']}}  "
-        f"{'Speed':<{widths['speed']}}  "
-        f"{'Strengths':<{widths['strengths']}}  "
+        f"  {ljust_display('Model', widths['model'])}  "
+        f"{ljust_display('Speed', widths['speed'])}  "
+        f"{ljust_display('Strengths', widths['strengths'])}  "
         f"Price"
     )
     print(color(header, Colors.CYAN))
@@ -1545,17 +1550,19 @@ def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None
     model_ids = list(catalog.keys())
     ordered = [current_model] + [m for m in model_ids if m != current_model]
 
+    from hermes_cli.text_width import display_width, ljust_display
+
     widths = {
-        "model": max(len(m) for m in model_ids),
-        "speed": max((len(catalog[m].get("speed", "")) for m in model_ids), default=6),
-        "strengths": max((len(catalog[m].get("strengths", "")) for m in model_ids), default=0),
+        "model": max(display_width(m) for m in model_ids),
+        "speed": max((display_width(catalog[m].get("speed", "")) for m in model_ids), default=6),
+        "strengths": max((display_width(catalog[m].get("strengths", "")) for m in model_ids), default=0),
     }
 
     print()
     header = (
-        f"  {'Model':<{widths['model']}}  "
-        f"{'Speed':<{widths['speed']}}  "
-        f"{'Strengths':<{widths['strengths']}}  "
+        f"  {ljust_display('Model', widths['model'])}  "
+        f"{ljust_display('Speed', widths['speed'])}  "
+        f"{ljust_display('Strengths', widths['strengths'])}  "
         f"Price"
     )
     print(color(header, Colors.CYAN))

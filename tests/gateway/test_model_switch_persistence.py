@@ -13,7 +13,7 @@ Tests exercise the real ``_apply_session_model_override()`` and
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -82,6 +82,69 @@ def _make_runner():
 
 class TestApplySessionModelOverride:
     """Verify _apply_session_model_override replaces config defaults."""
+
+    def test_resolve_session_runtime_uses_persisted_override_after_restart(self):
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+        runner.session_store.get_session_model_override = MagicMock(return_value={
+            "model": "gpt-5.4",
+            "provider": "copilot-acp",
+            "base_url": "acp://copilot",
+            "api_mode": "chat_completions",
+        })
+
+        with patch(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            return_value={
+                "provider": "openai-codex",
+                "api_key": "***",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_mode": "codex_responses",
+            },
+        ), patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value={
+                "provider": "copilot-acp",
+                "api_key": "copilot-acp",
+                "base_url": "acp://copilot",
+                "api_mode": "chat_completions",
+                "command": "copilot",
+                "args": ["--acp", "--stdio"],
+            },
+        ):
+            model, rt = runner._resolve_session_agent_runtime(
+                session_key=sk,
+                user_config={"model": {"default": "gpt-5.4-mini"}},
+            )
+
+        assert model == "gpt-5.4"
+        assert rt["provider"] == "copilot-acp"
+        assert rt["api_key"] == "copilot-acp"
+        assert rt["base_url"] == "acp://copilot"
+        assert runner._session_model_overrides[sk]["model"] == "gpt-5.4"
+
+    def test_persist_session_model_override_updates_session_store(self):
+        runner = _make_runner()
+        sk = build_session_key(_make_source())
+        runner.session_store.set_session_model_override = MagicMock(return_value=True)
+
+        runner._persist_session_model_override(
+            sk,
+            model="gpt-5.4",
+            provider="copilot-acp",
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            api_mode="chat_completions",
+        )
+
+        assert runner._session_model_overrides[sk]["provider"] == "copilot-acp"
+        runner.session_store.set_session_model_override.assert_called_once_with(
+            sk,
+            model="gpt-5.4",
+            provider="copilot-acp",
+            base_url="acp://copilot",
+            api_mode="chat_completions",
+        )
 
     def test_override_replaces_all_fields(self):
         runner = _make_runner()

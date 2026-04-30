@@ -1097,8 +1097,9 @@ class AIAgent:
         if (
             api_mode is None
             and self.api_mode == "chat_completions"
-            and self.provider != "copilot-acp"
+            and self.provider not in {"copilot-acp", "claude-cli"}
             and not str(self.base_url or "").lower().startswith("acp://copilot")
+            and not str(self.base_url or "").lower().startswith("claude-cli://")
             and not str(self.base_url or "").lower().startswith("acp+tcp://")
             and not self._is_azure_openai_url()
             and (
@@ -1405,7 +1406,7 @@ class AIAgent:
                     client_kwargs = {"api_key": api_key, "base_url": base_url}
                 if _provider_timeout is not None:
                     client_kwargs["timeout"] = _provider_timeout
-                if self.provider == "copilot-acp":
+                if self.provider in {"copilot-acp", "claude-cli"}:
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args
                 effective_base = base_url
@@ -1645,7 +1646,7 @@ class AIAgent:
                 logger.warning(
                     "Session DB create_session failed (session_search still available): %s", e
                 )
-        
+
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
         self._todo_store = TodoStore()
@@ -2302,6 +2303,9 @@ class AIAgent:
             _sm_timeout = get_provider_request_timeout(self.provider, self.model)
             if _sm_timeout is not None:
                 self._client_kwargs["timeout"] = _sm_timeout
+            if self.provider in {"copilot-acp", "claude-cli"}:
+                self._client_kwargs["command"] = self.acp_command
+                self._client_kwargs["args"] = list(self.acp_args or [])
             self.client = self._create_openai_client(
                 dict(self._client_kwargs),
                 reason="switch_model",
@@ -5438,6 +5442,17 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
+        if self.provider == "claude-cli" or str(client_kwargs.get("base_url", "")).startswith("claude-cli://"):
+            from agent.claude_cli_client import ClaudeCLIClient
+
+            client = ClaudeCLIClient(**client_kwargs)
+            logger.info(
+                "Claude CLI client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
         if self.provider == "google-gemini-cli" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
             from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
 
@@ -6714,6 +6729,14 @@ class AIAgent:
             last_chunk_time["t"] = time.time()
             self._touch_activity("waiting for provider response (streaming)")
             stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
+
+            # Some OpenAI-compatible shims ignore `stream=True` and return a
+            # completed response object immediately. Treat that as a clean
+            # fallback to the non-streaming shape instead of trying to iterate
+            # it as a stream (which raises TypeError on SimpleNamespace-backed
+            # adapter responses like Claude CLI).
+            if hasattr(stream, "choices") and not hasattr(stream, "__iter__"):
+                return stream
 
             # Capture rate limit headers from the initial HTTP response.
             # The OpenAI SDK Stream object exposes the underlying httpx

@@ -31,6 +31,7 @@ class TestProviderRegistry:
 
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
+        ("claude-cli", "Claude CLI", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
@@ -120,6 +121,7 @@ class TestProviderRegistry:
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
+        assert PROVIDER_REGISTRY["claude-cli"].inference_base_url == "claude-cli://local"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
@@ -156,6 +158,7 @@ PROVIDER_ENV_VARS = (
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
     "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_ACP_BASE_URL",
+    "HERMES_CLAUDE_CLI_COMMAND", "HERMES_CLAUDE_CLI_ARGS", "CLAUDE_CLI_BASE_URL",
 )
 
 
@@ -246,6 +249,10 @@ class TestResolveProvider:
     def test_alias_github_copilot_acp(self):
         assert resolve_provider("github-copilot-acp") == "copilot-acp"
         assert resolve_provider("copilot-acp-agent") == "copilot-acp"
+
+    def test_alias_claude_cli(self):
+        assert resolve_provider("claude-cli") == "claude-cli"
+        assert resolve_provider("claude-code-cli") == "claude-cli"
 
     def test_explicit_huggingface(self):
         assert resolve_provider("huggingface") == "huggingface"
@@ -385,6 +392,18 @@ class TestApiKeyProviderStatus:
         assert status["args"] == ["--acp", "--stdio", "--debug"]
         assert status["base_url"] == "acp://copilot"
 
+    def test_claude_cli_status_detects_local_cli(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
+
+        status = get_external_process_provider_status("claude-cli")
+
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["command"] == "claude"
+        assert status["resolved_command"] == "/opt/bin/claude"
+        assert status["args"] == []
+        assert status["base_url"] == "claude-cli://local"
+
     def test_get_auth_status_dispatches_to_external_process(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
 
@@ -392,6 +411,14 @@ class TestApiKeyProviderStatus:
 
         assert status["configured"] is True
         assert status["provider"] == "copilot-acp"
+
+    def test_get_auth_status_dispatches_to_claude_cli(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
+
+        status = get_auth_status("claude-cli")
+
+        assert status["configured"] is True
+        assert status["provider"] == "claude-cli"
 
     def test_non_api_key_provider(self):
         status = get_api_key_provider_status("nous")
@@ -489,6 +516,18 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["base_url"] == "acp://copilot"
         assert creds["command"] == "/usr/local/bin/copilot"
         assert creds["args"] == ["--acp", "--stdio"]
+        assert creds["source"] == "process"
+
+    def test_resolve_claude_cli_with_local_cli(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        creds = resolve_external_process_provider_credentials("claude-cli")
+
+        assert creds["provider"] == "claude-cli"
+        assert creds["api_key"] == "claude-cli"
+        assert creds["base_url"] == "claude-cli://local"
+        assert creds["command"] == "/usr/local/bin/claude"
+        assert creds["args"] == []
         assert creds["source"] == "process"
 
     def test_resolve_kimi_with_key(self, monkeypatch):
@@ -711,6 +750,21 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "acp://copilot"
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]
+
+    def test_runtime_claude_cli_uses_process_runtime(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+        monkeypatch.setenv("HERMES_CLAUDE_CLI_ARGS", "--verbose")
+
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="claude-cli")
+
+        assert result["provider"] == "claude-cli"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "claude-cli"
+        assert result["base_url"] == "claude-cli://local"
+        assert result["command"] == "/usr/local/bin/claude"
+        assert result["args"] == []
 
 
 # =============================================================================

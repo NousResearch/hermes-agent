@@ -482,6 +482,15 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Session-scoped /model selection persisted across gateway restarts.
+    # This is intentionally separate from config.yaml defaults: it should
+    # follow the current session lane until /new or /reset starts a fresh
+    # session, matching OpenClaw's per-session model override behavior.
+    model_override: Optional[str] = None
+    provider_override: Optional[str] = None
+    override_base_url: Optional[str] = None
+    override_api_mode: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -508,6 +517,10 @@ class SessionEntry:
                 if self.last_resume_marked_at
                 else None
             ),
+            "model_override": self.model_override,
+            "provider_override": self.provider_override,
+            "override_base_url": self.override_base_url,
+            "override_api_mode": self.override_api_mode,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -556,6 +569,10 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            model_override=data.get("model_override"),
+            provider_override=data.get("provider_override"),
+            override_base_url=data.get("override_base_url"),
+            override_api_mode=data.get("override_api_mode"),
         )
 
 
@@ -952,6 +969,58 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+
+    def get_session_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
+        """Return a persisted session-scoped model override, if any."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if not entry or not entry.model_override:
+                return None
+            return {
+                "model": entry.model_override,
+                "provider": entry.provider_override,
+                "base_url": entry.override_base_url,
+                "api_mode": entry.override_api_mode,
+            }
+
+    def set_session_model_override(
+        self,
+        session_key: str,
+        *,
+        model: str,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
+        api_mode: Optional[str] = None,
+    ) -> bool:
+        """Persist a session-scoped /model selection for restart-safe resume."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if not entry:
+                return False
+            entry.model_override = model
+            entry.provider_override = provider
+            entry.override_base_url = base_url
+            entry.override_api_mode = api_mode
+            entry.updated_at = _now()
+            self._save()
+            return True
+
+    def clear_session_model_override(self, session_key: str) -> bool:
+        """Remove any persisted session-scoped /model selection."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if not entry:
+                return False
+            entry.model_override = None
+            entry.provider_override = None
+            entry.override_base_url = None
+            entry.override_api_mode = None
+            entry.updated_at = _now()
+            self._save()
+            return True
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.

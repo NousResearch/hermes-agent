@@ -53,6 +53,7 @@ def _make_runner():
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = session_entry
     runner.session_store.reset_session.return_value = session_entry
+    runner.session_store.clear_session_model_override = MagicMock(return_value=True)
     runner.session_store._entries = {session_key: session_entry}
     runner.session_store._generate_session_key.return_value = session_key
     runner._running_agents = {}
@@ -88,6 +89,7 @@ async def test_new_command_clears_session_model_override():
     assert session_key not in runner._session_model_overrides
     assert session_key not in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
+    runner.session_store.clear_session_model_override.assert_called_once_with(session_key)
 
 
 @pytest.mark.asyncio
@@ -103,6 +105,27 @@ async def test_new_command_no_override_is_noop():
 
     assert session_key not in runner._session_model_overrides
     assert session_key not in runner._session_reasoning_overrides
+    runner.session_store.clear_session_model_override.assert_called_once_with(session_key)
+
+
+@pytest.mark.asyncio
+async def test_reset_alias_clears_persisted_session_model_override():
+    """/reset must clear the persisted model override for the current session."""
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+
+    runner._session_model_overrides[session_key] = {
+        "model": "gpt-4o",
+        "provider": "openai",
+        "api_key": "***",
+        "base_url": "",
+        "api_mode": "openai",
+    }
+
+    await runner._handle_reset_command(_make_event("/reset"))
+
+    assert session_key not in runner._session_model_overrides
+    runner.session_store.clear_session_model_override.assert_called_once_with(session_key)
 
 
 @pytest.mark.asyncio
@@ -115,7 +138,7 @@ async def test_new_command_only_clears_own_session():
     runner._session_model_overrides[session_key] = {
         "model": "gpt-4o",
         "provider": "openai",
-        "api_key": "sk-test",
+        "api_key": "***",
         "base_url": "",
         "api_mode": "openai",
     }
@@ -124,7 +147,7 @@ async def test_new_command_only_clears_own_session():
         "provider": "anthropic",
         "api_key": "***",
         "base_url": "",
-        "api_mode": "anthropic",
+        "api_mode": "chat_completions",
     }
     runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
     runner._session_reasoning_overrides[other_key] = {"enabled": True, "effort": "low"}
@@ -139,3 +162,4 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+    runner.session_store.clear_session_model_override.assert_called_once_with(session_key)

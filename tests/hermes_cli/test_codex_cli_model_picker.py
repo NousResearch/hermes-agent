@@ -133,6 +133,20 @@ def test_claude_code_file_detected_by_model_picker(claude_code_only_env):
     assert anthropic["total_models"] > 0
 
 
+def test_claude_cli_detected_by_model_picker(monkeypatch, claude_code_only_env):
+    """claude-cli should appear as a separate picker option when Claude CLI is installed and Claude Code creds exist."""
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+    providers = list_authenticated_providers(
+        current_provider="claude-cli",
+        max_models=10,
+    )
+    slugs = [p["slug"] for p in providers]
+    assert "claude-cli" in slugs, f"claude-cli not found in /model picker providers: {slugs}"
+
+
 def test_no_codex_when_no_credentials(tmp_path, monkeypatch):
     """openai-codex should NOT appear when no credentials exist anywhere."""
     hermes_home = tmp_path / ".hermes"

@@ -80,6 +80,7 @@ _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
 _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
     "copilot",
     "copilot-acp",
+    "claude-cli",
     "openai-codex",
 })
 
@@ -409,13 +410,13 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             return bare
         return _dots_to_hyphens(bare)
 
-    # --- Copilot / Copilot ACP: delegate to the Copilot-specific
+    # --- Copilot / Copilot ACP / Claude CLI: delegate to the provider-specific
     #     normalizer.  It knows about the alias table (vendor-prefix
     #     stripping for Anthropic/OpenAI, dash-to-dot repair for Claude)
     #     and live-catalog lookups.  Without this, vendor-prefixed or
-    #     dash-notation Claude IDs survive to the Copilot API and hit
-    #     HTTP 400 "model_not_supported".  See issue #6879.
-    if provider in {"copilot", "copilot-acp"}:
+    #     dash-notation Claude IDs survive to the backend and hit
+    #     unsupported-model errors.
+    if provider in {"copilot", "copilot-acp", "claude-cli"}:
         try:
             from hermes_cli.models import normalize_copilot_model_id
 
@@ -424,10 +425,10 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
                 return normalized
         except Exception:
             # Fall through to the generic strip-vendor behaviour below
-            # if the Copilot-specific path is unavailable for any reason.
+            # if the provider-specific path is unavailable for any reason.
             pass
 
-    # --- Copilot / Copilot ACP / openai-codex fallback:
+    # --- Copilot / Copilot ACP / Claude CLI / openai-codex fallback:
     #     strip matching provider prefix, keep dots ---
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
         stripped = _strip_matching_provider_prefix(name, provider)

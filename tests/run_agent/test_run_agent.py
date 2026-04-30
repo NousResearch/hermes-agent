@@ -3944,6 +3944,125 @@ def test_aiagent_uses_copilot_acp_client():
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
 
 
+def test_aiagent_uses_claude_cli_client():
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI") as mock_openai,
+        patch("agent.claude_cli_client.ClaudeCLIClient") as mock_claude_client,
+    ):
+        cli_client = MagicMock()
+        mock_claude_client.return_value = cli_client
+
+        agent = AIAgent(
+            api_key="claude-cli",
+            base_url="claude-cli://local",
+            provider="claude-cli",
+            acp_command="/usr/local/bin/claude",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is cli_client
+    mock_openai.assert_not_called()
+    mock_claude_client.assert_called_once()
+    assert mock_claude_client.call_args.kwargs["base_url"] == "claude-cli://local"
+    assert mock_claude_client.call_args.kwargs["api_key"] == "claude-cli"
+    assert mock_claude_client.call_args.kwargs["command"] == "/usr/local/bin/claude"
+    assert mock_claude_client.call_args.kwargs["args"] == []
+
+
+def test_aiagent_does_not_bind_claude_cli_runtime_state_from_session_db():
+    session_db = MagicMock()
+    session_db.get_session.return_value = {
+        "model_config": json.dumps(
+            {
+                "runtime_state": {
+                    "claude-cli": {
+                        "claude_session_id": "11111111-1111-1111-1111-111111111111",
+                        "synced_message_count": 7,
+                    }
+                }
+            }
+        )
+    }
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("agent.claude_cli_client.ClaudeCLIClient") as mock_claude_client,
+    ):
+        cli_client = MagicMock()
+        cli_client.export_session_state.return_value = {
+            "claude_session_id": "11111111-1111-1111-1111-111111111111",
+            "synced_message_count": 7,
+        }
+        mock_claude_client.return_value = cli_client
+
+        agent = AIAgent(
+            api_key="claude-cli",
+            base_url="claude-cli://local",
+            provider="claude-cli",
+            session_id="session-123",
+            session_db=session_db,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    cli_client.export_session_state.assert_not_called()
+    assert "hermes_session_id" not in agent._client_kwargs
+    assert "session_state" not in agent._client_kwargs
+
+
+def test_switch_model_to_claude_cli_does_not_restore_backend_session_state():
+    agent = object.__new__(AIAgent)
+    agent.provider = "claude-cli"
+    agent.session_id = "session-123"
+    agent.model = "claude-haiku"
+    agent.base_url = "claude-cli://local"
+    agent.api_key = "claude-cli"
+    agent.api_mode = "chat_completions"
+    agent.acp_command = "/usr/local/bin/claude"
+    agent.acp_args = []
+    agent.client = MagicMock()
+    agent.client.export_session_state.return_value = {
+        "claude_session_id": "22222222-2222-2222-2222-222222222222",
+        "synced_message_count": 5,
+    }
+    agent._client_kwargs = {
+        "base_url": "claude-cli://local",
+        "api_key": "claude-cli",
+        "session_state": {"claude_session_id": "stale"},
+    }
+    agent._session_db = None
+    agent._transport_cache = {}
+    agent._config_context_length = None
+    agent._fallback_chain = []
+    agent._fallback_model = None
+    agent.context_compressor = None
+    agent._anthropic_prompt_cache_policy = MagicMock(return_value=(False, False))
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
+
+    with patch("run_agent.get_provider_request_timeout", return_value=None):
+        agent.switch_model(
+            new_model="claude-sonnet-4.6",
+            new_provider="claude-cli",
+            api_key="claude-cli",
+            base_url="claude-cli://local",
+            api_mode="chat_completions",
+        )
+
+    created_kwargs = agent._create_openai_client.call_args.args[0]
+    assert created_kwargs["command"] == "/usr/local/bin/claude"
+    assert created_kwargs["args"] == []
+    assert "hermes_session_id" not in created_kwargs
+    assert "session_state" not in created_kwargs
+    assert "session_state" not in agent._primary_runtime["client_kwargs"]
+
+
 def test_quiet_spinner_allowed_with_explicit_print_fn(agent):
     agent._print_fn = lambda *_a, **_kw: None
     with patch.object(run_agent.sys.stdout, "isatty", return_value=False):
@@ -4180,6 +4299,15 @@ class TestStreamingApiCall:
         callback.assert_any_call("Hel")
         callback.assert_any_call("lo ")
         callback.assert_any_call("World")
+
+    def test_non_streaming_response_object_falls_back_cleanly(self, agent):
+        resp = _mock_response(content="PINEAPPLE", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        recovered = agent._interruptible_streaming_api_call({"messages": []})
+
+        assert recovered is resp
+        assert recovered.choices[0].message.content == "PINEAPPLE"
 
     def test_tool_call_accumulation(self, agent):
         # Per OpenAI streaming spec, function names are delivered atomically

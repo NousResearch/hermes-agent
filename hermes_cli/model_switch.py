@@ -1238,6 +1238,17 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
+        if not has_creds and hermes_slug == "claude-cli":
+            try:
+                from agent.anthropic_adapter import read_claude_code_credentials
+                from hermes_cli.auth import get_external_process_provider_status
+
+                status = get_external_process_provider_status("claude-cli")
+                cc_creds = read_claude_code_credentials()
+                if status.get("configured") and cc_creds and cc_creds.get("accessToken"):
+                    has_creds = True
+            except Exception as exc:
+                logger.debug("Claude CLI external creds check failed: %s", exc)
         if not has_creds:
             continue
 

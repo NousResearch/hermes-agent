@@ -474,6 +474,64 @@ class TestSessionStoreRewriteTranscript:
         assert reloaded == []
 
 
+class TestSessionStoreModelOverridePersistence:
+    def test_roundtrip_preserves_session_model_override(self, tmp_path):
+        config = GatewayConfig()
+        sessions_dir = tmp_path / "sessions"
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="c1",
+            chat_type="group",
+            user_id="u1",
+            user_name="tester",
+        )
+
+        store = SessionStore(sessions_dir=sessions_dir, config=config)
+        entry = store.get_or_create_session(source)
+        assert store.set_session_model_override(
+            entry.session_key,
+            model="gpt-5.4",
+            provider="copilot-acp",
+            base_url="acp://copilot",
+            api_mode="chat_completions",
+        )
+
+        reloaded = SessionStore(sessions_dir=sessions_dir, config=config)
+        override = reloaded.get_session_model_override(entry.session_key)
+
+        assert override == {
+            "model": "gpt-5.4",
+            "provider": "copilot-acp",
+            "base_url": "acp://copilot",
+            "api_mode": "chat_completions",
+        }
+
+    def test_clear_session_model_override_persists_after_reload(self, tmp_path):
+        config = GatewayConfig()
+        sessions_dir = tmp_path / "sessions"
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="c1",
+            chat_type="group",
+            user_id="u1",
+            user_name="tester",
+        )
+
+        store = SessionStore(sessions_dir=sessions_dir, config=config)
+        entry = store.get_or_create_session(source)
+        assert store.set_session_model_override(
+            entry.session_key,
+            model="gpt-5.4",
+            provider="copilot-acp",
+            base_url="acp://copilot",
+            api_mode="chat_completions",
+        )
+        assert store.clear_session_model_override(entry.session_key)
+
+        reloaded = SessionStore(sessions_dir=sessions_dir, config=config)
+        assert reloaded.get_session_model_override(entry.session_key) is None
+
+
 class TestLoadTranscriptCorruptLines:
     """Regression: corrupt JSONL lines (e.g. from mid-write crash) must be
     skipped instead of crashing the entire transcript load.  GH-1193."""

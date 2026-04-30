@@ -59,6 +59,28 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_dispatch_rejects_non_object_request():
+    resp = server.dispatch([])
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {"code": -32600, "message": "invalid request: expected an object"},
+    }
+
+
+def test_dispatch_rejects_non_object_params():
+    resp = server.dispatch(
+        {"id": "1", "method": "session.create", "params": []}
+    )
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "error": {"code": -32602, "message": "invalid params: expected an object"},
+    }
+
+
 def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, terminal, ,memory")
 

@@ -55,3 +55,23 @@ class TestStripLeakedTerminalResponses:
     def test_preserves_multiline_content(self):
         text = "line 1\n\x1b[53;1Rline 2"
         assert _strip_leaked_terminal_responses(text) == "line 1\nline 2"
+
+    def test_strips_sgr_mouse_report_esc_form(self):
+        text = "abc\x1b[<65;1;49Mdef"
+        assert _strip_leaked_terminal_responses(text) == "abcdef"
+
+    def test_strips_sgr_mouse_report_visible_form(self):
+        text = "abc^[[<65;1;49Mdef"
+        assert _strip_leaked_terminal_responses(text) == "abcdef"
+
+    def test_strips_sgr_mouse_report_bare_form(self):
+        text = "abc<65;1;49Mdef"
+        assert _strip_leaked_terminal_responses(text) == "abcdef"
+
+    def test_strips_multiple_concatenated_sgr_mouse_reports(self):
+        text = "<65;1;49M<35;1;42Mhello<64;1;40m"
+        assert _strip_leaked_terminal_responses(text) == "hello"
+
+    def test_does_not_strip_regular_angle_bracket_text(self):
+        text = "render <div class='hero'> literal"
+        assert _strip_leaked_terminal_responses(text) == text

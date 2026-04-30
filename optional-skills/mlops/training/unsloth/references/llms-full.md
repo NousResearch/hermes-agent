@@ -4128,7 +4128,7 @@ With Unsloth's new RL improvements, you NEVER have to worry about tuning or sett
 
 ## :interrobang:Why does RL use so much memory?
 
-GRPO (and many RL variants) rely heavily on generation which is primarily powered by vLLM. But this comes comes with a steep cost since it requires constant **GPU memory for weights, activations, and the KV Cache**.
+GRPO (and many RL variants) rely heavily on generation which is primarily powered by vLLM. But this comes with a steep cost since it requires constant **GPU memory for weights, activations, and the KV Cache**.
 
 {% columns %}
 {% column width="41.66666666666667%" %}

@@ -343,3 +343,94 @@ def pytest_configure(config):
             + _GUARD_HINT
         )
 
+# ---------------------------------------------------------------------------
+# LINE adapter shared helpers
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+import pytest_asyncio  # noqa: E402
+
+from gateway.config import PlatformConfig as _PlatformConfig  # noqa: E402
+from gateway.platforms.line import LineAdapter as _LineAdapter  # noqa: E402
+
+
+def make_line_platform_config(token: str = "t") -> _PlatformConfig:
+    """Build a PlatformConfig for LineAdapter — matches the shape produced
+    by gateway/run.py's adapter factory. LINE-specific options come from
+    env vars at adapter __init__ time, so tests should monkeypatch the
+    LINE_* vars BEFORE constructing the adapter."""
+    return _PlatformConfig(enabled=True, token=token)
+
+
+@pytest.fixture
+def line_lock_noop(monkeypatch):
+    """Stub the per-credential platform lock for LINE connect()/disconnect().
+
+    Without this, multiple ``connect()`` calls in the same test process
+    contend on a real file lock keyed by ``channel_access_token="t"`` —
+    the default credential used by LINE fixtures — and every test after
+    the first fails with ``Failed to acquire lock``. The lock is a real
+    production safety mechanism (mirrors Telegram/Discord); we stub it
+    inside the test process via the same pattern test_telegram_conflict
+    uses when it needs to exercise the failure branch.
+
+    Opt-in only — request this fixture in tests that exercise
+    connect()/disconnect(). Peer convention (test_telegram, test_discord)
+    favors explicit opt-in over autouse to avoid silently neutering
+    unrelated tests."""
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+
+@pytest_asyncio.fixture
+async def make_line_adapter(monkeypatch):
+    """Factory fixture for building a LineAdapter with custom env-driven
+    settings. Sets LINE_* env vars then constructs the adapter so the v2
+    PlatformConfig + os.environ pattern is exercised end-to-end.
+
+    Usage::
+
+        adapter = make_line_adapter(
+            LINE_ALLOWED_GROUPS="C1",
+            LINE_REQUIRE_MENTION="true",
+            LINE_BOT_DISPLAY_NAME="小茉",
+        )
+    """
+    adapters = []
+
+    def _factory(**env_overrides):
+        defaults = {
+            "LINE_CHANNEL_ACCESS_TOKEN": "t",
+            "LINE_CHANNEL_SECRET": "s",
+            "LINE_ALLOWED_USERS": "U1",
+            "LINE_SLOW_RESPONSE_THRESHOLD": "50",
+        }
+        defaults.update(env_overrides)
+        for key, value in defaults.items():
+            if value is None:
+                monkeypatch.delenv(key, raising=False)
+            else:
+                monkeypatch.setenv(key, str(value))
+        adapter = _LineAdapter(make_line_platform_config(token=defaults["LINE_CHANNEL_ACCESS_TOKEN"]))
+        adapters.append(adapter)
+        return adapter
+
+    yield _factory
+
+    for a in adapters:
+        await a.disconnect()
+
+
+def line_sign(secret: str, body: bytes) -> str:
+    """Build a LINE-format X-Line-Signature header for a body using the channel secret."""
+    import base64 as _base64
+    import hashlib as _hashlib
+    import hmac as _hmac
+    digest = _hmac.new(secret.encode(), body, _hashlib.sha256).digest()
+    return _base64.b64encode(digest).decode()

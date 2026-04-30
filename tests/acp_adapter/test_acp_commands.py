@@ -82,6 +82,24 @@ async def test_acp_steer_slash_command_injects_into_running_agent():
 
 
 @pytest.mark.asyncio
+async def test_acp_steer_after_zed_interrupt_replays_interrupted_prompt_with_guidance():
+    acp_agent, state, fake, _conn = make_agent_and_state()
+    state.interrupted_prompt_text = "write hi to a text file"
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/steer write HELLO instead")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.steers == []
+    assert fake.runs == [
+        "write hi to a text file\n\nUser correction/guidance after interrupt: write HELLO instead"
+    ]
+    assert state.interrupted_prompt_text == ""
+
+
+@pytest.mark.asyncio
 async def test_acp_queue_slash_command_adds_next_turn_without_running_now():
     acp_agent, state, fake, _conn = make_agent_and_state()
 

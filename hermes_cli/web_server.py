@@ -974,10 +974,14 @@ def get_model_options():
             current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
             current_provider = model_cfg.get("provider", "") or ""
             current_base_url = model_cfg.get("base_url", "") or ""
+            picker_configured_only = bool(
+                model_cfg.get("picker_configured_only", False)
+            )
         else:
             current_model = str(model_cfg) if model_cfg else ""
             current_provider = ""
             current_base_url = ""
+            picker_configured_only = False
 
         user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
         custom_providers = (
@@ -993,6 +997,7 @@ def get_model_options():
             user_providers=user_providers,
             custom_providers=custom_providers,
             max_models=50,
+            picker_configured_only=picker_configured_only,
         )
         return {
             "providers": providers,

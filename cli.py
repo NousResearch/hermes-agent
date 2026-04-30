@@ -5437,19 +5437,34 @@ class HermesCLI:
         parts = cmd_original.split(None, 1)  # split off '/model'
         raw_args = parts[1].strip() if len(parts) > 1 else ""
 
+        # Pseudo-arg: /model configured opens the picker filtered to entries
+        # the user has explicitly defined in providers: / custom_providers:,
+        # regardless of the model.picker_configured_only config setting.
+        configured_only_override = raw_args.lower() == "configured"
+        if configured_only_override:
+            raw_args = ""
+
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
 
         # Load providers for switch_model (picker path needs them below)
         user_provs = None
         custom_provs = None
+        picker_configured_only = False
         try:
             from hermes_cli.config import get_compatible_custom_providers, load_config
             cfg = load_config()
             user_provs = cfg.get("providers")
             custom_provs = get_compatible_custom_providers(cfg)
+            model_cfg = cfg.get("model")
+            if isinstance(model_cfg, dict):
+                picker_configured_only = bool(
+                    model_cfg.get("picker_configured_only", False)
+                )
         except Exception:
             pass
+
+        effective_configured_only = configured_only_override or picker_configured_only
 
         # No args at all: open prompt_toolkit-native picker modal
         if not model_input and not explicit_provider:
@@ -5464,6 +5479,7 @@ class HermesCLI:
                     user_providers=user_provs,
                     custom_providers=custom_provs,
                     max_models=50,
+                    picker_configured_only=effective_configured_only,
                 )
             except Exception:
                 providers = []

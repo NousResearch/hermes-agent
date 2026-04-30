@@ -4659,6 +4659,11 @@ def _(rid, params: dict) -> dict:
         current_provider = getattr(agent, "provider", "") or ""
         current_model = getattr(agent, "model", "") or _resolve_model()
         current_base_url = getattr(agent, "base_url", "") or ""
+        model_cfg = cfg.get("model")
+        picker_configured_only = bool(
+            isinstance(model_cfg, dict)
+            and model_cfg.get("picker_configured_only", False)
+        )
         # list_authenticated_providers already populates each provider's
         # "models" with the curated list (same source as `hermes model` and
         # classic CLI's /model picker). Do NOT overwrite with live
@@ -4678,6 +4683,7 @@ def _(rid, params: dict) -> dict:
                 else []
             ),
             max_models=50,
+            picker_configured_only=picker_configured_only,
         )
         return _ok(
             rid,

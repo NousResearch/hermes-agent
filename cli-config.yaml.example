@@ -45,6 +45,22 @@ model:
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
 
+  # ── /model picker scope ───────────────────────────────────────────────────
+  #
+  # Restrict the /model picker (and `hermes model` REST surface) to entries
+  # the user has explicitly defined in ``providers:`` and ``custom_providers:``
+  # below.  Built-in / curated rows (anthropic, openrouter, copilot, …) are
+  # hidden even when their credentials are present in ~/.hermes/.env, and the
+  # live ``/v1/models`` override that normally replaces a user-defined
+  # endpoint's ``models:`` list is skipped so the picker reflects exactly what
+  # was written here.
+  #
+  # Default is false (show every authenticated provider — current behaviour).
+  # For a one-off configured-only view without setting this flag, type
+  # ``/model configured`` inside a chat session.
+  #
+  # picker_configured_only: false
+
   # ── Token limits — two settings, easy to confuse ──────────────────────────
   #
   # context_length: TOTAL context window (input + output tokens combined).

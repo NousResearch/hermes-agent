@@ -599,6 +599,101 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# /model configured + model.picker_configured_only threading (#13796)
+# ---------------------------------------------------------------------------
+
+def _stub_model_picker_environment(monkeypatch, cli, shell, model_cfg):
+    """Wire HermesCLI._handle_model_switch to a captured fake picker."""
+    captured: dict = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": model_cfg},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.get_compatible_custom_providers",
+        lambda cfg: [],
+    )
+
+    def _fake_list_authenticated_providers(**kwargs):
+        captured.update(kwargs)
+        return [{"slug": "local-ollama", "name": "Local Ollama", "models": []}]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        _fake_list_authenticated_providers,
+    )
+    monkeypatch.setattr(
+        shell,
+        "_open_model_picker",
+        lambda *args, **kwargs: captured.setdefault("opened", (args, kwargs)),
+    )
+    return captured
+
+
+def test_cli_model_picker_forwards_configured_only_from_config(monkeypatch):
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.model = "gpt-5"
+    shell.provider = "openrouter"
+
+    captured = _stub_model_picker_environment(
+        monkeypatch,
+        cli,
+        shell,
+        {
+            "default": "gpt-5",
+            "provider": "openrouter",
+            "picker_configured_only": True,
+        },
+    )
+
+    shell._handle_model_switch("/model")
+
+    assert captured["picker_configured_only"] is True
+    assert "opened" in captured
+
+
+def test_cli_model_configured_pseudo_arg_overrides_config(monkeypatch):
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.model = "gpt-5"
+    shell.provider = "openrouter"
+
+    # Config flag is off, but the user typed `/model configured` — the
+    # pseudo-arg must still flip the picker into configured-only mode.
+    captured = _stub_model_picker_environment(
+        monkeypatch,
+        cli,
+        shell,
+        {"default": "gpt-5", "provider": "openrouter"},
+    )
+
+    shell._handle_model_switch("/model configured")
+
+    assert captured["picker_configured_only"] is True
+    assert "opened" in captured
+
+
+def test_cli_model_picker_default_does_not_filter(monkeypatch):
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.model = "gpt-5"
+    shell.provider = "openrouter"
+
+    captured = _stub_model_picker_environment(
+        monkeypatch,
+        cli,
+        shell,
+        {"default": "gpt-5", "provider": "openrouter"},
+    )
+
+    shell._handle_model_switch("/model")
+
+    assert captured["picker_configured_only"] is False
+
+
+# ---------------------------------------------------------------------------
 # _auto_provider_name — unit tests
 # ---------------------------------------------------------------------------
 

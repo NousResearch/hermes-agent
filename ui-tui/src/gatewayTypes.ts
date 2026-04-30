@@ -129,6 +129,10 @@ export interface SessionListResponse {
   sessions?: SessionListItem[]
 }
 
+export interface SessionDeleteResponse {
+  deleted: string
+}
+
 export interface SessionMostRecentResponse {
   session_id?: null | string
   source?: string

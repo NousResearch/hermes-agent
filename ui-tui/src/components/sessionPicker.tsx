@@ -2,7 +2,7 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SessionListItem, SessionListResponse } from '../gatewayTypes.js'
+import type { SessionDeleteResponse, SessionListItem, SessionListResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -31,6 +31,10 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   const [err, setErr] = useState('')
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
+  // When non-null, the user pressed `d` on this index and we're waiting for
+  // `y`/`Y` to confirm deletion.  Any other key cancels the prompt.
+  const [confirmDelete, setConfirmDelete] = useState<null | number>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const { stdout } = useStdout()
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
@@ -59,7 +63,57 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
       })
   }, [gw])
 
+  const performDelete = (index: number) => {
+    const target = items[index]
+
+    if (!target || deleting) {
+      return
+    }
+
+    setDeleting(true)
+    gw.request<SessionDeleteResponse>('session.delete', { session_id: target.id })
+      .then(raw => {
+        const r = asRpcResult<SessionDeleteResponse>(raw)
+
+        if (!r || r.deleted !== target.id) {
+          setErr('invalid response: session.delete')
+          setDeleting(false)
+
+          return
+        }
+
+        setItems(prev => {
+          const next = prev.filter((_, i) => i !== index)
+          setSel(s => Math.max(0, Math.min(s, next.length - 1)))
+
+          return next
+        })
+        setErr('')
+        setDeleting(false)
+      })
+      .catch((e: unknown) => {
+        setErr(rpcErrorMessage(e))
+        setDeleting(false)
+      })
+  }
+
   useInput((ch, key) => {
+    if (deleting) {
+      return
+    }
+
+    if (confirmDelete !== null) {
+      if (ch === 'y' || ch === 'Y') {
+        const idx = confirmDelete
+        setConfirmDelete(null)
+        performDelete(idx)
+      } else {
+        setConfirmDelete(null)
+      }
+
+      return
+    }
+
     if (key.upArrow && sel > 0) {
       setSel(s => s - 1)
     }
@@ -70,6 +124,14 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
 
     if (key.return && items[sel]) {
       onSelect(items[sel]!.id)
+
+      return
+    }
+
+    if ((ch === 'd' || ch === 'D') && items[sel]) {
+      setConfirmDelete(sel)
+
+      return
     }
 
     const n = parseInt(ch)
@@ -83,7 +145,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
     return <Text color={t.color.muted}>loading sessions…</Text>
   }
 
-  if (err) {
+  if (err && !items.length) {
     return (
       <Box flexDirection="column">
         <Text color={t.color.label}>error: {err}</Text>
@@ -109,11 +171,12 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
         Resume Session
       </Text>
 
-      {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
+      {offset > 0 && <Text color={t.color.muted}>  ↑ {offset} more</Text>}
 
       {items.slice(offset, offset + VISIBLE).map((s, vi) => {
         const i = offset + vi
         const selected = sel === i
+        const pendingDelete = confirmDelete === i
 
         return (
           <Box key={s.id}>
@@ -135,18 +198,23 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
 
             <Text
               bold={selected}
-              color={selected ? t.color.accent : t.color.muted}
+              color={pendingDelete ? t.color.label : selected ? t.color.accent : t.color.muted}
               inverse={selected}
               wrap="truncate-end"
             >
-              {s.title || s.preview || '(untitled)'}
+              {pendingDelete ? 'delete? y/n' : s.title || s.preview || '(untitled)'}
             </Text>
           </Box>
         )
       })}
 
-      {offset + VISIBLE < items.length && <Text color={t.color.muted}> ↓ {items.length - offset - VISIBLE} more</Text>}
-      <OverlayHint t={t}>↑/↓ select · Enter resume · 1-9 quick · Esc/q cancel</OverlayHint>
+      {offset + VISIBLE < items.length && <Text color={t.color.muted}>  ↓ {items.length - offset - VISIBLE} more</Text>}
+      {err && <Text color={t.color.label}>error: {err}</Text>}
+      {deleting ? (
+        <OverlayHint t={t}>deleting…</OverlayHint>
+      ) : (
+        <OverlayHint t={t}>↑/↓ select · Enter resume · 1-9 quick · d delete · Esc/q cancel</OverlayHint>
+      )}
     </Box>
   )
 }

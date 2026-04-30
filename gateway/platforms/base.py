@@ -23,6 +23,45 @@ from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
+# Audio file extensions Hermes recognizes for native audio delivery.
+# Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
+# should_send_media_as_audio() below.
+_AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
+# Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
+# formats either need to go through sendVoice (Opus/OGG) or must be
+# delivered as a regular document.
+_TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
+_TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+
+
+def _platform_name(platform) -> str:
+    """Normalize a Platform enum / raw string into a lowercase name."""
+    value = getattr(platform, "value", platform)
+    return str(value or "").lower()
+
+
+def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
+    """Return True when a media file should use the platform's audio sender.
+
+    Other platforms: every recognized audio extension routes through the
+    audio sender.
+
+    Telegram: the Bot API only accepts MP3/M4A for sendAudio and
+    Opus/OGG for sendVoice. Opus/OGG is only routed as audio when the
+    caller flagged ``is_voice=True`` (so we don't turn a regular audio
+    attachment into a voice bubble just because the file happens to be
+    Opus). Everything else falls through to document delivery by
+    returning ``False``.
+    """
+    normalized_ext = (ext or "").lower()
+    if normalized_ext not in _AUDIO_EXTS:
+        return False
+    if _platform_name(platform) == "telegram":
+        if normalized_ext in _TELEGRAM_VOICE_EXTS:
+            return is_voice
+        return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
+    return True
+
 
 def utf16_len(s: str) -> int:
     """Count UTF-16 code units in *s*.
@@ -1675,7 +1714,7 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -2579,7 +2618,6 @@ class BasePlatformAdapter(ABC):
                         logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
 
                 # Send extracted media files — route by file type
-                _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
@@ -2588,7 +2626,7 @@ class BasePlatformAdapter(ABC):
                         await asyncio.sleep(human_delay)
                     try:
                         ext = Path(media_path).suffix.lower()
-                        if ext in _AUDIO_EXTS:
+                        if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                             media_result = await self.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,

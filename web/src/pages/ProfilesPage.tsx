@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, Pencil, Plus, Terminal, Trash2, Users } from "lucide-react";
 import { H2 } from "@/components/NouiTypography";
 import { api } from "@/lib/api";
@@ -37,6 +37,9 @@ export default function ProfilesPage() {
   const [editingSoulFor, setEditingSoulFor] = useState<string | null>(null);
   const [soulText, setSoulText] = useState("");
   const [soulSaving, setSoulSaving] = useState(false);
+  // Tracks the latest SOUL request so out-of-order responses don't overwrite
+  // newer state when the user switches profiles or closes the editor.
+  const activeSoulRequest = useRef<string | null>(null);
 
   const load = useCallback(() => {
     api
@@ -99,16 +102,22 @@ export default function ProfilesPage() {
   const openSoulEditor = useCallback(
     async (name: string) => {
       if (editingSoulFor === name) {
+        activeSoulRequest.current = null;
         setEditingSoulFor(null);
         return;
       }
       setEditingSoulFor(name);
       setSoulText("");
+      activeSoulRequest.current = name;
       try {
         const soul = await api.getProfileSoul(name);
-        setSoulText(soul.content);
+        if (activeSoulRequest.current === name) {
+          setSoulText(soul.content);
+        }
       } catch (e) {
-        showToast(`${t.status.error}: ${e}`, "error");
+        if (activeSoulRequest.current === name) {
+          showToast(`${t.status.error}: ${e}`, "error");
+        }
       }
     },
     [editingSoulFor, showToast, t.status.error],
@@ -127,7 +136,14 @@ export default function ProfilesPage() {
   };
 
   const handleCopyTerminalCommand = async (name: string) => {
-    const cmd = name === "default" ? "hermes setup" : `${name} setup`;
+    let cmd: string;
+    try {
+      const res = await api.getProfileSetupCommand(name);
+      cmd = res.command;
+    } catch (e) {
+      showToast(`${t.status.error}: ${e}`, "error");
+      return;
+    }
     try {
       await navigator.clipboard.writeText(cmd);
       showToast(`${t.profiles.commandCopied}: ${cmd}`, "success");
@@ -395,10 +411,14 @@ export default function ProfilesPage() {
 
               {isEditingSoul && (
                 <div className="border-t border-border px-4 pb-4 pt-3 flex flex-col gap-2">
-                  <Label className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
+                  <Label
+                    htmlFor={`soul-editor-${p.name}`}
+                    className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground"
+                  >
                     {t.profiles.soulSection}
                   </Label>
                   <textarea
+                    id={`soul-editor-${p.name}`}
                     className="flex min-h-[180px] w-full border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     placeholder={t.profiles.soulPlaceholder}
                     value={soulText}

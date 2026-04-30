@@ -170,6 +170,22 @@ class TestAgentConfigSignature:
         )
         assert sig_a == sig_b
 
+    def test_tool_registry_generation_change_busts_cache(self):
+        """MCP reloads mutate the tool registry, so cached agents must rebuild."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        sig_before = GatewayRunner._agent_config_signature(
+            "m", runtime, ["telegram"], "",
+            cache_keys={"tools.registry_generation": 10},
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m", runtime, ["telegram"], "",
+            cache_keys={"tools.registry_generation": 11},
+        )
+
+        assert sig_before != sig_after
+
 
 class TestExtractCacheBustingConfig:
     """Verify _extract_cache_busting_config pulls the documented subset of
@@ -229,6 +245,17 @@ class TestExtractCacheBustingConfig:
         out = GatewayRunner._extract_cache_busting_config(None)
         for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
             assert out[f"{section}.{key}"] is None
+        assert "tools.registry_generation" in out
+
+    def test_extract_includes_live_tool_registry_generation(self, monkeypatch):
+        from gateway.run import GatewayRunner
+        from tools.registry import registry
+
+        monkeypatch.setattr(registry, "_generation", 12345)
+
+        out = GatewayRunner._extract_cache_busting_config({})
+
+        assert out["tools.registry_generation"] == 12345
 
     def test_full_round_trip_busts_cache_on_real_edit(self):
         """End-to-end: simulate a config edit on main and verify the

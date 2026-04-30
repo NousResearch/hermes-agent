@@ -266,7 +266,9 @@ export const coreCommands: SlashCommand[] = [
         return transcript.sys(DETAILS_USAGE)
       }
 
-      patchUiState({ detailsMode: next, detailsModeCommandOverride: true })
+      const sections = Object.fromEntries(SECTION_NAMES.map(section => [section, next]))
+
+      patchUiState({ detailsMode: next, detailsModeCommandOverride: true, sections })
       gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})
       transcript.sys(`details: ${next}`)
     }

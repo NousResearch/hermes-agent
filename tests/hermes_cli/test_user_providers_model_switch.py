@@ -453,6 +453,142 @@ def test_list_authenticated_providers_no_duplicate_labels_across_schemas(monkeyp
     )
 
 
+def test_list_authenticated_providers_hides_custom_shadowing_builtin_endpoint(monkeypatch):
+    """#16970: a custom_providers entry whose ``base_url`` matches a built-in
+    provider's endpoint should be hidden. The built-in row already represents
+    that endpoint with its canonical slug, curated model list, and auth wiring.
+
+    Repro: user sets ``DASHSCOPE_API_KEY`` (triggers the built-in ``alibaba``
+    row pointing at the static ``inference_base_url``) AND defines a
+    ``my-alibaba`` custom provider pointing at the same URL. Before the fix,
+    the picker showed both rows for one endpoint.
+    """
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "alibaba": {
+                "name": "Alibaba Cloud (DashScope)",
+                "env": ["DASHSCOPE_API_KEY"],
+            }
+        },
+    )
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    custom_providers = [
+        {
+            "name": "my-alibaba",
+            # Matches PROVIDER_REGISTRY['alibaba'].inference_base_url exactly.
+            "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "api_key": "sk-sp-test",
+            "model": "qwen3.6-plus",
+            "models": {"qwen3.6-plus": {"context_length": 500000}},
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="my-alibaba",
+        user_providers={},
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    slugs = [p["slug"] for p in providers]
+    # Built-in alibaba row should be present.
+    assert "alibaba" in slugs, (
+        f"Expected built-in alibaba row, got slugs: {slugs}"
+    )
+    # Custom shadow row should be hidden — its base_url matches the built-in's.
+    assert not any("my-alibaba" in s for s in slugs), (
+        f"Custom my-alibaba should have been dedup'd against the built-in "
+        f"alibaba endpoint, got slugs: {slugs}"
+    )
+
+
+def test_list_authenticated_providers_keeps_custom_with_distinct_endpoint(monkeypatch):
+    """Dedup must only apply when the endpoint matches a built-in. A custom
+    provider on a genuinely distinct endpoint stays visible even if a
+    built-in is also authenticated."""
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "alibaba": {
+                "name": "Alibaba Cloud (DashScope)",
+                "env": ["DASHSCOPE_API_KEY"],
+            }
+        },
+    )
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    custom_providers = [
+        {
+            "name": "my-private-relay",
+            "base_url": "https://relay.example.internal/v1",
+            "api_key": "sk-relay-test",
+            "model": "qwen3.6-plus",
+            "models": {"qwen3.6-plus": {}},
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="my-private-relay",
+        user_providers={},
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    slugs = [p["slug"] for p in providers]
+    assert any("my-private-relay" in s for s in slugs), (
+        f"Custom provider on distinct endpoint must stay visible, got: {slugs}"
+    )
+
+
+def test_list_authenticated_providers_dedup_honors_base_url_env_override(monkeypatch):
+    """The dedup must track the EFFECTIVE endpoint — if DASHSCOPE_BASE_URL
+    overrides the static inference_base_url, a custom provider pointing at
+    the overridden URL (not the static one) should still be recognized as
+    a duplicate."""
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
+    monkeypatch.setenv(
+        "DASHSCOPE_BASE_URL",
+        "https://custom-dashscope.example.com/v1",
+    )
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "alibaba": {
+                "name": "Alibaba Cloud (DashScope)",
+                "env": ["DASHSCOPE_API_KEY"],
+            }
+        },
+    )
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    custom_providers = [
+        {
+            "name": "my-dashscope-override",
+            # Same URL as DASHSCOPE_BASE_URL env override above.
+            "base_url": "https://custom-dashscope.example.com/v1",
+            "api_key": "sk-test",
+            "model": "qwen3.6-plus",
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="alibaba",
+        user_providers={},
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    slugs = [p["slug"] for p in providers]
+    assert not any("my-dashscope-override" in s for s in slugs), (
+        f"Custom entry matching env-overridden built-in endpoint should be "
+        f"dedup'd, got: {slugs}"
+    )
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================

@@ -1,14 +1,14 @@
 ---
-title: "Huggingface Hub"
+title: "Huggingface Hub — HuggingFace hf CLI: search/download/upload models, datasets"
 sidebar_label: "Huggingface Hub"
-description: "Hugging Face Hub CLI (hf) — search, download, and upload models and datasets, manage repos, query datasets with SQL, deploy inference endpoints, manage Space..."
+description: "HuggingFace hf CLI: search/download/upload models, datasets"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Huggingface Hub
 
-Hugging Face Hub CLI (hf) — search, download, and upload models and datasets, manage repos, query datasets with SQL, deploy inference endpoints, manage Spaces and buckets.
+HuggingFace hf CLI: search/download/upload models, datasets.
 
 ## Skill metadata
 

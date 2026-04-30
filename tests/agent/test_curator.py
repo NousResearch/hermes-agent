@@ -363,6 +363,19 @@ def test_state_atomic_write_no_tmp_leftovers(curator_env):
         assert not p.name.startswith(".curator_state_"), f"tmp leftover: {p.name}"
 
 
+def test_state_preserves_last_report_path(curator_env):
+    c = curator_env["curator"]
+    c.save_state({
+        "last_run_at": "2026-04-30T12:00:00+00:00",
+        "last_run_summary": "ok",
+        "last_report_path": "/tmp/curator-report",
+        "paused": False,
+        "run_count": 1,
+    })
+    state = c.load_state()
+    assert state["last_report_path"] == "/tmp/curator-report"
+
+
 def test_curator_review_prompt_has_invariants():
     """Core invariants must be in the review prompt text."""
     from agent.curator import CURATOR_REVIEW_PROMPT

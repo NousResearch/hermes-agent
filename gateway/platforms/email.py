@@ -28,9 +28,10 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
+from email.utils import formatdate
 from email import encoders
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -504,6 +505,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id
 
+        msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
@@ -537,6 +539,113 @@ class EmailAdapter(BasePlatformAdapter):
         text = caption or ""
         text += f"\n\nImage: {image_url}"
         return await self.send(chat_id, text.strip(), reply_to)
+
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images as a single email with multiple MIME attachments.
+
+        Local files are attached directly. URL images have their URL
+        appended to the body (email adapter does not download remote
+        images). No hard cap — email clients handle dozens of
+        attachments fine, subject to SMTP message size limits.
+        """
+        if not images:
+            return
+
+        from urllib.parse import unquote as _unquote
+
+        body_parts: List[str] = []
+        local_paths: List[str] = []
+        for image_url, alt_text in images:
+            if alt_text:
+                body_parts.append(alt_text)
+            if image_url.startswith("file://"):
+                local_path = _unquote(image_url[7:])
+                if Path(local_path).exists():
+                    local_paths.append(local_path)
+                else:
+                    logger.warning("[Email] Skipping missing image: %s", local_path)
+            else:
+                # Remote URLs just get linked in the body (parity with send_image)
+                body_parts.append(f"Image: {image_url}")
+
+        if not local_paths and not body_parts:
+            return
+
+        body = "\n\n".join(body_parts)
+
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                self._send_email_with_attachments,
+                chat_id,
+                body,
+                local_paths,
+            )
+        except Exception as e:
+            logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+
+    def _send_email_with_attachments(
+        self,
+        to_addr: str,
+        body: str,
+        file_paths: List[str],
+    ) -> str:
+        """Send an email with multiple file attachments via SMTP."""
+        msg = MIMEMultipart()
+        msg["From"] = self._address
+        msg["To"] = to_addr
+
+        ctx = self._thread_context.get(to_addr, {})
+        subject = ctx.get("subject", "Hermes Agent")
+        if not subject.startswith("Re:"):
+            subject = f"Re: {subject}"
+        msg["Subject"] = subject
+
+        original_msg_id = ctx.get("message_id")
+        if original_msg_id:
+            msg["In-Reply-To"] = original_msg_id
+            msg["References"] = original_msg_id
+
+        msg["Date"] = formatdate(localtime=True)
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        msg["Message-ID"] = msg_id
+
+        if body:
+            msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        for file_path in file_paths:
+            p = Path(file_path)
+            try:
+                with open(p, "rb") as f:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    part.add_header("Content-Disposition", f"attachment; filename={p.name}")
+                    msg.attach(part)
+            except Exception as e:
+                logger.warning("[Email] Failed to attach %s: %s", file_path, e)
+
+        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        try:
+            smtp.starttls(context=ssl.create_default_context())
+            smtp.login(self._address, self._password)
+            smtp.send_message(msg)
+        finally:
+            try:
+                smtp.quit()
+            except Exception:
+                smtp.close()
+
+        logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
+        return msg_id
 
     async def send_document(
         self,
@@ -586,6 +695,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id
 
+        msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 

@@ -33,7 +33,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
 
 
 def _get_custom_provider_names() -> list:
@@ -110,18 +110,40 @@ def _display_source(source: str) -> str:
     return source.split(":", 1)[1] if source.startswith("manual:") else source
 
 
+def _classify_exhausted_status(entry) -> tuple[str, bool]:
+    code = getattr(entry, "last_error_code", None)
+    reason = str(getattr(entry, "last_error_reason", "") or "").strip().lower()
+    message = str(getattr(entry, "last_error_message", "") or "").strip().lower()
+
+    if code == 429 or any(token in reason for token in ("rate_limit", "usage_limit", "quota", "exhausted")) or any(
+        token in message for token in ("rate limit", "usage limit", "quota", "too many requests")
+    ):
+        return "rate-limited", True
+
+    if code in {401, 403} or any(token in reason for token in ("invalid_token", "invalid_grant", "unauthorized", "forbidden", "auth")) or any(
+        token in message for token in ("unauthorized", "forbidden", "expired", "revoked", "invalid token", "authentication")
+    ):
+        return "auth failed", False
+
+    return "exhausted", True
+
+
+
 def _format_exhausted_status(entry) -> str:
     if entry.last_status != STATUS_EXHAUSTED:
         return ""
+    label, show_retry_window = _classify_exhausted_status(entry)
     reason = getattr(entry, "last_error_reason", None)
     reason_text = f" {reason}" if isinstance(reason, str) and reason.strip() else ""
     code = f" ({entry.last_error_code})" if entry.last_error_code else ""
+    if not show_retry_window:
+        return f" {label}{reason_text}{code} (re-auth may be required)"
     exhausted_until = _exhausted_until(entry)
     if exhausted_until is None:
-        return f" exhausted{reason_text}{code}"
+        return f" {label}{reason_text}{code}"
     remaining = max(0, int(math.ceil(exhausted_until - time.time())))
     if remaining <= 0:
-        return f" exhausted{reason_text}{code} (ready to retry)"
+        return f" {label}{reason_text}{code} (ready to retry)"
     minutes, seconds = divmod(remaining, 60)
     hours, minutes = divmod(minutes, 60)
     days, hours = divmod(hours, 24)
@@ -133,7 +155,7 @@ def _format_exhausted_status(entry) -> str:
         wait = f"{minutes}m {seconds}s"
     else:
         wait = f"{seconds}s"
-    return f" exhausted{reason_text}{code} ({wait} left)"
+    return f" {label}{reason_text}{code} ({wait} left)"
 
 
 def auth_add_command(args) -> None:
@@ -148,7 +170,7 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         else:
-            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"} else AUTH_TYPE_API_KEY
+            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "minimax-oauth"} else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
 
@@ -311,6 +333,27 @@ def auth_add_command(args) -> None:
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
+    if provider == "minimax-oauth":
+        from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+        creds = resolve_minimax_oauth_runtime_credentials()
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            creds["api_key"],
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:minimax_oauth",
+            access_token=creds["api_key"],
+            base_url=creds.get("base_url"),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
     raise SystemExit(f"`hermes auth add {provider}` is not implemented for auth type {requested_type} yet.")
 
 
@@ -384,6 +427,44 @@ def auth_reset_command(args) -> None:
     pool = load_pool(provider)
     count = pool.reset_statuses()
     print(f"Reset status on {count} {provider} credentials")
+
+
+def auth_status_command(args) -> None:
+    provider = _normalize_provider(getattr(args, "provider", "") or "")
+    if not provider:
+        raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
+    status = auth_mod.get_auth_status(provider)
+    if not status.get("logged_in"):
+        reason = status.get("error")
+        if reason:
+            print(f"{provider}: logged out ({reason})")
+        else:
+            print(f"{provider}: logged out")
+        return
+
+    print(f"{provider}: logged in")
+    for key in ("auth_type", "client_id", "redirect_uri", "scope", "expires_at", "api_base_url"):
+        value = status.get(key)
+        if value:
+            print(f"  {key}: {value}")
+
+
+def auth_logout_command(args) -> None:
+    auth_mod.logout_command(SimpleNamespace(provider=getattr(args, "provider", None)))
+
+
+def auth_spotify_command(args) -> None:
+    action = str(getattr(args, "spotify_action", "") or "login").strip().lower()
+    if action in {"", "login"}:
+        auth_mod.login_spotify_command(args)
+        return
+    if action == "status":
+        auth_status_command(SimpleNamespace(provider="spotify"))
+        return
+    if action == "logout":
+        auth_logout_command(SimpleNamespace(provider="spotify"))
+        return
+    raise SystemExit(f"Unknown Spotify auth action: {action}")
 
 
 def _interactive_auth() -> None:
@@ -582,6 +663,15 @@ def auth_command(args) -> None:
         return
     if action == "reset":
         auth_reset_command(args)
+        return
+    if action == "status":
+        auth_status_command(args)
+        return
+    if action == "logout":
+        auth_logout_command(args)
+        return
+    if action == "spotify":
+        auth_spotify_command(args)
         return
     # No subcommand — launch interactive mode
     _interactive_auth()

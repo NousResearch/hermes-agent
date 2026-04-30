@@ -54,9 +54,12 @@ class TestFailoverReason:
         expected = {
             "auth", "auth_permanent", "billing", "rate_limit",
             "overloaded", "server_error", "timeout",
-            "context_overflow", "payload_too_large",
+            "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
-            "thinking_signature", "long_context_tier", "unknown",
+            "provider_policy_blocked",
+            "thinking_signature", "long_context_tier",
+            "oauth_long_context_beta_forbidden",
+            "unknown",
         }
         actual = {r.value for r in FailoverReason}
         assert expected == actual
@@ -308,6 +311,59 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
+    # ── Provider policy-block (OpenRouter privacy/guardrail) ──
+
+    def test_404_openrouter_policy_blocked(self):
+        # Real OpenRouter error when the user's account privacy setting
+        # excludes the only endpoint serving a model (e.g. DeepSeek V4 Pro
+        # which is hosted only by DeepSeek, and their endpoint may log
+        # inputs).  Must NOT classify as model_not_found — the model
+        # exists, falling back won't help (same account setting applies),
+        # and the error body already tells the user where to fix it.
+        e = MockAPIError(
+            "No endpoints available matching your guardrail restrictions "
+            "and data policy. Configure: https://openrouter.ai/settings/privacy",
+            status_code=404,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_400_openrouter_policy_blocked(self):
+        # Defense-in-depth: if OpenRouter ever returns this as 400 instead
+        # of 404, still classify it distinctly rather than as format_error
+        # or model_not_found.
+        e = MockAPIError(
+            "No endpoints available matching your data policy",
+            status_code=400,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_message_only_openrouter_policy_blocked(self):
+        # No status code — classifier should still catch the fingerprint
+        # via the message-pattern fallback.
+        e = Exception(
+            "No endpoints available matching your guardrail restrictions "
+            "and data policy"
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.provider_policy_blocked
+
+    def test_404_model_not_found_still_works(self):
+        # Regression guard: the new policy-block check must not swallow
+        # genuine model_not_found 404s.
+        e = MockAPIError(
+            "openrouter/nonexistent-model is not a valid model ID",
+            status_code=404,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.should_fallback is True
+
     # ── Payload too large ──
 
     def test_413_payload_too_large(self):
@@ -403,6 +459,40 @@ class TestClassifyApiError:
         e = MockAPIError("Too Many Requests", status_code=429)
         result = classify_api_error(e, provider="anthropic")
         assert result.reason == FailoverReason.rate_limit
+
+    # ── Provider-specific: Anthropic OAuth 1M-context beta forbidden ──
+
+    def test_anthropic_oauth_1m_beta_forbidden(self):
+        """400 + 'long context beta is not yet available for this subscription'
+        → oauth_long_context_beta_forbidden (retryable, no compression)."""
+        e = MockAPIError(
+            "The long context beta is not yet available for this subscription.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-sonnet-4.6")
+        assert result.reason == FailoverReason.oauth_long_context_beta_forbidden
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_anthropic_oauth_1m_beta_forbidden_does_not_collide_with_tier_gate(self):
+        """The 429 'extra usage' + 'long context' tier gate keeps its own
+        classification even though its message mentions 'long context'."""
+        e = MockAPIError(
+            "Extra usage is required for long context requests over 200k tokens",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-sonnet-4.6")
+        assert result.reason == FailoverReason.long_context_tier
+
+    def test_400_without_beta_phrase_is_not_1m_beta_forbidden(self):
+        """A generic 400 that happens to mention 'long context' but not the
+        exact beta-availability phrase should not be misclassified."""
+        e = MockAPIError(
+            "long context window exceeded",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason != FailoverReason.oauth_long_context_beta_forbidden
 
     # ── Transport errors ──
 
@@ -1040,3 +1130,37 @@ class TestSSLTransientPatterns:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.timeout
         assert result.retryable is True
+
+# ── Test: RateLimitError without status_code (Copilot/GitHub Models) ──────────
+
+class TestRateLimitErrorWithoutStatusCode:
+    """Regression tests for the Copilot/GitHub Models edge case where the
+    OpenAI SDK raises RateLimitError but does not populate .status_code."""
+
+    def _make_rate_limit_error(self, status_code=None):
+        """Create an exception whose class name is 'RateLimitError' with
+        an optionally missing status_code, mirroring the OpenAI SDK shape."""
+        cls = type("RateLimitError", (Exception,), {})
+        e = cls("You have exceeded your rate limit.")
+        e.status_code = status_code  # None simulates the Copilot case
+        return e
+
+    def test_rate_limit_error_without_status_code_classified_as_rate_limit(self):
+        """RateLimitError with status_code=None must classify as rate_limit."""
+        e = self._make_rate_limit_error(status_code=None)
+        result = classify_api_error(e, provider="copilot", model="gpt-4o")
+        assert result.reason == FailoverReason.rate_limit
+
+    def test_rate_limit_error_with_status_code_429_classified_as_rate_limit(self):
+        """RateLimitError that does set status_code=429 still classifies correctly."""
+        e = self._make_rate_limit_error(status_code=429)
+        result = classify_api_error(e, provider="copilot", model="gpt-4o")
+        assert result.reason == FailoverReason.rate_limit
+
+    def test_other_error_without_status_code_not_forced_to_rate_limit(self):
+        """A non-RateLimitError with missing status_code must NOT be forced to 429."""
+        cls = type("APIError", (Exception,), {})
+        e = cls("something went wrong")
+        e.status_code = None
+        result = classify_api_error(e, provider="copilot", model="gpt-4o")
+        assert result.reason != FailoverReason.rate_limit

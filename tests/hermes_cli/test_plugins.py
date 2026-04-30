@@ -330,6 +330,33 @@ class TestPluginHooks:
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS
 
+    def test_valid_hooks_include_pre_gateway_dispatch(self):
+        assert "pre_gateway_dispatch" in VALID_HOOKS
+
+    def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
+        """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "predispatch_plugin",
+            register_body=(
+                'ctx.register_hook("pre_gateway_dispatch", '
+                'lambda **kw: {"action": "skip", "reason": "test"})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_gateway_dispatch",
+            event=object(),
+            gateway=object(),
+            session_store=object(),
+        )
+        assert len(results) == 1
+        assert results[0] == {"action": "skip", "reason": "test"}
+
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -608,7 +635,7 @@ class TestPluginManagerList:
         assert mgr.list_plugins() == []
 
     def test_list_returns_sorted(self, tmp_path, monkeypatch):
-        """list_plugins() returns results sorted by name."""
+        """list_plugins() returns results sorted by key."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         _make_plugin_dir(plugins_dir, "zulu")
         _make_plugin_dir(plugins_dir, "alpha")
@@ -618,8 +645,10 @@ class TestPluginManagerList:
         mgr.discover_and_load()
 
         listing = mgr.list_plugins()
-        names = [p["name"] for p in listing]
-        assert names == sorted(names)
+        # list_plugins sorts by key (path-derived, e.g. ``image_gen/openai``),
+        # not by display name, so that category plugins group together.
+        keys = [p["key"] for p in listing]
+        assert keys == sorted(keys)
 
     def test_list_with_plugins(self, tmp_path, monkeypatch):
         """list_plugins() returns info dicts for each discovered plugin."""

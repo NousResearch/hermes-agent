@@ -9,7 +9,7 @@ Thank you for contributing to Hermes Agent! This guide covers everything you nee
 We value contributions in this order:
 
 1. **Bug fixes** — crashes, incorrect behavior, data loss. Always top priority.
-2. **Cross-platform compatibility** — Windows, macOS, different Linux distros, different terminal emulators. We want Hermes to work everywhere.
+2. **Cross-platform compatibility** — macOS, different Linux distros, and WSL2 on Windows. We want Hermes to work everywhere.
 3. **Security hardening** — shell injection, prompt injection, path traversal, privilege escalation. See [Security](#security-considerations).
 4. **Performance and robustness** — retry logic, error handling, graceful degradation.
 5. **New skills** — but only broadly useful ones. See [Should it be a Skill or a Tool?](#should-it-be-a-skill-or-a-tool)
@@ -494,7 +494,7 @@ branding:
   agent_name: "My Agent"
   welcome: "Welcome message"
   response_label: " ⚔ Agent "
-  prompt_symbol: "⚔ ❯ "
+  prompt_symbol: "⚔"
 
 tool_prefix: "╎"             # Tool output line prefix
 ```
@@ -515,7 +515,7 @@ See `hermes_cli/skin_engine.py` for the full schema and existing skins as exampl
 
 ## Cross-Platform Compatibility
 
-Hermes runs on Linux, macOS, and Windows. When writing code that touches the OS:
+Hermes runs on Linux, macOS, and WSL2 on Windows. When writing code that touches the OS:
 
 ### Critical rules
 
@@ -597,7 +597,7 @@ refactor/description   # Code restructuring
 
 1. **Run tests**: `pytest tests/ -v`
 2. **Test manually**: Run `hermes` and exercise the code path you changed
-3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider Windows and macOS
+3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
 
 ### PR description

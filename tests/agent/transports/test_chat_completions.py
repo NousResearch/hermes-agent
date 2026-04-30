@@ -4,7 +4,7 @@ import pytest
 from types import SimpleNamespace
 
 from agent.transports import get_transport
-from agent.transports.types import NormalizedResponse, ToolCall
+from agent.transports.types import NormalizedResponse
 
 
 @pytest.fixture
@@ -33,15 +33,18 @@ class TestChatCompletionsBasic:
     def test_convert_messages_strips_codex_fields(self, transport):
         msgs = [
             {"role": "assistant", "content": "ok", "codex_reasoning_items": [{"id": "rs_1"}],
+             "codex_message_items": [{"id": "msg_1", "type": "message"}],
              "tool_calls": [{"id": "call_1", "call_id": "call_1", "response_item_id": "fc_1",
                             "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
         ]
         result = transport.convert_messages(msgs)
         assert "codex_reasoning_items" not in result[0]
+        assert "codex_message_items" not in result[0]
         assert "call_id" not in result[0]["tool_calls"][0]
         assert "response_item_id" not in result[0]["tool_calls"][0]
         # Original list untouched (deepcopy-on-demand)
         assert "codex_reasoning_items" in msgs[0]
+        assert "codex_message_items" in msgs[0]
 
 
 class TestChatCompletionsBuildKwargs:
@@ -118,6 +121,168 @@ class TestChatCompletionsBuildKwargs:
             reasoning_config={"effort": "none"},
         )
         assert kw["extra_body"]["think"] is False
+
+    def test_gemini_native_without_explicit_reasoning_config_keeps_existing_behavior(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        assert "thinking_config" not in kw.get("extra_body", {})
+        assert "google" not in kw.get("extra_body", {})
+        assert "extra_body" not in kw.get("extra_body", {})
+
+    def test_gemini_native_flash_reasoning_maps_to_top_level_thinking_config(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+            "thinkingLevel": "high",
+        }
+
+    def test_gemini_openai_compat_flash_reasoning_maps_to_nested_google_thinking_config(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert "thinking_config" not in kw["extra_body"]
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_level": "high",
+        }
+
+    def test_gemini_native_25_reasoning_only_enables_visible_thoughts(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-2.5-flash",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+        }
+
+    def test_gemini_openai_compat_pro_reasoning_clamps_to_supported_levels(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="google/gemini-3.1-pro-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_level": "low",
+        }
+
+    def test_gemini_native_disabled_reasoning_hides_thoughts(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            reasoning_config={"enabled": False},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": False,
+        }
+
+    def test_gemini_openai_compat_xhigh_clamps_to_high(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+        )
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_level"] == "high"
+
+    def test_google_gemini_cli_keeps_top_level_thinking_config(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="google-gemini-cli",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+            "thinkingLevel": "high",
+        }
+        assert "google" not in kw["extra_body"]
+
+    def test_gemini_flash_minimal_clamps_to_low(self, transport):
+        # Gemini 3 Flash documents low/medium/high; "minimal" isn't accepted,
+        # so clamp it down to "low" rather than forwarding it verbatim.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": True, "effort": "minimal"},
+        )
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_level": "low",
+        }
+
+    def test_gemma_does_not_receive_thinking_config(self, transport):
+        # The `gemini` provider also serves Gemma (e.g. `gemma-4-31b-it`),
+        # but Gemma rejects `thinking_config` with HTTP 400 (#17426). Even
+        # when Hermes has reasoning enabled, the field must be omitted for
+        # non-Gemini models on this provider.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemma-4-31b-it",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert "thinking_config" not in kw.get("extra_body", {})
+
+    def test_gemma_disabled_reasoning_still_omits_thinking_config(self, transport):
+        # The `Unknown name 'thinking_config': Cannot find field` rejection
+        # fires even on `{"includeThoughts": False}` — the entire field must
+        # be absent, not just disabled. (#17426)
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemma-4-31b-it",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": False},
+        )
+        assert "thinking_config" not in kw.get("extra_body", {})
+
+    def test_google_prefixed_gemma_also_omits_thinking_config(self, transport):
+        # OpenRouter-style `google/gemma-...` IDs hit the same provider path
+        # and must also omit `thinking_config`. The existing `google/`
+        # prefix-stripping must not accidentally classify Gemma as Gemini.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="google/gemma-4-31b-it",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+        assert "thinking_config" not in kw.get("extra_body", {})
 
     def test_max_tokens_with_fn(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
@@ -238,6 +403,130 @@ class TestChatCompletionsKimi:
         )
         assert kw["extra_body"]["thinking"] == {"type": "disabled"}
 
+    def test_moonshot_tool_schemas_are_sanitized_by_model_name(self, transport):
+        """Aggregator routes (Nous, OpenRouter) hit Moonshot by model name, not base URL."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "Search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "q": {"description": "query"},  # missing type
+                        },
+                    },
+                },
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="moonshotai/kimi-k2.6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["tools"][0]["function"]["parameters"]["properties"]["q"]["type"] == "string"
+
+    def test_non_moonshot_tools_are_not_mutated(self, transport):
+        """Other models don't go through the Moonshot sanitizer."""
+        original_params = {
+            "type": "object",
+            "properties": {"q": {"description": "query"}},  # missing type
+        }
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "Search",
+                    "parameters": original_params,
+                },
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="anthropic/claude-sonnet-4.6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        # The parameters dict is passed through untouched (no synthetic type)
+        assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
+
+
+class TestChatCompletionsLmStudioReasoning:
+    """LM Studio publishes per-model reasoning ``allowed_options``. When the
+    user requests an effort the model can't honor (e.g. ``high`` on a
+    toggle-style ``["off","on"]`` model), the transport omits
+    ``reasoning_effort`` so LM Studio falls back to the model's default —
+    silently downgrading "high" to "low" would mislead the user.
+    """
+
+    def test_omits_effort_when_high_not_allowed_toggle(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "high"},
+            lmstudio_reasoning_options=["off", "on"],
+        )
+        assert "reasoning_effort" not in kw
+
+    def test_omits_effort_when_high_not_allowed_minimal_low(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "high"},
+            lmstudio_reasoning_options=["off", "minimal", "low"],
+        )
+        assert "reasoning_effort" not in kw
+
+    def test_passes_through_when_effort_allowed(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "high"},
+            lmstudio_reasoning_options=["off", "low", "medium", "high"],
+        )
+        assert kw["reasoning_effort"] == "high"
+
+    def test_passes_through_aliased_on_for_toggle(self, transport):
+        # User has reasoning enabled at the default "medium"; toggle model
+        # publishes ["off","on"] which aliases to {"none","medium"}, so the
+        # default request is honorable and gets sent.
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "medium"},
+            lmstudio_reasoning_options=["off", "on"],
+        )
+        assert kw["reasoning_effort"] == "medium"
+
+    def test_disabled_keeps_none_when_off_allowed(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"enabled": False},
+            lmstudio_reasoning_options=["off", "on"],
+        )
+        assert kw["reasoning_effort"] == "none"
+
+    def test_no_options_falls_back_to_legacy_behavior(self, transport):
+        # When the probe failed or returned nothing, allowed_options is unknown;
+        # send whatever the user picked rather than blocking the request.
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "high"},
+            lmstudio_reasoning_options=None,
+        )
+        assert kw["reasoning_effort"] == "high"
+
 
 class TestChatCompletionsValidate:
 
@@ -330,6 +619,41 @@ class TestChatCompletionsNormalize:
         nr = transport.normalize_response(r)
         assert nr.reasoning == "summary text"
         assert nr.provider_data == {"reasoning_content": "detailed scratchpad"}
+
+    def test_empty_reasoning_content_preserved(self, transport):
+        """DeepSeek can require an explicit empty reasoning_content replay field."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    tool_calls=None,
+                    reasoning=None,
+                    reasoning_content="",
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.provider_data == {"reasoning_content": ""}
+        assert nr.reasoning_content == ""
+
+    def test_reasoning_content_preserved_from_model_extra(self, transport):
+        """OpenAI SDK can expose provider-specific DeepSeek fields via model_extra."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    tool_calls=None,
+                    reasoning=None,
+                    model_extra={"reasoning_content": "model-extra scratchpad"},
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.provider_data == {"reasoning_content": "model-extra scratchpad"}
 
 
 class TestChatCompletionsCacheStats:

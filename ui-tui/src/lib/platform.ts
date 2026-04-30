@@ -5,8 +5,8 @@
  * as `key.meta`. Some macOS terminals also translate Cmd+Left/Right/Backspace
  * into readline-style Ctrl+A/Ctrl+E/Ctrl+U before the app sees them.
  * On other platforms the action modifier is Ctrl.
- * Ctrl+C is ALWAYS the interrupt key regardless of platform — it must never be
- * remapped to copy.
+ * Ctrl+C stays the interrupt key on macOS. On non-mac terminals it can also
+ * copy an active TUI selection, matching common terminal selection behavior.
  */
 
 export const isMac = process.platform === 'darwin'
@@ -33,3 +33,31 @@ export const isMacActionFallback = (
 /** Match action-modifier + a single character (case-insensitive). */
 export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string, target: string): boolean =>
   isActionMod(key) && ch.toLowerCase() === target
+
+export const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
+  Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
+
+export const isCopyShortcut = (
+  key: { ctrl: boolean; meta: boolean; super?: boolean },
+  ch: string,
+  env: NodeJS.ProcessEnv = process.env
+): boolean =>
+  ch.toLowerCase() === 'c' &&
+  (isAction(key, ch, 'c') ||
+    (isRemoteShell(env) && (key.meta || key.super === true)) ||
+    // VS Code/Cursor/Windsurf terminal setup forwards Cmd+C as a CSI-u
+    // sequence with the super bit plus a benign ctrl bit. Accept that shape
+    // even though raw Ctrl+C should remain interrupt on local macOS.
+    (isMac && key.ctrl && (key.meta || key.super === true)))
+
+/**
+ * Voice recording toggle key (Ctrl+B).
+ *
+ * Documented as "Ctrl+B" everywhere: tips.py, config.yaml's voice.record_key
+ * default, and the Python CLI prompt_toolkit handler. We accept raw Ctrl+B on
+ * every platform so the TUI matches those docs. On macOS we additionally
+ * accept Cmd+B (the platform action modifier) so existing macOS muscle memory
+ * keeps working.
+ */
+export const isVoiceToggleKey = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string): boolean =>
+  (key.ctrl || isActionMod(key)) && ch.toLowerCase() === 'b'

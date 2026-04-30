@@ -11,10 +11,11 @@ Tests are parametrized over platforms via the ``platform`` fixture in conftest.
 """
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.config import Platform
 from gateway.platforms.base import SendResult
 from tests.e2e.conftest import make_event, send_and_capture
 
@@ -74,14 +75,6 @@ class TestSlashCommands:
         send_status.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_provider_shows_current_provider(self, adapter, platform):
-        send = await send_and_capture(adapter, "/provider", platform)
-
-        send.assert_called_once()
-        response_text = send.call_args[1].get("content") or send.call_args[0][1]
-        assert "provider" in response_text.lower()
-
-    @pytest.mark.asyncio
     async def test_verbose_responds(self, adapter, platform):
         send = await send_and_capture(adapter, "/verbose", platform)
 
@@ -89,6 +82,37 @@ class TestSlashCommands:
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         # Either shows the mode cycle or tells user to enable it in config
         assert "verbose" in response_text.lower() or "tool_progress" in response_text
+
+    @pytest.mark.asyncio
+    async def test_plaintext_restart_gateway_routes_to_safe_restart_command(self, adapter, runner, platform, monkeypatch):
+        if platform != Platform.TELEGRAM:
+            pytest.skip("Plaintext restart shortcut is intentionally DM/Telegram-focused")
+
+        monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
+        runner.request_restart = MagicMock(return_value=True)
+
+        send = await send_and_capture(adapter, "restart gateway", platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert "restart" in response_text.lower() or "draining" in response_text.lower()
+        runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+    @pytest.mark.asyncio
+    async def test_plaintext_restart_gateway_in_group_stays_plain_text(self, adapter, runner, platform, monkeypatch):
+        if platform != Platform.TELEGRAM:
+            pytest.skip("Shortcut scope is only verified for Telegram here")
+
+        monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
+        runner.request_restart = MagicMock(return_value=True)
+        runner._handle_message_with_agent = AsyncMock(return_value="agent-handled")
+
+        send = await send_and_capture(adapter, "restart gateway", platform, chat_id="group-chat-1", user_id="u1", chat_type="group")
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert response_text == "agent-handled"
+        runner.request_restart.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_personality_lists_options(self, adapter, platform):

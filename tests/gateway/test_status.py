@@ -51,6 +51,29 @@ class TestGatewayPidState:
         assert status.get_running_pid() is None
         assert not pid_path.exists()
 
+    def test_get_running_pid_cleans_stale_record_from_dead_process(self, tmp_path, monkeypatch):
+        # Simulates the aftermath of a crash: the PID file still points at a
+        # process that no longer exists. The next gateway startup must be
+        # able to unlink it so ``write_pid_file``'s O_EXCL create succeeds —
+        # otherwise systemd's restart loop hits "PID file race lost" forever.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        dead_pid = 999999  # not our pid, and below we simulate it's dead
+        pid_path.write_text(json.dumps({
+            "pid": dead_pid,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 111,
+        }))
+
+        def _dead_process(pid, sig):
+            raise ProcessLookupError
+
+        monkeypatch.setattr(status.os, "kill", _dead_process)
+
+        assert status.get_running_pid() is None
+        assert not pid_path.exists()
+
     def test_get_running_pid_accepts_gateway_metadata_when_cmdline_unavailable(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         pid_path = tmp_path / "gateway.pid"
@@ -403,6 +426,53 @@ class TestScopedLocks:
 
         status.release_scoped_lock("telegram-bot-token", "secret")
         assert not lock_path.exists()
+
+    def test_release_all_scoped_locks_can_target_single_owner(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_dir = tmp_path / "locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+
+        target_lock = lock_dir / "telegram-bot-token-target.lock"
+        other_lock = lock_dir / "slack-app-token-other.lock"
+        target_lock.write_text(json.dumps({
+            "pid": 111,
+            "start_time": 222,
+            "kind": "hermes-gateway",
+        }))
+        other_lock.write_text(json.dumps({
+            "pid": 999,
+            "start_time": 333,
+            "kind": "hermes-gateway",
+        }))
+
+        removed = status.release_all_scoped_locks(
+            owner_pid=111,
+            owner_start_time=222,
+        )
+
+        assert removed == 1
+        assert not target_lock.exists()
+        assert other_lock.exists()
+
+    def test_release_all_scoped_locks_skips_pid_reuse_mismatch(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_dir = tmp_path / "locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+
+        reused_pid_lock = lock_dir / "telegram-bot-token-reused.lock"
+        reused_pid_lock.write_text(json.dumps({
+            "pid": 111,
+            "start_time": 999,
+            "kind": "hermes-gateway",
+        }))
+
+        removed = status.release_all_scoped_locks(
+            owner_pid=111,
+            owner_start_time=222,
+        )
+
+        assert removed == 0
+        assert reused_pid_lock.exists()
 
 
 class TestTakeoverMarker:

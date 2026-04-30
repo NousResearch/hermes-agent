@@ -1102,3 +1102,411 @@ def test_load_pool_does_not_seed_qwen_oauth_when_no_token(tmp_path, monkeypatch)
 
     assert not pool.has_credentials()
     assert pool.entries() == []
+
+
+def test_nous_seed_from_singletons_preserves_obtained_at_timestamps(tmp_path, monkeypatch):
+    """Regression test for #15099 secondary issue.
+
+    When ``_seed_from_singletons`` materialises a device_code pool entry from
+    the ``providers.nous`` singleton, it must carry the mint/refresh
+    timestamps (``obtained_at``, ``agent_key_obtained_at``, ``expires_in``,
+    etc.) into the pool entry.  Without them, freshness-sensitive consumers
+    (self-heal hooks, pool pruning by age) treat just-minted credentials as
+    older than they actually are and evict them.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "nous": {
+                    "access_token": "at_XXXXXXXX",
+                    "refresh_token": "rt_YYYYYYYY",
+                    "client_id": "hermes-cli",
+                    "portal_base_url": "https://portal.nousresearch.com",
+                    "inference_base_url": "https://inference.nousresearch.com/v1",
+                    "token_type": "Bearer",
+                    "scope": "openid profile",
+                    "obtained_at": "2026-04-24T10:00:00+00:00",
+                    "expires_at": "2026-04-24T11:00:00+00:00",
+                    "expires_in": 3600,
+                    "agent_key": "sk-nous-AAAA",
+                    "agent_key_id": "ak_123",
+                    "agent_key_expires_at": "2026-04-25T10:00:00+00:00",
+                    "agent_key_expires_in": 86400,
+                    "agent_key_reused": False,
+                    "agent_key_obtained_at": "2026-04-24T10:00:05+00:00",
+                    "tls": {"insecure": False, "ca_bundle": None},
+                },
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("nous")
+    entries = pool.entries()
+
+    device_entries = [e for e in entries if e.source == "device_code"]
+    assert len(device_entries) == 1, f"expected single device_code entry; got {len(device_entries)}"
+    e = device_entries[0]
+
+    # Direct dataclass fields — must survive the singleton → pool copy.
+    assert e.access_token == "at_XXXXXXXX"
+    assert e.refresh_token == "rt_YYYYYYYY"
+    assert e.expires_at == "2026-04-24T11:00:00+00:00"
+    assert e.agent_key == "sk-nous-AAAA"
+    assert e.agent_key_expires_at == "2026-04-25T10:00:00+00:00"
+
+    # Extra fields — this is what regressed.  These must be carried through
+    # via ``extra`` dict or __getattr__, NOT silently dropped.
+    assert e.obtained_at == "2026-04-24T10:00:00+00:00", (
+        f"obtained_at was dropped during seed; got {e.obtained_at!r}. This breaks "
+        f"downstream pool-freshness consumers (#15099)."
+    )
+    assert e.agent_key_obtained_at == "2026-04-24T10:00:05+00:00"
+    assert e.expires_in == 3600
+    assert e.agent_key_id == "ak_123"
+    assert e.agent_key_expires_in == 86400
+    assert e.agent_key_reused is False
+
+
+class TestLeastUsedStrategy:
+    """Regression: least_used strategy must increment request_count on select."""
+
+    def test_request_count_increments(self):
+        """Each select() call should increment the chosen entry's request_count."""
+        from unittest.mock import patch as _patch
+        from agent.credential_pool import CredentialPool, PooledCredential, STRATEGY_LEAST_USED
+
+        entries = [
+            PooledCredential(provider="test", id="a", label="a", auth_type="api_key",
+                             source="a", access_token="tok-a", priority=0, request_count=0),
+            PooledCredential(provider="test", id="b", label="b", auth_type="api_key",
+                             source="b", access_token="tok-b", priority=1, request_count=0),
+        ]
+        with _patch("agent.credential_pool.get_pool_strategy", return_value=STRATEGY_LEAST_USED):
+            pool = CredentialPool("test", entries)
+
+        # First select should pick entry with lowest count (both 0 → first)
+        e1 = pool.select()
+        assert e1 is not None
+        count_after_first = e1.request_count
+        assert count_after_first == 1, f"Expected 1 after first select, got {count_after_first}"
+
+        # Second select should pick the OTHER entry (now has lower count)
+        e2 = pool.select()
+        assert e2 is not None
+        assert e2.id != e1.id or e2.request_count == 2, (
+            "least_used should alternate or increment"
+        )
+
+
+# ── PR #10160 salvage: Nous OAuth cross-process sync tests ─────────────────
+
+def test_sync_nous_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypatch):
+    """When auth.json has a newer refresh token, the pool entry should adopt it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:mint_agent_key",
+                    "access_token": "access-OLD",
+                    "refresh_token": "refresh-OLD",
+                    "expires_at": "2026-03-24T12:00:00+00:00",
+                    "agent_key": "agent-key-OLD",
+                    "agent_key_expires_at": "2026-03-24T13:30:00+00:00",
+                }
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("nous")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.refresh_token == "refresh-OLD"
+
+    # Simulate another process refreshing the token in auth.json
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:mint_agent_key",
+                    "access_token": "access-NEW",
+                    "refresh_token": "refresh-NEW",
+                    "expires_at": "2026-03-24T12:30:00+00:00",
+                    "agent_key": "agent-key-NEW",
+                    "agent_key_expires_at": "2026-03-24T14:00:00+00:00",
+                }
+            },
+        },
+    )
+
+    synced = pool._sync_nous_entry_from_auth_store(entry)
+    assert synced is not entry
+    assert synced.access_token == "access-NEW"
+    assert synced.refresh_token == "refresh-NEW"
+    assert synced.agent_key == "agent-key-NEW"
+    assert synced.agent_key_expires_at == "2026-03-24T14:00:00+00:00"
+
+def test_sync_nous_entry_noop_when_tokens_match(tmp_path, monkeypatch):
+    """When auth.json has the same refresh token, sync should be a no-op."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:mint_agent_key",
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "expires_at": "2026-03-24T12:00:00+00:00",
+                    "agent_key": "agent-key",
+                    "agent_key_expires_at": "2026-03-24T13:30:00+00:00",
+                }
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("nous")
+    entry = pool.select()
+    assert entry is not None
+
+    synced = pool._sync_nous_entry_from_auth_store(entry)
+    assert synced is entry
+
+def test_nous_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch):
+    """An exhausted Nous entry should recover when auth.json has newer tokens."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from dataclasses import replace as dc_replace
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:mint_agent_key",
+                    "access_token": "access-OLD",
+                    "refresh_token": "refresh-OLD",
+                    "expires_at": "2026-03-24T12:00:00+00:00",
+                    "agent_key": "agent-key",
+                    "agent_key_expires_at": "2026-03-24T13:30:00+00:00",
+                }
+            },
+        },
+    )
+
+    pool = load_pool("nous")
+    entry = pool.select()
+    assert entry is not None
+
+    # Mark entry as exhausted (simulating a failed refresh)
+    exhausted = dc_replace(
+        entry,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=time.time(),
+        last_error_code=401,
+    )
+    pool._replace_entry(entry, exhausted)
+    pool._persist()
+
+    # Simulate another process having successfully refreshed
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:mint_agent_key",
+                    "access_token": "access-FRESH",
+                    "refresh_token": "refresh-FRESH",
+                    "expires_at": "2026-03-24T12:30:00+00:00",
+                    "agent_key": "agent-key-FRESH",
+                    "agent_key_expires_at": "2026-03-24T14:00:00+00:00",
+                }
+            },
+        },
+    )
+
+    available = pool._available_entries(clear_expired=True)
+    assert len(available) == 1
+    assert available[0].refresh_token == "refresh-FRESH"
+    assert available[0].last_status is None
+
+
+# ── OpenAI Codex OAuth cross-process sync tests ────────────────────────────
+
+def _codex_auth_store(access: str, refresh: str) -> dict:
+    return {
+        "version": 1,
+        "active_provider": "openai-codex",
+        "providers": {
+            "openai-codex": {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": access,
+                    "refresh_token": refresh,
+                    "id_token": "id-" + access,
+                },
+                "last_refresh": "2026-04-28T00:00:00Z",
+            }
+        },
+    }
+
+
+def test_sync_codex_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypatch):
+    """When auth.json has newer Codex tokens, the pool entry should adopt them."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_auth_store("access-OLD", "refresh-OLD"))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.access_token == "access-OLD"
+    assert entry.refresh_token == "refresh-OLD"
+
+    # Simulate `hermes auth openai-codex` replacing the token pair on disk.
+    _write_auth_store(tmp_path, _codex_auth_store("access-NEW", "refresh-NEW"))
+
+    synced = pool._sync_codex_entry_from_auth_store(entry)
+    assert synced is not entry
+    assert synced.access_token == "access-NEW"
+    assert synced.refresh_token == "refresh-NEW"
+    assert synced.last_status is None
+    assert synced.last_error_code is None
+    assert synced.last_error_reset_at is None
+
+
+def test_sync_codex_entry_noop_when_tokens_match(tmp_path, monkeypatch):
+    """When auth.json has the same tokens, sync should be a no-op."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, _codex_auth_store("access-same", "refresh-same"))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+
+    synced = pool._sync_codex_entry_from_auth_store(entry)
+    assert synced is entry
+
+
+def test_codex_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch):
+    """An exhausted Codex entry should recover when auth.json has newer tokens.
+
+    Reproduces the Discord report (p1aceho1der, Apr 2026): after a Codex
+    rate-limit reset the user ran `hermes model` to reauth, but the pool
+    entry stayed marked EXHAUSTED with last_error_reset_at many hours in
+    the future — so `_available_entries` kept returning empty and every
+    request failed with "no available entries (all exhausted or empty)".
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from dataclasses import replace as dc_replace
+
+    _write_auth_store(tmp_path, _codex_auth_store("access-OLD", "refresh-OLD"))
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+
+    # Mark entry as exhausted with last_error_reset_at one hour in the
+    # future (Codex 429 weekly-window pattern).
+    now = time.time()
+    exhausted = dc_replace(
+        entry,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=now,
+        last_error_code=429,
+        last_error_reset_at=now + 3600,
+    )
+    pool._replace_entry(entry, exhausted)
+    pool._persist()
+
+    # Sanity: before the reauth, _available_entries refuses to return
+    # this entry because last_error_reset_at is in the future.
+    # (clear_expired would only clear it AFTER exhausted_until elapsed.)
+    available_before = pool._available_entries(clear_expired=True, refresh=False)
+    assert available_before == []
+
+    # Simulate `hermes model` / `hermes auth` refreshing the tokens.
+    _write_auth_store(tmp_path, _codex_auth_store("access-FRESH", "refresh-FRESH"))
+
+    available = pool._available_entries(clear_expired=True, refresh=False)
+    assert len(available) == 1
+    assert available[0].access_token == "access-FRESH"
+    assert available[0].refresh_token == "refresh-FRESH"
+    assert available[0].last_status is None
+    assert available[0].last_error_reset_at is None
+
+
+def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, monkeypatch):
+    """Regression guard: if auth.json tokens haven't changed, the exhausted
+    entry must stay stuck behind its reset window — sync must not spuriously
+    clear status just because the entry is STATUS_EXHAUSTED."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from dataclasses import replace as dc_replace
+
+    _write_auth_store(tmp_path, _codex_auth_store("access-same", "refresh-same"))
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+    assert entry is not None
+
+    now = time.time()
+    exhausted = dc_replace(
+        entry,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=now,
+        last_error_code=429,
+        last_error_reset_at=now + 3600,
+    )
+    pool._replace_entry(entry, exhausted)
+    pool._persist()
+
+    # auth.json unchanged → sync returns same entry → exhausted_until check
+    # still skips it.
+    available = pool._available_entries(clear_expired=True, refresh=False)
+    assert available == []

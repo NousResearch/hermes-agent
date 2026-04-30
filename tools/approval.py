@@ -17,6 +17,7 @@ import threading
 import time
 import unicodedata
 from typing import Optional
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,32 @@ _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_key",
     default="",
 )
+
+
+def _fire_approval_hook(hook_name: str, **kwargs) -> None:
+    """Invoke a plugin lifecycle hook for the approval system.
+
+    Lazy-imports the plugin manager to avoid circular imports (approval.py is
+    imported very early, long before plugins are discovered). Never raises --
+    plugin errors are logged and swallowed.
+
+    Only fires for the two approval-specific hooks in VALID_HOOKS:
+    pre_approval_request, post_approval_response.
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook
+    except Exception:
+        # Plugin system not available in this execution context
+        # (e.g. bare tool-only imports, minimal test environments).
+        return
+    try:
+        invoke_hook(hook_name, **kwargs)
+    except Exception as exc:
+        # invoke_hook() already swallows per-callback errors, so reaching here
+        # means the dispatch layer itself failed. Log and move on -- approval
+        # flow is safety-critical, plugin observability is not.
+        logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc)
+
 
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
@@ -72,6 +99,113 @@ _SENSITIVE_WRITE_TARGET = (
 )
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
+
+# =========================================================================
+# Hardline (unconditional) blocklist
+# =========================================================================
+#
+# Commands so catastrophic they should NEVER run via the agent, regardless
+# of --yolo, /yolo, approvals.mode=off, or cron approve mode.  This is a
+# floor below yolo: opting into yolo is the user trusting the agent with
+# their files and services, not trusting it to wipe the disk or power the
+# box off.
+#
+# Hardline only applies to environments that can actually damage the host
+# (local, ssh, container-host cron).  Containerized backends (docker,
+# singularity, modal, daytona) already bypass the dangerous-command layer
+# because nothing they do can touch the host, so we leave that behavior
+# alone.
+#
+# The list is deliberately tiny — only things with no recovery path:
+# filesystem destruction rooted at /, raw block device overwrites, kernel
+# shutdown/reboot, and denial-of-service commands that take the host down.
+# Recoverable-but-costly operations (git reset --hard, rm -rf /tmp/x,
+# chmod -R 777, curl|sh) stay in DANGEROUS_PATTERNS where yolo can pass
+# them through — that's what yolo is for.
+#
+# Inspired by Mercury Agent's permission-hardened blocklist
+# (https://github.com/cosmicstack-labs/mercury-agent).
+
+# Regex fragment matching the *start* of a command (i.e. positions where
+# a shell would begin parsing a new command).  Used by shutdown/reboot
+# patterns so they don't fire on "echo reboot" or "grep 'shutdown' log".
+# Matches: start of string, after command separators (; && || | newline),
+# after subshell openers ( `$(` or backtick ), optionally consuming
+# leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid).
+_CMDPOS = (
+    r'(?:^|[;&|\n`]|\$\()'         # start position
+    r'\s*'                          # optional whitespace
+    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
+    r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
+    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    r'\s*'
+)
+
+HARDLINE_PATTERNS = [
+    # rm recursive targeting the root filesystem or protected roots
+    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
+    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
+    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
+    # Filesystem format
+    (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    # Raw block device overwrites (dd + redirection)
+    (r'\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
+    # Fork bomb (classic shell form)
+    (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
+    # Kill every process on the system
+    (r'\bkill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    # System shutdown / reboot — anchor to command position (start of line,
+    # after a command separator, or after sudo/env wrappers) so we don't
+    # false-positive on "echo reboot" or "grep 'shutdown' logs".
+    # _CMDPOS matches start-of-command positions.
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
+    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
+    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+]
+
+# Pre-compiled variant used by the hot-path matcher. Building these at module
+# load eliminates the ~2.6 ms cold-cache re.compile fan-out on the first
+# terminal() call per process (12 HARDLINE + 47 DANGEROUS patterns, each
+# potentially evicted from Python's 512-entry ``re._cache`` by unrelated
+# regex work elsewhere in the agent). DANGEROUS_PATTERNS_COMPILED is built
+# at the end of this module after DANGEROUS_PATTERNS is defined.
+_RE_FLAGS = re.IGNORECASE | re.DOTALL
+HARDLINE_PATTERNS_COMPILED = [
+    (re.compile(pattern, _RE_FLAGS), description)
+    for pattern, description in HARDLINE_PATTERNS
+]
+
+
+def detect_hardline_command(command: str) -> tuple:
+    """Check if a command matches the unconditional hardline blocklist.
+
+    Returns:
+        (is_hardline, description) or (False, None)
+    """
+    normalized = _normalize_command_for_detection(command).lower()
+    for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+        if pattern_re.search(normalized):
+            return (True, description)
+    return (False, None)
+
+
+def _hardline_block_result(description: str) -> dict:
+    """Build the standard block result for a hardline match."""
+    return {
+        "approved": False,
+        "hardline": True,
+        "message": (
+            f"BLOCKED (hardline): {description}. "
+            "This command is on the unconditional blocklist and cannot "
+            "be executed via the agent — not even with --yolo, /yolo, "
+            "approvals.mode=off, or cron approve mode. If you genuinely "
+            "need to run it, run it yourself in a terminal outside the "
+            "agent."
+        ),
+    }
+
 
 # =========================================================================
 # Dangerous command patterns
@@ -146,6 +280,13 @@ DANGEROUS_PATTERNS = [
 ]
 
 
+# Pre-compiled variant (same rationale as HARDLINE_PATTERNS_COMPILED above).
+DANGEROUS_PATTERNS_COMPILED = [
+    (re.compile(pattern, _RE_FLAGS), description)
+    for pattern, description in DANGEROUS_PATTERNS
+]
+
+
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
     return pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
@@ -198,8 +339,8 @@ def detect_dangerous_command(command: str) -> tuple:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
     command_lower = _normalize_command_for_detection(command).lower()
-    for pattern, description in DANGEROUS_PATTERNS:
-        if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
+    for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+        if pattern_re.search(command_lower):
             pattern_key = description
             return (True, pattern_key, description)
     return (False, None, None)
@@ -441,6 +582,33 @@ def prompt_dangerous_approval(command: str, description: str,
             logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
 
+    # Fail-closed guard: if prompt_toolkit owns the terminal (interactive
+    # CLI session) and no approval callback is registered on this thread,
+    # the input() fallback below would spawn a daemon thread whose read
+    # can never see Enter -- the user's keystrokes go to prompt_toolkit,
+    # not input(), producing an invisible 60s deadlock (issue #15216).
+    # Deny fast and log loudly instead so the caller can surface a real
+    # error to the agent. Any thread that needs interactive approval must
+    # install a callback via tools.terminal_tool.set_approval_callback()
+    # before reaching this point (see delegate_tool.py, run_agent.py
+    # _execute_tool_calls_concurrent / _spawn_background_review for the
+    # established pattern).
+    try:
+        from prompt_toolkit.application.current import get_app_or_none
+        if get_app_or_none() is not None:
+            logger.warning(
+                "Dangerous-command approval requested on a thread with no "
+                "approval callback while prompt_toolkit is active; denying "
+                "to avoid stdin deadlock. command=%r description=%r",
+                command, description,
+            )
+            return "deny"
+    except Exception:
+        # prompt_toolkit not installed, or detection failed -- fall through
+        # to the legacy input() path (safe in non-TUI contexts: scripts,
+        # tests, sshd, etc.).
+        pass
+
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
         while True:
@@ -544,7 +712,7 @@ def _get_cron_approval_mode() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        mode = str(config.get("approvals", {}).get("cron_mode", "deny")).lower().strip()
+        mode = str(cfg_get(config, "approvals", "cron_mode", default="deny")).lower().strip()
         if mode in ("approve", "off", "allow", "yes"):
             return "approve"
         return "deny"
@@ -614,8 +782,18 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         return {"approved": True, "message": None}
+
+    # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
+    # to raw device, shutdown/reboot, fork bomb, kill -1) are blocked
+    # unconditionally, BEFORE the yolo bypass.  Opting into yolo is
+    # trusting the agent with your files and services, not trusting it
+    # to wipe the disk or power the box off.
+    is_hardline, hardline_desc = detect_hardline_command(command)
+    if is_hardline:
+        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        return _hardline_block_result(hardline_desc)
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
@@ -729,8 +907,17 @@ def check_all_command_guards(command: str, env_type: str,
     other was shown to the user.
     """
     # Skip containers for both checks
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         return {"approved": True, "message": None}
+
+    # Hardline floor: unconditional block for catastrophic commands
+    # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
+    # kill -1). Applies BEFORE yolo / mode=off / cron approve-mode so
+    # no session-level setting can bypass it.
+    is_hardline, hardline_desc = detect_hardline_command(command)
+    if is_hardline:
+        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        return _hardline_block_result(hardline_desc)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
@@ -861,6 +1048,19 @@ def check_all_command_guards(command: str, env_type: str,
             with _lock:
                 _gateway_queues.setdefault(session_key, []).append(entry)
 
+            # Notify plugins that an approval is being requested. Fires before
+            # the gateway notify callback so observers (e.g. macOS notifier
+            # plugins, audit logs, Slack alerts) get the event in real time.
+            _fire_approval_hook(
+                "pre_approval_request",
+                command=command,
+                description=combined_desc,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                session_key=session_key,
+                surface="gateway",
+            )
+
             # Notify the user (bridges sync agent thread → async gateway)
             try:
                 notify_cb(approval_data)
@@ -926,6 +1126,24 @@ def check_all_command_guards(command: str, env_type: str,
                     _gateway_queues.pop(session_key, None)
 
             choice = entry.result
+            # Normalize outcome for the post hook. Unresolved (timeout) and
+            # None both mean the user never responded; report that explicitly
+            # so plugins can distinguish timeout from explicit deny.
+            _outcome = (
+                "timeout" if not resolved
+                else (choice if choice else "timeout")
+            )
+            _fire_approval_hook(
+                "post_approval_response",
+                command=command,
+                description=combined_desc,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                session_key=session_key,
+                surface="gateway",
+                choice=_outcome,
+            )
+
             if not resolved or choice is None or choice == "deny":
                 reason = "timed out" if not resolved else "denied by user"
                 return {
@@ -970,9 +1188,28 @@ def check_all_command_guards(command: str, env_type: str,
 
     # CLI interactive: single combined prompt
     # Hide [a]lways when any tirith warning is present
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=command,
+        description=combined_desc,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        session_key=session_key,
+        surface="cli",
+    )
     choice = prompt_dangerous_approval(command, combined_desc,
                                        allow_permanent=not has_tirith,
                                        approval_callback=approval_callback)
+    _fire_approval_hook(
+        "post_approval_response",
+        command=command,
+        description=combined_desc,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        session_key=session_key,
+        surface="cli",
+        choice=choice,
+    )
 
     if choice == "deny":
         return {

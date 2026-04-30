@@ -10,9 +10,11 @@ ENV PYTHONUNBUFFERED=1
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 
 # Install system dependencies in one layer, clear APT cache
+# tini reaps orphaned zombie processes (MCP stdio subprocesses, git, bun, etc.)
+# that would otherwise accumulate when hermes runs as PID 1. See #15012.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli && \
+    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
     rm -rf /var/lib/apt/lists/*
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
@@ -28,22 +30,38 @@ WORKDIR /opt/hermes
 # unless the lockfiles themselves change.
 COPY package.json package-lock.json ./
 COPY web/package.json web/package-lock.json web/
+COPY ui-tui/package.json ui-tui/package-lock.json ui-tui/
+COPY ui-tui/packages/hermes-ink/package.json ui-tui/packages/hermes-ink/package-lock.json ui-tui/packages/hermes-ink/
 
 RUN npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
     (cd web && npm install --prefer-offline --no-audit) && \
+    (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
 COPY --chown=hermes:hermes . .
 
-# Build web dashboard (Vite outputs to hermes_cli/web_dist/)
-RUN cd web && npm run build
+# Build browser dashboard and terminal UI assets.
+RUN cd web && npm run build && \
+    cd ../ui-tui && npm run build && \
+    rm -rf node_modules/@hermes/ink && \
+    rm -rf packages/hermes-ink/node_modules && \
+    cp -R packages/hermes-ink node_modules/@hermes/ink && \
+    npm install --omit=dev --prefer-offline --no-audit --prefix node_modules/@hermes/ink && \
+    rm -rf node_modules/@hermes/ink/node_modules/react && \
+    node --input-type=module -e "await import('@hermes/ink')"
+
+# ---------- Permissions ----------
+# Make install dir world-readable so any HERMES_UID can read it at runtime.
+# The venv needs to be traversable too.
+USER root
+RUN chmod -R a+rX /opt/hermes
+# Start as root so the entrypoint can usermod/groupmod + gosu.
+# If HERMES_UID is unset, the entrypoint drops to the default hermes user (10000).
 
 # ---------- Python virtualenv ----------
-RUN chown hermes:hermes /opt/hermes
-USER hermes
 RUN uv venv && \
     uv pip install --no-cache-dir -e ".[all]"
 
@@ -52,4 +70,4 @@ ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
 ENV PATH="/opt/data/.local/bin:${PATH}"
 VOLUME [ "/opt/data" ]
-ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]
+ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]

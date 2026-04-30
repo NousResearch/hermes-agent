@@ -1,19 +1,21 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import { isActionMod, isMac, isMacActionFallback } from '../lib/platform.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
   useDeclaredCursor: (a: { line: number; column: number; active: boolean }) => (el: any) => void
+  useStdout: () => { stdout?: NodeJS.WriteStream }
   useTerminalFocus: () => boolean
 }
 
 const ink = Ink as unknown as InkExt
-const { Box, Text, useStdin, useInput, stringWidth, useDeclaredCursor, useTerminalFocus } = ink
+const { Box, Text, useStdin, useInput, useStdout, stringWidth, useDeclaredCursor, useTerminalFocus } = ink
 
 const ESC = '\x1b'
 const INV = `${ESC}[7m`
@@ -23,6 +25,7 @@ const DIM_OFF = `${ESC}[22m`
 const FWD_DEL_RE = new RegExp(`${ESC}\\[3(?:[~$^]|;)`)
 const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
+const MULTI_CLICK_MS = 500
 
 const invert = (s: string) => INV + s + INV_OFF
 const dim = (s: string) => DIM + s + DIM_OFF
@@ -167,101 +170,7 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
   return snapPos(s, Math.min(nextBreak + 1 + col, lineEnd))
 }
 
-// mirrors wrap-ansi(..., { wordWrap: false, hard: true }) so the declared
-// cursor lines up with what <Text wrap="wrap-char"> actually renders
-export function cursorLayout(value: string, cursor: number, cols: number) {
-  const pos = Math.max(0, Math.min(cursor, value.length))
-  const w = Math.max(1, cols)
-
-  let col = 0,
-    line = 0
-
-  for (const { segment, index } of seg().segment(value)) {
-    if (index >= pos) {
-      break
-    }
-
-    if (segment === '\n') {
-      line++
-      col = 0
-
-      continue
-    }
-
-    const sw = stringWidth(segment)
-
-    if (!sw) {
-      continue
-    }
-
-    if (col + sw > w) {
-      line++
-      col = 0
-    }
-
-    col += sw
-  }
-
-  // trailing cursor-cell overflows to the next row at the wrap column
-  if (col >= w) {
-    line++
-    col = 0
-  }
-
-  return { column: col, line }
-}
-
-export function offsetFromPosition(value: string, row: number, col: number, cols: number) {
-  if (!value.length) {
-    return 0
-  }
-
-  const targetRow = Math.max(0, Math.floor(row))
-  const targetCol = Math.max(0, Math.floor(col))
-  const w = Math.max(1, cols)
-
-  let line = 0
-  let column = 0
-  let lastOffset = 0
-
-  for (const { segment, index } of seg().segment(value)) {
-    lastOffset = index
-
-    if (segment === '\n') {
-      if (line === targetRow) {
-        return index
-      }
-
-      line++
-      column = 0
-
-      continue
-    }
-
-    const sw = Math.max(1, stringWidth(segment))
-
-    if (column + sw > w) {
-      if (line === targetRow) {
-        return index
-      }
-
-      line++
-      column = 0
-    }
-
-    if (line === targetRow && targetCol <= column + Math.max(0, sw - 1)) {
-      return index
-    }
-
-    column += sw
-  }
-
-  if (targetRow >= line) {
-    return value.length
-  }
-
-  return lastOffset
-}
+export { offsetFromPosition }
 
 function renderWithCursor(value: string, cursor: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
@@ -329,6 +238,7 @@ export function TextInput({
   onPaste,
   onSubmit,
   mask,
+  mouseApiRef,
   placeholder = '',
   focus = true
 }: TextInputProps) {
@@ -336,6 +246,7 @@ export function TextInput({
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
+  const { stdout } = useStdout()
 
   const curRef = useRef(cur)
   const selRef = useRef<null | { end: number; start: number }>(null)
@@ -346,6 +257,12 @@ export function TextInput({
   const pasteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pastePos = useRef(0)
   const editVersionRef = useRef(0)
+  const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingParentValue = useRef<string | null>(null)
+  const localRenderTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lineWidthRef = useRef(stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value))
+  const mouseAnchorRef = useRef<null | number>(null)
+  const lastClickRef = useRef<{ at: number; offset: number }>({ at: 0, offset: -1 })
   const undo = useRef<{ cursor: number; value: string }[]>([])
   const redo = useRef<{ cursor: number; value: string }[]>([])
 
@@ -373,21 +290,45 @@ export function TextInput({
     active: focus && termFocus && !selected
   })
 
+  // Hide the hardware cursor while a selection is active (prevents
+  // auto-wrap onto the next row when inverted text fills the column
+  // exactly) or when the terminal loses focus (suppresses the hollow-rect
+  // ghost most terminals draw at the parked position).
+  const hideHardwareCursor = focus && !!stdout?.isTTY && (!!selected || !termFocus)
+
+  useEffect(() => {
+    if (!hideHardwareCursor || !stdout) {
+      return
+    }
+
+    stdout.write('\x1b[?25l')
+
+    return () => {
+      stdout.write('\x1b[?25h')
+    }
+  }, [hideHardwareCursor, stdout])
+
+  const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
+
+  // Placeholder text is just a hint, not a selection — render it dim
+  // without inverse styling. In a TTY the hardware cursor parks at column
+  // 0 and visually marks the input start. Non-TTY surfaces still need the
+  // synthetic inverse first-char to draw a cursor at all.
   const rendered = useMemo(() => {
     if (!focus) {
       return display || dim(placeholder)
     }
 
     if (!display && placeholder) {
-      return invert(placeholder[0] ?? ' ') + dim(placeholder.slice(1))
+      return nativeCursor ? dim(placeholder) : invert(placeholder[0] ?? ' ') + dim(placeholder.slice(1))
     }
 
     if (selected) {
       return renderWithSelection(display, selected.start, selected.end)
     }
 
-    return renderWithCursor(display, cur)
-  }, [cur, display, focus, placeholder, selected])
+    return nativeCursor ? display || ' ' : renderWithCursor(display, cur)
+  }, [cur, display, focus, nativeCursor, placeholder, selected])
 
   useEffect(() => {
     if (self.current) {
@@ -398,6 +339,7 @@ export function TextInput({
       curRef.current = value.length
       selRef.current = null
       vRef.current = value
+      lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
       undo.current = []
       redo.current = []
     }
@@ -408,12 +350,21 @@ export function TextInput({
       return
     }
 
+    const dropSel = () => {
+      if (!selRef.current) {
+        return
+      }
+
+      selRef.current = null
+      setSel(null)
+    }
+
     setInputSelection({
-      clear: () => {
-        if (selRef.current) {
-          selRef.current = null
-          setSel(null)
-        }
+      clear: dropSel,
+      collapseToEnd: () => {
+        dropSel()
+        setCur(vRef.current.length)
+        curRef.current = vRef.current.length
       },
       end: selected?.end ?? curRef.current,
       start: selected?.start ?? curRef.current,
@@ -428,11 +379,92 @@ export function TextInput({
       if (pasteTimer.current) {
         clearTimeout(pasteTimer.current)
       }
+
+      if (parentChangeTimer.current) {
+        clearTimeout(parentChangeTimer.current)
+      }
+
+      if (localRenderTimer.current) {
+        clearTimeout(localRenderTimer.current)
+      }
     },
     []
   )
 
-  const commit = (next: string, nextCur: number, track = true) => {
+  const flushParentChange = () => {
+    if (parentChangeTimer.current) {
+      clearTimeout(parentChangeTimer.current)
+      parentChangeTimer.current = null
+    }
+
+    const next = pendingParentValue.current
+    pendingParentValue.current = null
+
+    if (next !== null) {
+      self.current = true
+      cbChange.current(next)
+    }
+  }
+
+  const scheduleParentChange = (next: string) => {
+    pendingParentValue.current = next
+
+    if (parentChangeTimer.current) {
+      return
+    }
+
+    parentChangeTimer.current = setTimeout(flushParentChange, 16)
+  }
+
+  const cancelLocalRender = () => {
+    if (localRenderTimer.current) {
+      clearTimeout(localRenderTimer.current)
+      localRenderTimer.current = null
+    }
+  }
+
+  const scheduleLocalRender = () => {
+    if (localRenderTimer.current) {
+      return
+    }
+
+    localRenderTimer.current = setTimeout(() => {
+      localRenderTimer.current = null
+      setCur(curRef.current)
+    }, 16)
+  }
+
+  const canFastEchoBase = () => focus && termFocus && !selected && !mask && !!stdout?.isTTY
+
+  const canFastAppend = (current: string, cursor: number, text: string) => {
+    const sw = stringWidth(text)
+
+    return (
+      canFastEchoBase() &&
+      cursor === current.length &&
+      current.length > 0 &&
+      !current.includes('\n') &&
+      sw === text.length &&
+      lineWidthRef.current + sw < Math.max(1, columns)
+    )
+  }
+
+  const canFastBackspace = (current: string, cursor: number) => {
+    if (!canFastEchoBase() || cursor !== current.length || cursor <= 0 || current.includes('\n')) {
+      return false
+    }
+
+    return stringWidth(current.slice(prevPos(current, cursor), cursor)) === 1
+  }
+
+  const commit = (
+    next: string,
+    nextCur: number,
+    track = true,
+    syncParent = true,
+    syncLocal = true,
+    nextLineWidth?: number
+  ) => {
     const prev = vRef.current
     const c = snapPos(next, nextCur)
     editVersionRef.current += 1
@@ -452,13 +484,27 @@ export function TextInput({
       redo.current = []
     }
 
-    setCur(c)
+    if (syncLocal) {
+      cancelLocalRender()
+      setCur(c)
+    } else {
+      scheduleLocalRender()
+    }
+
     curRef.current = c
     vRef.current = next
+    lineWidthRef.current =
+      nextLineWidth ?? stringWidth(next.includes('\n') ? next.slice(next.lastIndexOf('\n') + 1) : next)
 
     if (next !== prev) {
-      self.current = true
-      cbChange.current(next)
+      if (syncParent) {
+        flushParentChange()
+        self.current = true
+        cbChange.current(next)
+      } else {
+        self.current = true
+        scheduleParentChange(next)
+      }
     }
   }
 
@@ -544,6 +590,22 @@ export function TextInput({
     curRef.current = end
   }
 
+  const moveCursor = (next: number, extend = false) => {
+    const c = snapPos(vRef.current, next)
+    const anchor = selRef.current?.start ?? curRef.current
+
+    if (!extend || anchor === c) {
+      clearSel()
+    } else {
+      const nextSel = { end: c, start: anchor }
+      selRef.current = nextSel
+      setSel(nextSel)
+    }
+
+    setCur(c)
+    curRef.current = c
+  }
+
   const selRange = () => {
     const range = selRef.current
 
@@ -570,6 +632,67 @@ export function TextInput({
     const nextCursor = range ? range.start + cleaned.length : curRef.current + cleaned.length
 
     commit(nextValue, nextCursor)
+  }
+
+  const startMouseSelection = (next: number) => {
+    const c = snapPos(vRef.current, next)
+
+    mouseAnchorRef.current = c
+    selRef.current = { end: c, start: c }
+    setSel(null)
+    setCur(c)
+    curRef.current = c
+  }
+
+  const dragMouseSelection = (next: number) => {
+    if (mouseAnchorRef.current === null) {
+      return
+    }
+
+    const c = snapPos(vRef.current, next)
+    const range = { end: c, start: mouseAnchorRef.current }
+    selRef.current = range
+    setSel(range.start === range.end ? null : range)
+    setCur(c)
+    curRef.current = c
+  }
+
+  const endMouseSelection = () => {
+    mouseAnchorRef.current = null
+
+    const range = selRef.current
+
+    if (range && range.start === range.end) {
+      selRef.current = null
+      setSel(null)
+
+      return
+    }
+
+    const normalized = selRange()
+
+    if (isMac && normalized) {
+      void writeClipboardText(vRef.current.slice(normalized.start, normalized.end))
+    }
+  }
+
+  const offsetAt = (e: { localCol?: number; localRow?: number }) =>
+    offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
+
+  const isMultiClickAt = (offset: number) => {
+    const now = Date.now()
+    const last = lastClickRef.current
+    lastClickRef.current = { at: now, offset }
+
+    return now - last.at < MULTI_CLICK_MS && offset === last.offset
+  }
+
+  if (mouseApiRef) {
+    mouseApiRef.current = {
+      dragAt: (row, col) => dragMouseSelection(offsetFromPosition(display, row, col, columns)),
+      end: endMouseSelection,
+      startAtBeginning: () => startMouseSelection(0)
+    }
   }
 
   useInput(
@@ -613,9 +736,7 @@ export function TextInput({
         const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
 
         if (next !== null) {
-          clearSel()
-          setCur(next)
-          curRef.current = next
+          moveCursor(next, k.shift)
 
           return
         }
@@ -623,14 +744,30 @@ export function TextInput({
         return
       }
 
-      if ((k.ctrl && inp === 'c') || k.tab || (k.shift && k.tab) || k.pageUp || k.pageDown || k.escape) {
+      // Ctrl chords claimed by useInputHandlers — pass through instead of
+      // letting them fall into readline-style nav or a literal char insert.
+      // Ctrl+B = voice toggle, Ctrl+X = delete queued message while editing.
+      if (
+        (k.ctrl && inp === 'c') ||
+        (k.ctrl && inp === 'b') ||
+        (k.ctrl && inp === 'x') ||
+        k.tab ||
+        (k.shift && k.tab) ||
+        k.pageUp ||
+        k.pageDown ||
+        k.escape
+      ) {
         return
       }
 
       if (k.return) {
-        k.shift || (isMac ? isActionMod(k) : k.meta)
-          ? commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
-          : cbSubmit.current?.(vRef.current)
+        if (k.shift || k.ctrl || (isMac ? isActionMod(k) : k.meta)) {
+          flushParentChange()
+          commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
+        } else {
+          flushParentChange()
+          cbSubmit.current?.(vRef.current)
+        }
 
         return
       }
@@ -660,27 +797,37 @@ export function TextInput({
       }
 
       if (actionHome) {
-        clearSel()
         c = 0
+        moveCursor(c, k.shift)
+
+        return
       } else if (actionEnd) {
-        clearSel()
         c = v.length
+        moveCursor(c, k.shift)
+
+        return
       } else if (k.leftArrow) {
-        if (range && !wordMod) {
+        if (range && !wordMod && !k.shift) {
           clearSel()
           c = range.start
         } else {
-          clearSel()
           c = wordMod ? wordLeft(v, c) : prevPos(v, c)
         }
+
+        moveCursor(c, k.shift)
+
+        return
       } else if (k.rightArrow) {
-        if (range && !wordMod) {
+        if (range && !wordMod && !k.shift) {
           clearSel()
           c = range.end
         } else {
-          clearSel()
           c = wordMod ? wordRight(v, c) : nextPos(v, c)
         }
+
+        moveCursor(c, k.shift)
+
+        return
       } else if (wordMod && inp === 'b') {
         clearSel()
         c = wordLeft(v, c)
@@ -695,6 +842,14 @@ export function TextInput({
           const t = wordLeft(v, c)
           v = v.slice(0, t) + v.slice(c)
           c = t
+        } else if (canFastBackspace(v, c)) {
+          const t = prevPos(v, c)
+          v = v.slice(0, t) + v.slice(c)
+          c = t
+          stdout!.write('\b \b')
+          commit(v, c, true, false, false, Math.max(0, lineWidthRef.current - 1))
+
+          return
         } else {
           const t = prevPos(v, c)
           v = v.slice(0, t) + v.slice(c)
@@ -734,8 +889,8 @@ export function TextInput({
         } else {
           v = v.slice(0, c)
         }
-      } else if (inp.length > 0) {
-        const bracketed = inp.includes('[200~')
+      } else if (event.keypress.isPasted || inp.length > 0) {
+        const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
         if (bracketed && emitPaste({ bracketed: true, cursor: c, text, value: v })) {
@@ -772,8 +927,17 @@ export function TextInput({
             v = v.slice(0, range.start) + text + v.slice(range.end)
             c = range.start + text.length
           } else {
+            const simpleAppend = canFastAppend(v, c, text)
+
             v = v.slice(0, c) + text + v.slice(c)
             c += text.length
+
+            if (simpleAppend) {
+              stdout!.write(text)
+              commit(v, c, true, false, false, lineWidthRef.current + stringWidth(text))
+
+              return
+            }
           }
         } else {
           return
@@ -789,30 +953,72 @@ export function TextInput({
 
   return (
     <Box
-      onClick={(e: { localRow?: number; localCol?: number }) => {
+      onClick={(e: MouseEventLite) => {
         if (!focus) {
           return
         }
 
+        e.stopImmediatePropagation?.()
         clearSel()
-        const next = offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
+        const next = offsetAt(e)
         setCur(next)
         curRef.current = next
       }}
-      onMouseDown={(e: { button: number }) => {
-        // Right-click to paste: route through the same hotkey path as
-        // Alt+V so the composer's clipboard RPC (text or image) handles it.
-        if (!focus || e.button !== 2) {
+      onMouseDown={(e: MouseEventLite) => {
+        if (!focus) {
           return
         }
 
-        emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+        // Right-click → route through the same path as Alt+V so the composer
+        // clipboard RPC (text or image) handles it.
+        if (e.button === 2) {
+          e.stopImmediatePropagation?.()
+          emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+
+          return
+        }
+
+        if (e.button !== 0) {
+          return
+        }
+
+        e.stopImmediatePropagation?.()
+        const offset = offsetAt(e)
+
+        if (isMultiClickAt(offset)) {
+          mouseAnchorRef.current = null
+          selectAll()
+
+          return
+        }
+
+        startMouseSelection(offset)
+      }}
+      onMouseDrag={(e: MouseEventLite) => {
+        if (!focus || e.button !== 0 || mouseAnchorRef.current === null) {
+          return
+        }
+
+        e.stopImmediatePropagation?.()
+        dragMouseSelection(offsetAt(e))
+      }}
+      onMouseUp={(e: MouseEventLite) => {
+        e.stopImmediatePropagation?.()
+        endMouseSelection()
       }}
       ref={boxRef}
+      width={columns}
     >
-      <Text wrap="wrap-char">{rendered}</Text>
+      <Text wrap="wrap">{rendered}</Text>
     </Box>
   )
+}
+
+type MouseEventLite = {
+  button?: number
+  localCol?: number
+  localRow?: number
+  stopImmediatePropagation?: () => void
 }
 
 export interface PasteEvent {
@@ -827,6 +1033,7 @@ interface TextInputProps {
   columns?: number
   focus?: boolean
   mask?: string
+  mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
   onChange: (v: string) => void
   onPaste?: (
     e: PasteEvent
@@ -834,4 +1041,10 @@ interface TextInputProps {
   onSubmit?: (v: string) => void
   placeholder?: string
   value: string
+}
+
+export interface TextInputMouseApi {
+  dragAt: (row: number, col: number) => void
+  end: () => void
+  startAtBeginning: () => void
 }

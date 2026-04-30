@@ -80,7 +80,7 @@ export function highlightLine(line: string, lang: string, t: Theme): Token[] {
   }
 
   if (spec.comment && line.trimStart().startsWith(spec.comment)) {
-    return [[t.color.dim, line]]
+    return [[t.color.muted, line]]
   }
 
   const tokens: Token[] = []
@@ -97,11 +97,11 @@ export function highlightLine(line: string, lang: string, t: Theme): Token[] {
     const ch = tok[0]!
 
     if (ch === '"' || ch === "'" || ch === '`') {
-      tokens.push([t.color.amber, tok])
+      tokens.push([t.color.accent, tok])
     } else if (ch >= '0' && ch <= '9') {
-      tokens.push([t.color.cornsilk, tok])
+      tokens.push([t.color.text, tok])
     } else if (spec.keywords.has(tok)) {
-      tokens.push([t.color.bronze, tok])
+      tokens.push([t.color.border, tok])
     } else {
       tokens.push(['', tok])
     }

@@ -1,11 +1,16 @@
 # nix/lib.nix — Shared helpers for nix stuff
-{ pkgs, npm-lockfile-fix }:
+{
+  pkgs,
+  npm-lockfile-fix,
+  nodejs,
+}:
 {
   # Returns a buildNpmPackage-compatible attrs set that provides:
-  #   patchPhase          — ensures lockfile has exactly one trailing newline
-  #   nativeBuildInputs   — [ updateLockfileScript ] (list, prepend with ++ for more)
+  #   patchPhase             — ensures lockfile has exactly one trailing newline
+  #   nativeBuildInputs      — [ updateLockfileScript ] (list, prepend with ++ for more)
   #   passthru.devShellHook  — stamp-checked npm install + hash auto-update
   #   passthru.npmLockfile   — metadata for mkFixLockfiles
+  #   nodejs                 — fixed nodejs version for all packages we use in the repo
   #
   # NOTE: npmConfigHook runs `diff` between the source lockfile and the
   # npm-deps cache lockfile. fetchNpmDeps preserves whatever trailing
@@ -24,6 +29,7 @@
       nixFile ? "nix/${attr}.nix", # defaults to nix/<attr>.nix
     }:
     {
+      inherit nodejs;
       patchPhase = ''
         runHook prePatch
         # Normalize trailing newlines so source and npm-deps always match,
@@ -56,8 +62,8 @@
 
           cd "$REPO_ROOT/${folder}"
           rm -rf node_modules/
-          npm cache clean --force
-          CI=true npm install
+          ${pkgs.lib.getExe' nodejs "npm"} cache clean --force
+          CI=true ${pkgs.lib.getExe' nodejs "npm"} install
           ${pkgs.lib.getExe npm-lockfile-fix} ./package-lock.json
 
           NIX_FILE="$REPO_ROOT/${nixFile}"
@@ -83,7 +89,7 @@
           STAMP_VALUE="$(_hermes_npm_stamp)"
           if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
             echo "${pname}: installing npm dependencies..."
-            ( cd ${folder} && CI=true npm install --silent --no-fund --no-audit 2>/dev/null )
+            ( cd ${folder} && CI=true ${pkgs.lib.getExe' nodejs "npm"} install --silent --no-fund --no-audit 2>/dev/null )
 
             # Auto-update the nix hash so it stays in sync with the lockfile
             echo "${pname}: prefetching npm deps..."
@@ -92,7 +98,7 @@
               sed -i "s|hash = \"sha256-[A-Za-z0-9+/=]+\"|hash = \"$NEW_HASH\";|" "$NIX_FILE"
               echo "${pname}: updated hash to $NEW_HASH"
             else
-              echo "${pname}: warning: prefetch failed, run 'nix run .#fix-lockfiles -- --apply' manually" >&2
+              echo "${pname}: warning: prefetch failed, run 'nix run .#fix-lockfiles' manually" >&2
             fi
 
             mkdir -p .nix-stamps
@@ -112,6 +118,7 @@
   # Invocations:
   #   fix-lockfiles --check   # exit 1 if any hash is stale
   #   fix-lockfiles --apply   # rewrite stale hashes in place
+  #   fix-lockfiles           # alias of --apply
   # Writes machine-readable fields (stale, changed, report) to $GITHUB_OUTPUT
   # when set, so CI workflows can post a sticky PR comment directly.
   mkFixLockfiles =
@@ -124,7 +131,7 @@
     in
     pkgs.writeShellScriptBin "fix-lockfiles" ''
       set -uox pipefail
-      MODE="''${1:---check}"
+      MODE="''${1:---apply}"
       case "$MODE" in
         --check|--apply) ;;
         -h|--help)
@@ -165,6 +172,17 @@
 
         NEW_HASH=$(echo "$OUTPUT" | awk '/got:/ {print $2; exit}')
         if [ -z "$NEW_HASH" ]; then
+          # Magic-Nix-Cache occasionally returns HTTP 418 / cache-throttled
+          # mid-run; nix then prints "outputs … not valid, so checking is
+          # not possible" without a `got:` line.  That's an infrastructure
+          # blip, not a stale lockfile — warn + skip rather than failing
+          # the lint.  A real hash mismatch would still surface in the
+          # primary `.#$ATTR` build, which is a separate CI job.
+          if echo "$OUTPUT" | grep -qE "throttled|HTTP error 418|substituter .* is disabled|some outputs of .* are not valid"; then
+            echo "    skipped (transient cache failure — see primary nix build for real status)" >&2
+            echo "$OUTPUT" | tail -8 >&2
+            continue
+          fi
           echo "    build failed with no hash mismatch:" >&2
           echo "$OUTPUT" | tail -40 >&2
           exit 1
@@ -187,7 +205,10 @@
 
         if [ "$MODE" = "--apply" ]; then
           sed -i "s|hash = \"sha256-[^\"]*\";|hash = \"$NEW_HASH\";|" "$NIX_FILE"
-          nix build ".#$ATTR.npmDeps" --no-link --print-build-logs
+          if ! nix build ".#$ATTR.npmDeps" --no-link --print-build-logs; then
+            echo "    verification build failed after hash update" >&2
+            exit 1
+          fi
           FIXED=1
           echo "    fixed"
         fi
@@ -208,7 +229,7 @@
       if [ "$STALE" -eq 1 ] && [ "$MODE" = "--check" ]; then
         echo
         echo "Stale lockfile hashes detected. Run:"
-        echo "  nix run .#fix-lockfiles -- --apply"
+        echo "  nix run .#fix-lockfiles"
         exit 1
       fi
 

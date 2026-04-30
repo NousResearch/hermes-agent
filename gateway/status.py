@@ -113,6 +113,11 @@ def _get_process_start_time(pid: int) -> Optional[int]:
         return None
 
 
+def get_process_start_time(pid: int) -> Optional[int]:
+    """Public wrapper for retrieving a process start time when available."""
+    return _get_process_start_time(pid)
+
+
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string."""
     cmdline_path = Path(f"/proc/{pid}/cmdline")
@@ -562,17 +567,43 @@ def release_scoped_lock(scope: str, identity: str) -> None:
         pass
 
 
-def release_all_scoped_locks() -> int:
-    """Remove all scoped lock files in the lock directory.
+def release_all_scoped_locks(
+    *,
+    owner_pid: Optional[int] = None,
+    owner_start_time: Optional[int] = None,
+) -> int:
+    """Remove scoped lock files in the lock directory.
 
     Called during --replace to clean up stale locks left by stopped/killed
-    gateway processes that did not release their locks gracefully.
+    gateway processes that did not release their locks gracefully. When an
+    ``owner_pid`` is provided, only lock records belonging to that gateway
+    process are removed. ``owner_start_time`` further narrows the match to
+    protect against PID reuse.
+
+    When no owner is provided, preserves the legacy behavior and removes every
+    scoped lock file in the directory.
+
     Returns the number of lock files removed.
     """
     lock_dir = _get_lock_dir()
     removed = 0
     if lock_dir.exists():
         for lock_file in lock_dir.glob("*.lock"):
+            if owner_pid is not None:
+                record = _read_json_file(lock_file)
+                if not isinstance(record, dict):
+                    continue
+                try:
+                    record_pid = int(record.get("pid"))
+                except (TypeError, ValueError):
+                    continue
+                if record_pid != owner_pid:
+                    continue
+                if (
+                    owner_start_time is not None
+                    and record.get("start_time") != owner_start_time
+                ):
+                    continue
             try:
                 lock_file.unlink(missing_ok=True)
                 removed += 1

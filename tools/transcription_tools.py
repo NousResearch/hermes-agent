@@ -42,6 +42,20 @@ from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_opena
 
 logger = logging.getLogger(__name__)
 
+def get_env_value(name, default=None):
+    """Read env values through the live config module.
+
+    Tests may monkeypatch and later restore ``hermes_cli.config.get_env_value``
+    before this module is imported. Resolve the helper at call time so STT does
+    not keep a stale imported function for the rest of the test process.
+    """
+    try:
+        from hermes_cli.config import get_env_value as _get_env_value
+    except ImportError:
+        return os.getenv(name, default)
+    value = _get_env_value(name)
+    return default if value is None else value
+
 # ---------------------------------------------------------------------------
 # Optional imports — graceful degradation
 # ---------------------------------------------------------------------------
@@ -222,7 +236,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "groq":
-            if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+            if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
                 return "groq"
             logger.warning(
                 "STT provider 'groq' configured but GROQ_API_KEY not set"
@@ -238,7 +252,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "mistral":
-            if _HAS_MISTRAL and os.getenv("MISTRAL_API_KEY"):
+            if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
                 return "mistral"
             logger.warning(
                 "STT provider 'mistral' configured but mistralai package "
@@ -247,7 +261,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "xai":
-            if os.getenv("XAI_API_KEY"):
+            if get_env_value("XAI_API_KEY"):
                 return "xai"
             logger.warning(
                 "STT provider 'xai' configured but XAI_API_KEY not set"
@@ -262,16 +276,16 @@ def _get_provider(stt_config: dict) -> str:
         return "local"
     if _has_local_command():
         return "local_command"
-    if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+    if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
-    if _HAS_MISTRAL and os.getenv("MISTRAL_API_KEY"):
+    if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
         logger.info("No local STT available, using Mistral Voxtral Transcribe API")
         return "mistral"
-    if os.getenv("XAI_API_KEY"):
+    if get_env_value("XAI_API_KEY"):
         logger.info("No local STT available, using xAI Grok STT API")
         return "xai"
     return "none"
@@ -313,6 +327,66 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+# Substrings that identify a missing/unloadable CUDA runtime library.  When
+# ctranslate2 (the backend for faster-whisper) cannot dlopen one of these, the
+# "auto" device picker has already committed to CUDA and the model can no
+# longer be used — we fall back to CPU and reload.
+#
+# Deliberately narrow: we match on library-name tokens and dlopen phrasing so
+# we DO NOT accidentally catch legitimate runtime failures like "CUDA out of
+# memory" — those should surface to the user, not silently fall back to CPU
+# (a 32GB audio clip on CPU at int8 isn't useful either).
+_CUDA_LIB_ERROR_MARKERS = (
+    "libcublas",
+    "libcudnn",
+    "libcudart",
+    "cannot be loaded",
+    "cannot open shared object",
+    "no kernel image is available",
+    "no CUDA-capable device",
+    "CUDA driver version is insufficient",
+)
+
+
+def _looks_like_cuda_lib_error(exc: BaseException) -> bool:
+    """Heuristic: is this exception a missing/broken CUDA runtime library?
+
+    ctranslate2 raises plain RuntimeError with messages like
+    ``Library libcublas.so.12 is not found or cannot be loaded``.  We want to
+    catch missing/unloadable shared libs and driver-mismatch errors, NOT
+    legitimate runtime failures ("CUDA out of memory", model bugs, etc.).
+    """
+    msg = str(exc)
+    return any(marker in msg for marker in _CUDA_LIB_ERROR_MARKERS)
+
+
+def _load_local_whisper_model(model_name: str):
+    """Load faster-whisper with graceful CUDA → CPU fallback.
+
+    faster-whisper's ``device="auto"`` picks CUDA when the ctranslate2 wheel
+    ships CUDA shared libs, even on hosts where the NVIDIA runtime
+    (``libcublas.so.12`` / ``libcudnn*``) isn't installed — common on WSL2
+    without CUDA-on-WSL, headless servers, and CPU-only developer machines.
+    On those hosts the load itself sometimes succeeds and the dlopen failure
+    only surfaces at first ``transcribe()`` call.
+
+    We try ``auto`` first (fast CUDA path when it works), and on any CUDA
+    library load failure fall back to CPU + int8.
+    """
+    from faster_whisper import WhisperModel
+    try:
+        return WhisperModel(model_name, device="auto", compute_type="auto")
+    except Exception as exc:
+        if not _looks_like_cuda_lib_error(exc):
+            raise
+        logger.warning(
+            "faster-whisper CUDA load failed (%s) — falling back to CPU (int8). "
+            "Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.",
+            exc,
+        )
+        return WhisperModel(model_name, device="cpu", compute_type="int8")
+
+
 def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
     global _local_model, _local_model_name
@@ -321,11 +395,10 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
-        from faster_whisper import WhisperModel
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
         if _local_model is None or _local_model_name != model_name:
             logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
+            _local_model = _load_local_whisper_model(model_name)
             _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
@@ -338,8 +411,29 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
 
-        segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
-        transcript = " ".join(segment.text.strip() for segment in segments)
+        try:
+            segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
+            transcript = " ".join(segment.text.strip() for segment in segments)
+        except Exception as exc:
+            # CUDA runtime libs sometimes only fail at dlopen-on-first-use,
+            # AFTER the model loaded successfully.  Evict the broken cached
+            # model, reload on CPU, retry once.  Without this the module-
+            # global `_local_model` is poisoned and every subsequent voice
+            # message on this process fails identically until restart.
+            if not _looks_like_cuda_lib_error(exc):
+                raise
+            logger.warning(
+                "faster-whisper CUDA runtime failed mid-transcribe (%s) — "
+                "evicting cached model and retrying on CPU (int8).",
+                exc,
+            )
+            _local_model = None
+            _local_model_name = None
+            from faster_whisper import WhisperModel
+            _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            _local_model_name = model_name
+            segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
+            transcript = " ".join(segment.text.strip() for segment in segments)
 
         logger.info(
             "Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
@@ -447,7 +541,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
 
 def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using Groq Whisper API (free tier available)."""
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = get_env_value("GROQ_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
 
@@ -560,7 +654,7 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
     Uses the ``mistralai`` Python SDK to call ``/v1/audio/transcriptions``.
     Requires ``MISTRAL_API_KEY`` environment variable.
     """
-    api_key = os.getenv("MISTRAL_API_KEY")
+    api_key = get_env_value("MISTRAL_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "MISTRAL_API_KEY not set"}
 
@@ -600,7 +694,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     Supports Inverse Text Normalization, diarization, and word-level timestamps.
     Requires ``XAI_API_KEY`` environment variable.
     """
-    api_key = os.getenv("XAI_API_KEY")
+    api_key = get_env_value("XAI_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "XAI_API_KEY not set"}
 
@@ -608,7 +702,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     xai_config = stt_config.get("xai", {})
     base_url = str(
         xai_config.get("base_url")
-        or os.getenv("XAI_STT_BASE_URL")
+        or get_env_value("XAI_STT_BASE_URL")
         or XAI_STT_BASE_URL
     ).strip().rstrip("/")
     language = str(
@@ -756,7 +850,6 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         return _transcribe_mistral(file_path, model_name)
 
     if provider == "xai":
-        xai_cfg = stt_config.get("xai", {})
         # xAI Grok STT doesn't use a model parameter — pass through for logging
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)

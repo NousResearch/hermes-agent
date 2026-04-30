@@ -5,6 +5,12 @@ export interface ActiveTool {
   startedAt?: number
 }
 
+export interface TodoItem {
+  content: string
+  id: string
+  status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
+}
+
 export interface ActivityItem {
   id: number
   text: string
@@ -102,7 +108,7 @@ export interface ClarifyReq {
 
 export interface Msg {
   info?: SessionInfo
-  kind?: 'intro' | 'panel' | 'slash' | 'trail'
+  kind?: 'diff' | 'intro' | 'panel' | 'slash' | 'trail'
   panelData?: PanelData
   role: Role
   text: string
@@ -110,11 +116,22 @@ export interface Msg {
   thinkingTokens?: number
   toolTokens?: number
   tools?: string[]
+  todos?: TodoItem[]
+  todoIncomplete?: boolean
+  todoCollapsedByDefault?: boolean
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
 export type DetailsMode = 'hidden' | 'collapsed' | 'expanded'
 export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
+
+// Per-section overrides for the agent details accordion.  Resolution order
+// at lookup time is: explicit `display.sections.<name>` → built-in
+// SECTION_DEFAULTS → global `details_mode`.  Today the built-in defaults
+// expand `thinking`/`tools` and hide `activity`; `subagents` falls through
+// to the global mode.  Any explicit value still wins for that one section.
+export type SectionName = 'thinking' | 'tools' | 'subagents' | 'activity'
+export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 
 export interface McpServerStatus {
   connected: boolean
@@ -125,9 +142,13 @@ export interface McpServerStatus {
 
 export interface SessionInfo {
   cwd?: string
+  fast?: boolean
+  lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  reasoning_effort?: string
   release_date?: string
+  service_tier?: string
   skills: Record<string, string[]>
   tools: Record<string, string[]>
   update_behind?: number | null

@@ -41,6 +41,7 @@ def _make_agent(
     agent.tool_progress_callback = None
     agent._compression_warning = None
     agent._aux_compression_context_length_config = None
+    agent.tools = []
 
     compressor = MagicMock(spec=ContextCompressor)
     compressor.context_length = main_context
@@ -82,7 +83,7 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     assert "threshold:" in messages[0]
     # Warning stored for gateway replay
     assert agent._compression_warning is not None
-    # Threshold on the live compressor was actually lowered
+    # Threshold on the live compressor was actually lowered to aux_context.
     assert agent.context_compressor.threshold_tokens == 80_000
 
 
@@ -180,6 +181,7 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
         base_url="http://custom-endpoint:8080/v1",
         api_key="sk-custom",
         config_context_length=1_000_000,
+        provider="openrouter",
     )
 
 
@@ -202,6 +204,7 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
         base_url="http://custom:8080/v1",
         api_key="sk-test",
         config_context_length=None,
+        provider="openrouter",
     )
 
 
@@ -254,6 +257,7 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         base_url="http://custom-endpoint:8080/v1",
         api_key="sk-custom",
         config_context_length=1_000_000,
+        provider="",
     )
 
 

@@ -31,6 +31,64 @@ describe('platform action modifier', () => {
   })
 })
 
+describe('isCopyShortcut', () => {
+  it('keeps Ctrl+C as the local non-macOS copy chord', async () => {
+    const { isCopyShortcut } = await importPlatform('linux')
+
+    expect(isCopyShortcut({ ctrl: true, meta: false, super: false }, 'c', {})).toBe(true)
+  })
+
+  it('accepts client Cmd+C over SSH even when running on Linux', async () => {
+    const { isCopyShortcut } = await importPlatform('linux')
+    const env = { SSH_CONNECTION: '1 2 3 4' } as NodeJS.ProcessEnv
+
+    expect(isCopyShortcut({ ctrl: false, meta: false, super: true }, 'c', env)).toBe(true)
+    expect(isCopyShortcut({ ctrl: false, meta: true, super: false }, 'c', env)).toBe(true)
+  })
+
+  it('does not treat local Linux Alt+C as copy', async () => {
+    const { isCopyShortcut } = await importPlatform('linux')
+
+    expect(isCopyShortcut({ ctrl: false, meta: true, super: false }, 'c', {})).toBe(false)
+  })
+
+  it('accepts the VS Code/Cursor forwarded Cmd+C copy sequence on macOS', async () => {
+    const { isCopyShortcut } = await importPlatform('darwin')
+
+    expect(isCopyShortcut({ ctrl: true, meta: false, super: true }, 'c', {})).toBe(true)
+  })
+})
+
+describe('isVoiceToggleKey', () => {
+  it('matches raw Ctrl+B on macOS (doc-default across platforms)', async () => {
+    const { isVoiceToggleKey } = await importPlatform('darwin')
+
+    expect(isVoiceToggleKey({ ctrl: true, meta: false, super: false }, 'b')).toBe(true)
+    expect(isVoiceToggleKey({ ctrl: true, meta: false, super: false }, 'B')).toBe(true)
+  })
+
+  it('matches Cmd+B on macOS (preserve platform muscle memory)', async () => {
+    const { isVoiceToggleKey } = await importPlatform('darwin')
+
+    expect(isVoiceToggleKey({ ctrl: false, meta: true, super: false }, 'b')).toBe(true)
+    expect(isVoiceToggleKey({ ctrl: false, meta: false, super: true }, 'b')).toBe(true)
+  })
+
+  it('matches Ctrl+B on non-macOS platforms', async () => {
+    const { isVoiceToggleKey } = await importPlatform('linux')
+
+    expect(isVoiceToggleKey({ ctrl: true, meta: false, super: false }, 'b')).toBe(true)
+  })
+
+  it('does not match unmodified b or other Ctrl combos', async () => {
+    const { isVoiceToggleKey } = await importPlatform('darwin')
+
+    expect(isVoiceToggleKey({ ctrl: false, meta: false, super: false }, 'b')).toBe(false)
+    expect(isVoiceToggleKey({ ctrl: true, meta: false, super: false }, 'a')).toBe(false)
+    expect(isVoiceToggleKey({ ctrl: true, meta: false, super: false }, 'c')).toBe(false)
+  })
+})
+
 describe('isMacActionFallback', () => {
   it('routes raw Ctrl+K and Ctrl+W to readline kill-to-end / delete-word on macOS', async () => {
     const { isMacActionFallback } = await importPlatform('darwin')

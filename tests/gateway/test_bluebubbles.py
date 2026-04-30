@@ -66,6 +66,37 @@ class TestBlueBubblesHelpers:
 
         assert check_bluebubbles_requirements() is True
 
+    def test_supports_message_editing_is_false(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.SUPPORTS_MESSAGE_EDITING is False
+
+    def test_truncate_message_omits_pagination_suffixes(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        chunks = adapter.truncate_message("abcdefghij", max_length=6)
+        assert len(chunks) > 1
+        assert "".join(chunks) == "abcdefghij"
+        assert all("(" not in chunk for chunk in chunks)
+
+    @pytest.mark.asyncio
+    async def test_send_splits_paragraphs_into_multiple_bubbles(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        sent = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            sent.append(payload["message"])
+            return {"data": {"guid": f"msg-{len(sent)}"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("user@example.com", "first thought\n\nsecond thought")
+
+        assert result.success is True
+        assert sent == ["first thought", "second thought"]
+
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         assert adapter.format_message("**Hello** `world`") == "Hello world"

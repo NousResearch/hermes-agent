@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
@@ -188,10 +187,116 @@ async def _cdp_call(
 # ---------------------------------------------------------------------------
 
 
+def _browser_cdp_via_supervisor(
+    task_id: str,
+    frame_id: str,
+    method: str,
+    params: Optional[Dict[str, Any]],
+    timeout: float,
+) -> str:
+    """Route a CDP call through the live supervisor session for an OOPIF frame.
+
+    Looks up the frame in the supervisor's snapshot, extracts its child
+    ``cdp_session_id``, and dispatches ``method`` with that sessionId via
+    the supervisor's already-connected WebSocket (using
+    ``asyncio.run_coroutine_threadsafe`` onto the supervisor loop).
+    """
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+    except Exception as exc:  # pragma: no cover — defensive
+        return tool_error(
+            f"CDP supervisor is not available: {exc}. frame_id routing requires "
+            f"a running supervisor attached via /browser connect or an active "
+            f"Browserbase session."
+        )
+
+    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    if supervisor is None:
+        return tool_error(
+            f"No CDP supervisor is attached for task={task_id!r}. Call "
+            f"browser_navigate or /browser connect first so the supervisor "
+            f"can attach. Once attached, browser_snapshot will populate "
+            f"frame_tree with frame_ids you can pass here."
+        )
+
+    snap = supervisor.snapshot()
+    # Search both the top frame and the children for the requested id.
+    top = snap.frame_tree.get("top")
+    frame_info: Optional[Dict[str, Any]] = None
+    if top and top.get("frame_id") == frame_id:
+        frame_info = top
+    else:
+        for child in snap.frame_tree.get("children", []) or []:
+            if child.get("frame_id") == frame_id:
+                frame_info = child
+                break
+    if frame_info is None:
+        # Check the raw frames dict too (frame_tree is capped at 30 entries)
+        with supervisor._state_lock:  # type: ignore[attr-defined]
+            raw = supervisor._frames.get(frame_id)  # type: ignore[attr-defined]
+        if raw is not None:
+            frame_info = raw.to_dict()
+
+    if frame_info is None:
+        return tool_error(
+            f"frame_id {frame_id!r} not found in supervisor state. "
+            f"Call browser_snapshot to see current frame_tree."
+        )
+
+    child_sid = frame_info.get("session_id")
+    if not child_sid:
+        # Not an OOPIF — fall back to top-level session (evaluating at page
+        # scope).  Same-origin iframes don't get their own sessionId; the
+        # agent can still use contentWindow/contentDocument from the parent.
+        return tool_error(
+            f"frame_id {frame_id!r} is not an out-of-process iframe (no "
+            f"dedicated CDP session). For same-origin iframes, use "
+            f"`browser_cdp(method='Runtime.evaluate', params={{'expression': "
+            f"\"document.querySelector('iframe').contentDocument.title\"}})` "
+            f"at the top-level page instead."
+        )
+
+    # Dispatch onto the supervisor's loop.
+    import asyncio as _asyncio
+    loop = supervisor._loop  # type: ignore[attr-defined]
+    if loop is None or not loop.is_running():
+        return tool_error(
+            "CDP supervisor loop is not running. Try reconnecting with "
+            "/browser connect."
+        )
+
+    async def _do_cdp():
+        return await supervisor._cdp(  # type: ignore[attr-defined]
+            method,
+            params or {},
+            session_id=child_sid,
+            timeout=timeout,
+        )
+
+    try:
+        fut = _asyncio.run_coroutine_threadsafe(_do_cdp(), loop)
+        result_msg = fut.result(timeout=timeout + 2)
+    except Exception as exc:
+        return tool_error(
+            f"CDP call via supervisor failed: {type(exc).__name__}: {exc}",
+            cdp_docs=CDP_DOCS_URL,
+        )
+
+    payload: Dict[str, Any] = {
+        "success": True,
+        "method": method,
+        "frame_id": frame_id,
+        "session_id": child_sid,
+        "result": result_msg.get("result", {}),
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def browser_cdp(
     method: str,
     params: Optional[Dict[str, Any]] = None,
     target_id: Optional[str] = None,
+    frame_id: Optional[str] = None,
     timeout: float = 30.0,
     task_id: Optional[str] = None,
 ) -> str:
@@ -202,16 +307,34 @@ def browser_cdp(
         params: Method-specific parameters; defaults to ``{}``.
         target_id: Optional target/tab ID for page-level methods.  When set,
             we first attach to the target (``flatten=True``) and send
-            ``method`` with the resulting ``sessionId``.
+            ``method`` with the resulting ``sessionId``.  Uses a fresh
+            stateless CDP connection.
+        frame_id: Optional cross-origin (OOPIF) iframe ``frame_id`` from
+            ``browser_snapshot.frame_tree.children[]``.  When set (and the
+            frame is an OOPIF with a live session tracked by the CDP
+            supervisor), routes the call through the supervisor's existing
+            WebSocket — which is how you Runtime.evaluate *inside* an
+            iframe on backends where per-call fresh CDP connections would
+            hit signed-URL expiry (Browserbase) or expensive reattach.
         timeout: Seconds to wait for the call to complete.
-        task_id: Unused (tool is stateless) — accepted for uniformity with
-            other browser tools.
+        task_id: Task identifier for supervisor lookup.  When ``frame_id``
+            is set, this identifies which task's supervisor to use; the
+            handler will default to ``"default"`` otherwise.
 
     Returns:
         JSON string ``{"success": True, "method": ..., "result": {...}}`` on
         success, or ``{"error": "..."}`` on failure.
     """
-    del task_id  # unused — stateless
+    # --- Route iframe-scoped calls through the supervisor ---------------
+    if frame_id:
+        return _browser_cdp_via_supervisor(
+            task_id=task_id or "default",
+            frame_id=frame_id,
+            method=method,
+            params=params,
+            timeout=timeout,
+        )
+    del task_id  # stateless path below
 
     if not method or not isinstance(method, str):
         return tool_error(
@@ -324,12 +447,18 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
         "'mobile': false}, target_id=<tabId>\n\n"
         "**Usage rules:**\n"
         "- Browser-level methods (Target.*, Browser.*, Storage.*): omit "
-        "target_id.\n"
+        "target_id and frame_id.\n"
         "- Page-level methods (Page.*, Runtime.*, DOM.*, Emulation.*, "
         "Network.* scoped to a tab): pass target_id from Target.getTargets.\n"
-        "- Each call is independent — sessions and event subscriptions do "
-        "not persist between calls. For stateful workflows, prefer the "
-        "dedicated browser tools."
+        "- **Cross-origin iframe scope** (Runtime.evaluate inside an OOPIF, "
+        "Page.* targeting a frame target, etc.): pass frame_id from the "
+        "browser_snapshot frame_tree output. This routes through the CDP "
+        "supervisor's live connection — the only reliable way on "
+        "Browserbase where stateless CDP calls hit signed-URL expiry.\n"
+        "- Each stateless call (without frame_id) is independent — sessions "
+        "and event subscriptions do not persist between calls. For stateful "
+        "workflows, prefer the dedicated browser tools or use frame_id "
+        "routing."
     ),
     "parameters": {
         "type": "object",
@@ -347,14 +476,31 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
                     "Method-specific parameters as a JSON object. Omit or "
                     "pass {} for methods that take no parameters."
                 ),
+                "properties": {},
                 "additionalProperties": True,
             },
             "target_id": {
                 "type": "string",
                 "description": (
                     "Optional. Target/tab ID from Target.getTargets result "
-                    "(each entry's 'targetId'). Required for page-level "
-                    "methods; must be omitted for browser-level methods."
+                    "(each entry's 'targetId'). Use for page-level methods "
+                    "at the top-level tab scope. Mutually exclusive with "
+                    "frame_id."
+                ),
+            },
+            "frame_id": {
+                "type": "string",
+                "description": (
+                    "Optional. Out-of-process iframe (OOPIF) frame_id from "
+                    "browser_snapshot.frame_tree.children[] where "
+                    "is_oopif=true. When set, routes the call through the "
+                    "CDP supervisor's live session for that iframe. "
+                    "Essential for Runtime.evaluate inside cross-origin "
+                    "iframes, especially on Browserbase where fresh "
+                    "per-call CDP connections can't keep up with signed "
+                    "URL rotation. For same-origin iframes, use parent "
+                    "contentWindow/contentDocument from Runtime.evaluate "
+                    "at the top-level page instead."
                 ),
             },
             "timeout": {
@@ -408,6 +554,7 @@ registry.register(
         method=args.get("method", ""),
         params=args.get("params"),
         target_id=args.get("target_id"),
+        frame_id=args.get("frame_id"),
         timeout=args.get("timeout", 30.0),
         task_id=kw.get("task_id"),
     ),

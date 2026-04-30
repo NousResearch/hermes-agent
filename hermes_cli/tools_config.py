@@ -11,12 +11,14 @@ the `platform_toolsets` key.
 
 import json as _json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 
 from hermes_cli.config import (
+    cfg_get,
     load_config, save_config, get_env_value, save_env_value,
 )
 from hermes_cli.colors import Colors, color
@@ -25,7 +27,7 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
-from utils import base_url_hostname
+from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -67,25 +69,60 @@ CONFIGURABLE_TOOLSETS = [
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
+    ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
+    ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
+    ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
+    ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
 ]
 
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin"}
+
+# Platform-scoped toolsets: only appear in the `hermes tools` checklist for
+# these platforms, and only resolve/save for these platforms.  A toolset
+# absent from this map is available on every platform (current behaviour).
+#
+# Use this for tools whose APIs only make sense on one platform (Discord
+# server admin, Slack workspace admin, etc.).  Keeps every other platform's
+# checklist from filling up with irrelevant toggles.
+_TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
+    "discord": {"discord"},
+    "discord_admin": {"discord"},
+}
+
+
+def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
+    """Return True if ``ts_key`` is configurable on ``platform``.
+
+    Toolsets without a restriction entry are allowed everywhere (the default).
+    """
+    allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
+    return allowed is None or platform in allowed
 
 
 def _get_effective_configurable_toolsets():
     """Return CONFIGURABLE_TOOLSETS + any plugin-provided toolsets.
 
     Plugin toolsets are appended at the end so they appear after the
-    built-in toolsets in the TUI checklist.
+    built-in toolsets in the TUI checklist. A plugin whose toolset key
+    already appears in ``CONFIGURABLE_TOOLSETS`` is skipped — bundled
+    plugins (e.g. ``plugins/spotify``) share their toolset key with the
+    built-in entry, and we want the built-in label/description to win.
+    Without the dedupe, ``hermes tools`` → "reconfigure existing" would
+    list the same toolset twice.
     """
     result = list(CONFIGURABLE_TOOLSETS)
+    seen = {ts_key for ts_key, _, _ in result}
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
         discover_plugins()  # idempotent — ensures plugins are loaded
-        result.extend(get_plugin_toolsets())
+        for entry in get_plugin_toolsets():
+            if entry[0] in seen:
+                continue
+            seen.add(entry[0])
+            result.append(entry)
     except Exception:
         pass
     return result
@@ -189,6 +226,14 @@ TOOL_CATEGORIES = {
                 "env_vars": [],
                 "tts_provider": "kittentts",
                 "post_setup": "kittentts",
+            },
+            {
+                "name": "Piper",
+                "badge": "local · free",
+                "tag": "Local neural TTS, 44 languages (voices ~20-90MB)",
+                "env_vars": [],
+                "tts_provider": "piper",
+                "post_setup": "piper",
             },
         ],
     },
@@ -361,6 +406,18 @@ TOOL_CATEGORIES = {
             },
         ],
     },
+    "spotify": {
+        "name": "Spotify",
+        "icon": "🎵",
+        "providers": [
+            {
+                "name": "Spotify Web API",
+                "tag": "PKCE OAuth — opens the setup wizard",
+                "env_vars": [],
+                "post_setup": "spotify",
+            },
+        ],
+    },
     "rl": {
         "name": "RL Training",
         "icon": "🧪",
@@ -374,6 +431,31 @@ TOOL_CATEGORIES = {
                     {"key": "WANDB_API_KEY", "prompt": "WandB API key", "url": "https://wandb.ai/authorize"},
                 ],
                 "post_setup": "rl_training",
+            },
+        ],
+    },
+    "langfuse": {
+        "name": "Langfuse Observability",
+        "icon": "📊",
+        "providers": [
+            {
+                "name": "Langfuse Cloud",
+                "tag": "Hosted Langfuse (cloud.langfuse.com)",
+                "env_vars": [
+                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)", "url": "https://cloud.langfuse.com"},
+                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)", "url": "https://cloud.langfuse.com"},
+                ],
+                "post_setup": "langfuse",
+            },
+            {
+                "name": "Langfuse Self-Hosted",
+                "tag": "Self-hosted Langfuse instance",
+                "env_vars": [
+                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)"},
+                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)"},
+                    {"key": "HERMES_LANGFUSE_BASE_URL", "prompt": "Langfuse server URL (e.g. http://localhost:3000)", "default": "http://localhost:3000"},
+                ],
+                "post_setup": "langfuse",
             },
         ],
     },
@@ -394,7 +476,10 @@ def _run_post_setup(post_setup_key: str):
     import shutil
     if post_setup_key in ("agent_browser", "browserbase"):
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
-        if not node_modules.exists() and shutil.which("npm"):
+        npm_bin = shutil.which("npm")
+        npx_bin = shutil.which("npx")
+        # Step 1: install the agent-browser npm package into node_modules/
+        if not node_modules.exists() and npm_bin:
             _print_info("    Installing Node.js dependencies for browser tools...")
             import subprocess
             result = subprocess.run(
@@ -406,8 +491,94 @@ def _run_post_setup(post_setup_key: str):
             else:
                 from hermes_constants import display_hermes_home
                 _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install")
+                if result.stderr:
+                    _print_info(f"      {result.stderr.strip()[:200]}")
         elif not node_modules.exists():
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
+            return
+
+        # Step 2: only the local browser provider actually needs Chromium on
+        # disk. Cloud providers (Browserbase, Browser Use, Firecrawl) host
+        # their own Chromium and don't need the local install.
+        if post_setup_key != "agent_browser":
+            return
+
+        # Step 3: ensure the Chromium / headless-shell build agent-browser
+        # drives is actually installed. Without it the CLI hangs on first
+        # use until the command timeout fires. Skip inside Docker — the
+        # image bakes Chromium in at build time, and runtime users usually
+        # can't write to PLAYWRIGHT_BROWSERS_PATH anyway.
+        try:
+            # Import lazily so the tools_config UI doesn't pull in the full
+            # browser_tool module at import time.
+            from tools.browser_tool import (
+                _chromium_installed,
+                _running_in_docker,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            _print_warning(f"    Could not check Chromium status: {exc}")
+            return
+
+        if _chromium_installed():
+            _print_success("    Chromium browser already installed")
+            return
+
+        if _running_in_docker():
+            _print_warning(
+                "    Chromium is missing but you're running in Docker."
+            )
+            _print_info(
+                "    Pull the latest image to get the bundled Chromium:"
+            )
+            _print_info(
+                "      docker pull ghcr.io/nousresearch/hermes-agent:latest"
+            )
+            return
+
+        if not npx_bin:
+            _print_warning(
+                "    npx not found - install Chromium manually: npx agent-browser install --with-deps"
+            )
+            return
+
+        _print_info("    Installing Chromium (~170MB one-time download)...")
+        import subprocess
+        # Prefer the bundled agent-browser install subcommand so the
+        # version of Chromium matches the CLI. Fall back to npx shim on
+        # setups where the local bin stub isn't present.
+        local_ab = PROJECT_ROOT / "node_modules" / ".bin" / "agent-browser"
+        if sys.platform == "win32":
+            local_ab_win = local_ab.with_suffix(".cmd")
+            if local_ab_win.exists():
+                local_ab = local_ab_win
+        install_cmd = (
+            [str(local_ab), "install", "--with-deps"]
+            if local_ab.exists()
+            else [npx_bin, "-y", "agent-browser", "install", "--with-deps"]
+        )
+        try:
+            result = subprocess.run(
+                install_cmd,
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT), timeout=600,
+            )
+            if result.returncode == 0:
+                _print_success("    Chromium installed")
+                # Invalidate the cached "missing" result so subsequent
+                # check_browser_requirements() calls see the new install.
+                import tools.browser_tool as _bt
+                _bt._cached_chromium_installed = None
+            else:
+                _print_warning("    Chromium install failed:")
+                tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+                for line in tail:
+                    _print_info(f"      {line[:200]}")
+                _print_info("    Run manually: npx agent-browser install --with-deps")
+        except subprocess.TimeoutExpired:
+            _print_warning("    Chromium install timed out (>10min)")
+            _print_info("    Run manually: npx agent-browser install --with-deps")
+        except Exception as exc:
+            _print_warning(f"    Chromium install failed: {exc}")
+            _print_info("    Run manually: npx agent-browser install --with-deps")
 
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
@@ -461,6 +632,62 @@ def _run_post_setup(post_setup_key: str):
             _print_warning("    kittentts install timed out (>5min)")
             _print_info(f"    Run manually: python -m pip install -U '{wheel_url}' soundfile")
 
+    elif post_setup_key == "piper":
+        try:
+            __import__("piper")
+            _print_success("    piper-tts is already installed")
+        except ImportError:
+            import subprocess
+            _print_info("    Installing piper-tts (~14MB wheel, voices downloaded on first use)...")
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-U", "piper-tts", "--quiet"],
+                    capture_output=True, text=True, timeout=300,
+                )
+                if result.returncode == 0:
+                    _print_success("    piper-tts installed")
+                else:
+                    _print_warning("    piper-tts install failed:")
+                    _print_info(f"      {result.stderr.strip()[:300]}")
+                    _print_info("    Run manually: python -m pip install -U piper-tts")
+                    return
+            except subprocess.TimeoutExpired:
+                _print_warning("    piper-tts install timed out (>5min)")
+                _print_info("    Run manually: python -m pip install -U piper-tts")
+                return
+        _print_info("    Default voice: en_US-lessac-medium (downloaded on first TTS call)")
+        _print_info("    Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md")
+        _print_info("    Switch voices by setting tts.piper.voice in ~/.hermes/config.yaml")
+
+    elif post_setup_key == "spotify":
+        # Run the full `hermes auth spotify` flow — if the user has no
+        # client_id yet, this drops them into the interactive wizard
+        # (opens the Spotify dashboard, prompts for client_id, persists
+        # to ~/.hermes/.env), then continues straight into PKCE. If they
+        # already have an app, it skips the wizard and just does OAuth.
+        from types import SimpleNamespace
+        try:
+            from hermes_cli.auth import login_spotify_command
+        except Exception as exc:
+            _print_warning(f"    Could not load Spotify auth: {exc}")
+            _print_info("    Run manually: hermes auth spotify")
+            return
+        _print_info("    Starting Spotify login...")
+        try:
+            login_spotify_command(SimpleNamespace(
+                client_id=None, redirect_uri=None, scope=None,
+                no_browser=False, timeout=None,
+            ))
+            _print_success("    Spotify authenticated")
+        except SystemExit as exc:
+            # User aborted the wizard, or OAuth failed — don't fail the
+            # toolset enable; they can retry with `hermes auth spotify`.
+            _print_warning(f"    Spotify login did not complete: {exc}")
+            _print_info("    Run later: hermes auth spotify")
+        except Exception as exc:
+            _print_warning(f"    Spotify login failed: {exc}")
+            _print_info("    Run manually: hermes auth spotify")
+
     elif post_setup_key == "rl_training":
         try:
             __import__("tinker_atropos")
@@ -489,6 +716,40 @@ def _run_post_setup(post_setup_key: str):
                 _print_warning("    tinker-atropos submodule not found - run:")
                 _print_info("      git submodule update --init --recursive")
                 _print_info('      uv pip install -e "./tinker-atropos"')
+
+    elif post_setup_key == "langfuse":
+        # Install the langfuse SDK.
+        try:
+            __import__("langfuse")
+            _print_success("    langfuse SDK already installed")
+        except ImportError:
+            import subprocess
+            _print_info("    Installing langfuse SDK...")
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "langfuse", "--quiet"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                _print_success("    langfuse SDK installed")
+            else:
+                _print_warning("    langfuse SDK install failed — run manually: pip install langfuse")
+        # Opt the bundled observability/langfuse plugin into plugins.enabled.
+        # The plugin ships in the repo but doesn't load until the user enables
+        # it (standalone plugins are opt-in).
+        try:
+            from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
+            enabled = _get_enabled_set()
+            if "observability/langfuse" in enabled or "langfuse" in enabled:
+                _print_success("    Plugin observability/langfuse already enabled")
+            else:
+                enabled.add("observability/langfuse")
+                _save_enabled_set(enabled)
+                _print_success("    Plugin observability/langfuse enabled")
+        except Exception as exc:
+            _print_warning(f"    Could not enable plugin automatically: {exc}")
+            _print_info("    Run manually: hermes plugins enable observability/langfuse")
+        _print_info("    Restart Hermes for tracing to take effect.")
+        _print_info("    Verify: hermes plugins list")
 
 
 # ─── Platform / Toolset Helpers ───────────────────────────────────────────────
@@ -549,13 +810,18 @@ def _get_platform_tools(
     include_default_mcp_servers: bool = True,
 ) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
-    from toolsets import resolve_toolset
+    from toolsets import resolve_toolset, TOOLSETS
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
 
     if toolset_names is None or not isinstance(toolset_names, list):
-        default_ts = PLATFORMS[platform]["default_toolset"]
+        plat_info = PLATFORMS.get(platform)
+        if plat_info:
+            default_ts = plat_info["default_toolset"]
+        else:
+            # Plugin platform — derive toolset name from platform key
+            default_ts = f"hermes-{platform}"
         toolset_names = [default_ts]
 
     # YAML may parse bare numeric names (e.g. ``12306:``) as int.
@@ -563,6 +829,8 @@ def _get_platform_tools(
     toolset_names = [str(ts) for ts in toolset_names]
 
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    plugin_ts_keys = _get_plugin_toolset_keys()
+    platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
 
     # If the saved list contains any configurable keys directly, the user
     # has explicitly configured this platform — use direct membership.
@@ -572,7 +840,10 @@ def _get_platform_tools(
     has_explicit_config = any(ts in configurable_keys for ts in toolset_names)
 
     if has_explicit_config:
-        enabled_toolsets = {ts for ts in toolset_names if ts in configurable_keys}
+        enabled_toolsets = {
+            ts for ts in toolset_names
+            if ts in configurable_keys and _toolset_allowed_for_platform(ts, platform)
+        }
     else:
         # No explicit config — fall back to resolving composite toolset names
         # (e.g. "hermes-cli") to individual tool names and reverse-mapping.
@@ -582,19 +853,70 @@ def _get_platform_tools(
 
         enabled_toolsets = set()
         for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
+            if not _toolset_allowed_for_platform(ts_key, platform):
+                continue
             ts_tools = set(resolve_toolset(ts_key))
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
+
         default_off = set(_DEFAULT_OFF_TOOLSETS)
-        if platform in default_off:
+        # Legacy safety: if the platform's own name matches a default-off
+        # toolset (e.g. `homeassistant` platform + `homeassistant` toolset),
+        # keep that toolset enabled on first install.  Skip this dodge for
+        # platform-restricted toolsets — those are always opt-in even on
+        # their own platform (e.g. `discord` + `discord` should stay OFF).
+        if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
             default_off.remove(platform)
+        # Home Assistant is already runtime-gated by its check_fn (requires
+        # HASS_TOKEN to register any tools). When a user has configured
+        # HASS_TOKEN, they've explicitly opted in — don't also strip it via
+        # _DEFAULT_OFF_TOOLSETS, which would silently drop HA from platforms
+        # (e.g. cron) that run through _get_platform_tools without an
+        # explicit saved toolset list. Without this, Norbert's HA cron jobs
+        # regressed after #14798 made cron honor per-platform tool config.
+        if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
+            default_off.remove("homeassistant")
         enabled_toolsets -= default_off
 
-    # Plugin toolsets: enabled by default unless explicitly disabled.
+    # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,
+    # feishu_drive).  These are part of the platform's default composite but
+    # absent from CONFIGURABLE_TOOLSETS, so they can't appear in the TUI
+    # checklist or in a user-saved config.  Must run in BOTH branches —
+    # otherwise saving via `hermes tools` (which flips has_explicit_config
+    # to True) silently drops them.
+    _plat_info = PLATFORMS.get(platform)
+    _default_ts = _plat_info["default_toolset"] if _plat_info else f"hermes-{platform}"
+    platform_tool_universe = set(resolve_toolset(_default_ts))
+    configurable_tool_universe = set()
+    for ck in configurable_keys:
+        configurable_tool_universe.update(resolve_toolset(ck))
+    claimed = set()
+    for ts_key in enabled_toolsets:
+        claimed.update(resolve_toolset(ts_key))
+    skip = configurable_keys | plugin_ts_keys | platform_default_keys
+    skip |= {k for k in TOOLSETS if k.startswith("hermes-")}
+    skip |= set(_DEFAULT_OFF_TOOLSETS) - {platform}
+    for ts_key, ts_def in TOOLSETS.items():
+        if ts_key in skip:
+            continue
+        if ts_def.get("includes"):
+            continue
+        ts_tools = set(resolve_toolset(ts_key))
+        if not ts_tools or not ts_tools.issubset(platform_tool_universe):
+            continue
+        if ts_tools.issubset(configurable_tool_universe):
+            continue
+        if not ts_tools.issubset(claimed):
+            enabled_toolsets.add(ts_key)
+            claimed.update(ts_tools)
+
+    # Plugin toolsets: enabled by default unless explicitly disabled, or
+    # unless the toolset is in _DEFAULT_OFF_TOOLSETS (e.g. spotify —
+    # shipped as a bundled plugin but user must opt in via `hermes tools`
+    # so we don't ship 7 Spotify tool schemas to users who don't use it).
     # A plugin toolset is "known" for a platform once `hermes tools`
     # has been saved for that platform (tracked via known_plugin_toolsets).
     # Unknown plugins default to enabled; known-but-absent = disabled.
-    plugin_ts_keys = _get_plugin_toolset_keys()
     if plugin_ts_keys:
         known_map = config.get("known_plugin_toolsets", {})
         known_for_platform = set(known_map.get(platform, []))
@@ -602,6 +924,9 @@ def _get_platform_tools(
             if pts in toolset_names:
                 # Explicitly listed in config — enabled
                 enabled_toolsets.add(pts)
+            elif pts in _DEFAULT_OFF_TOOLSETS:
+                # Opt-in plugin toolset — stay off until user picks it
+                continue
             elif pts not in known_for_platform:
                 # New plugin not yet seen by hermes tools — default enabled
                 enabled_toolsets.add(pts)
@@ -609,7 +934,6 @@ def _get_platform_tools(
 
     # Preserve any explicit non-configurable toolset entries (for example,
     # custom toolsets or MCP server names saved in platform_toolsets).
-    platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
     explicit_passthrough = {
         ts
         for ts in toolset_names
@@ -644,6 +968,16 @@ def _get_platform_tools(
     else:
         enabled_toolsets.update(explicit_mcp_servers)
 
+    # Honor agent.disabled_toolsets from config.yaml — allows users to
+    # globally suppress specific toolsets (e.g. "memory") across all
+    # platforms without per-platform toolset configuration.  This runs
+    # last so it overrides everything above.
+    agent_cfg = config.get("agent") or {}
+    disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
+    if disabled_toolsets:
+        disabled_set = {str(ts) for ts in disabled_toolsets}
+        enabled_toolsets -= disabled_set
+
     return enabled_toolsets
 
 
@@ -654,6 +988,14 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     that were already in the config for this platform.
     """
     config.setdefault("platform_toolsets", {})
+
+    # Drop platform-scoped toolsets that don't apply here.  Prevents the
+    # "Configure all platforms" checklist (or a hand-edited config.yaml)
+    # from turning on, say, the `discord` toolset for Telegram.
+    enabled_toolset_keys = {
+        ts for ts in enabled_toolset_keys
+        if _toolset_allowed_for_platform(ts, platform)
+    }
 
     # Get the set of all configurable toolset keys (built-in + plugin)
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
@@ -666,9 +1008,10 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
 
     # Get existing toolsets for this platform
-    existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
+    existing_toolsets = cfg_get(config, "platform_toolsets", platform, default=[])
     if not isinstance(existing_toolsets, list):
         existing_toolsets = []
+    existing_toolsets = [str(ts) for ts in existing_toolsets]
 
     # Preserve any entries that are NOT configurable toolsets and NOT platform
     # defaults (i.e. only MCP server names should be preserved)
@@ -676,6 +1019,11 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         entry for entry in existing_toolsets
         if entry not in configurable_keys and entry not in platform_default_keys
     }
+    # Opening `hermes tools` is the user's opt-in to reconfigure tools, so treat
+    # saving from the picker as consent to clear the "no_mcp" sentinel. The
+    # picker has no checkbox for no_mcp, so without this users who once set it
+    # by hand could never re-enable MCP servers through the UI.
+    preserved_entries.discard("no_mcp")
 
     # Merge preserved entries with new enabled toolsets
     config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
@@ -783,7 +1131,7 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     return _tool_token_cache
 
 
-def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
+def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: str = "cli") -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_cli.curses_ui import curses_checklist
     from toolsets import resolve_toolset
@@ -791,7 +1139,12 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
     # Pre-compute per-tool token counts (cached after first call).
     tool_tokens = _estimate_tool_tokens()
 
-    effective = _get_effective_configurable_toolsets()
+    effective_all = _get_effective_configurable_toolsets()
+    # Drop platform-scoped toolsets that don't apply to this platform.
+    effective = [
+        (k, l, d) for (k, l, d) in effective_all
+        if _toolset_allowed_for_platform(k, platform)
+    ]
 
     labels = []
     for ts_key, ts_label, ts_desc in effective:
@@ -1036,29 +1389,29 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
                 configured_provider = image_cfg.get("provider")
                 if configured_provider not in (None, "", "fal"):
                     return False
-                if image_cfg.get("use_gateway") is False:
+                if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
                     return False
             return feature.managed_by_nous
         if provider.get("tts_provider"):
             return (
                 feature.managed_by_nous
-                and config.get("tts", {}).get("provider") == provider["tts_provider"]
+                and cfg_get(config, "tts", "provider") == provider["tts_provider"]
             )
         if "browser_provider" in provider:
-            current = config.get("browser", {}).get("cloud_provider")
+            current = cfg_get(config, "browser", "cloud_provider")
             return feature.managed_by_nous and provider["browser_provider"] == current
         if provider.get("web_backend"):
-            current = config.get("web", {}).get("backend")
+            current = cfg_get(config, "web", "backend")
             return feature.managed_by_nous and current == provider["web_backend"]
         return feature.managed_by_nous
 
     if provider.get("tts_provider"):
-        return config.get("tts", {}).get("provider") == provider["tts_provider"]
+        return cfg_get(config, "tts", "provider") == provider["tts_provider"]
     if "browser_provider" in provider:
-        current = config.get("browser", {}).get("cloud_provider")
+        current = cfg_get(config, "browser", "cloud_provider")
         return provider["browser_provider"] == current
     if provider.get("web_backend"):
-        current = config.get("web", {}).get("backend")
+        current = cfg_get(config, "web", "backend")
         return current == provider["web_backend"]
     if provider.get("imagegen_backend"):
         image_cfg = config.get("image_gen", {})
@@ -1068,7 +1421,7 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
         return (
             provider["imagegen_backend"] == "fal"
             and configured_provider in (None, "", "fal")
-            and not image_cfg.get("use_gateway")
+            and not is_truthy_value(image_cfg.get("use_gateway"), default=False)
         )
     return False
 
@@ -1705,7 +2058,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
 
             # Show checklist
-            new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected)
+            new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected, pkey)
 
             added = new_enabled - current_enabled
             removed = current_enabled - new_enabled
@@ -2061,7 +2414,11 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
 
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
-    effective = _get_effective_configurable_toolsets()
+    effective_all = _get_effective_configurable_toolsets()
+    effective = [
+        (k, l, d) for (k, l, d) in effective_all
+        if _toolset_allowed_for_platform(k, platform)
+    ]
     builtin_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
     print(f"Built-in toolsets ({platform}):")
@@ -2126,6 +2483,20 @@ def tools_disable_enable_command(args):
         for name in unknown_toolsets:
             _print_error(f"Unknown toolset '{name}'")
         toolset_targets = [t for t in toolset_targets if t in valid_toolsets]
+
+    # Reject platform-scoped toolsets on platforms that don't allow them.
+    restricted_targets = [
+        t for t in toolset_targets
+        if not _toolset_allowed_for_platform(t, platform)
+    ]
+    if restricted_targets:
+        for name in restricted_targets:
+            allowed = sorted(_TOOLSET_PLATFORM_RESTRICTIONS.get(name) or set())
+            _print_error(
+                f"Toolset '{name}' is not available on platform '{platform}' "
+                f"(only: {', '.join(allowed)})"
+            )
+        toolset_targets = [t for t in toolset_targets if t not in restricted_targets]
 
     if toolset_targets:
         _apply_toolset_change(config, platform, toolset_targets, action)

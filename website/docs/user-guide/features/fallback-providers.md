@@ -21,7 +21,15 @@ When your main LLM provider encounters errors — rate limits, server overload, 
 
 ### Configuration
 
-Add a `fallback_model` section to `~/.hermes/config.yaml`:
+The easiest path is the interactive manager:
+
+```bash
+hermes fallback
+```
+
+`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Press `a` to add a fallback, `↑`/`↓` to reorder, `d` to remove, `q` to save and exit. Changes persist under `model.fallback_providers` in `config.yaml`.
+
+If you'd rather edit the YAML directly, add a `fallback_model` section to `~/.hermes/config.yaml`:
 
 ```yaml
 fallback_model:
@@ -30,6 +38,10 @@ fallback_model:
 ```
 
 Both `provider` and `model` are **required**. If either is missing, the fallback is disabled.
+
+:::note `fallback_model` vs `fallback_providers`
+`fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat. `fallback_providers` (plural, list) supports multiple fallbacks tried in order; `hermes fallback` writes to this key. When both are set, Hermes merges them with `fallback_providers` taking priority.
+:::
 
 ### Supported Providers
 
@@ -54,12 +66,20 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | xAI (Grok) | `xai` (alias `grok`) | `XAI_API_KEY` (optional: `XAI_BASE_URL`) |
 | AWS Bedrock | `bedrock` | Standard boto3 auth (`AWS_REGION` + `AWS_PROFILE` or `AWS_ACCESS_KEY_ID`) |
 | Qwen Portal (OAuth) | `qwen-oauth` | `hermes model` (Qwen Portal OAuth; optional: `HERMES_QWEN_BASE_URL`) |
+| MiniMax (OAuth) | `minimax-oauth` | `hermes model` (MiniMax portal OAuth) |
 | OpenCode Zen | `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
 | Xiaomi MiMo | `xiaomi` | `XIAOMI_API_KEY` |
 | Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
+| GMI Cloud | `gmi` | `GMI_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
+| Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) |
+| Kimi / Moonshot (China) | `kimi-coding-cn` | `KIMI_CN_API_KEY` |
+| StepFun | `stepfun` | `STEPFUN_API_KEY` |
+| Tencent TokenHub | `tencent-tokenhub` | `TOKENHUB_API_KEY` |
+| Azure AI Foundry | `azure-foundry` | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
+| LM Studio (local) | `lmstudio` | `LM_API_KEY` (or none for local) + `LM_BASE_URL` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `key_env` (see below) |
 
@@ -168,7 +188,6 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 | Session Search | Past session summarization | `auxiliary.session_search` |
 | Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
-| Memory Flush | Memory consolidation | `auxiliary.flush_memories` |
 | Approval | Smart command-approval classification | `auxiliary.approval` |
 | Title Generation | Session title summaries | `auxiliary.title_generation` |
 
@@ -224,10 +243,6 @@ auxiliary:
     model: ""
 
   mcp:
-    provider: "auto"
-    model: ""
-
-  flush_memories:
     provider: "auto"
     model: ""
 ```
@@ -365,7 +380,6 @@ See [Scheduled Tasks (Cron)](/docs/user-guide/features/cron) for full configurat
 | Session search | Auto-detection chain | `auxiliary.session_search` |
 | Skills hub | Auto-detection chain | `auxiliary.skills_hub` |
 | MCP helpers | Auto-detection chain | `auxiliary.mcp` |
-| Memory flush | Auto-detection chain | `auxiliary.flush_memories` |
 | Approval classification | Auto-detection chain | `auxiliary.approval` |
 | Title generation | Auto-detection chain | `auxiliary.title_generation` |
 | Delegation | Provider override only (no automatic fallback) | `delegation.provider` / `delegation.model` |

@@ -28,9 +28,9 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
-import json
 import logging
 import re
+import inspect
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -62,15 +62,124 @@ def sanitize_context(text: str) -> str:
     return text
 
 
-def build_memory_context_block(raw_context: str) -> str:
-    """Wrap prefetched memory in a fenced block with system note.
+class StreamingContextScrubber:
+    """Stateful scrubber for streaming text that may contain split memory-context spans.
 
-    The fence prevents the model from treating recalled context as user
-    discourse.  Injected at API-call time only — never persisted.
+    The one-shot ``sanitize_context`` regex cannot survive chunk boundaries:
+    a ``<memory-context>`` opened in one delta and closed in a later delta
+    leaks its payload to the UI because the non-greedy block regex needs
+    both tags in one string.  This scrubber runs a small state machine
+    across deltas, holding back partial-tag tails and discarding
+    everything inside a span (including the system-note line).
+
+    Usage::
+
+        scrubber = StreamingContextScrubber()
+        for delta in stream:
+            visible = scrubber.feed(delta)
+            if visible:
+                emit(visible)
+        trailing = scrubber.flush()  # at end of stream
+        if trailing:
+            emit(trailing)
+
+    The scrubber is re-entrant per agent instance.  Callers building new
+    top-level responses (new turn) should create a fresh scrubber or call
+    ``reset()``.
     """
+
+    _OPEN_TAG = "<memory-context>"
+    _CLOSE_TAG = "</memory-context>"
+
+    def __init__(self) -> None:
+        self._in_span: bool = False
+        self._buf: str = ""
+
+    def reset(self) -> None:
+        self._in_span = False
+        self._buf = ""
+
+    def feed(self, text: str) -> str:
+        """Return the visible portion of ``text`` after scrubbing.
+
+        Any trailing fragment that could be the start of an open/close tag
+        is held back in the internal buffer and surfaced on the next
+        ``feed()`` call or discarded/emitted by ``flush()``.
+        """
+        if not text:
+            return ""
+        buf = self._buf + text
+        self._buf = ""
+        out: list[str] = []
+
+        while buf:
+            if self._in_span:
+                idx = buf.lower().find(self._CLOSE_TAG)
+                if idx == -1:
+                    # Hold back a potential partial close tag; drop the rest
+                    held = self._max_partial_suffix(buf, self._CLOSE_TAG)
+                    self._buf = buf[-held:] if held else ""
+                    return "".join(out)
+                # Found close — skip span content + tag, continue
+                buf = buf[idx + len(self._CLOSE_TAG):]
+                self._in_span = False
+            else:
+                idx = buf.lower().find(self._OPEN_TAG)
+                if idx == -1:
+                    # No open tag — hold back a potential partial open tag
+                    held = self._max_partial_suffix(buf, self._OPEN_TAG)
+                    if held:
+                        out.append(buf[:-held])
+                        self._buf = buf[-held:]
+                    else:
+                        out.append(buf)
+                    return "".join(out)
+                # Emit text before the tag, enter span
+                if idx > 0:
+                    out.append(buf[:idx])
+                buf = buf[idx + len(self._OPEN_TAG):]
+                self._in_span = True
+
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Emit any held-back buffer at end-of-stream.
+
+        If we're still inside an unterminated span the remaining content is
+        discarded (safer: leaking partial memory context is worse than a
+        truncated answer).  Otherwise the held-back partial-tag tail is
+        emitted verbatim (it turned out not to be a real tag).
+        """
+        if self._in_span:
+            self._buf = ""
+            self._in_span = False
+            return ""
+        tail = self._buf
+        self._buf = ""
+        return tail
+
+    @staticmethod
+    def _max_partial_suffix(buf: str, tag: str) -> int:
+        """Return the length of the longest buf-suffix that is a tag-prefix.
+
+        Case-insensitive.  Returns 0 if no suffix could start the tag.
+        """
+        tag_lower = tag.lower()
+        buf_lower = buf.lower()
+        max_check = min(len(buf_lower), len(tag_lower) - 1)
+        for i in range(max_check, 0, -1):
+            if tag_lower.startswith(buf_lower[-i:]):
+                return i
+        return 0
+
+
+def build_memory_context_block(raw_context: str) -> str:
+    """Wrap prefetched memory in a fenced block with system note."""
     if not raw_context or not raw_context.strip():
         return ""
     clean = sanitize_context(raw_context)
+    if clean != raw_context:
+        logger.warning("memory provider returned pre-wrapped context; stripped")
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "
@@ -293,6 +402,41 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Notify all providers that the agent's session_id has rotated.
+
+        Fires on ``/resume``, ``/branch``, ``/reset``, ``/new``, and
+        context compression — any path that reassigns
+        ``AIAgent.session_id`` without tearing the provider down.
+
+        Providers keep running; they only need to refresh cached
+        per-session state so subsequent writes land in the correct
+        session's record. See ``MemoryProvider.on_session_switch`` for
+        the full contract.
+        """
+        if not new_session_id:
+            return
+        for provider in self._providers:
+            try:
+                provider.on_session_switch(
+                    new_session_id,
+                    parent_session_id=parent_session_id,
+                    reset=reset,
+                    **kwargs,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' on_session_switch failed: %s",
+                    provider.name, e,
+                )
+
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Notify all providers before context compression.
 
@@ -312,7 +456,39 @@ class MemoryManager:
                 )
         return "\n\n".join(parts)
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
+    @staticmethod
+    def _provider_memory_write_metadata_mode(provider: MemoryProvider) -> str:
+        """Return how to pass metadata to a provider's memory-write hook."""
+        try:
+            signature = inspect.signature(provider.on_memory_write)
+        except (TypeError, ValueError):
+            return "keyword"
+
+        params = list(signature.parameters.values())
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+            return "keyword"
+        if "metadata" in signature.parameters:
+            return "keyword"
+
+        accepted = [
+            p for p in params
+            if p.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        ]
+        if len(accepted) >= 4:
+            return "positional"
+        return "legacy"
+
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Notify external providers when the built-in memory tool writes.
 
         Skips the builtin provider itself (it's the source of the write).
@@ -321,7 +497,15 @@ class MemoryManager:
             if provider.name == "builtin":
                 continue
             try:
-                provider.on_memory_write(action, target, content)
+                metadata_mode = self._provider_memory_write_metadata_mode(provider)
+                if metadata_mode == "keyword":
+                    provider.on_memory_write(
+                        action, target, content, metadata=dict(metadata or {})
+                    )
+                elif metadata_mode == "positional":
+                    provider.on_memory_write(action, target, content, dict(metadata or {}))
+                else:
+                    provider.on_memory_write(action, target, content)
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' on_memory_write failed: %s",

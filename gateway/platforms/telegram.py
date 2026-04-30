@@ -84,6 +84,7 @@ from gateway.platforms.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
+from utils import atomic_replace
 
 
 def check_telegram_requirements() -> bool:
@@ -122,12 +123,12 @@ def _strip_mdv2(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Markdown table → code block conversion
+# Markdown table → Telegram-friendly row groups
 # ---------------------------------------------------------------------------
 # Telegram's MarkdownV2 has no table syntax — '|' is just an escaped literal,
 # so pipe tables render as noisy backslash-pipe text with no alignment.
-# Wrapping the table in a fenced code block makes Telegram render it as
-# monospace preformatted text with columns intact.
+# Reformating each row into a bold heading plus bullet list keeps the content
+# readable on mobile clients while preserving the source data.
 
 # Matches a GFM table delimiter row: optional outer pipes, cells containing
 # only dashes (with optional leading/trailing colons for alignment) separated
@@ -144,13 +145,49 @@ def _is_table_row(line: str) -> bool:
     return bool(stripped) and '|' in stripped
 
 
+def _split_markdown_table_row(line: str) -> list[str]:
+    """Split a simple GFM table row into stripped cell values."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _render_table_block_for_telegram(table_block: list[str]) -> str:
+    """Render a detected GFM table as Telegram-friendly row groups."""
+    if len(table_block) < 3:
+        return "\n".join(table_block)
+
+    headers = _split_markdown_table_row(table_block[0])
+    if len(headers) < 2:
+        return "\n".join(table_block)
+
+    rendered_rows: list[str] = []
+    for index, row in enumerate(table_block[2:], start=1):
+        cells = _split_markdown_table_row(row)
+        if len(cells) < len(headers):
+            cells.extend([""] * (len(headers) - len(cells)))
+        elif len(cells) > len(headers):
+            cells = cells[: len(headers)]
+
+        heading = next((cell for cell in cells if cell), f"Row {index}")
+        rendered_rows.append(f"**{heading}**")
+        rendered_rows.extend(
+            f"• {header}: {value}" for header, value in zip(headers, cells)
+        )
+
+    return "\n\n".join(rendered_rows)
+
+
 def _wrap_markdown_tables(text: str) -> str:
-    """Wrap GFM-style pipe tables in ``` fences so Telegram renders them.
+    """Rewrite GFM-style pipe tables into Telegram-friendly bullet groups.
 
     Detected by a row containing '|' immediately followed by a delimiter
     row matching :data:`_TABLE_SEPARATOR_RE`.  Subsequent pipe-containing
-    non-blank lines are consumed as the table body and included in the
-    wrapped block.  Tables inside existing fenced code blocks are left
+    non-blank lines are consumed as the table body and rewritten as
+    per-row bullet groups. Tables inside existing fenced code blocks are left
     alone.
     """
     if '|' not in text or '-' not in text:
@@ -187,9 +224,7 @@ def _wrap_markdown_tables(text: str) -> str:
             while j < len(lines) and _is_table_row(lines[j]):
                 table_block.append(lines[j])
                 j += 1
-            out.append('```')
-            out.extend(table_block)
-            out.append('```')
+            out.append(_render_table_block_for_telegram(table_block))
             i = j
             continue
 
@@ -202,14 +237,14 @@ def _wrap_markdown_tables(text: str) -> str:
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
-    
+
     Handles:
     - Receiving messages from users and groups
     - Sending responses with Telegram markdown
     - Forum topics (thread_id support)
     - Media messages
     """
-    
+
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
     # Threshold for detecting Telegram client-side message splits.
@@ -217,7 +252,7 @@ class TelegramAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
-    
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
@@ -251,6 +286,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
+        # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
+        self._slash_confirm_state: Dict[str, str] = {}
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -334,6 +372,49 @@ class TelegramAdapter(BasePlatformAdapter):
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
 
+    async def _drain_polling_connections(self) -> None:
+        """Reset the httpx connection pool used for getUpdates polling.
+
+        Network errors (especially through proxies like sing-box) can leave
+        httpx connections in a half-closed state that still occupy pool slots.
+        After enough reconnect cycles the pool fills up entirely, causing
+        ``Pool timeout: All connections in the connection pool are occupied.``
+
+        We reset ONLY ``_request[0]`` (the getUpdates request) — the general
+        request (``_request[1]``) is left untouched so concurrent
+        ``send_message`` / ``edit_message`` calls are never interrupted.
+
+        Implementation note: accesses ``Bot._request[0]`` which is the
+        get-updates ``BaseRequest`` in the PTB 22.x internal tuple
+        ``(get_updates_request, general_request)``.  There is no public
+        accessor for the polling request; review if upgrading to PTB 23+.
+        """
+        if not (self._app and self._app.bot):
+            return
+        try:
+            # PTB 22.x: _request is a (get_updates, general) tuple;
+            # no public accessor exists for the polling request.
+            polling_req = self._app.bot._request[0]  # noqa: SLF001
+        except Exception:
+            return
+        try:
+            await polling_req.shutdown()
+        except Exception:
+            logger.debug(
+                "[%s] Polling request shutdown failed (non-fatal)",
+                self.name, exc_info=True,
+            )
+        try:
+            await polling_req.initialize()
+            logger.debug(
+                "[%s] Polling request pool drained before reconnect", self.name
+            )
+        except Exception:
+            logger.debug(
+                "[%s] Polling request re-initialize failed (non-fatal)",
+                self.name, exc_info=True,
+            )
+
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
 
@@ -378,6 +459,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._app.updater.stop()
         except Exception:
             pass
+
+        await self._drain_polling_connections()
 
         try:
             await self._app.updater.start_polling(
@@ -426,6 +509,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception:
                 pass
             await asyncio.sleep(RETRY_DELAY)
+            await self._drain_polling_connections()
             try:
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
@@ -554,7 +638,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
                         f.flush()
                         os.fsync(f.fileno())
-                    os.replace(tmp_path, config_path)
+                    atomic_replace(tmp_path, config_path)
                 except BaseException:
                     try:
                         os.unlink(tmp_path)
@@ -703,7 +787,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
 
-            proxy_url = resolve_proxy_url("TELEGRAM_PROXY")
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in ("1", "true", "yes", "on"))
             fallback_ips = self._fallback_ips()
             if not fallback_ips:
@@ -714,6 +797,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     ", ".join(fallback_ips),
                 )
 
+            proxy_targets = ["api.telegram.org", *fallback_ips]
+            proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
             if fallback_ips and not proxy_url and not disable_fallback:
                 logger.info(
                     "[%s] Telegram fallback IPs active: %s",
@@ -912,7 +997,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._set_fatal_error("telegram_connect_error", message, retryable=True)
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
-    
+
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
         pending_media_group_tasks = list(self._media_group_tasks.values())
@@ -1208,6 +1293,31 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Telegram message.
+
+        Used by the stream consumer's fresh-final cleanup path (ported
+        from openclaw/openclaw#72038) to remove long-lived preview
+        messages after sending the completed reply as a fresh message.
+        Telegram's Bot API ``deleteMessage`` works for bot-posted
+        messages in the last 48 hours.  Failures are non-fatal — the
+        caller leaves the preview in place and logs at debug level.
+        """
+        if not self._bot:
+            return False
+        try:
+            await self._bot.delete_message(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+            )
+            return True
+        except Exception as e:
+            logger.debug(
+                "[%s] Failed to delete Telegram message %s: %s",
+                self.name, message_id, e,
+            )
+            return False
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
@@ -1302,6 +1412,48 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_slash_confirm(
+        self, chat_id: str, title: str, message: str, session_key: str,
+        confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a three-button slash-command confirmation prompt."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            # Message body: render as plain text (message already contains
+            # markdown formatting from the gateway primitive).
+            preview = message if len(message) <= 3800 else message[:3800] + "..."
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
+                    InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}"),
+                ],
+                [
+                    InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}"),
+                ],
+            ])
+
+            thread_id = self._metadata_thread_id(metadata)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": preview,
+                "parse_mode": ParseMode.MARKDOWN,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            message_thread_id = self._message_thread_id_for_send(thread_id)
+            if message_thread_id is not None:
+                kwargs["message_thread_id"] = message_thread_id
+
+            msg = await self._bot.send_message(**kwargs)
+            self._slash_confirm_state[confirm_id] = session_key
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_slash_confirm failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
     async def send_model_picker(
@@ -1672,6 +1824,68 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             return
 
+        # --- Slash-confirm callbacks (sc:choice:confirm_id) ---
+        if data.startswith("sc:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                choice = parts[1]  # once, always, cancel
+                confirm_id = parts[2]
+
+                caller_id = str(getattr(query.from_user, "id", "")) 
+                if not self._is_callback_user_authorized(caller_id):
+                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    return
+
+                session_key = self._slash_confirm_state.pop(confirm_id, None)
+                if not session_key:
+                    await query.answer(text="This prompt has already been resolved.")
+                    return
+
+                label_map = {
+                    "once": "✅ Approved once",
+                    "always": "🔒 Always approve",
+                    "cancel": "❌ Cancelled",
+                }
+                user_display = getattr(query.from_user, "first_name", "User")
+                label = label_map.get(choice, "Resolved")
+
+                await query.answer(text=label)
+
+                try:
+                    await query.edit_message_text(
+                        text=f"{label} by {user_display}",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+
+                # Resolve via the module-level primitive.  The runner stored
+                # a handler keyed by session_key; we run it on the event
+                # loop and (if it returns a string) send it as a follow-up
+                # message in the same chat.
+                try:
+                    from tools import slash_confirm as _slash_confirm_mod
+                    result_text = await _slash_confirm_mod.resolve(
+                        session_key, confirm_id, choice,
+                    )
+                    if result_text and query.message:
+                        # Inherit the prompt message's thread so the reply
+                        # lands in the same supergroup topic / reply chain.
+                        thread_id = getattr(query.message, "message_thread_id", None)
+                        send_kwargs: Dict[str, Any] = {
+                            "chat_id": int(query.message.chat_id),
+                            "text": result_text,
+                            "parse_mode": ParseMode.MARKDOWN,
+                            **self._link_preview_kwargs(),
+                        }
+                        if thread_id is not None:
+                            send_kwargs["message_thread_id"] = thread_id
+                        await self._bot.send_message(**send_kwargs)
+                except Exception as exc:
+                    logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return
@@ -1737,8 +1951,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
             
             with open(audio_path, "rb") as audio_file:
-                # .ogg files -> send as voice (round playable bubble)
-                if audio_path.endswith((".ogg", ".opus")):
+                ext = os.path.splitext(audio_path)[1].lower()
+                # .ogg / .opus files -> send as voice (round playable bubble)
+                if ext in (".ogg", ".opus"):
                     _voice_thread = self._metadata_thread_id(metadata)
                     msg = await self._bot.send_voice(
                         chat_id=int(chat_id),
@@ -1747,8 +1962,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=int(reply_to) if reply_to else None,
                         message_thread_id=self._message_thread_id_for_send(_voice_thread),
                     )
-                else:
-                    # .mp3 and others -> send as audio file
+                elif ext in (".mp3", ".m4a"):
+                    # Telegram's Bot API sendAudio only accepts MP3 / M4A.
                     _audio_thread = self._metadata_thread_id(metadata)
                     msg = await self._bot.send_audio(
                         chat_id=int(chat_id),
@@ -1756,6 +1971,16 @@ class TelegramAdapter(BasePlatformAdapter):
                         caption=caption[:1024] if caption else None,
                         reply_to_message_id=int(reply_to) if reply_to else None,
                         message_thread_id=self._message_thread_id_for_send(_audio_thread),
+                    )
+                else:
+                    # Formats Telegram can't play natively (.wav, .flac, ...)
+                    # — fall back to document delivery instead of raising.
+                    return await self.send_document(
+                        chat_id=chat_id,
+                        file_path=audio_path,
+                        caption=caption,
+                        reply_to=reply_to,
+                        metadata=metadata,
                     )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -1766,7 +1991,118 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return await super().send_voice(chat_id, audio_path, caption, reply_to)
-    
+
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[tuple],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images natively via Telegram's media group API.
+
+        Telegram's ``send_media_group`` bundles up to 10 photos/videos into
+        a single album. Larger batches are chunked. Animated GIFs cannot
+        go into a media group (they require ``send_animation``), so they
+        are peeled off and sent individually via the base default path.
+
+        URL-based photos go into the group directly; local files are
+        opened as byte streams. On failure the whole batch falls back to
+        the base adapter's per-image loop.
+        """
+        if not self._bot:
+            return
+        if not images:
+            return
+
+        try:
+            from telegram import InputMediaPhoto
+        except Exception as exc:  # pragma: no cover - missing SDK
+            logger.warning(
+                "[%s] InputMediaPhoto unavailable, falling back to per-image send: %s",
+                self.name, exc,
+            )
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return
+
+        # Peel off animations — they need send_animation, not send_media_group
+        animations: List[tuple] = []
+        photos: List[tuple] = []
+        for image_url, alt_text in images:
+            if not image_url.startswith("file://") and self._is_animation_url(image_url):
+                animations.append((image_url, alt_text))
+            else:
+                photos.append((image_url, alt_text))
+
+        # Animations: route through the base default (per-image send_animation)
+        if animations:
+            await super().send_multiple_images(
+                chat_id, animations, metadata, human_delay=human_delay,
+            )
+
+        if not photos:
+            return
+
+        from urllib.parse import unquote as _unquote
+        _thread = self._metadata_thread_id(metadata)
+        _thread_id = self._message_thread_id_for_send(_thread)
+
+        # Chunk into groups of 10 (Telegram's album limit)
+        CHUNK = 10
+        chunks = [photos[i:i + CHUNK] for i in range(0, len(photos), CHUNK)]
+
+        for chunk_idx, chunk in enumerate(chunks):
+            if human_delay > 0 and chunk_idx > 0:
+                await asyncio.sleep(human_delay)
+
+            media: List[Any] = []
+            opened_files: List[Any] = []
+            try:
+                for image_url, alt_text in chunk:
+                    caption = alt_text[:1024] if alt_text else None
+                    if image_url.startswith("file://"):
+                        local_path = _unquote(image_url[7:])
+                        if not os.path.exists(local_path):
+                            logger.warning(
+                                "[%s] Skipping missing image in media group: %s",
+                                self.name, local_path,
+                            )
+                            continue
+                        fh = open(local_path, "rb")
+                        opened_files.append(fh)
+                        media.append(InputMediaPhoto(media=fh, caption=caption))
+                    else:
+                        media.append(InputMediaPhoto(media=image_url, caption=caption))
+
+                if not media:
+                    continue
+
+                logger.info(
+                    "[%s] Sending media group of %d photo(s) (chunk %d/%d)",
+                    self.name, len(media), chunk_idx + 1, len(chunks),
+                )
+                await self._bot.send_media_group(
+                    chat_id=int(chat_id),
+                    media=media,
+                    message_thread_id=_thread_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[%s] send_media_group failed (chunk %d/%d), falling back to per-image: %s",
+                    self.name, chunk_idx + 1, len(chunks), e,
+                    exc_info=True,
+                )
+                # Fallback: send each photo in this chunk individually
+                await super().send_multiple_images(
+                    chat_id, chunk, metadata, human_delay=human_delay,
+                )
+            finally:
+                for fh in opened_files:
+                    try:
+                        fh.close()
+                    except Exception:
+                        pass
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -1933,7 +2269,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 # Final fallback: send URL as text
                 return await super().send_image(chat_id, image_url, caption, reply_to)
-    
+
     async def send_animation(
         self,
         chat_id: str,
@@ -1995,7 +2331,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
-    
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
         if not self._bot:
@@ -2029,7 +2365,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
-    
+
     def format_message(self, content: str) -> str:
         """
         Convert standard markdown to Telegram MarkdownV2 format.
@@ -2054,10 +2390,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         text = content
 
-        # 0) Pre-wrap GFM-style pipe tables in ``` fences.  Telegram can't
-        #    render tables natively, but fenced code blocks render as
-        #    monospace preformatted text with columns intact.  The wrapped
-        #    tables then flow through step (1) below as protected regions.
+        # 0) Rewrite GFM-style pipe tables into Telegram-friendly row groups
+        #    before the normal MarkdownV2 conversions run.
         text = _wrap_markdown_tables(text)
 
         # 1) Protect fenced code blocks (``` ... ```)
@@ -2203,7 +2537,7 @@ class TelegramAdapter(BasePlatformAdapter):
         text = ''.join(_safe_parts)
 
         return text
-    
+
     # ── Group mention gating ──────────────────────────────────────────────
 
     def _telegram_require_mention(self) -> bool:
@@ -2327,6 +2661,26 @@ class TelegramAdapter(BasePlatformAdapter):
                     user = getattr(entity, "user", None)
                     if user and getattr(user, "id", None) == bot_id:
                         return True
+                elif entity_type == "bot_command" and expected:
+                    # Telegram's official group-disambiguation form for slash
+                    # commands (``/cmd@botname``) is emitted as a single
+                    # ``bot_command`` entity covering the whole span — there
+                    # is no accompanying ``mention`` entity. Treat it as a
+                    # direct address to this bot when the ``@botname`` suffix
+                    # matches. This is the form Telegram's own command menu
+                    # autocomplete produces in groups, so dropping it at the
+                    # mention gate would break /new, /reset, /help, ... for
+                    # every group that has ``require_mention`` enabled (#15415).
+                    offset = int(getattr(entity, "offset", -1))
+                    length = int(getattr(entity, "length", 0))
+                    if offset < 0 or length <= 0:
+                        continue
+                    command_text = source_text[offset:offset + length]
+                    at_index = command_text.find("@")
+                    if at_index < 0:
+                        continue
+                    if command_text[at_index:].strip().lower() == expected:
+                        return True
         return False
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:
@@ -2398,7 +2752,7 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
-    
+
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
         if not update.message or not update.message.text:
@@ -2408,7 +2762,7 @@ class TelegramAdapter(BasePlatformAdapter):
         
         event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)
         await self.handle_message(event)
-    
+
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
         if not update.message:
@@ -2766,7 +3120,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         await self.handle_message(event)
-    
+
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
         """Buffer Telegram media-group items so albums arrive as one logical event.
 

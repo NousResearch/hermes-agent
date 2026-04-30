@@ -491,6 +491,70 @@ class TestCompositeContextEngine:
         # Sanity: inner engine was updated
         assert lcm.context_length == 200_000
 
+    def test_on_session_reset_clears_token_counters_on_wrapper(self):
+        """on_session_reset() must zero the composite wrapper's token counters.
+
+        Regression: previously the wrapper's last_prompt_tokens etc. were only
+        set at construction time. After a session reset the inner compression
+        engine zeroed its counters but the wrapper still held the stale values,
+        causing the next compression decision to use a non-zero token count.
+        """
+        from plugins.context_engine.lcm.__init__ import LcmContextEngine
+
+        lcm = LcmContextEngine()
+        composite = CompositeContextEngine(lcm)
+
+        # Simulate a session that accumulated token usage
+        composite.last_prompt_tokens = 50_000
+        composite.last_completion_tokens = 2_000
+        composite.last_total_tokens = 52_000
+        composite.compression_count = 3
+
+        composite.on_session_reset()
+
+        assert composite.last_prompt_tokens == 0, (
+            f"composite.last_prompt_tokens={composite.last_prompt_tokens} after reset; "
+            "expected 0 — wrapper was not synced from inner engine after on_session_reset"
+        )
+        assert composite.last_completion_tokens == 0, (
+            f"composite.last_completion_tokens={composite.last_completion_tokens} after reset; expected 0"
+        )
+        assert composite.last_total_tokens == 0, (
+            f"composite.last_total_tokens={composite.last_total_tokens} after reset; expected 0"
+        )
+        assert composite.compression_count == 0, (
+            f"composite.compression_count={composite.compression_count} after reset; expected 0"
+        )
+
+    def test_update_from_response_syncs_token_fields_on_wrapper(self):
+        """update_from_response() must re-sync the wrapper's token fields.
+
+        Regression: update_from_response delegated to the inner engine but did
+        not copy the updated values back to the wrapper's mirrored attributes,
+        so composite.last_prompt_tokens remained stale.
+        """
+        from plugins.context_engine.lcm.__init__ import LcmContextEngine
+
+        lcm = LcmContextEngine()
+        composite = CompositeContextEngine(lcm)
+
+        # Pre-condition: wrapper starts at 0
+        assert composite.last_prompt_tokens == 0
+
+        usage = {"prompt_tokens": 80_000, "completion_tokens": 1_500}
+        composite.update_from_response(usage)
+
+        assert composite.last_prompt_tokens == 80_000, (
+            f"composite.last_prompt_tokens={composite.last_prompt_tokens} after "
+            "update_from_response; expected 80000 — wrapper was not re-synced"
+        )
+        assert composite.last_completion_tokens == 1_500, (
+            f"composite.last_completion_tokens={composite.last_completion_tokens}; expected 1500"
+        )
+        assert composite.last_total_tokens == 81_500, (
+            f"composite.last_total_tokens={composite.last_total_tokens}; expected 81500"
+        )
+
 
 # ── RLMAgentEnvironment Tests ───────────────────────────────────────────
 

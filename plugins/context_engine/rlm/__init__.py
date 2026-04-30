@@ -485,6 +485,11 @@ class CompositeContextEngine(ContextEngine):
 
     def update_from_response(self, usage: Dict[str, Any]) -> None:
         self._compression_engine.update_from_response(usage)
+        # Re-sync wrapper-mirrored token attributes so callers reading
+        # composite.last_prompt_tokens etc. see up-to-date values.
+        self.last_prompt_tokens = getattr(self._compression_engine, "last_prompt_tokens", 0)
+        self.last_completion_tokens = getattr(self._compression_engine, "last_completion_tokens", 0)
+        self.last_total_tokens = getattr(self._compression_engine, "last_total_tokens", 0)
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         return self._compression_engine.should_compress(prompt_tokens)
@@ -519,6 +524,12 @@ class CompositeContextEngine(ContextEngine):
         self._compression_engine.on_session_reset()
         if self._rlm_engine:
             self._rlm_engine.on_session_reset()
+        # Re-sync wrapper-mirrored token and counter attributes from the inner
+        # compression engine so the next compression decision uses fresh values.
+        self.last_prompt_tokens = getattr(self._compression_engine, "last_prompt_tokens", 0)
+        self.last_completion_tokens = getattr(self._compression_engine, "last_completion_tokens", 0)
+        self.last_total_tokens = getattr(self._compression_engine, "last_total_tokens", 0)
+        self.compression_count = getattr(self._compression_engine, "compression_count", 0)
 
     def update_model(self, **kwargs) -> None:
         """Update model info on both engines and re-sync wrapper-mirrored fields."""

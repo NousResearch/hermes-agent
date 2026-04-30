@@ -88,16 +88,25 @@ def _cmd_status(args) -> int:
     if pinned:
         print(f"\npinned ({len(pinned)}): {', '.join(pinned)}")
 
-    # Show top 5 least-recently-used active skills
+    # Show top 5 least-recently-active skills. Views and edits are activity too:
+    # curator should not report a skill as "never used" right after skill_view()
+    # or skill_manage() touched it.
     active = sorted(
         by_state.get("active", []),
-        key=lambda r: r.get("last_used_at") or r.get("created_at") or "",
+        key=lambda r: r.get("last_activity_at") or r.get("created_at") or "",
     )[:5]
     if active:
-        print("\nleast recently used (top 5):")
+        print("\nleast recently active (top 5):")
         for r in active:
-            last = _fmt_ts(r.get("last_used_at"))
-            print(f"  {r['name']:40s}  use={r.get('use_count', 0):3d}  last_used={last}")
+            last = _fmt_ts(r.get("last_activity_at"))
+            print(
+                f"  {r['name']:40s}  "
+                f"activity={r.get('activity_count', 0):3d}  "
+                f"use={r.get('use_count', 0):3d}  "
+                f"view={r.get('view_count', 0):3d}  "
+                f"patches={r.get('patch_count', 0):3d}  "
+                f"last_activity={last}"
+            )
 
     return 0
 

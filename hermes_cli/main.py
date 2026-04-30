@@ -922,9 +922,39 @@ def _find_bundled_tui(tui_dir: Path) -> Optional[Path]:
 
 
 def _tui_build_needed(tui_dir: Path) -> bool:
+    entry = tui_dir / "dist" / "entry.js"
+    # In the esbuild pipeline, ink is bundled into dist/entry.js directly.
+    # If the main bundle exists and is up to date with all source files,
+    # no separate ink rebuild is needed.
+    if entry.exists():
+        dist_m = entry.stat().st_mtime
+        skip = frozenset({"node_modules", "dist"})
+        stale = False
+        for dirpath, dirnames, filenames in os.walk(tui_dir, topdown=True):
+            dirnames[:] = [d for d in dirnames if d not in skip]
+            for fn in filenames:
+                if fn.endswith((".ts", ".tsx")):
+                    if os.path.getmtime(os.path.join(dirpath, fn)) > dist_m:
+                        stale = True
+                        break
+            if stale:
+                break
+        if not stale:
+            for meta in (
+                "package.json",
+                "package-lock.json",
+                "tsconfig.json",
+                "tsconfig.build.json",
+            ):
+                mp = tui_dir / meta
+                if mp.exists() and mp.stat().st_mtime > dist_m:
+                    stale = True
+                    break
+        if not stale:
+            return False
+
     if _hermes_ink_bundle_stale(tui_dir):
         return True
-    entry = tui_dir / "dist" / "entry.js"
     if not entry.exists():
         return True
     dist_m = entry.stat().st_mtime

@@ -81,29 +81,39 @@ class TestResolveCommandProviderConfig:
     def test_user_declared_command_provider_resolves(self):
         cfg = {
             "providers": {
-                "piper": {"type": "command", "command": "piper foo"},
+                "piper-cli": {"type": "command", "command": "piper-cli foo"},
             },
         }
-        resolved = _resolve_command_provider_config("piper", cfg)
+        resolved = _resolve_command_provider_config("piper-cli", cfg)
         assert resolved is not None
-        assert resolved["command"] == "piper foo"
+        assert resolved["command"] == "piper-cli foo"
 
     def test_type_command_is_implied_when_command_is_set(self):
-        cfg = {"providers": {"piper": {"command": "piper foo"}}}
-        resolved = _resolve_command_provider_config("piper", cfg)
+        cfg = {"providers": {"piper-cli": {"command": "piper-cli foo"}}}
+        resolved = _resolve_command_provider_config("piper-cli", cfg)
         assert resolved is not None
 
     def test_other_type_values_reject(self):
-        cfg = {"providers": {"piper": {"type": "python", "command": "piper foo"}}}
-        assert _resolve_command_provider_config("piper", cfg) is None
+        cfg = {"providers": {"piper-cli": {"type": "python", "command": "piper-cli foo"}}}
+        assert _resolve_command_provider_config("piper-cli", cfg) is None
 
     def test_empty_command_rejects(self):
-        cfg = {"providers": {"piper": {"type": "command", "command": "   "}}}
-        assert _resolve_command_provider_config("piper", cfg) is None
+        cfg = {"providers": {"piper-cli": {"type": "command", "command": "   "}}}
+        assert _resolve_command_provider_config("piper-cli", cfg) is None
 
     def test_case_insensitive_lookup(self):
-        cfg = {"providers": {"piper": {"type": "command", "command": "x"}}}
-        assert _resolve_command_provider_config("PIPER", cfg) is not None
+        cfg = {"providers": {"piper-cli": {"type": "command", "command": "x"}}}
+        assert _resolve_command_provider_config("PIPER-CLI", cfg) is not None
+
+    def test_native_piper_cannot_be_shadowed_by_command_entry(self):
+        """Regression guard for PR that added native Piper as a built-in.
+        A user's ``tts.providers.piper`` must not override the built-in."""
+        cfg = {
+            "providers": {
+                "piper": {"type": "command", "command": "some-script"},
+            },
+        }
+        assert _resolve_command_provider_config("piper", cfg) is None
 
 
 class TestGetNamedProviderConfig:
@@ -145,16 +155,16 @@ class TestIterCommandProviders:
         cfg = {
             "providers": {
                 "openai": {"type": "command", "command": "shouldnt show up"},
-                "piper": {"type": "command", "command": "piper"},
+                "piper-cli": {"type": "command", "command": "piper-cli"},
                 "voxcpm": {"type": "command", "command": "voxcpm"},
                 "broken": {"type": "command", "command": ""},
             },
         }
         names = sorted(name for name, _ in _iter_command_providers(cfg))
-        assert names == ["piper", "voxcpm"]
+        assert names == ["piper-cli", "voxcpm"]
 
     def test_has_any_command_provider_detects_declared(self):
-        cfg = {"providers": {"piper": {"type": "command", "command": "piper"}}}
+        cfg = {"providers": {"piper-cli": {"type": "command", "command": "piper-cli"}}}
         assert _has_any_command_tts_provider(cfg) is True
 
     def test_has_any_command_provider_when_none(self):
@@ -216,16 +226,16 @@ class TestConfigGetters:
 
 class TestMaxTextLengthForCommandProviders:
     def test_default_for_command_provider(self):
-        cfg = {"providers": {"piper": {"type": "command", "command": "x"}}}
-        assert _resolve_max_text_length("piper", cfg) == DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH
+        cfg = {"providers": {"piper-cli": {"type": "command", "command": "x"}}}
+        assert _resolve_max_text_length("piper-cli", cfg) == DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH
 
     def test_override_under_providers(self):
-        cfg = {"providers": {"piper": {"type": "command", "command": "x", "max_text_length": 2500}}}
-        assert _resolve_max_text_length("piper", cfg) == 2500
+        cfg = {"providers": {"piper-cli": {"type": "command", "command": "x", "max_text_length": 2500}}}
+        assert _resolve_max_text_length("piper-cli", cfg) == 2500
 
     def test_override_under_legacy_tts_name_block(self):
-        cfg = {"piper": {"type": "command", "command": "x", "max_text_length": 7777}}
-        assert _resolve_max_text_length("piper", cfg) == 7777
+        cfg = {"piper-cli": {"type": "command", "command": "x", "max_text_length": 7777}}
+        assert _resolve_max_text_length("piper-cli", cfg) == 7777
 
     def test_non_command_unknown_provider_still_falls_back(self):
         assert _resolve_max_text_length("unknown", {}) > 0

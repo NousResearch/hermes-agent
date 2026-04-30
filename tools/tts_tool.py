@@ -12,6 +12,7 @@ Built-in TTS providers:
 - xAI TTS: Grok voices, needs XAI_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
+- Piper (local, free, no API key): OHF-Voice/piper1-gpl neural VITS, 44 languages
 
 Custom command providers:
 - Users can declare any number of named providers with ``type: command``
@@ -109,6 +110,18 @@ def _import_kittentts():
     return KittenTTS
 
 
+def _import_piper():
+    """Lazy import Piper. Returns the PiperVoice class or raises ImportError.
+
+    Piper is an optional, fully-local neural TTS engine (Home Assistant /
+    Open Home Foundation). ``pip install piper-tts`` provides cross-platform
+    wheels (Linux / macOS / Windows, x86_64 + ARM64) with embedded espeak-ng.
+    Voice models (.onnx + .onnx.json) are downloaded on first use.
+    """
+    from piper import PiperVoice
+    return PiperVoice
+
+
 # ===========================================================================
 # Defaults
 # ===========================================================================
@@ -120,6 +133,7 @@ DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
+DEFAULT_PIPER_VOICE = "en_US-lessac-medium"  # balanced size/quality
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-2.8-hd"
@@ -163,6 +177,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
+    "piper": 5000,        # local VITS model, phoneme-based; practical cap
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -308,6 +323,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "gemini",
     "neutts",
     "kittentts",
+    "piper",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -1294,6 +1310,167 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
 
 
 # ===========================================================================
+# Provider: Piper (local, neural VITS, 44 languages)
+# ===========================================================================
+
+# Module-level cache for Piper voice instances. Voices are keyed on their
+# absolute .onnx model path so switching voices doesn't invalidate older
+# cached voices.
+_piper_voice_cache: Dict[str, Any] = {}
+
+
+def _check_piper_available() -> bool:
+    """Check whether the piper-tts package is importable."""
+    try:
+        import importlib.util
+        return importlib.util.find_spec("piper") is not None
+    except Exception:
+        return False
+
+
+def _get_piper_voices_dir() -> Path:
+    """Return the directory where Hermes caches Piper voice models.
+
+    Resolves to ``~/.hermes/cache/piper-voices/`` under the active
+    HERMES_HOME so voice downloads follow profile boundaries.
+    """
+    from hermes_constants import get_hermes_dir
+    root = Path(get_hermes_dir("cache/piper-voices", "piper_voices_cache"))
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
+    """Resolve *voice* (a model name or path) to a concrete .onnx file path.
+
+    Accepts any of:
+      - Absolute / expanded path to an .onnx file the user already has
+      - A voice *name* like ``en_US-lessac-medium`` (downloads to
+        ``download_dir`` on first use via ``python -m piper.download_voices``)
+
+    Raises RuntimeError if the model can't be located or downloaded.
+    """
+    if not voice:
+        voice = DEFAULT_PIPER_VOICE
+
+    # Case 1: user gave a direct file path.
+    candidate = Path(voice).expanduser()
+    if candidate.suffix.lower() == ".onnx" and candidate.exists():
+        return str(candidate)
+
+    # Case 2: user gave a voice *name*. See if it's already downloaded.
+    cached = download_dir / f"{voice}.onnx"
+    if cached.exists() and (download_dir / f"{voice}.onnx.json").exists():
+        return str(cached)
+
+    # Case 3: download the voice. piper ships a download helper module.
+    import sys as _sys
+    logger.info("[Piper] Downloading voice '%s' to %s (first use)", voice, download_dir)
+    try:
+        result = subprocess.run(
+            [_sys.executable, "-m", "piper.download_voices", voice,
+             "--download-dir", str(download_dir)],
+            capture_output=True, text=True, timeout=300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Piper voice download timed out after 300s for '{voice}'"
+        ) from exc
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip() or "no stderr output"
+        raise RuntimeError(
+            f"Piper voice download failed for '{voice}': {stderr[:400]}"
+        )
+
+    if not cached.exists():
+        raise RuntimeError(
+            f"Piper voice download completed but {cached} is missing — "
+            f"check voice name (see: https://github.com/OHF-Voice/piper1-gpl/"
+            f"blob/main/docs/VOICES.md)"
+        )
+    return str(cached)
+
+
+def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using the local Piper engine.
+
+    Loads the voice model once per process (cached by absolute path) and
+    writes a WAV file. Caller is responsible for converting to MP3/Opus
+    via ffmpeg when a different output format is required.
+    """
+    PiperVoice = _import_piper()
+    import wave
+
+    piper_config = tts_config.get("piper", {}) if isinstance(tts_config, dict) else {}
+    voice_name = piper_config.get("voice") or DEFAULT_PIPER_VOICE
+    download_dir = Path(piper_config.get("voices_dir") or _get_piper_voices_dir()).expanduser()
+    download_dir.mkdir(parents=True, exist_ok=True)
+    use_cuda = bool(piper_config.get("use_cuda", False))
+
+    model_path = _resolve_piper_voice_path(voice_name, download_dir)
+
+    cache_key = f"{model_path}::cuda={use_cuda}"
+    global _piper_voice_cache
+    if cache_key not in _piper_voice_cache:
+        logger.info("[Piper] Loading voice: %s", model_path)
+        _piper_voice_cache[cache_key] = PiperVoice.load(model_path, use_cuda=use_cuda)
+        logger.info("[Piper] Voice loaded")
+    voice = _piper_voice_cache[cache_key]
+
+    # Optional synthesis knobs — only pass a SynthesisConfig when at least
+    # one advanced knob is configured, so we don't depend on a newer Piper
+    # version than the user's installed one unless we need to.
+    syn_config = None
+    has_advanced = any(
+        k in piper_config
+        for k in ("length_scale", "noise_scale", "noise_w_scale", "volume", "normalize_audio")
+    )
+    if has_advanced:
+        try:
+            from piper import SynthesisConfig  # type: ignore
+            syn_config = SynthesisConfig(
+                length_scale=float(piper_config.get("length_scale", 1.0)),
+                noise_scale=float(piper_config.get("noise_scale", 0.667)),
+                noise_w_scale=float(piper_config.get("noise_w_scale", 0.8)),
+                volume=float(piper_config.get("volume", 1.0)),
+                normalize_audio=bool(piper_config.get("normalize_audio", True)),
+            )
+        except ImportError:
+            logger.warning(
+                "[Piper] SynthesisConfig not available in this piper-tts "
+                "version — advanced knobs ignored"
+            )
+
+    # Piper outputs WAV. Caller handles downstream MP3/Opus conversion.
+    wav_path = output_path
+    if not output_path.endswith(".wav"):
+        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+
+    with wave.open(wav_path, "wb") as wav_file:
+        if syn_config is not None:
+            voice.synthesize_wav(text, wav_file, syn_config=syn_config)
+        else:
+            voice.synthesize_wav(text, wav_file)
+
+    # Convert to desired format if caller requested mp3/ogg
+    if wav_path != output_path:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
+            subprocess.run(conv_cmd, check=True, timeout=30)
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+        else:
+            # No ffmpeg — keep WAV and return that path
+            os.rename(wav_path, output_path)
+
+    return output_path
+
+
+# ===========================================================================
 # Provider: KittenTTS (local, lightweight)
 # ===========================================================================
 
@@ -1517,6 +1694,19 @@ def text_to_speech_tool(
             logger.info("Generating speech with KittenTTS (local, ~25MB)...")
             _generate_kittentts(text, file_str, tts_config)
 
+        elif provider == "piper":
+            try:
+                _import_piper()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Piper provider selected but 'piper-tts' package not installed. "
+                             "Run 'hermes tools' and select Piper under TTS, or install manually: "
+                             "pip install piper-tts",
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Piper (local)...")
+            _generate_piper_tts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -1566,7 +1756,7 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif provider in ("edge", "neutts", "minimax", "xai", "kittentts") and not file_str.endswith(".ogg"):
+        elif provider in ("edge", "neutts", "minimax", "xai", "kittentts", "piper") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -1656,6 +1846,8 @@ def check_tts_requirements() -> bool:
     if _check_neutts_available():
         return True
     if _check_kittentts_available():
+        return True
+    if _check_piper_available():
         return True
     return False
 
@@ -1954,6 +2146,7 @@ if __name__ == "__main__":
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
     print(f"  MiniMax:    {'API key set' if get_env_value('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
+    print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 

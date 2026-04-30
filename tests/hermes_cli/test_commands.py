@@ -66,9 +66,16 @@ class TestCommandRegistry:
                         f"Alias '{alias}' of '{cmd.name}' shadows canonical '{target.name}'"
 
     def test_every_entry_has_valid_category(self):
-        valid_categories = {"Session", "Configuration", "Tools & Skills", "Info", "Exit"}
+        valid_categories = {"Session", "Configuration", "Tools & Skills", "Code Mode", "Info", "Exit"}
         for cmd in COMMAND_REGISTRY:
             assert cmd.category in valid_categories, f"{cmd.name} has invalid category '{cmd.category}'"
+
+    def test_code_mode_commands_registered(self):
+        expected = {"code", "web", "workspace", "session", "approvals", "skills-code", "github"}
+        names = {cmd.name for cmd in COMMAND_REGISTRY}
+        assert expected <= names
+        assert resolve_command("skillscode").name == "skills-code"
+        assert resolve_command("github").name == "github"
 
     def test_reasoning_subcommands_are_in_logical_order(self):
         reasoning = next(cmd for cmd in COMMAND_REGISTRY if cmd.name == "reasoning")
@@ -142,6 +149,7 @@ class TestDerivedDicts:
         assert "/exit" in COMMANDS
         assert "/reload_mcp" in COMMANDS
         assert "/gateway" in COMMANDS
+        assert "/skillscode" in COMMANDS
 
     def test_commands_by_category_covers_all_categories(self):
         registry_categories = {cmd.category for cmd in COMMAND_REGISTRY if not cmd.gateway_only}

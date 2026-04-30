@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import queue
 import secrets
 import subprocess
 import sys
@@ -22,6 +23,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -46,6 +48,11 @@ from hermes_cli.config import (
     remove_env_value,
     check_config_version,
     redact_key,
+)
+from hermes_cli.code.event_bus import (
+    build_event_filters_from_query,
+    get_code_event_bus,
+    _parse_bool,
 )
 from gateway.status import get_running_pid, read_runtime_status
 
@@ -101,6 +108,8 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/status",
+    "/api/code/status",
+    "/api/code/github/webhooks",
     "/api/config/defaults",
     "/api/config/schema",
     "/api/model/info",
@@ -441,6 +450,91 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+class CodeArtifactCreate(BaseModel):
+    artifact_type: str
+    content: str
+    title: str | None = None
+    content_type: str = "markdown"
+    workspace_id: str | None = None
+    code_session_id: str | None = None
+    orchestrated_run_id: str | None = None
+    command_id: str | None = None
+    metadata: dict[str, Any] = {}
+
+
+class OrchestratorRunCreate(BaseModel):
+    title: str | None = None
+    goal: str | None = None
+    workspace_id: str | None = None
+    code_session_id: str | None = None
+    metadata: dict[str, Any] = {}
+    create_intake_artifact: bool = True
+
+
+class OrchestratorTransitionRequest(BaseModel):
+    to_state: str
+    reason: str | None = None
+    metadata: dict[str, Any] = {}
+
+
+class PolicyAssessCommandRequest(BaseModel):
+    command: str
+
+
+class RepoKnowledgeBootstrapRequest(BaseModel):
+    project_summary: str | None = None
+
+
+class GitHubSyncBody(BaseModel):
+    installation_id: int | None = None
+    dry_run: bool = False
+    limit: int = 100
+
+
+class GitHubCommentBody(BaseModel):
+    repo_full_name: str
+    issue_number: int | None = None
+    pr_number: int | None = None
+    body: str
+    approval_id: str | None = None
+    installation_id: int | None = None
+
+
+class GitHubPreparePullRequestBody(BaseModel):
+    repo_full_name: str
+    title: str
+    head: str
+    base: str = "main"
+    body: str = ""
+    approval_id: str | None = None
+
+
+class CodeApprovalCreateBody(BaseModel):
+    kind: str
+    risk_class: str
+    title: str
+    description: str | None = None
+    requested_action: str
+    requested_payload: dict[str, Any] = {}
+    resource_type: str | None = None
+    resource_id: str | None = None
+    workspace_id: str | None = None
+    code_session_id: str | None = None
+    orchestrated_run_id: str | None = None
+    artifact_id: str | None = None
+    github_repo_full_name: str | None = None
+    github_issue_number: int | None = None
+    github_pr_number: int | None = None
+    requested_by: str | None = None
+    expires_at: float | None = None
+    metadata: dict[str, Any] = {}
+
+
+class CodeApprovalDecisionBody(BaseModel):
+    actor: str | None = None
+    reason: str | None = None
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -591,6 +685,1227 @@ async def get_status():
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
+    }
+
+
+def _code_limit(value: int, default: int = 50, maximum: int = 200) -> int:
+    try:
+        value = int(value)
+    except Exception:
+        value = default
+    return max(1, min(value, maximum))
+
+
+def _code_offset(value: int) -> int:
+    try:
+        value = int(value)
+    except Exception:
+        value = 0
+    return max(0, value)
+
+
+def _record_code_event(
+    event_type: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    level: str = "info",
+    source: str = "control_plane",
+) -> dict[str, Any]:
+    try:
+        payload_value = payload or {}
+        bus = get_code_event_bus()
+        event = bus.publish(
+            event_type,
+            payload=payload_value,
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=payload_value.get("orchestrated_run_id") or payload_value.get("run_id"),
+            approval_id=payload_value.get("approval_id"),
+            github_repo_full_name=payload_value.get("github_repo_full_name") or payload_value.get("repo_full_name"),
+            metadata={"source": source},
+            source=source,
+            level=level,
+        )
+        return event
+    except Exception:
+        _log.exception("Failed to persist code event %s", event_type)
+    return {"type": event_type, "version": 1, "timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload or {}}
+
+
+@app.get("/api/code/status")
+async def get_code_status():
+    """Read-only Code Mode readiness endpoint.
+
+    This endpoint is public so the CLI can detect whether the dashboard backend
+    is reachable without knowing the dashboard session token.
+    """
+    try:
+        from hermes_state import SCHEMA_VERSION, SessionDB
+
+        db = SessionDB()
+        try:
+            status = db.code_mode_status()
+        finally:
+            db.close()
+        return {
+            "mode": "code_mode",
+            "ready": status.get("mode") == "enabled",
+            "schema_version": status.get("schema_version") or SCHEMA_VERSION,
+            "state": status,
+            "workspace_path": os.getcwd(),
+            "web_url": None,
+        }
+    except Exception as exc:
+        _log.exception("GET /api/code/status failed")
+        return {
+            "mode": "code_mode",
+            "ready": False,
+            "schema_version": None,
+            "state": {"mode": "unavailable", "error": str(exc)},
+            "workspace_path": os.getcwd(),
+            "web_url": None,
+        }
+
+
+@app.get("/api/code/workspaces")
+async def get_code_workspaces(owner: str | None = None, q: str = "", limit: int = 50, offset: int = 0):
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            workspaces = db.list_code_workspaces(
+                owner=owner,
+                q=q or "",
+                limit=_code_limit(limit),
+                offset=_code_offset(offset),
+            )
+            return {"workspaces": workspaces, "limit": _code_limit(limit), "offset": _code_offset(offset)}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/code/workspaces failed")
+        raise HTTPException(status_code=500, detail="Code Mode workspaces unavailable")
+
+
+@app.get("/api/code/sessions")
+async def get_code_sessions(workspace_id: str | None = None, limit: int = 50, offset: int = 0):
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            sessions = db.list_code_sessions(
+                workspace_id=workspace_id,
+                limit=_code_limit(limit),
+                offset=_code_offset(offset),
+            )
+            return {"sessions": sessions, "limit": _code_limit(limit), "offset": _code_offset(offset)}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/code/sessions failed")
+        raise HTTPException(status_code=500, detail="Code Mode sessions unavailable")
+
+
+@app.get("/api/code/events")
+async def get_code_events(
+    type: str | None = None,
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    session_id: str | None = None,
+    orchestrated_run_id: str | None = None,
+    approval_id: str | None = None,
+    github_repo_full_name: str | None = None,
+    since_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    try:
+        bus = get_code_event_bus()
+        filters = build_event_filters_from_query(
+            event_type=type,
+            workspace_id=workspace_id,
+            code_session_id=code_session_id or session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            approval_id=approval_id,
+            github_repo_full_name=github_repo_full_name,
+        )
+        events = bus.fetch_events(
+            filters=filters,
+            since_id=since_id,
+            limit=_code_limit(limit),
+            offset=_code_offset(offset),
+            newest_first=True,
+        )
+        return {"events": events, "limit": _code_limit(limit), "offset": _code_offset(offset)}
+    except Exception:
+        _log.exception("GET /api/code/events failed")
+        raise HTTPException(status_code=500, detail="Code Mode events unavailable")
+
+
+@app.get("/api/code/events/recent")
+async def get_code_events_recent(
+    type: str | None = None,
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    orchestrated_run_id: str | None = None,
+    approval_id: str | None = None,
+    github_repo_full_name: str | None = None,
+    since_id: str | None = None,
+    limit: int = 50,
+):
+    try:
+        bus = get_code_event_bus()
+        filters = build_event_filters_from_query(
+            event_type=type,
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            approval_id=approval_id,
+            github_repo_full_name=github_repo_full_name,
+        )
+        events = bus.fetch_events(
+            filters=filters,
+            since_id=since_id,
+            limit=_code_limit(limit),
+            offset=0,
+            newest_first=True,
+        )
+        return {"events": events, "limit": _code_limit(limit)}
+    except Exception:
+        _log.exception("GET /api/code/events/recent failed")
+        raise HTTPException(status_code=500, detail="Recent Code Mode events unavailable")
+
+
+@app.get("/api/code/events/summary")
+async def get_code_events_summary(
+    type: str | None = None,
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    orchestrated_run_id: str | None = None,
+    approval_id: str | None = None,
+    github_repo_full_name: str | None = None,
+    limit: int = 200,
+):
+    try:
+        bus = get_code_event_bus()
+        filters = build_event_filters_from_query(
+            event_type=type,
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            approval_id=approval_id,
+            github_repo_full_name=github_repo_full_name,
+        )
+        summary = bus.summary(filters=filters, recent_limit=_code_limit(limit, default=200, maximum=2000))
+        return {"summary": summary}
+    except Exception:
+        _log.exception("GET /api/code/events/summary failed")
+        raise HTTPException(status_code=500, detail="Code Mode event summary unavailable")
+
+
+@app.get("/api/code/events/subscriptions")
+async def get_code_event_subscriptions():
+    try:
+        bus = get_code_event_bus()
+        return {"subscriptions": bus.subscription_stats()}
+    except Exception:
+        _log.exception("GET /api/code/events/subscriptions failed")
+        raise HTTPException(status_code=500, detail="Code Mode event subscriptions unavailable")
+
+
+@app.websocket("/api/code/events/ws")
+async def code_events_ws(ws: WebSocket) -> None:
+    token = ws.query_params.get("token", "")
+    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        await ws.close(code=4401)
+        return
+
+    client_host = ws.client.host if ws.client else ""
+    if client_host and client_host not in _LOOPBACK_HOSTS:
+        await ws.close(code=4403)
+        return
+
+    filters = build_event_filters_from_query(
+        event_type=ws.query_params.get("type") or None,
+        workspace_id=ws.query_params.get("workspace_id") or None,
+        code_session_id=ws.query_params.get("code_session_id") or None,
+        orchestrated_run_id=ws.query_params.get("orchestrated_run_id") or None,
+        approval_id=ws.query_params.get("approval_id") or None,
+        github_repo_full_name=ws.query_params.get("github_repo_full_name") or None,
+    )
+    since_id = ws.query_params.get("since_id") or None
+    replay = _parse_bool(ws.query_params.get("replay"), default=bool(since_id))
+    limit = _code_limit(ws.query_params.get("limit", 200), default=200, maximum=2000)
+
+    await ws.accept()
+    bus = get_code_event_bus()
+    if replay or since_id:
+        try:
+            replay_events = bus.replay(filters=filters, since_id=since_id, limit=limit)
+            for item in replay_events:
+                await ws.send_json(item)
+        except Exception:
+            _log.exception("Code event replay failed for websocket subscriber")
+
+    sub_id, sub_queue = bus.subscribe(filters=filters, max_queue_size=512)
+    try:
+        while True:
+            try:
+                event = await asyncio.to_thread(sub_queue.get, True, 20.0)
+                await ws.send_json(event)
+            except queue.Empty:
+                await ws.send_json(
+                    {
+                        "type": "code.events.heartbeat",
+                        "version": 1,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "payload": {},
+                    }
+                )
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        _log.exception("Code events websocket failed")
+    finally:
+        bus.unsubscribe(sub_id)
+
+
+@app.get("/api/code/artifacts")
+async def get_code_artifacts(
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    orchestrated_run_id: str | None = None,
+    artifact_type: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    try:
+        from hermes_cli.code.artifact_ledger import ArtifactLedger
+
+        ledger = ArtifactLedger()
+        artifacts = ledger.list_artifacts(
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            artifact_type=artifact_type,
+            limit=_code_limit(limit, default=100, maximum=500),
+            offset=_code_offset(offset),
+        )
+        return {
+            "artifacts": artifacts,
+            "limit": _code_limit(limit, default=100, maximum=500),
+            "offset": _code_offset(offset),
+        }
+    except Exception:
+        _log.exception("GET /api/code/artifacts failed")
+        raise HTTPException(status_code=500, detail="Code artifacts unavailable")
+
+
+@app.post("/api/code/artifacts")
+async def create_code_artifact(payload: CodeArtifactCreate):
+    try:
+        from hermes_cli.code.artifact_ledger import ArtifactLedger
+
+        ledger = ArtifactLedger()
+        artifact = ledger.create_artifact(
+            payload.artifact_type,
+            payload.content,
+            title=payload.title,
+            content_type=payload.content_type,
+            workspace_id=payload.workspace_id,
+            code_session_id=payload.code_session_id,
+            orchestrated_run_id=payload.orchestrated_run_id,
+            command_id=payload.command_id,
+            metadata=payload.metadata or {},
+        )
+        event = _record_code_event(
+            "artifact.created",
+            payload={"artifact_id": artifact["id"], "artifact_type": artifact["artifact_type"]},
+            workspace_id=artifact.get("workspace_id"),
+            code_session_id=artifact.get("code_session_id"),
+        )
+        return {"ok": True, "artifact": artifact, "event": event}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/artifacts failed")
+        raise HTTPException(status_code=500, detail="Failed to create artifact")
+
+
+@app.get("/api/code/sessions/{code_session_id}/artifacts")
+async def get_code_session_artifacts(code_session_id: str, limit: int = 100, offset: int = 0):
+    try:
+        from hermes_cli.code.artifact_ledger import ArtifactLedger
+
+        ledger = ArtifactLedger()
+        artifacts = ledger.list_session_artifacts(
+            code_session_id=code_session_id,
+            limit=_code_limit(limit, default=100, maximum=500),
+            offset=_code_offset(offset),
+        )
+        return {
+            "code_session_id": code_session_id,
+            "artifacts": artifacts,
+            "limit": _code_limit(limit, default=100, maximum=500),
+            "offset": _code_offset(offset),
+        }
+    except Exception:
+        _log.exception("GET /api/code/sessions/%s/artifacts failed", code_session_id)
+        raise HTTPException(status_code=500, detail="Code session artifacts unavailable")
+
+
+@app.get("/api/code/orchestrator/runs")
+async def get_orchestrator_runs(
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    state: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    try:
+        from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+
+        orchestrator = AgentOrchestrator()
+        runs = orchestrator.list_runs(
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            state=state,
+            limit=_code_limit(limit),
+            offset=_code_offset(offset),
+        )
+        return {"runs": runs, "limit": _code_limit(limit), "offset": _code_offset(offset)}
+    except Exception:
+        _log.exception("GET /api/code/orchestrator/runs failed")
+        raise HTTPException(status_code=500, detail="Orchestrator runs unavailable")
+
+
+@app.post("/api/code/orchestrator/runs")
+async def create_orchestrator_run(payload: OrchestratorRunCreate):
+    try:
+        from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+
+        orchestrator = AgentOrchestrator()
+        run = orchestrator.create_run(
+            title=payload.title,
+            goal=payload.goal,
+            workspace_id=payload.workspace_id,
+            code_session_id=payload.code_session_id,
+            metadata=payload.metadata or {},
+            create_intake_artifact=payload.create_intake_artifact,
+        )
+        event = _record_code_event(
+            "orchestrator.run.created",
+            payload={"run_id": run["id"], "state": run["state"]},
+            workspace_id=run.get("workspace_id"),
+            code_session_id=run.get("code_session_id"),
+        )
+        return {"ok": True, "run": run, "event": event}
+    except Exception:
+        _log.exception("POST /api/code/orchestrator/runs failed")
+        raise HTTPException(status_code=500, detail="Failed to create orchestrator run")
+
+
+@app.get("/api/code/orchestrator/runs/{run_id}")
+async def get_orchestrator_run(run_id: str):
+    try:
+        from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+
+        orchestrator = AgentOrchestrator()
+        run = orchestrator.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+        transitions = orchestrator.list_transitions(run_id)
+        return {"run": run, "transitions": transitions}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/code/orchestrator/runs/%s failed", run_id)
+        raise HTTPException(status_code=500, detail="Orchestrator run unavailable")
+
+
+@app.post("/api/code/orchestrator/runs/{run_id}/transition")
+async def transition_orchestrator_run(run_id: str, payload: OrchestratorTransitionRequest):
+    try:
+        from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+
+        orchestrator = AgentOrchestrator()
+        run = orchestrator.transition_run(
+            run_id,
+            payload.to_state,
+            reason=payload.reason,
+            metadata=payload.metadata or {},
+        )
+        event = _record_code_event(
+            "orchestrator.run.transitioned",
+            payload={
+                "run_id": run_id,
+                "to_state": payload.to_state,
+                "reason": payload.reason,
+            },
+            workspace_id=run.get("workspace_id"),
+            code_session_id=run.get("code_session_id"),
+        )
+        return {"ok": True, "run": run, "event": event}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/orchestrator/runs/%s/transition failed", run_id)
+        raise HTTPException(status_code=500, detail="Failed to transition orchestrator run")
+
+
+@app.post("/api/code/policy/assess-command")
+async def assess_code_command_policy(payload: PolicyAssessCommandRequest):
+    try:
+        from hermes_cli.code.execution_policy import policy_engine
+
+        assessment = policy_engine.assess_command(payload.command)
+        return {"assessment": assessment}
+    except Exception:
+        _log.exception("POST /api/code/policy/assess-command failed")
+        raise HTTPException(status_code=500, detail="Execution policy unavailable")
+
+
+@app.get("/api/code/approvals")
+async def get_code_approvals(
+    status: str | None = None,
+    kind: str | None = None,
+    risk_class: str | None = None,
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    orchestrated_run_id: str | None = None,
+    github_repo_full_name: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        approvals = service.list_requests(
+            status=status,
+            kind=kind,
+            risk_class=risk_class,
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            github_repo_full_name=github_repo_full_name,
+            limit=_code_limit(limit, default=100, maximum=500),
+            offset=_code_offset(offset),
+        )
+        return {
+            "approvals": approvals,
+            "limit": _code_limit(limit, default=100, maximum=500),
+            "offset": _code_offset(offset),
+        }
+    except Exception:
+        _log.exception("GET /api/code/approvals failed")
+        raise HTTPException(status_code=500, detail="Code approvals unavailable")
+
+
+@app.post("/api/code/approvals")
+async def create_code_approval(payload: CodeApprovalCreateBody):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceError, ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        approval = service.create_request(
+            kind=payload.kind,
+            risk_class=payload.risk_class,
+            title=payload.title,
+            description=payload.description,
+            requested_action=payload.requested_action,
+            requested_payload=payload.requested_payload or {},
+            resource_type=payload.resource_type,
+            resource_id=payload.resource_id,
+            workspace_id=payload.workspace_id,
+            code_session_id=payload.code_session_id,
+            orchestrated_run_id=payload.orchestrated_run_id,
+            artifact_id=payload.artifact_id,
+            github_repo_full_name=payload.github_repo_full_name,
+            github_issue_number=payload.github_issue_number,
+            github_pr_number=payload.github_pr_number,
+            requested_by=payload.requested_by,
+            expires_at=payload.expires_at,
+            metadata=payload.metadata or {},
+        )
+        return {"approval": approval}
+    except ApprovalGovernanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/approvals failed")
+        raise HTTPException(status_code=500, detail="Failed to create code approval")
+
+
+@app.get("/api/code/approvals/summary")
+async def get_code_approval_summary(
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    orchestrated_run_id: str | None = None,
+    github_repo_full_name: str | None = None,
+):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        summary = service.summary(
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            github_repo_full_name=github_repo_full_name,
+        )
+        return {"summary": summary}
+    except Exception:
+        _log.exception("GET /api/code/approvals/summary failed")
+        raise HTTPException(status_code=500, detail="Approval summary unavailable")
+
+
+@app.post("/api/code/approvals/expire")
+async def expire_code_approvals(limit: int = 500):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        expired = service.expire_pending(limit=max(1, min(int(limit), 2000)))
+        return {"expired": expired.get("expired", []), "count": int(expired.get("count", 0))}
+    except Exception:
+        _log.exception("POST /api/code/approvals/expire failed")
+        raise HTTPException(status_code=500, detail="Failed to expire approvals")
+
+
+@app.get("/api/code/approvals/{approval_id}")
+async def get_code_approval(approval_id: str):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        approval = service.get_request(approval_id)
+        if not approval:
+            raise HTTPException(status_code=404, detail=f"Approval not found: {approval_id}")
+        return {"approval": approval}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/code/approvals/%s failed", approval_id)
+        raise HTTPException(status_code=500, detail="Code approval unavailable")
+
+
+@app.post("/api/code/approvals/{approval_id}/approve")
+async def approve_code_approval(approval_id: str, payload: CodeApprovalDecisionBody):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceError, ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        approval = service.approve_request(approval_id, approved_by=payload.actor)
+        return {"approval": approval}
+    except ApprovalGovernanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/approvals/%s/approve failed", approval_id)
+        raise HTTPException(status_code=500, detail="Failed to approve request")
+
+
+@app.post("/api/code/approvals/{approval_id}/reject")
+async def reject_code_approval(approval_id: str, payload: CodeApprovalDecisionBody):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceError, ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        approval = service.reject_request(approval_id, rejected_by=payload.actor, reason=payload.reason)
+        return {"approval": approval}
+    except ApprovalGovernanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/approvals/%s/reject failed", approval_id)
+        raise HTTPException(status_code=500, detail="Failed to reject request")
+
+
+@app.post("/api/code/approvals/{approval_id}/cancel")
+async def cancel_code_approval(approval_id: str, payload: CodeApprovalDecisionBody):
+    try:
+        from hermes_cli.code.approval_governance import ApprovalGovernanceError, ApprovalGovernanceService
+
+        service = ApprovalGovernanceService()
+        approval = service.cancel_request(approval_id, cancelled_by=payload.actor, reason=payload.reason)
+        return {"approval": approval}
+    except ApprovalGovernanceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/approvals/%s/cancel failed", approval_id)
+        raise HTTPException(status_code=500, detail="Failed to cancel request")
+
+
+@app.get("/api/code/workspaces/{workspace_id}/git/capabilities")
+async def get_workspace_git_capabilities(workspace_id: str):
+    try:
+        from hermes_cli.code.worktree_service import WorktreeService
+
+        service = WorktreeService()
+        caps = service.detect_capabilities_for_workspace(workspace_id)
+        return {"workspace_id": workspace_id, "capabilities": caps}
+    except Exception:
+        _log.exception("GET /api/code/workspaces/%s/git/capabilities failed", workspace_id)
+        raise HTTPException(status_code=500, detail="Git capability detection unavailable")
+
+
+@app.get("/api/code/workspaces/{workspace_id}/git/worktrees")
+async def get_workspace_git_worktrees(workspace_id: str):
+    try:
+        from hermes_cli.code.worktree_service import WorktreeService
+
+        service = WorktreeService()
+        worktrees = service.list_worktrees_for_workspace(workspace_id)
+        return {"workspace_id": workspace_id, "worktrees": worktrees}
+    except Exception:
+        _log.exception("GET /api/code/workspaces/%s/git/worktrees failed", workspace_id)
+        raise HTTPException(status_code=500, detail="Worktree listing unavailable")
+
+
+@app.get("/api/code/skills/discovered")
+async def get_code_discovered_skills(workspace_id: str | None = None):
+    try:
+        from hermes_cli.code.skill_discovery import SkillDiscoveryService
+        from hermes_state import SessionDB
+
+        workspace_path = None
+        if workspace_id:
+            db = SessionDB()
+            try:
+                workspace = db.get_code_workspace(workspace_id)
+            finally:
+                db.close()
+            if workspace and workspace.get("path"):
+                workspace_path = Path(workspace["path"])
+
+        service = SkillDiscoveryService()
+        skills = service.list_skills(workspace_path=workspace_path)
+        return {"skills": skills, "workspace_id": workspace_id}
+    except Exception:
+        _log.exception("GET /api/code/skills/discovered failed")
+        raise HTTPException(status_code=500, detail="Code skill discovery unavailable")
+
+
+@app.get("/api/code/workspaces/{workspace_id}/repo-knowledge")
+async def get_workspace_repo_knowledge(workspace_id: str):
+    try:
+        from hermes_cli.code.repo_knowledge import RepoKnowledgeService
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            workspace = db.get_code_workspace(workspace_id)
+        finally:
+            db.close()
+        if not workspace or not workspace.get("path"):
+            raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}")
+
+        service = RepoKnowledgeService()
+        root = Path(workspace["path"])
+        manifest = service.detect(root)
+        agents_md = service.read_agents_md(root)
+        return {
+            "workspace_id": workspace_id,
+            "manifest": manifest,
+            "agents_md_excerpt": agents_md,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/code/workspaces/%s/repo-knowledge failed", workspace_id)
+        raise HTTPException(status_code=500, detail="Repo knowledge unavailable")
+
+
+@app.post("/api/code/workspaces/{workspace_id}/repo-knowledge/bootstrap")
+async def bootstrap_workspace_repo_knowledge(workspace_id: str, payload: RepoKnowledgeBootstrapRequest):
+    try:
+        from hermes_cli.code.repo_knowledge import RepoKnowledgeService
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            workspace = db.get_code_workspace(workspace_id)
+        finally:
+            db.close()
+        if not workspace or not workspace.get("path"):
+            raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}")
+
+        service = RepoKnowledgeService()
+        root = Path(workspace["path"])
+        result = service.bootstrap(root, project_summary=payload.project_summary)
+        event = _record_code_event(
+            "repo_knowledge.bootstrap",
+            payload={"workspace_id": workspace_id, "created": bool(result.get("created"))},
+            workspace_id=workspace_id,
+        )
+        return {"ok": True, "result": result, "event": event}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/code/workspaces/%s/repo-knowledge/bootstrap failed", workspace_id)
+        raise HTTPException(status_code=500, detail="Repo knowledge bootstrap unavailable")
+
+
+@app.get("/api/code/github/status")
+async def github_status():
+    from hermes_cli.code.github_integration import GitHubIntegrationService
+
+    try:
+        status = GitHubIntegrationService().status()
+        _record_code_event(
+            "github.integration.configured" if status.get("configured") else "github.error",
+            payload={"status": status},
+            source="github",
+        )
+        return {"status": status}
+    except Exception:
+        _log.exception("GET /api/code/github/status failed")
+        raise HTTPException(status_code=500, detail="GitHub integration unavailable")
+
+
+@app.get("/api/code/github/installations")
+async def github_installations(limit: int = 100):
+    from hermes_cli.code.github_integration import GitHubIntegrationStore
+
+    store = GitHubIntegrationStore()
+    try:
+        items = store.list_installations(limit=_code_limit(limit, default=100, maximum=1000))
+        return {"installations": items, "total": len(items)}
+    finally:
+        store.close()
+
+
+@app.get("/api/code/github/repositories")
+async def github_repositories(
+    owner: str | None = None,
+    q: str | None = None,
+    installation_id: int | None = None,
+    limit: int = 100,
+):
+    from hermes_cli.code.github_integration import GitHubIntegrationStore
+
+    store = GitHubIntegrationStore()
+    try:
+        repos = store.list_repositories(
+            owner=owner,
+            q=q,
+            installation_id=installation_id,
+            limit=_code_limit(limit, default=100, maximum=1000),
+        )
+        return {"repositories": repos, "total": len(repos)}
+    finally:
+        store.close()
+
+
+@app.post("/api/code/github/repositories/sync")
+async def github_repositories_sync(body: GitHubSyncBody):
+    from hermes_cli.code.github_integration import GitHubAPIError
+    from hermes_cli.code.github_sync import GitHubSyncService
+
+    try:
+        result = GitHubSyncService().sync_repositories(
+            installation_id=body.installation_id,
+            dry_run=body.dry_run,
+            limit=_code_limit(body.limit, default=100, maximum=1000),
+        )
+    except GitHubAPIError as exc:
+        _record_code_event("github.error", payload={"error": exc.message}, source="github")
+        raise HTTPException(status_code=400, detail=exc.message)
+    except Exception:
+        _log.exception("POST /api/code/github/repositories/sync failed")
+        raise HTTPException(status_code=500, detail="GitHub repository sync failed")
+
+    _record_code_event("github.repository.synced", payload={"result": result}, source="github")
+    return {"result": result}
+
+
+@app.get("/api/code/github/repositories/{owner}/{repo}")
+async def github_repository(owner: str, repo: str):
+    from hermes_cli.code.github_integration import GitHubIntegrationStore
+
+    store = GitHubIntegrationStore()
+    try:
+        repository = store.get_repository(owner, repo)
+    finally:
+        store.close()
+    if not repository:
+        raise HTTPException(status_code=404, detail="GitHub repository not found")
+    return {"repository": repository}
+
+
+@app.get("/api/code/github/repositories/{owner}/{repo}/issues")
+async def github_repository_issues(owner: str, repo: str, limit: int = 100):
+    from hermes_cli.code.github_integration import GitHubIntegrationStore
+
+    repo_full_name = f"{owner}/{repo}"
+    store = GitHubIntegrationStore()
+    try:
+        issues = store.list_issues(repo_full_name, limit=_code_limit(limit, default=100, maximum=1000))
+    finally:
+        store.close()
+    return {"repo_full_name": repo_full_name, "issues": issues, "total": len(issues)}
+
+
+@app.get("/api/code/github/repositories/{owner}/{repo}/pulls")
+async def github_repository_pulls(owner: str, repo: str, limit: int = 100):
+    from hermes_cli.code.github_integration import GitHubIntegrationStore
+
+    repo_full_name = f"{owner}/{repo}"
+    store = GitHubIntegrationStore()
+    try:
+        pulls = store.list_pull_requests(repo_full_name, limit=_code_limit(limit, default=100, maximum=1000))
+    finally:
+        store.close()
+    return {"repo_full_name": repo_full_name, "pull_requests": pulls, "total": len(pulls)}
+
+
+@app.post("/api/code/github/webhooks")
+async def github_webhook(request: Request):
+    from hermes_cli.code.github_webhooks import GitHubWebhookService, WebhookSignatureError
+
+    event = request.headers.get("X-GitHub-Event", "")
+    delivery_id = request.headers.get("X-GitHub-Delivery", "")
+    signature = request.headers.get("X-Hub-Signature-256")
+    if not event or not delivery_id:
+        raise HTTPException(status_code=400, detail="Missing GitHub webhook headers")
+
+    body = await request.body()
+    try:
+        result = GitHubWebhookService().process(
+            delivery_id=delivery_id,
+            event=event,
+            body=body,
+            signature=signature,
+        )
+        return result
+    except WebhookSignatureError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        _log.error("POST /api/code/github/webhooks failed: %s", GitHubWebhookService.safe_error(exc))
+        raise HTTPException(status_code=500, detail="GitHub webhook processing failed")
+
+
+@app.post("/api/code/github/chatops/{command_id}/run")
+async def github_chatops_run(command_id: str):
+    from hermes_cli.code.github_chatops import GitHubChatOpsService
+
+    try:
+        result = GitHubChatOpsService().run_command(command_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception:
+        _log.exception("POST /api/code/github/chatops/%s/run failed", command_id)
+        raise HTTPException(status_code=500, detail="GitHub ChatOps run failed")
+
+    _record_code_event(
+        "github.chatops.run_created",
+        payload={"command_id": command_id, "run": result.get("run")},
+        workspace_id=(result.get("run") or {}).get("workspace_id"),
+        code_session_id=(result.get("run") or {}).get("code_session_id"),
+        source="github",
+    )
+    return result
+
+
+@app.post("/api/code/github/comments")
+async def github_comments(body: GitHubCommentBody):
+    from hermes_cli.code.approval_governance import (
+        ApprovalGovernanceError,
+        ApprovalGovernanceService,
+        ApprovalKind,
+    )
+    from hermes_cli.code.execution_policy import policy_engine
+    from hermes_cli.code.github_integration import GitHubAPIError, GitHubIntegrationService, redact_github_secrets
+
+    target_number = body.issue_number or body.pr_number
+    if not target_number:
+        raise HTTPException(status_code=400, detail="issue_number or pr_number is required")
+    if not body.body.strip():
+        raise HTTPException(status_code=400, detail="comment body must not be empty")
+
+    assessment = policy_engine.assess_github_write("github.comment.post")
+    service = ApprovalGovernanceService()
+    expected_payload = {
+        "repo_full_name": body.repo_full_name,
+        "issue_number": int(target_number),
+        "body": body.body,
+    }
+    resource_type = "github_issue_or_pr"
+    resource_id = f"{body.repo_full_name}#{int(target_number)}"
+
+    if not body.approval_id:
+        approval = service.create_request(
+            kind=ApprovalKind.GITHUB_COMMENT,
+            risk_class=str(assessment.get("risk_class")),
+            title=f"GitHub comment write: {body.repo_full_name}#{int(target_number)}",
+            description="Posting a GitHub comment requires explicit approval.",
+            requested_action="github.comment.post",
+            requested_payload=expected_payload,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            github_repo_full_name=body.repo_full_name,
+            github_issue_number=int(target_number),
+            metadata={"risk_tags": assessment.get("risk_tags", [])},
+        )
+        _record_code_event(
+            "github.write.approval_required",
+            payload={
+                "approval_id": approval.get("id"),
+                "kind": ApprovalKind.GITHUB_COMMENT,
+                "repo_full_name": body.repo_full_name,
+                "issue_number": int(target_number),
+            },
+            source="github",
+        )
+        return {
+            "requires_approval": True,
+            "approval_id": approval.get("id"),
+            "status": approval.get("status"),
+            "risk_class": approval.get("risk_class"),
+            "message": "GitHub comment write requires approval before execution.",
+            "prepared": {
+                "repo_full_name": body.repo_full_name,
+                "issue_number": int(target_number),
+                "body": redact_github_secrets(body.body),
+            },
+        }
+
+    try:
+        validated = service.validate_for_execution(
+            body.approval_id,
+            expected_kind=ApprovalKind.GITHUB_COMMENT,
+            expected_requested_action="github.comment.post",
+            expected_resource_type=resource_type,
+            expected_resource_id=resource_id,
+            expected_github_repo_full_name=body.repo_full_name,
+            expected_github_issue_number=int(target_number),
+            expected_requested_payload=expected_payload,
+        )
+    except ApprovalGovernanceError as exc:
+        _record_code_event(
+            "github.write.rejected",
+            payload={
+                "approval_id": body.approval_id,
+                "kind": ApprovalKind.GITHUB_COMMENT,
+                "repo_full_name": body.repo_full_name,
+                "issue_number": int(target_number),
+                "error": str(exc),
+            },
+            source="github",
+            level="warning",
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        comment = GitHubIntegrationService().post_issue_comment(
+            repo_full_name=body.repo_full_name,
+            issue_number=int(target_number),
+            body=body.body,
+            installation_id=body.installation_id,
+        )
+        service.mark_executed(
+            body.approval_id,
+            metadata={"github_comment_id": (comment or {}).get("id")},
+        )
+    except GitHubAPIError as exc:
+        try:
+            service.mark_failed(body.approval_id, reason=exc.message)
+        except Exception:
+            pass
+        _record_code_event(
+            "github.write.failed",
+            payload={
+                "approval_id": body.approval_id,
+                "kind": ApprovalKind.GITHUB_COMMENT,
+                "repo_full_name": body.repo_full_name,
+                "issue_number": int(target_number),
+                "error": exc.message,
+            },
+            source="github",
+            level="error",
+        )
+        raise HTTPException(status_code=400, detail=exc.message)
+    except Exception:
+        try:
+            service.mark_failed(body.approval_id, reason="GitHub comment request failed")
+        except Exception:
+            pass
+        _record_code_event(
+            "github.write.failed",
+            payload={
+                "approval_id": body.approval_id,
+                "kind": ApprovalKind.GITHUB_COMMENT,
+                "repo_full_name": body.repo_full_name,
+                "issue_number": int(target_number),
+                "error": "GitHub comment request failed",
+            },
+            source="github",
+            level="error",
+        )
+        _log.exception("POST /api/code/github/comments failed")
+        raise HTTPException(status_code=500, detail="GitHub comment request failed")
+
+    _record_code_event(
+        "github.write.executed",
+        payload={
+            "approval_id": body.approval_id,
+            "kind": ApprovalKind.GITHUB_COMMENT,
+            "repo_full_name": body.repo_full_name,
+            "issue_number": int(target_number),
+        },
+        source="github",
+    )
+    _record_code_event(
+        "github.comment.posted",
+        payload={"repo_full_name": body.repo_full_name, "issue_number": int(target_number)},
+        source="github",
+    )
+    return {
+        "requires_approval": False,
+        "approval_id": body.approval_id,
+        "status": "executed",
+        "approved": True,
+        "approval": validated,
+        "comment": comment,
+    }
+
+
+@app.post("/api/code/github/pull-requests/prepare")
+async def github_pull_request_prepare(body: GitHubPreparePullRequestBody):
+    from hermes_cli.code.approval_governance import (
+        ApprovalGovernanceError,
+        ApprovalGovernanceService,
+        ApprovalKind,
+    )
+    from hermes_cli.code.artifact_ledger import ArtifactLedger
+    from hermes_cli.code.execution_policy import policy_engine
+    from hermes_cli.code.github_integration import GitHubIntegrationService
+
+    assessment = policy_engine.assess_github_write("github.pull_request.prepare")
+    service = ApprovalGovernanceService()
+    expected_payload = {
+        "repo_full_name": body.repo_full_name,
+        "title": body.title,
+        "head": body.head,
+        "base": body.base,
+        "body": body.body,
+    }
+    resource_type = "github_repo"
+    resource_id = body.repo_full_name
+
+    if not body.approval_id:
+        approval = service.create_request(
+            kind=ApprovalKind.GITHUB_PR_PREPARE,
+            risk_class=str(assessment.get("risk_class")),
+            title=f"Prepare GitHub PR metadata: {body.repo_full_name}",
+            description="Preparing/storing PR metadata requires approval.",
+            requested_action="github.pull_request.prepare",
+            requested_payload=expected_payload,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            github_repo_full_name=body.repo_full_name,
+            metadata={"risk_tags": assessment.get("risk_tags", [])},
+        )
+        _record_code_event(
+            "github.write.approval_required",
+            payload={
+                "approval_id": approval.get("id"),
+                "kind": ApprovalKind.GITHUB_PR_PREPARE,
+                "repo_full_name": body.repo_full_name,
+            },
+            source="github",
+        )
+        return {
+            "requires_approval": True,
+            "approval_id": approval.get("id"),
+            "status": approval.get("status"),
+            "risk_class": approval.get("risk_class"),
+            "prepared": {
+                "repo_full_name": body.repo_full_name,
+                "title": body.title,
+                "head": body.head,
+                "base": body.base,
+                "body": body.body,
+                "auto_push": False,
+                "auto_merge": False,
+            },
+        }
+
+    try:
+        validated = service.validate_for_execution(
+            body.approval_id,
+            expected_kind=ApprovalKind.GITHUB_PR_PREPARE,
+            expected_requested_action="github.pull_request.prepare",
+            expected_resource_type=resource_type,
+            expected_resource_id=resource_id,
+            expected_github_repo_full_name=body.repo_full_name,
+            expected_requested_payload=expected_payload,
+        )
+    except ApprovalGovernanceError as exc:
+        _record_code_event(
+            "github.write.rejected",
+            payload={
+                "approval_id": body.approval_id,
+                "kind": ApprovalKind.GITHUB_PR_PREPARE,
+                "repo_full_name": body.repo_full_name,
+                "error": str(exc),
+            },
+            source="github",
+            level="warning",
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        prepared = GitHubIntegrationService().prepare_pull_request(body.model_dump())
+        artifact = ArtifactLedger().create_artifact(
+            "implementation_plan",
+            json.dumps(prepared, indent=2),
+            title=f"Prepared GitHub PR: {body.title}",
+            metadata={"source": "github_pull_request_prepare", "repo_full_name": body.repo_full_name},
+        )
+        service.mark_executed(
+            body.approval_id,
+            metadata={"artifact_id": artifact.get("id"), "prepared_pr_id": prepared.get("id")},
+        )
+    except Exception:
+        try:
+            service.mark_failed(body.approval_id, reason="GitHub pull request prepare failed")
+        except Exception:
+            pass
+        _record_code_event(
+            "github.write.failed",
+            payload={
+                "approval_id": body.approval_id,
+                "kind": ApprovalKind.GITHUB_PR_PREPARE,
+                "repo_full_name": body.repo_full_name,
+                "error": "GitHub pull request prepare failed",
+            },
+            source="github",
+            level="error",
+        )
+        _log.exception("POST /api/code/github/pull-requests/prepare failed")
+        raise HTTPException(status_code=500, detail="GitHub pull request prepare failed")
+
+    _record_code_event(
+        "github.write.executed",
+        payload={
+            "approval_id": body.approval_id,
+            "kind": ApprovalKind.GITHUB_PR_PREPARE,
+            "repo_full_name": body.repo_full_name,
+        },
+        source="github",
+    )
+    return {
+        "requires_approval": False,
+        "approval_id": body.approval_id,
+        "status": "executed",
+        "approval": validated,
+        "prepared": prepared,
+        "artifact": artifact,
     }
 
 

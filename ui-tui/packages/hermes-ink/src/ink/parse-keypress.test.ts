@@ -127,4 +127,10 @@ describe('fragmented SGR mouse recovery', () => {
 
     expect(key).toMatchObject({ kind: 'key', sequence: 'see 1;2;3M for details' })
   })
+
+  it('does not match prefixless fragments inside longer digit runs', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '1234;56;78M9;10;11M')
+
+    expect(key).toMatchObject({ kind: 'key', sequence: '1234;56;78M9;10;11M' })
+  })
 })

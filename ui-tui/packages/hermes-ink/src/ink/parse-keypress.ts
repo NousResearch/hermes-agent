@@ -63,7 +63,7 @@ const XTVERSION_RE = /^\x1bP>\|(.*?)(?:\x07|\x1b\\)$/s
 // Button 32=left-drag (0x20 | motion-bit). Plain 0/1/2 = left/mid/right click.
 // eslint-disable-next-line no-control-regex
 const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/
-const SGR_MOUSE_FRAGMENT_RE = /(?:\[<|<)?(?:[0-9]|[1-9][0-9]|1\d{2}|2[0-4]\d|25[0-5]);\d+;\d+[Mm]/g
+const SGR_MOUSE_FRAGMENT_RE = /(?<!\d)(?:\[<|<)?(?:[0-9]|[1-9][0-9]|1\d{2}|2[0-4]\d|25[0-5]);\d+;\d+[Mm]/g
 
 function createPasteKey(content: string): ParsedKey {
   return {

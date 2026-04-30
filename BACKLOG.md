@@ -51,3 +51,14 @@ Stage 7 calls for a tdd-guard hook in dry-run for the first two sessions, but no
 - LiteLLM integration for unified billing/auth across providers.
 - Quarterly retention review for `audits/` folder growth.
 - Provider-cost dashboard for monthly role spend.
+
+## Stage 8 verification drift (2026-04-29)
+
+Final verification found `41 failed, 17690 passed, 56 skipped, 1 error`, versus the accepted Stage 1 baseline of `36 failed, 17695 passed, 56 skipped`. Treat this as an operator-attention item before relying on the overlay for CC hardening: either accept the new 41-failure baseline explicitly or investigate the five-failure drift.
+
+Additional verification gaps to resolve:
+- `pre-commit` is not installed in the WSL environment.
+- Dashboard backend smoke returned connection refused on port 9119.
+- Runtime skills smoke using `./hermes -c '/skills'` failed; verify the correct Hermes command-mode invocation.
+- `/tmp/precedence-test-result.txt` was missing during final verification after Stage 5 had defaulted to user-global precedence.
+- Model-agnostic grep fails only in vendored `docs/reference/claude-code-system-prompts/`; decide whether to exclude vendored reference docs from that gate.

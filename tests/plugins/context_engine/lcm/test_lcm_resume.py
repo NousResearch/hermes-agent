@@ -446,3 +446,126 @@ class TestHrrAndDamReattachedAfterRebuild:
         outer = LcmContextEngine(lcm_config=config)
         assert hasattr(outer._engine, "hrr_store") and outer._engine.hrr_store is not None
         assert hasattr(outer._engine, "retriever") and outer._engine.retriever is not None
+
+
+# ---------------------------------------------------------------------------
+# Fix 3 — legacy session files must seed _ingested_count from store size
+# ---------------------------------------------------------------------------
+
+class TestLegacySessionIngestedCount:
+    """When a session file has no lcm.original_messages (legacy format), the
+    rebuilt engine's store is populated from active raw messages.  _ingested_count
+    must be seeded from that store size so the next compress() call with the same
+    messages does NOT re-ingest them.
+
+    Without the fix: _ingested_count = 0, so compress() sees len(messages) - 0 = N
+    "new" messages and re-ingests everything, duplicating the store.
+    """
+
+    def _make_legacy_session_data(self, n: int) -> dict:
+        """Build a legacy-format session_data with n raw messages and no
+        lcm.original_messages key (or an empty list for it)."""
+        messages = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(n)
+        ]
+        # Legacy format: lcm block present but no original_messages
+        return {
+            "messages": messages,
+            "lcm": {
+                "summaries": [],
+                # Deliberately omit "original_messages" to simulate a legacy file
+            },
+        }
+
+    def test_ingested_count_seeded_from_store_for_legacy_session(self):
+        """After resuming a legacy session with 50 messages, _ingested_count==50."""
+        import json
+        import pathlib
+        import tempfile
+
+        config = LcmConfig(enabled=True, protect_last_n=2)
+        session_data = self._make_legacy_session_data(50)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_id = "legacy-seed-count"
+            session_file = (
+                pathlib.Path(tmpdir) / "sessions" / f"session_{session_id}.json"
+            )
+            session_file.parent.mkdir(parents=True, exist_ok=True)
+            session_file.write_text(json.dumps(session_data), encoding="utf-8")
+
+            outer = LcmContextEngine(lcm_config=config)
+            outer.on_session_start(session_id, hermes_home=tmpdir)
+
+        assert outer._ingested_count == 50, (
+            f"_ingested_count={outer._ingested_count} but expected 50 for legacy "
+            "session with 50 messages — cursor not seeded from store size"
+        )
+
+    def test_compress_does_not_reingest_after_legacy_resume(self):
+        """After legacy resume, compress(same_50_msgs) must not grow the store."""
+        import json
+        import pathlib
+        import tempfile
+
+        config = LcmConfig(enabled=True, protect_last_n=2)
+        msgs = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(50)
+        ]
+        session_data = self._make_legacy_session_data(50)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_id = "legacy-no-reingest"
+            session_file = (
+                pathlib.Path(tmpdir) / "sessions" / f"session_{session_id}.json"
+            )
+            session_file.parent.mkdir(parents=True, exist_ok=True)
+            session_file.write_text(json.dumps(session_data), encoding="utf-8")
+
+            outer = LcmContextEngine(lcm_config=config)
+            outer.on_session_start(session_id, hermes_home=tmpdir)
+
+        store_size_after_resume = len(outer._engine.store)
+        # Calling compress with the same 50 messages must not add anything
+        outer.compress(msgs)
+        store_size_after_compress = len(outer._engine.store)
+
+        assert store_size_after_compress == store_size_after_resume, (
+            f"Store grew from {store_size_after_resume} to {store_size_after_compress} "
+            "after compress() — legacy session messages were re-ingested"
+        )
+
+    def test_new_messages_after_legacy_resume_are_ingested(self):
+        """After legacy resume with 50 msgs, compress(60 msgs) ingests exactly 10."""
+        import json
+        import pathlib
+        import tempfile
+
+        config = LcmConfig(enabled=True, protect_last_n=2)
+        session_data = self._make_legacy_session_data(50)
+        msgs_60 = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(60)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_id = "legacy-new-msgs"
+            session_file = (
+                pathlib.Path(tmpdir) / "sessions" / f"session_{session_id}.json"
+            )
+            session_file.parent.mkdir(parents=True, exist_ok=True)
+            session_file.write_text(json.dumps(session_data), encoding="utf-8")
+
+            outer = LcmContextEngine(lcm_config=config)
+            outer.on_session_start(session_id, hermes_home=tmpdir)
+
+        store_after_resume = len(outer._engine.store)
+        outer.compress(msgs_60)
+        store_after_compress = len(outer._engine.store)
+
+        assert store_after_compress == store_after_resume + 10, (
+            f"Expected {store_after_resume + 10} store entries after adding 10 new "
+            f"messages, got {store_after_compress}"
+        )

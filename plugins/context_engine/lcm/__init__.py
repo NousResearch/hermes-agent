@@ -274,7 +274,14 @@ class LcmContextEngine(ContextEngine):
                     # shorter than the number of messages that were ingested, causing
                     # compress() to re-ingest already-stored messages on the next call.
                     lcm_meta = session_data.get("lcm") or {}
-                    self._ingested_count = len(lcm_meta.get("original_messages") or [])
+                    original = lcm_meta.get("original_messages")
+                    if original:
+                        self._ingested_count = len(original)
+                    else:
+                        # Legacy session (no original_messages key): rebuild() appended
+                        # each raw active message to the store.  Seed from store size so
+                        # compress() doesn't re-ingest everything that was just restored.
+                        self._ingested_count = len(self._engine.store)
                 elif not is_compression_rollover:
                     # No save file and not a compression rollover — fresh session,
                     # nothing ingested yet.  Compression rollovers keep existing

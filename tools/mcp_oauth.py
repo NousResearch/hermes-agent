@@ -160,8 +160,11 @@ def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     try:
-        tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
-        os.chmod(tmp, 0o600)
+        # Open with 0o600 from the start — write_text uses the default umask
+        # which leaves the file world-readable between write and chmod.
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=2, default=str))
         tmp.rename(path)
     except OSError:
         tmp.unlink(missing_ok=True)

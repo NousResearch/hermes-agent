@@ -157,7 +157,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     # Cron fields: minute hour day month weekday [year]
     parts = schedule.split()
     if len(parts) >= 5 and all(
-        re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
+        re.match(r'^[\d\w\*\-,/]+$', p) for p in parts[:5]
     ):
         if not HAS_CRONITER:
             raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
@@ -881,4 +881,18 @@ def save_job_output(job_id: str, output: str):
             pass
         raise
     
+    _prune_job_output(job_output_dir)
     return output_file
+
+
+_MAX_OUTPUT_FILES_PER_JOB = 100
+
+
+def _prune_job_output(job_output_dir: Path, keep: int = _MAX_OUTPUT_FILES_PER_JOB):
+    """Remove oldest output files, keeping only the most recent *keep*."""
+    try:
+        files = sorted(job_output_dir.glob("*.md"))
+        for stale in files[:-keep] if len(files) > keep else []:
+            stale.unlink(missing_ok=True)
+    except OSError:
+        pass

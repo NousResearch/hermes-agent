@@ -155,6 +155,7 @@ def _build_codex_client():
             api_key=token,
             base_url=_CODEX_BASE_URL,
             default_headers=_codex_cloudflare_headers(token),
+            timeout=300.0,
         )
     except Exception as exc:
         logger.debug("Could not build Codex image client: %s", exc)

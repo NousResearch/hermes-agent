@@ -167,6 +167,12 @@ class OpenAIImageGenProvider(ImageGenProvider):
                     "prompt": "OpenAI API key",
                     "url": "https://platform.openai.com/api-keys",
                 },
+                {
+                    "key": "OPENAI_BASE_URL",
+                    "prompt": "OpenAI-compatible API base URL (optional, for third-party proxies)",
+                    "url": "",
+                    "optional": True,
+                },
             ],
         }
 
@@ -223,7 +229,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         }
 
         try:
-            client = openai.OpenAI()
+            client = openai.OpenAI(timeout=300.0)
             response = client.images.generate(**payload)
         except Exception as exc:
             logger.debug("OpenAI image generation failed", exc_info=True)

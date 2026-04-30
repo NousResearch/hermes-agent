@@ -234,6 +234,90 @@ def test_size_only_direct_print_source_takes_priority_over_accidental_preview(tm
     assert payload["print_request"]["approved_image_sha256"] != accidental_sha
 
 
+
+def test_print_request_inherits_size_from_latest_same_thread_preview_text(tmp_path):
+    runtime = tmp_path / "runtime"
+    db_path = runtime / "image2_jobs.sqlite"
+    store = Image2JobStore(db_path=db_path, runtime_root=runtime)
+    preview = store.enqueue_feishu({
+        "feishu_message_id": "om_design_request",
+        "chat_id": "oc_chat",
+        "root_id": "om_topic",
+        "thread_id": "om_topic",
+        "text": "/image2 做一张火宫殿 T3 海报，尺寸 80×120cm",
+    })
+    preview_dir = Path(str(preview["job_dir"]))
+    approved = preview_dir / "candidates" / "approved.png"
+    approved.parent.mkdir(parents=True, exist_ok=True)
+    approved.write_bytes(b"approved-preview-with-size")
+    approved_sha = hashlib.sha256(approved.read_bytes()).hexdigest()
+    (preview_dir / "worker_result.json").write_text(json.dumps({
+        "delivery_contract": {"status": "ready_to_send", "image_path": str(approved), "image_sha256": approved_sha},
+        "delivery_readback": {"verified": True, "message_id": "om_delivered_preview", "readback_msg_type": "image"},
+        "generation_result": {"link": "https://chatgpt.com/c/size-thread", "title": "Image2 size thread"},
+    }, ensure_ascii=False), encoding="utf-8")
+    store.mark_readback_verified(task_id=str(preview["task_id"]), worker_id="unit")
+    settings = Image2IngressSettings(enabled=True, runtime_root=runtime, db_path=db_path, launch_worker=True)
+
+    ack = handle_image2_feishu_ingress_event(
+        _event("生成印刷稿", message_id="om_print", root_id="om_topic"),
+        settings=settings,
+        launch_func=lambda _settings, *, task_id: {"pid": 123},
+    )
+
+    assert "需要尺寸" not in ack
+    assert "800×1200mm / 150DPI" in ack
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM image2_jobs WHERE feishu_message_id = ?", ("om_print",)).fetchone()
+    assert row is not None
+    payload = json.loads(row["payload_json"])
+    assert payload["print_request"]["approved_task_id"] == preview["task_id"]
+    assert payload["print_request"]["spec"]["width_mm"] == 800
+    assert payload["print_request"]["spec"]["height_mm"] == 1200
+    assert payload["print_request"]["spec"]["target_width_px"] == 4724
+    assert payload["print_request"]["spec"]["target_height_px"] == 7087
+
+
+def test_size_only_followup_can_resolve_preview_by_delivered_image_message_id(tmp_path):
+    runtime = tmp_path / "runtime"
+    db_path = runtime / "image2_jobs.sqlite"
+    store = Image2JobStore(db_path=db_path, runtime_root=runtime)
+    preview = store.enqueue_feishu({
+        "feishu_message_id": "om_design_request",
+        "chat_id": "oc_chat",
+        "root_id": "om_original_topic",
+        "thread_id": "om_original_topic",
+        "text": "/image2 做一张设计图",
+    })
+    preview_dir = Path(str(preview["job_dir"]))
+    approved = preview_dir / "candidates" / "approved.png"
+    approved.parent.mkdir(parents=True, exist_ok=True)
+    approved.write_bytes(b"approved-preview-delivered-message")
+    approved_sha = hashlib.sha256(approved.read_bytes()).hexdigest()
+    (preview_dir / "worker_result.json").write_text(json.dumps({
+        "delivery_contract": {"status": "ready_to_send", "image_path": str(approved), "image_sha256": approved_sha},
+        "delivery_readback": {"verified": True, "message_id": "om_delivered_preview", "readback_msg_type": "image"},
+    }, ensure_ascii=False), encoding="utf-8")
+    store.mark_readback_verified(task_id=str(preview["task_id"]), worker_id="unit")
+    settings = Image2IngressSettings(enabled=True, runtime_root=runtime, db_path=db_path, launch_worker=True)
+
+    ack = handle_image2_feishu_ingress_event(
+        _event("80×120cm", message_id="om_size", root_id="om_delivered_preview"),
+        settings=settings,
+        launch_func=lambda _settings, *, task_id: {"pid": 456},
+    )
+
+    assert "没有找到" not in ack
+    assert "800×1200mm / 150DPI" in ack
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM image2_jobs WHERE feishu_message_id = ?", ("om_size",)).fetchone()
+    assert row is not None
+    payload = json.loads(row["payload_json"])
+    assert payload["print_request"]["approved_task_id"] == preview["task_id"]
+    assert payload["print_request"]["approved_image_path"] == str(approved)
+
 def test_print_request_without_thread_does_not_pick_random_chat_preview(tmp_path):
     runtime = tmp_path / "runtime"
     db_path = runtime / "image2_jobs.sqlite"

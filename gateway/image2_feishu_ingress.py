@@ -1097,9 +1097,91 @@ def find_latest_verified_image2_preview(
             "feishu_image_message_id": str(readback.get("message_id") or ""),
             "chatgpt_url": str(generation.get("link") or generation.get("chatgpt_url") or generation.get("history") or ""),
             "generation_title": str(generation.get("title") or ""),
+            "source_text": str(payload.get("text") or ""),
         }
+    if ids:
+        # When the user replies directly to the delivered preview image in Feishu,
+        # the new message root/thread can be the image message id rather than the
+        # original design request thread id.  In that case, match only by the
+        # exact readback image message id; never fall back to a random chat image.
+        try:
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM image2_jobs WHERE chat_id = ? AND status = ? ORDER BY updated_at DESC, created_at DESC LIMIT 80",
+                    (str(chat_id), "readback_verified"),
+                ).fetchall()
+        except sqlite3.Error:
+            rows = []
+        id_set = set(ids)
+        for row in rows:
+            item = dict(row)
+            try:
+                payload = json.loads(str(item.get("payload_json") or "{}"))
+            except json.JSONDecodeError:
+                payload = {}
+            if isinstance(payload, Mapping) and payload.get("print_request"):
+                continue
+            job_dir = Path(str(item.get("job_dir") or ""))
+            result_path = job_dir / "worker_result.json"
+            if not result_path.is_file():
+                continue
+            try:
+                worker_result = json.loads(result_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            readback = worker_result.get("delivery_readback") or {}
+            if str(readback.get("message_id") or "") not in id_set:
+                continue
+            contract = worker_result.get("delivery_contract") or {}
+            if contract.get("status") != "ready_to_send":
+                continue
+            image_path = Path(str(contract.get("image_path") or ""))
+            image_sha256 = str(contract.get("image_sha256") or "")
+            if not image_path.is_file() or not image_sha256:
+                continue
+            try:
+                if _sha256_local_file(image_path) != image_sha256:
+                    continue
+            except OSError:
+                continue
+            if readback.get("verified") is not True or readback.get("readback_msg_type") != "image":
+                continue
+            generation = worker_result.get("generation_result") or {}
+            if not generation and (job_dir / "generation_result.json").is_file():
+                try:
+                    loaded_generation = json.loads((job_dir / "generation_result.json").read_text(encoding="utf-8"))
+                    generation = loaded_generation if isinstance(loaded_generation, Mapping) else {}
+                except Exception:
+                    generation = {}
+            return {
+                "task_id": str(item.get("task_id") or ""),
+                "job_dir": str(job_dir),
+                "approved_image_path": str(image_path),
+                "approved_image_sha256": image_sha256,
+                "feishu_image_message_id": str(readback.get("message_id") or ""),
+                "chatgpt_url": str(generation.get("link") or generation.get("chatgpt_url") or generation.get("history") or ""),
+                "generation_title": str(generation.get("title") or ""),
+                "source_text": str(payload.get("text") or ""),
+            }
     return None
 
+
+def print_spec_from_approved_preview_context(approved: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Infer print size from the design request that produced an approved preview."""
+    if not approved:
+        return None
+    for key in ("source_text", "text", "generation_title"):
+        value = str(approved.get(key) or "").strip()
+        if not value:
+            continue
+        spec = parse_print_spec(value, allow_size_only=True)
+        if spec.get("status") == "ok":
+            enriched = dict(spec)
+            enriched["inherited_from_task_id"] = str(approved.get("task_id") or "")
+            enriched["inherited_from"] = "approved_preview_context"
+            return enriched
+    return None
 
 def print_approved_from_source_files(source_files: Iterable[Any]) -> Optional[Dict[str, Any]]:
     """Treat a user-provided Feishu image as the already-approved print source.
@@ -1297,11 +1379,17 @@ def handle_image2_feishu_ingress_event(
     chat_id, root_id, thread_id = canonical_image2_thread_identity(event, settings=loaded)
     print_source_payload: Optional[Dict[str, Any]] = None
     size_only_direct_approved: Optional[Dict[str, Any]] = None
+    context_approved: Optional[Dict[str, Any]] = None
     explicit_print_request = should_handle_print_request(raw_text)
     spec = parse_print_spec(raw_text) if explicit_print_request else {"status": "not_print_request"}
 
     if explicit_print_request and spec.get("status") == "need_clarification":
-        return str(spec.get("message") or "要出最终印刷稿，需要先补尺寸。")
+        context_approved = find_latest_verified_image2_preview(loaded, chat_id=chat_id, root_id=root_id, thread_id=thread_id)
+        inherited_spec = print_spec_from_approved_preview_context(context_approved)
+        if inherited_spec:
+            spec = inherited_spec
+        else:
+            return str(spec.get("message") or "要出最终印刷稿，需要先补尺寸。")
 
     if not explicit_print_request:
         size_only_spec = parse_print_spec(raw_text, allow_size_only=True)
@@ -1316,6 +1404,11 @@ def handle_image2_feishu_ingress_event(
             if size_only_direct_approved:
                 spec = size_only_spec
                 explicit_print_request = True
+            else:
+                context_approved = find_latest_verified_image2_preview(loaded, chat_id=chat_id, root_id=root_id, thread_id=thread_id)
+                if context_approved:
+                    spec = size_only_spec
+                    explicit_print_request = True
 
     if explicit_print_request and spec.get("status") == "ok":
         direct_source_files: list[Any] = list((print_source_payload or {}).get("source_files") or [])
@@ -1323,7 +1416,7 @@ def handle_image2_feishu_ingress_event(
         # user is treating that uploaded image as the final design source.  Do
         # not let an accidental preview generated by an earlier explanatory
         # message override the user-provided source.
-        approved = size_only_direct_approved or find_latest_verified_image2_preview(loaded, chat_id=chat_id, root_id=root_id, thread_id=thread_id)
+        approved = size_only_direct_approved or context_approved or find_latest_verified_image2_preview(loaded, chat_id=chat_id, root_id=root_id, thread_id=thread_id)
         if not approved:
             if print_source_payload is None:
                 try:

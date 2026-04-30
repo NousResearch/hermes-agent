@@ -251,7 +251,7 @@ Beyond chat, the adapter can also answer `@`-mentions left on **Feishu/Lark docu
 Powered by the `drive.notice.comment_add_v1` event, the handler:
 
 - Fetches the document content and comment timeline in parallel (20 messages for whole-doc threads, 12 for local-selection threads).
-- Runs the agent with the `feishu_doc` + `feishu_drive` toolsets scoped to that single comment session.
+- Runs the agent with the `feishu_doc` toolset scoped to that single comment session.
 - Chunks replies at 4000 chars and posts them back as threaded replies.
 - Caches per-document sessions for 1 hour with a 50-message cap so follow-up comments on the same doc keep context.
 

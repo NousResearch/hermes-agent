@@ -63,17 +63,6 @@ Scoped to the Feishu document-comment intelligent-reply handler (`gateway/platfo
 |------|-------------|----------------------|
 | `feishu_doc_read` | Read the full text content of a Feishu/Lark document (Docx, Doc, or Sheet) given its file_type and token. | Feishu app credentials |
 
-## `feishu_drive` toolset
-
-Scoped to the Feishu document-comment handler. Drives comment read/write operations on drive files.
-
-| Tool | Description | Requires environment |
-|------|-------------|----------------------|
-| `feishu_drive_add_comment` | Add a top-level comment on a Feishu/Lark document or file. | Feishu app credentials |
-| `feishu_drive_list_comments` | List whole-document comments on a Feishu/Lark file, most recent first. | Feishu app credentials |
-| `feishu_drive_list_comment_replies` | List replies on a specific Feishu comment thread (whole-doc or local-selection). | Feishu app credentials |
-| `feishu_drive_reply_comment` | Post a reply on a Feishu comment thread, with optional `@`-mention. | Feishu app credentials |
-
 ## `file` toolset
 
 | Tool | Description | Requires environment |

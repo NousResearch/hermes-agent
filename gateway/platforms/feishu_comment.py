@@ -14,7 +14,7 @@ Flow:
        Whole -> list whole comments timeline
        Local -> list comment thread replies
   5. Build prompt (local or whole)
-  6. Create AIAgent with feishu_doc + feishu_drive tools -> agent generates reply
+  6. Create AIAgent with feishu_doc tools -> agent generates reply
   7. Route reply:
        Whole -> add_whole_comment
        Local -> reply_to_comment (fallback to add_whole_comment on 1069302)
@@ -867,7 +867,6 @@ def _select_whole_timeline(
 
 _COMMON_INSTRUCTIONS = """
 This is a Feishu document comment thread, not an IM chat.
-Do NOT call feishu_drive_add_comment or feishu_drive_reply_comment yourself.
 Your reply will be posted automatically. Just output the reply text.
 Use the thread timeline above as the main context.
 If the quoted content is not enough, use feishu_doc_read to read nearby context.
@@ -1056,9 +1055,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
 
     logger.info("[Feishu-Comment] _run_comment_agent: injecting lark client into tool thread-locals")
     from tools.feishu_doc_tool import set_client as set_doc_client
-    from tools.feishu_drive_tool import set_client as set_drive_client
     set_doc_client(client)
-    set_drive_client(client)
 
     try:
         model, runtime_kwargs = _resolve_model_and_runtime()
@@ -1082,7 +1079,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
             skip_context_files=True,
             skip_memory=True,
             max_iterations=15,
-            enabled_toolsets=["feishu_doc", "feishu_drive"],
+            enabled_toolsets=["feishu_doc"],
         )
         logger.info("[Feishu-Comment] _run_comment_agent: calling run_conversation (prompt=%d chars, history=%d)",
                     len(prompt), len(history))
@@ -1104,7 +1101,6 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
         return ""
     finally:
         set_doc_client(None)
-        set_drive_client(None)
 
 
 # ---------------------------------------------------------------------------

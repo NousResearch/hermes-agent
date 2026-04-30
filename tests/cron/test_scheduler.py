@@ -764,6 +764,84 @@ class TestRunJobSessionPersistence:
         assert "RuntimeError: boom" in error
         mock_agent.close.assert_called_once()
 
+    def test_run_job_ends_rotated_child_session_after_compression(self, tmp_path):
+        job = {
+            "id": "split-job",
+            "name": "split",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+
+            def _run_and_rotate(_prompt):
+                mock_agent.session_id = "child-session-123"
+                return {"final_response": "ok"}
+
+            mock_agent.run_conversation.side_effect = _run_and_rotate
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        end_calls = fake_db.end_session.call_args_list
+        assert any(call.args == ("child-session-123", "cron_complete") for call in end_calls)
+        assert any(call.args[0].startswith("cron_split-job_") and call.args[1] == "cron_complete" for call in end_calls)
+
+    def test_run_job_ends_original_session_once_without_rotation(self, tmp_path):
+        job = {
+            "id": "plain-job",
+            "name": "plain",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        end_calls = fake_db.end_session.call_args_list
+        assert len(end_calls) == 1
+        assert end_calls[0].args[0].startswith("cron_plain-job_")
+        assert end_calls[0].args[1] == "cron_complete"
+
     def test_run_job_reaps_stale_auxiliary_clients_per_tick(self, tmp_path):
         # Regression: auxiliary clients bound to the cron worker's dead
         # event loop must be reaped each tick. Without this, ``_client_cache``

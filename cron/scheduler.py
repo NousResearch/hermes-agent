@@ -1193,10 +1193,22 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
-            try:
-                _session_db.end_session(_cron_session_id, "cron_complete")
-            except (Exception, KeyboardInterrupt) as e:
-                logger.debug("Job '%s': failed to end session: %s", job_id, e)
+            _session_ids_to_end = []
+            _final_session_id = getattr(agent, "session_id", None) if agent is not None else None
+            if isinstance(_final_session_id, str) and _final_session_id:
+                _session_ids_to_end.append(_final_session_id)
+            else:
+                _session_ids_to_end.append(_cron_session_id)
+            if _cron_session_id not in _session_ids_to_end:
+                _session_ids_to_end.append(_cron_session_id)
+
+            for _sid in _session_ids_to_end:
+                try:
+                    _session_db.end_session(_sid, "cron_complete")
+                except (Exception, KeyboardInterrupt) as e:
+                    logger.debug(
+                        "Job '%s': failed to end session %s: %s", job_id, _sid, e
+                    )
             try:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:

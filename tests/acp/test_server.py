@@ -810,7 +810,13 @@ class TestPrompt:
         assert routed_prompt.endswith("User: analyze this hard problem")
 
     @pytest.mark.asyncio
-    async def test_prompt_force_moa_spar_routes_moa_then_spar(self, agent):
+    async def test_prompt_force_moa_spar_routes_moa_then_spar(self, agent, monkeypatch):
+        # Legacy text-only verification: the agent-hands path is the new
+        # default, but the underlying MoA->Spar wiring must still work
+        # when an operator opts out via HERMES_MOA_TEXT_ONLY=1. This test
+        # locks down that legacy contract; new tests below cover the
+        # default agent-hands path.
+        monkeypatch.setenv("HERMES_MOA_TEXT_ONLY", "1")
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
         state.mode = "force-moa-spar"
@@ -881,6 +887,165 @@ class TestPrompt:
         assert mock_spar.await_args.kwargs["user_prompt"] == routed_prompt
         assert mock_spar.await_args.kwargs["candidate_response"] == "moa draft"
         assert mock_spar.await_args.kwargs["builder_model"] == "xiaomi/mimo-v2.5-pro"
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_moa_spar_runs_agent_first_then_refines(self, agent, monkeypatch):
+        """Default behaviour (no HERMES_MOA_TEXT_ONLY): force-moa-spar must
+        run the standard Hermes agent FIRST so tools execute with real
+        side effects, then pass the agent's draft to MoA references for
+        refinement, then Spar-review the refined output. This is the fix
+        for the user complaint that MoA+Spar was a 'no-hands' mode."""
+        monkeypatch.delenv("HERMES_MOA_TEXT_ONLY", raising=False)
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa-spar"
+
+        # Mock the agent so it returns a 'real' draft as if it had run
+        # tools. The test asserts that this draft becomes the input to
+        # MoA refinement (not the raw user text).
+        agent_draft = "Agent ran SSH and read /etc/os-release. VPS is Ubuntu 24.04."
+        state.agent.run_conversation = MagicMock(
+            return_value={
+                "final_response": agent_draft,
+                "messages": [
+                    {"role": "user", "content": "what OS is the VPS on?"},
+                    {"role": "tool", "content": "uname -a output..."},
+                    {"role": "assistant", "content": agent_draft},
+                ],
+            }
+        )
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(
+                return_value=json.dumps(
+                    {
+                        "success": True,
+                        "response": "Ubuntu 24.04 (verified by SSH).",
+                        "models_used": {
+                            "reference_models": ["xiaomi/mimo-v2.5-pro"],
+                            "aggregator_model": "xiaomi/mimo-v2.5-pro",
+                        },
+                        "failed_models": [],
+                        "failed_model_errors": {},
+                        "reference_previews": {},
+                        "reference_outputs": {},
+                        "per_model_metrics": {
+                            "reference_models": {},
+                            "aggregator": {"model": "xiaomi/mimo-v2.5-pro", "success": True},
+                            "forensic_analysis": {"skipped": True, "success": False},
+                        },
+                        "decision_trace": {},
+                        "aggregator_influence_log": {},
+                    }
+                )
+            ),
+        ) as mock_moa, patch(
+            "tools.spar_tool.spar_tool",
+            AsyncMock(
+                return_value=json.dumps(
+                    {
+                        "approved": True,
+                        "summary": "approved",
+                        "issues": [],
+                        "final_response": "Ubuntu 24.04 (verified by SSH).",
+                        "disagreement": False,
+                        "judge_verdict": {"approved": True, "summary": "judge ok"},
+                    }
+                )
+            ),
+        ) as mock_spar:
+            resp = await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="what OS is the VPS on?")],
+                session_id=new_resp.session_id,
+            )
+
+        assert resp.stop_reason == "end_turn"
+        # 1. The agent MUST have been called (Phase 1: real tool execution).
+        state.agent.run_conversation.assert_called_once()
+        # 2. The MoA prompt is the REFINEMENT prompt — it includes the
+        #    agent's draft and ends with the improvement marker, not a
+        #    raw "User: ..." line.
+        moa_prompt = mock_moa.await_args.kwargs["user_prompt"]
+        assert "REFINEMENT TASK" in moa_prompt
+        assert agent_draft in moa_prompt
+        assert moa_prompt.endswith("=== YOUR IMPROVED VERSION ===")
+        # 3. Spar reviews the MoA-refined output against the same prompt.
+        assert mock_spar.await_args.kwargs["user_prompt"] == moa_prompt
+        assert mock_spar.await_args.kwargs["candidate_response"] == "Ubuntu 24.04 (verified by SSH)."
+        # 4. The final response shown to the user is the refined version.
+        assert state.history[-1]["content"] == "Ubuntu 24.04 (verified by SSH)."
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_moa_spar_falls_back_to_agent_draft_on_refine_failure(
+        self, agent, monkeypatch
+    ):
+        """When the agent succeeded (real tool work was done) but MoA or
+        Spar errored, the user must still see the agent's draft —
+        discarding completed tool work would be far worse than losing
+        the polish layer."""
+        monkeypatch.delenv("HERMES_MOA_TEXT_ONLY", raising=False)
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa-spar"
+
+        agent_draft = "I edited config.yaml and restarted the service. VPS is healthy."
+        state.agent.run_conversation = MagicMock(
+            return_value={
+                "final_response": agent_draft,
+                "messages": [
+                    {"role": "user", "content": "fix the config"},
+                    {"role": "assistant", "content": agent_draft},
+                ],
+            }
+        )
+
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool",
+            AsyncMock(side_effect=RuntimeError("MoA provider down")),
+        ):
+            resp = await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="fix the config")],
+                session_id=new_resp.session_id,
+            )
+
+        assert resp.stop_reason == "end_turn"
+        # User sees the agent's draft, not an error — the actual work happened.
+        assert state.history[-1]["content"] == agent_draft
+
+    @pytest.mark.asyncio
+    async def test_prompt_force_moa_spar_skips_refinement_when_agent_errors(
+        self, agent, monkeypatch
+    ):
+        """If the standard agent itself errors out, return that error
+        directly. Don't try to MoA-refine an error message — that would
+        produce a hallucinated 'success' response on top of a real failure.
+        """
+        monkeypatch.delenv("HERMES_MOA_TEXT_ONLY", raising=False)
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.mode = "force-moa-spar"
+
+        state.agent.run_conversation = MagicMock(
+            return_value={
+                "final_response": "Error: provider rate limited",
+                "messages": [{"role": "user", "content": "do something"}],
+            }
+        )
+
+        moa_mock = AsyncMock()
+        with patch(
+            "tools.mixture_of_agents_tool.mixture_of_agents_tool", moa_mock
+        ):
+            resp = await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="do something")],
+                session_id=new_resp.session_id,
+            )
+
+        assert resp.stop_reason == "end_turn"
+        # MoA must NOT have been called — refining an error message would
+        # produce a misleading 'fixed' response.
+        moa_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_prompt_force_moa_spar_accepts_wrapped_tool_json(self, agent):

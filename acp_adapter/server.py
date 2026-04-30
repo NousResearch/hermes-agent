@@ -111,7 +111,7 @@ _SESSION_MODES = (
     {
         "id": "force-moa-spar",
         "name": "Force MoA + Spar",
-        "description": "Draft with Mixture of Agents, then run the Spar review gate.",
+        "description": "Run the standard agent (with tools), then refine its draft via Mixture of Agents and gate the result with Spar review.",
     },
 )
 
@@ -170,6 +170,28 @@ _ROUTED_MEMORY_FILES: tuple[tuple[str, str], ...] = (
     ("USER.md", "USER PROFILE"),
 )
 _ROUTED_MEMORY_DISABLE_ENV = "HERMES_MOA_NO_MEMORY"
+
+# Agent-hands integration for MoA+Spar (added 2026-04-30).
+# Without this, force-moa-spar bypasses the standard agent entirely and the
+# MoA reference models are pure stateless text completers — they cannot
+# read files, SSH, run commands, or edit code. The user's expectation
+# (correct, given Hermes' positioning) is that MoA+Spar should still BE
+# the agent, just with multi-model thinking and review on top.
+#
+# When enabled (default), force-moa-spar:
+#   Phase 1: runs the standard Hermes agent loop with full tools.
+#   Phase 2: passes the agent's draft to MoA references for refinement.
+#   Phase 3: passes the refined response to Spar review for quality gate.
+#   Returns:  the Spar-approved final response, with the agent's tool
+#             actions and message history preserved (real side effects
+#             happened once in Phase 1, not 3x in parallel).
+#
+# Set HERMES_MOA_TEXT_ONLY=1 to revert to the legacy text-only behaviour.
+_MOA_TEXT_ONLY_ENV = "HERMES_MOA_TEXT_ONLY"
+
+
+def _moa_agent_hands_enabled() -> bool:
+    return os.getenv(_MOA_TEXT_ONLY_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}
 _ROUTED_LOCAL_FILE_MAX_CHARS = 30000
 _ROUTED_LOCAL_FILE_MAX_COUNT = 3
 _ROUTE_FORENSICS_LOG = "route_forensics.jsonl"
@@ -596,6 +618,108 @@ def _build_routed_prompt(
         "Do not ask for context that is already present unless it is still genuinely missing.\n\n"
         f"Recent conversation:\n{transcript}\n\n"
         f"Current user request:\n{current_request}"
+    )
+
+
+# Cap on the agent draft passed into the MoA refinement prompt. If the agent
+# produces a 50KB report, we don't want to inflate every reference call by
+# 50KB × 5 models. Truncation here is a safety net; in practice agent
+# responses are 1-5KB.
+_AGENT_DRAFT_REFINEMENT_MAX_CHARS = 8000
+
+
+def _build_refinement_prompt(
+    user_text: str,
+    agent_draft: str,
+    history: list[dict[str, Any]],
+    max_messages: int = _ROUTED_HISTORY_MAX_MESSAGES,
+    max_chars: int = _ROUTED_HISTORY_MAX_CHARS,
+) -> str:
+    """Build the prompt MoA references see when refining the standard
+    Hermes agent's draft response (the 'agent + MoA + Spar' path).
+
+    The standard agent already ran with full tools and produced a draft.
+    References should NOT re-run anything or invent new facts — they
+    should improve the draft's structure, clarity, and completeness while
+    preserving every factual claim the agent made.
+    """
+    memory_block = _load_routed_memory()
+    memory_section = (
+        f"Persistent memory the user has saved (use these as ground truth):\n"
+        f"{memory_block}\n\n"
+        if memory_block
+        else ""
+    )
+
+    recent_messages: list[tuple[str, str]] = []
+    consumed = 0
+    for message in reversed(history):
+        role = str(message.get("role") or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        label = "User" if role == "user" else "Assistant"
+        entry = f"{label}: {content}"
+        projected = consumed + len(entry) + 2
+        if recent_messages and projected > max_chars:
+            break
+        if projected > max_chars:
+            remaining = max_chars - len(label) - 4
+            if remaining <= 0:
+                break
+            content = f"{content[:remaining].rstrip()}..."
+            entry = f"{label}: {content}"
+        recent_messages.append((label, content))
+        consumed += len(entry) + 2
+        if len(recent_messages) >= max_messages:
+            break
+    recent_messages.reverse()
+
+    transcript = ""
+    if recent_messages:
+        body = "\n\n".join(f"{label}: {content}" for label, content in recent_messages)
+        transcript = f"Recent conversation:\n{body}\n\n"
+
+    draft = agent_draft.strip()
+    if len(draft) > _AGENT_DRAFT_REFINEMENT_MAX_CHARS:
+        draft = (
+            draft[:_AGENT_DRAFT_REFINEMENT_MAX_CHARS].rstrip()
+            + "\n...[draft truncated by Hermes before refinement]"
+        )
+
+    refinement_framing = (
+        "REFINEMENT TASK (read carefully):\n"
+        "1. The Hermes agent has ALREADY run with full tools (filesystem, "
+        "shell, SSH, code edits) and produced the draft response below. "
+        "Tool work is DONE. Files have already been read or modified. "
+        "Commands have already executed. Side effects are committed.\n"
+        "2. Your job is to improve the draft's clarity, structure, and "
+        "completeness as a written answer to the user. You are a polish "
+        "layer, not a re-doer.\n"
+        "3. PRESERVE every factual claim, file path, command output, "
+        "and verdict the agent stated. The agent saw the real results; "
+        "you did not. Do NOT contradict, second-guess, or hedge factual "
+        "claims unless the draft is internally inconsistent.\n"
+        "4. You may: tighten prose, fix structure, remove repetition, "
+        "clarify reasoning, surface key findings earlier, fix obvious "
+        "typos. You may not: invent new findings, claim tools were used "
+        "that the draft doesn't mention, fabricate command output.\n"
+        "5. Do NOT emit `<tool_call>`, `<function=...>`, or any tool "
+        "markup. You have no tools — the agent already did the work.\n"
+        "6. Output your improved version of the draft response in plain "
+        "prose. Do not narrate your editing process; just return the "
+        "improved answer the user should see.\n\n"
+    )
+
+    return (
+        f"{refinement_framing}"
+        f"{memory_section}"
+        f"{transcript}"
+        f"=== USER REQUEST ===\n{user_text}\n\n"
+        f"=== AGENT'S DRAFT RESPONSE (after running tools) ===\n{draft}\n\n"
+        f"=== YOUR IMPROVED VERSION ==="
     )
 
 
@@ -1193,7 +1317,65 @@ class HermesACPAgent(acp.Agent):
                 user_text[:100],
             )
             route_turn_id = _route_turn_id_from_kwargs(kwargs)
-            routed_prompt = _build_routed_prompt(user_text, state.history)
+
+            # Agent-hands path: when the user is on force-moa-spar (the typical
+            # default in Scarf), they expect a real coding agent — not
+            # disembodied text models. Run the standard Hermes agent FIRST so
+            # tools execute exactly once with real side effects, then pass the
+            # agent's draft to MoA+Spar as a refinement layer. Set
+            # HERMES_MOA_TEXT_ONLY=1 to revert to the legacy text-only path.
+            agent_pre_messages: list[dict[str, Any]] | None = None
+            agent_pre_draft: str | None = None
+            use_agent_hands = (
+                prompt_route == "force-moa-spar" and _moa_agent_hands_enabled()
+            )
+            if use_agent_hands:
+                logger.info(
+                    "force-moa-spar: running standard agent first (Phase 1) on session %s",
+                    session_id,
+                )
+                try:
+                    agent_phase_result = await self._run_agent_with_callbacks(
+                        state=state, conn=conn, session_id=session_id, user_text=user_text
+                    )
+                except Exception:
+                    logger.exception(
+                        "Agent pre-execution failed in force-moa-spar session %s; falling back to text-only MoA+Spar",
+                        session_id,
+                    )
+                    agent_phase_result = None
+
+                if agent_phase_result is not None:
+                    candidate_draft = str(
+                        agent_phase_result.get("final_response") or ""
+                    ).strip()
+                    if candidate_draft and not candidate_draft.startswith("Error:"):
+                        agent_pre_draft = candidate_draft
+                        agent_pre_messages = agent_phase_result.get("messages") or list(state.history)
+                    else:
+                        # Agent itself errored — skip refinement and return its result.
+                        # The user needs to see the failure, not a refined hallucination.
+                        result = agent_phase_result
+                        # Persist whatever messages the agent produced so the
+                        # error is part of session history.
+                        if result.get("messages"):
+                            state.history = result["messages"]
+                            self.session_manager.save_session(session_id)
+                        final_response = result.get("final_response", "")
+                        if final_response and conn:
+                            update = acp.update_agent_message_text(final_response)
+                            await conn.session_update(session_id, update)
+                        return PromptResponse(stop_reason="end_turn")
+
+            if agent_pre_draft is not None:
+                routed_prompt = _build_refinement_prompt(
+                    user_text=user_text,
+                    agent_draft=agent_pre_draft,
+                    history=state.history,
+                )
+            else:
+                routed_prompt = _build_routed_prompt(user_text, state.history)
+
             _log_route_forensics(
                 event_type="route_start",
                 session_id=session_id,
@@ -1277,14 +1459,38 @@ class HermesACPAgent(acp.Agent):
                     raw_output=raw_output,
                     final_text=final_text,
                 )
-                result = {
-                    "final_response": final_text,
-                    "messages": [
-                        *state.history,
-                        {"role": "user", "content": user_text},
-                        {"role": "assistant", "content": final_text, "route_turn_id": route_turn_id},
-                    ],
-                }
+                if agent_pre_messages is not None:
+                    # Agent already ran with hands; preserve its tool history
+                    # and only swap the final assistant message for the refined
+                    # version. This way Scarf still sees every tool call the
+                    # agent made (file reads, SSH, edits) — only the final
+                    # natural-language summary is the MoA+Spar refined one.
+                    refined_messages = list(agent_pre_messages)
+                    if refined_messages and refined_messages[-1].get("role") == "assistant":
+                        refined_messages[-1] = {
+                            **refined_messages[-1],
+                            "content": final_text,
+                            "route_turn_id": route_turn_id,
+                        }
+                    else:
+                        refined_messages.append({
+                            "role": "assistant",
+                            "content": final_text,
+                            "route_turn_id": route_turn_id,
+                        })
+                    result = {
+                        "final_response": final_text,
+                        "messages": refined_messages,
+                    }
+                else:
+                    result = {
+                        "final_response": final_text,
+                        "messages": [
+                            *state.history,
+                            {"role": "user", "content": user_text},
+                            {"role": "assistant", "content": final_text, "route_turn_id": route_turn_id},
+                        ],
+                    }
             except Exception as exc:
                 logger.exception("Mode-routed prompt failed in session %s", session_id)
                 error_text = f"Error: {exc}"
@@ -1299,87 +1505,40 @@ class HermesACPAgent(acp.Agent):
                     route_turn_id=route_turn_id,
                     error=exc,
                 )
-                result = {
-                    "final_response": error_text,
-                    "messages": [
-                        *state.history,
-                        {"role": "user", "content": user_text},
-                        {"role": "assistant", "content": error_text, "route_turn_id": route_turn_id},
-                    ],
-                }
+                if agent_pre_messages is not None and agent_pre_draft is not None:
+                    # MoA/Spar refinement crashed but the agent already did
+                    # the actual work. Show the user the agent's draft —
+                    # losing the polish layer is far better than discarding
+                    # tool work that already touched the filesystem/VPS.
+                    fallback_messages = list(agent_pre_messages)
+                    if fallback_messages and fallback_messages[-1].get("role") == "assistant":
+                        # Keep the agent's draft as-is; it's the source of truth.
+                        pass
+                    else:
+                        fallback_messages.append({
+                            "role": "assistant",
+                            "content": agent_pre_draft,
+                            "route_turn_id": route_turn_id,
+                        })
+                    result = {
+                        "final_response": agent_pre_draft,
+                        "messages": fallback_messages,
+                    }
+                else:
+                    result = {
+                        "final_response": error_text,
+                        "messages": [
+                            *state.history,
+                            {"role": "user", "content": user_text},
+                            {"role": "assistant", "content": error_text, "route_turn_id": route_turn_id},
+                        ],
+                    }
         else:
             logger.info("Prompt on session %s: %s", session_id, user_text[:100])
-
-            loop = asyncio.get_running_loop()
-            tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
-            tool_call_meta: dict[str, dict[str, Any]] = {}
-
-            if conn:
-                tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-                thinking_cb = make_thinking_cb(conn, session_id, loop)
-                step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-                message_cb = make_message_cb(conn, session_id, loop)
-                approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
-            else:
-                tool_progress_cb = None
-                thinking_cb = None
-                step_cb = None
-                message_cb = None
-                approval_cb = None
-
-            agent = state.agent
-            agent.tool_progress_callback = tool_progress_cb
-            agent.thinking_callback = thinking_cb
-            agent.step_callback = step_cb
-            agent.message_callback = message_cb
-
-            # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
-            # Set it INSIDE _run_agent so the TLS write happens in the executor
-            # thread — setting it here would write to the event-loop thread's TLS,
-            # not the executor's. Also set HERMES_INTERACTIVE so approval.py
-            # takes the CLI-interactive path (which calls the registered
-            # callback via prompt_dangerous_approval) instead of the
-            # non-interactive auto-approve branch (GHSA-96vc-wcxf-jjff).
-            # ACP's conn.request_permission maps cleanly to the interactive
-            # callback shape — not the gateway-queue HERMES_EXEC_ASK path,
-            # which requires a notify_cb registered in _gateway_notify_cbs.
-            previous_approval_cb = None
-            previous_interactive = None
-
-            def _run_agent() -> dict:
-                nonlocal previous_approval_cb, previous_interactive
-                if approval_cb:
-                    try:
-                        from tools import terminal_tool as _terminal_tool
-                        previous_approval_cb = _terminal_tool._get_approval_callback()
-                        _terminal_tool.set_approval_callback(approval_cb)
-                    except Exception:
-                        logger.debug("Could not set ACP approval callback", exc_info=True)
-                previous_interactive = os.environ.get("HERMES_INTERACTIVE")
-                os.environ["HERMES_INTERACTIVE"] = "1"
-                try:
-                    return agent.run_conversation(
-                        user_message=user_text,
-                        conversation_history=state.history,
-                        task_id=session_id,
-                    )
-                except Exception as exc:
-                    logger.exception("Agent error in session %s", session_id)
-                    return {"final_response": f"Error: {exc}", "messages": state.history}
-                finally:
-                    if previous_interactive is None:
-                        os.environ.pop("HERMES_INTERACTIVE", None)
-                    else:
-                        os.environ["HERMES_INTERACTIVE"] = previous_interactive
-                    if approval_cb:
-                        try:
-                            from tools import terminal_tool as _terminal_tool
-                            _terminal_tool.set_approval_callback(previous_approval_cb)
-                        except Exception:
-                            logger.debug("Could not restore approval callback", exc_info=True)
-
             try:
-                result = await loop.run_in_executor(_executor, _run_agent)
+                result = await self._run_agent_with_callbacks(
+                    state=state, conn=conn, session_id=session_id, user_text=user_text
+                )
             except Exception:
                 logger.exception("Executor error for session %s", session_id)
                 return PromptResponse(stop_reason="end_turn")
@@ -1419,6 +1578,90 @@ class HermesACPAgent(acp.Agent):
 
         stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
         return PromptResponse(stop_reason=stop_reason, usage=usage)
+
+    async def _run_agent_with_callbacks(
+        self,
+        *,
+        state: SessionState,
+        conn: acp.Client | None,
+        session_id: str,
+        user_text: str,
+    ) -> dict[str, Any]:
+        """Run the standard Hermes agent loop with full tool access and stream
+        progress back to the editor. Used by both `standard` mode and the
+        Phase 1 of `force-moa-spar` (agent-then-refine) — extracting it lets
+        both paths share one source of truth for callback wiring, approval
+        thread-locals, and the HERMES_INTERACTIVE env handling.
+        """
+        loop = asyncio.get_running_loop()
+        tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
+        tool_call_meta: dict[str, dict[str, Any]] = {}
+
+        if conn:
+            tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+            thinking_cb = make_thinking_cb(conn, session_id, loop)
+            step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+            message_cb = make_message_cb(conn, session_id, loop)
+            approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
+        else:
+            tool_progress_cb = None
+            thinking_cb = None
+            step_cb = None
+            message_cb = None
+            approval_cb = None
+
+        agent = state.agent
+        agent.tool_progress_callback = tool_progress_cb
+        agent.thinking_callback = thinking_cb
+        agent.step_callback = step_cb
+        agent.message_callback = message_cb
+
+        # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
+        # Set it INSIDE _run_agent so the TLS write happens in the executor
+        # thread — setting it here would write to the event-loop thread's TLS,
+        # not the executor's. Also set HERMES_INTERACTIVE so approval.py
+        # takes the CLI-interactive path (which calls the registered
+        # callback via prompt_dangerous_approval) instead of the
+        # non-interactive auto-approve branch (GHSA-96vc-wcxf-jjff).
+        # ACP's conn.request_permission maps cleanly to the interactive
+        # callback shape — not the gateway-queue HERMES_EXEC_ASK path,
+        # which requires a notify_cb registered in _gateway_notify_cbs.
+        previous_approval_cb = None
+        previous_interactive = None
+
+        def _run_agent() -> dict:
+            nonlocal previous_approval_cb, previous_interactive
+            if approval_cb:
+                try:
+                    from tools import terminal_tool as _terminal_tool
+                    previous_approval_cb = _terminal_tool._get_approval_callback()
+                    _terminal_tool.set_approval_callback(approval_cb)
+                except Exception:
+                    logger.debug("Could not set ACP approval callback", exc_info=True)
+            previous_interactive = os.environ.get("HERMES_INTERACTIVE")
+            os.environ["HERMES_INTERACTIVE"] = "1"
+            try:
+                return agent.run_conversation(
+                    user_message=user_text,
+                    conversation_history=state.history,
+                    task_id=session_id,
+                )
+            except Exception as exc:
+                logger.exception("Agent error in session %s", session_id)
+                return {"final_response": f"Error: {exc}", "messages": state.history}
+            finally:
+                if previous_interactive is None:
+                    os.environ.pop("HERMES_INTERACTIVE", None)
+                else:
+                    os.environ["HERMES_INTERACTIVE"] = previous_interactive
+                if approval_cb:
+                    try:
+                        from tools import terminal_tool as _terminal_tool
+                        _terminal_tool.set_approval_callback(previous_approval_cb)
+                    except Exception:
+                        logger.debug("Could not restore approval callback", exc_info=True)
+
+        return await loop.run_in_executor(_executor, _run_agent)
 
     # ---- Slash commands (headless) -------------------------------------------
 

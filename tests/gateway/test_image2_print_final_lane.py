@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from gateway.image2_feishu_ingress import Image2IngressSettings, handle_image2_feishu_ingress_event
 from gateway.image2_feishu_delivery import FeishuDeliveryError, FeishuImageClient
 from gateway.image2_print import parse_print_spec, should_handle_print_request
-from gateway.image2_print_reconstruction import reconstruct_print_source_with_chatgpt
+from gateway.image2_print_reconstruction import build_print_reconstruction_prompt, reconstruct_print_source_with_chatgpt
 from gateway.image2_store import Image2JobStore
 from gateway.image2_worker import run_worker
 
@@ -526,6 +526,18 @@ def test_worker_print_lane_fails_closed_when_chatgpt_reconstruction_rejects_sour
     assert result["status"] == "failed_final"
     assert result["reason"] == "print_reconstruction_failed"
     assert "source_sha_match" in result["last_error"]
+
+
+def test_print_reconstruction_prompt_names_exact_target_pixels_for_physical_dpi():
+    prompt = build_print_reconstruction_prompt(
+        print_request={"spec": {"width_mm": 800, "height_mm": 1200, "dpi": 200, "target_width_px": 6299, "target_height_px": 9449}},
+        prompt_text="主视觉对象：夏日鲜果冰柠系列",
+    )
+
+    assert "800×1200mm" in prompt
+    assert "200DPI" in prompt
+    assert "目标像素尺寸：6299×9449px" in prompt
+    assert "如果平台无法直接输出该像素尺寸" in prompt
 
 
 def test_reconstruct_print_source_retries_without_file_when_upload_route_is_blocked(tmp_path):

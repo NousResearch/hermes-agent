@@ -65,6 +65,8 @@ def build_print_reconstruction_prompt(*, print_request: Mapping[str, Any], promp
     width = spec.get("width_mm") or spec.get("width_cm") or ""
     height = spec.get("height_mm") or spec.get("height_cm") or ""
     dpi = spec.get("dpi") or ""
+    target_width = spec.get("target_width_px") or ""
+    target_height = spec.get("target_height_px") or ""
     size_line = ""
     if width and height:
         size_line = f"目标印刷规格：{width}×{height}mm"
@@ -72,6 +74,9 @@ def build_print_reconstruction_prompt(*, print_request: Mapping[str, Any], promp
             size_line += f"，{dpi}DPI。"
     elif dpi:
         size_line = f"目标印刷规格：{dpi}DPI。"
+    pixel_line = ""
+    if target_width and target_height:
+        pixel_line = f"目标像素尺寸：{target_width}×{target_height}px。请尽量直接输出接近或达到该像素尺寸的完整竖版成图；如果平台无法直接输出该像素尺寸，也要生成可作为后续精确缩放到该尺寸的最高质量源图。"
     original = str(prompt_text or "").strip()
     excerpt = original[:700]
     return "\n".join(
@@ -79,6 +84,7 @@ def build_print_reconstruction_prompt(*, print_request: Mapping[str, Any], promp
         for line in [
             "请基于已确认的海报预览做高分辨率重建/AI超分，不要重新创作新方案。",
             size_line,
+            pixel_line,
             "必须严格保持原构图、主体数量、产品位置、标题层级、价格/文字含义、色调和留白；只提升清晰度、边缘质感、材质细节与印刷观感。",
             "不得添加或改写 Logo、二维码、品牌字样、价格、菜名/饮品名；看不清的小字宁可保持原样，不要编造。",
             "输出一张完整竖版成图，作为后续 PDF/PNG/PSD 印刷打包的源图。",

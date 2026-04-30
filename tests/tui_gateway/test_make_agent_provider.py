@@ -8,7 +8,7 @@ provider/base_url/api_key empty in AIAgent, causing HTTP 404.
 from unittest.mock import MagicMock, patch
 
 
-def test_make_agent_passes_resolved_provider():
+def test_make_agent_passes_resolved_provider(monkeypatch):
     """_make_agent forwards provider/base_url/api_key/api_mode from
     resolve_runtime_provider to AIAgent."""
 
@@ -26,6 +26,14 @@ def test_make_agent_passes_resolved_provider():
         "model": {"default": "claude-opus-4-6", "provider": "anthropic"},
         "agent": {"system_prompt": "test"},
     }
+
+    for key in (
+        "HERMES_MODEL",
+        "HERMES_INFERENCE_MODEL",
+        "HERMES_TUI_PROVIDER",
+        "HERMES_INFERENCE_PROVIDER",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
     with (
         patch("tui_gateway.server._load_cfg", return_value=fake_cfg),

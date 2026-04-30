@@ -96,12 +96,17 @@ MESSAGE_DEDUP_TTL_SECONDS = 300
 def _is_stale_session_ret(
     ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]",
 ) -> bool:
-    """True when iLink returns ret=-2 / errcode=-2 with 'unknown error',
-    which is a stale-session signal (same as errcode=-14) rather than
-    a genuine rate limit."""
+    """True when iLink ret=-2/errcode=-2 likely means a stale session.
+
+    iLink has been observed to return the same -2 code for both genuine rate
+    limits and stale context tokens.  Populated rate-limit messages should stay
+    on the backoff path, while ``"unknown error"`` and empty/None messages are
+    stale-session signals that should trigger the tokenless retry path.
+    """
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
-    return (errmsg or "").lower() == "unknown error"
+    message = (errmsg or "").strip().lower()
+    return message in {"", "unknown error"}
 
 
 MEDIA_IMAGE = 1

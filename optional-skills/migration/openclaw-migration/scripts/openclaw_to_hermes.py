@@ -91,6 +91,10 @@ MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
         "label": "WhatsApp settings",
         "description": "Import WhatsApp allowlist into Hermes .env.",
     },
+    "whatsapp-config": {
+        "label": "WhatsApp configuration",
+        "description": "Import WhatsApp channel policy and reaction settings into Hermes config.yaml.",
+    },
     "signal-settings": {
         "label": "Signal settings",
         "description": "Import Signal account, HTTP URL, and allowlist into Hermes .env.",
@@ -197,6 +201,7 @@ MIGRATION_PRESETS: Dict[str, set[str]] = {
         "discord-settings",
         "slack-settings",
         "whatsapp-settings",
+        "whatsapp-config",
         "signal-settings",
         "model-config",
         "tts-config",
@@ -797,6 +802,7 @@ class Migrator:
         "session-config",
         "full-providers",
         "deep-channels",
+        "whatsapp-config",
         "browser-config",
         "tools-config",
         "approvals-config",
@@ -917,6 +923,7 @@ class Migrator:
         self.run_if_selected("discord-settings", lambda: self.migrate_discord_settings(config))
         self.run_if_selected("slack-settings", lambda: self.migrate_slack_settings(config))
         self.run_if_selected("whatsapp-settings", lambda: self.migrate_whatsapp_settings(config))
+        self.run_if_selected("whatsapp-config", lambda: self.migrate_whatsapp_config(config))
         self.run_if_selected("signal-settings", lambda: self.migrate_signal_settings(config))
         self.run_if_selected("provider-keys", lambda: self.handle_provider_keys(config))
         self.run_if_selected("model-config", lambda: self.migrate_model_config(config))
@@ -1474,6 +1481,55 @@ class Migrator:
             self.merge_env_values(additions, "whatsapp-settings", self.source_root / "openclaw.json")
         else:
             self.record("whatsapp-settings", self.source_root / "openclaw.json", self.target_root / ".env", "skipped", "No WhatsApp settings found")
+
+    def migrate_whatsapp_config(self, config: Optional[Dict[str, Any]] = None) -> None:
+        config = config or self.load_openclaw_config()
+        whatsapp = config.get("channels", {}).get("whatsapp", {})
+        destination = self.target_root / "config.yaml"
+        if not isinstance(whatsapp, dict) or not whatsapp:
+            self.record("whatsapp-config", self.source_root / "openclaw.json", destination, "skipped", "No WhatsApp channel config found")
+            return
+        if yaml is None:
+            self.record("whatsapp-config", self.source_root / "openclaw.json", destination, "error", "PyYAML is not available")
+            return
+
+        incoming = {
+            hermes_key: value
+            for openclaw_key, hermes_key in {
+                "enabled": "enabled",
+                "dmPolicy": "dm_policy",
+                "groupPolicy": "group_policy",
+                "sendReadReceipts": "send_read_receipts",
+                "ackReaction": "ack_reaction",
+                "requireMention": "require_mention",
+                "mentionPatterns": "mention_patterns",
+            }.items()
+            if (value := self._get_channel_field(whatsapp, openclaw_key)) is not None
+        }
+        if not incoming:
+            self.record("whatsapp-config", self.source_root / "openclaw.json", destination, "skipped", "No Hermes-compatible WhatsApp config found")
+            return
+
+        hermes_config = load_yaml_file(destination)
+        current = hermes_config.get("whatsapp") if isinstance(hermes_config.get("whatsapp"), dict) else {}
+        conflicts = [key for key, value in incoming.items() if key in current and current[key] != value]
+        if conflicts and not self.overwrite:
+            self.record("whatsapp-config", self.source_root / "openclaw.json", destination, "conflict",
+                        "WhatsApp config already has different values", conflicting_keys=conflicts)
+            return
+        if all(current.get(key) == value for key, value in incoming.items()):
+            self.record("whatsapp-config", self.source_root / "openclaw.json", destination, "skipped", "WhatsApp config already present")
+            return
+        if self.execute:
+            backup_path = self.maybe_backup(destination)
+            current.update(incoming)
+            hermes_config["whatsapp"] = current
+            dump_yaml_file(destination, hermes_config)
+            self.record("whatsapp-config", self.source_root / "openclaw.json", destination, "migrated",
+                        backup=str(backup_path) if backup_path else "", added_keys=sorted(incoming.keys()))
+        else:
+            self.record("whatsapp-config", self.source_root / "openclaw.json", destination, "migrated",
+                        "Would merge WhatsApp config", added_keys=sorted(incoming.keys()))
 
     def migrate_signal_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
@@ -2507,9 +2563,16 @@ class Migrator:
 
             # For non-well-known providers, create custom_providers entry
             if prov_name.lower() not in WELL_KNOWN and prov_cfg.get("baseUrl"):
-                # Check if already exists
-                existing_names = {p.get("name", "").lower() for p in custom_providers}
-                if prov_name.lower() in existing_names and not self.overwrite:
+                existing_index = next(
+                    (
+                        idx
+                        for idx, provider in enumerate(custom_providers)
+                        if isinstance(provider, dict)
+                        and str(provider.get("name", "")).lower() == prov_name.lower()
+                    ),
+                    None,
+                )
+                if existing_index is not None and not self.overwrite:
                     self.record("full-providers", f"models.providers.{prov_name}",
                                 "config.yaml custom_providers", "conflict",
                                 f"Provider '{prov_name}' already exists")
@@ -2531,7 +2594,10 @@ class Migrator:
                     "api_key": "",  # referenced from .env
                     "api_mode": api_mode_map.get(api_type, "chat_completions"),
                 }
-                custom_providers.append(entry)
+                if existing_index is None:
+                    custom_providers.append(entry)
+                else:
+                    custom_providers[existing_index] = entry
                 added += 1
                 self.record("full-providers", f"models.providers.{prov_name}",
                             f"config.yaml custom_providers[{prov_name}]", "migrated")

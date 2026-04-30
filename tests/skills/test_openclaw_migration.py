@@ -185,6 +185,49 @@ def test_migrator_optionally_imports_supported_secrets_and_messaging_settings(tm
     assert "TELEGRAM_BOT_TOKEN=123:abc" in env_text
 
 
+def test_migrator_ports_whatsapp_channel_config(tmp_path: Path):
+    mod = load_module()
+    source, target = tmp_path / ".openclaw", tmp_path / ".hermes"
+    source.mkdir(); target.mkdir()
+    (target / "config.yaml").write_text("{}\n", encoding="utf-8")
+    ack = {"emoji": "👀", "direct": True, "group": "mentions"}
+    (source / "openclaw.json").write_text(json.dumps({"channels": {"whatsapp": {
+        "enabled": True, "dmPolicy": "open", "allowFrom": ["*"],
+        "groupPolicy": "open", "sendReadReceipts": True, "ackReaction": ack,
+    }}}), encoding="utf-8")
+
+    report = mod.Migrator(source, target, True, None, False, True,
+                          target / "migration-report", {"whatsapp-config"}).migrate()
+
+    assert mod.load_yaml_file(target / "config.yaml")["whatsapp"] == {
+        "enabled": True, "dm_policy": "open", "group_policy": "open",
+        "send_read_receipts": True, "ack_reaction": ack,
+    }
+    assert any(item["kind"] == "whatsapp-config" and item["status"] == "migrated" for item in report["items"])
+
+
+def test_full_providers_overwrite_upserts_existing_custom_provider(tmp_path: Path):
+    mod = load_module()
+    source, target = tmp_path / ".openclaw", tmp_path / ".hermes"
+    source.mkdir(); target.mkdir()
+    (target / "config.yaml").write_text(
+        "custom_providers:\n  - name: claude-max\n    base_url: https://old.example/v1\n    api_mode: chat_completions\n    api_key: ''\n",
+        encoding="utf-8",
+    )
+    (source / "openclaw.json").write_text(json.dumps({"models": {"providers": {
+        "claude-max": {"baseUrl": "https://api.anthropic.com/v1", "api": "anthropic-messages"}
+    }}}), encoding="utf-8")
+
+    mod.Migrator(source, target, True, None, True, False,
+                 target / "migration-report", {"full-providers"}).migrate()
+
+    matching = [p for p in mod.load_yaml_file(target / "config.yaml")["custom_providers"] if p["name"] == "claude-max"]
+    assert matching == [{
+        "name": "claude-max", "base_url": "https://api.anthropic.com/v1",
+        "api_key": "", "api_mode": "anthropic_messages",
+    }]
+
+
 def test_messaging_cwd_skipped_when_inside_source(tmp_path: Path):
     """MESSAGING_CWD pointing inside the OpenClaw source dir should be skipped."""
     mod = load_module()

@@ -1150,6 +1150,21 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"agent.run_conversation returned {type(result).__name__} instead of dict: {result!r}"
             )
 
+        # If the agent itself reported failure (e.g. all retries exhausted on
+        # API errors, model abort, mid-run interrupt), do not silently mark the
+        # job as successful. run_agent populates `failed=True`/`completed=False`
+        # on these paths and may put the error into `final_response`, which
+        # would otherwise be delivered as if it were the agent's reply and the
+        # job's `last_status` set to "ok". Raise so the except handler below
+        # builds the proper failure tuple. (issue #17855)
+        if result.get("failed") is True or result.get("completed") is False:
+            _err_text = (
+                result.get("error")
+                or (result.get("final_response") or "").strip()
+                or "agent reported failure"
+            )
+            raise RuntimeError(_err_text)
+
         final_response = result.get("final_response", "") or ""
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":

@@ -58,6 +58,7 @@ AUTHOR_MAP = {
     "nbot@liizfq.top": "liizfq",
     "274096618+hermes-agent-dhabibi@users.noreply.github.com": "dhabibi",
     "dejie.guo@gmail.com": "JayGwod",
+    "maxence@groine.fr": "MaxyMoos",
     # OpenViking viking_read salvage (April 2026)
     "hitesh@gmail.com": "htsh",
     "pty819@outlook.com": "pty819",

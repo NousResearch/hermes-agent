@@ -116,8 +116,9 @@ _DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
     "plugins", "memories", "knowledge", "preferences",
 })
 
-# Names that cannot be used as profile aliases
-_RESERVED_NAMES = frozenset({"hermes", "default", "test", "tmp", "root", "sudo"})
+# Names that cannot be used as profile aliases or as new-profile names.
+# "main" would collide with the default profile's agent:main session namespace.
+_RESERVED_NAMES = frozenset({"hermes", "default", "main", "test", "tmp", "root", "sudo"})
 
 # Hermes subcommands that cannot be used as profile names/aliases
 _HERMES_SUBCOMMANDS = frozenset({
@@ -818,8 +819,11 @@ def create_profile(
             "(cloning explicitly copies skills from the source profile)."
         )
     canon = _canon_valid(name)
-    if canon == "default":
-        raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
+    if canon in _RESERVED_NAMES:
+        raise ValueError(
+            f"Cannot create a profile named {canon!r} — it is reserved. "
+            f"Reserved names: {', '.join(sorted(_RESERVED_NAMES))}."
+        )
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists() and named_profile_is_deleted(profile_dir):
         # Empty shells left by post-delete mkdir may be replaced. Identity files mean the

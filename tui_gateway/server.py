@@ -1806,6 +1806,21 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         load_permanent_allowlist()
     except Exception:
         pass
+    # Surface the self-improvement background review's "💾 …" summary as a
+    # review.summary event so Ink can render it as a persistent system line
+    # in the transcript. In the CLI path this message is printed via
+    # prompt_toolkit; the TUI has no equivalent print surface, so without
+    # this callback the review would write the skill/memory change silently.
+    try:
+        agent.background_review_callback = (
+            lambda message, _sid=sid: _emit(
+                "review.summary", _sid, {"text": str(message)}
+            )
+        )
+    except Exception:
+        # Bare AIAgents that don't expose the attribute (unlikely, but keep
+        # session startup resilient).
+        pass
     _wire_callbacks(sid)
     _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent))

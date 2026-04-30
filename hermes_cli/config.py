@@ -2617,6 +2617,38 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_provider_model_context_length(
+    provider: str,
+    model: str,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Look up ``providers.<provider>.models.<model>.context_length``."""
+    if not provider or not model:
+        return None
+    if config is None:
+        config = load_config()
+    providers = config.get("providers")
+    if not isinstance(providers, dict):
+        return None
+    entry = providers.get(provider)
+    if not isinstance(entry, dict):
+        return None
+    models = entry.get("models")
+    if not isinstance(models, dict):
+        return None
+    model_cfg = models.get(model)
+    if not isinstance(model_cfg, dict):
+        return None
+    raw_ctx = model_cfg.get("context_length")
+    if raw_ctx is None:
+        return None
+    try:
+        ctx = int(raw_ctx)
+    except (TypeError, ValueError):
+        return None
+    return ctx if ctx > 0 else None
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.

@@ -19,6 +19,19 @@ class DummyResponse:
         return self._payload
 
 
+def test_native_gemini_base_url_accepts_v1beta_proxy():
+    """Sub2API-style Gemini native-compatible proxies expose ``/v1beta``
+    without using Google's hostname.
+    """
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+
+    assert is_native_gemini_base_url("http://127.0.0.1:8080/v1beta")
+    assert is_native_gemini_base_url("https://generativelanguage.googleapis.com/v1beta")
+    assert not is_native_gemini_base_url(
+        "https://generativelanguage.googleapis.com/v1beta/openai"
+    )
+
+
 def test_build_native_request_preserves_thought_signature_on_tool_replay():
     from agent.gemini_native_adapter import build_gemini_request
 

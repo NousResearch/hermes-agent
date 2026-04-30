@@ -5,7 +5,13 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider, resolve_api_key_provider_credentials
-from hermes_cli.models import _PROVIDER_MODELS, _PROVIDER_LABELS, _PROVIDER_ALIASES, normalize_provider
+from hermes_cli.models import (
+    _PROVIDER_MODELS,
+    _PROVIDER_LABELS,
+    _PROVIDER_ALIASES,
+    normalize_provider,
+    provider_model_ids,
+)
 from hermes_cli.model_normalize import normalize_model_for_provider, detect_vendor
 from agent.model_metadata import get_model_context_length
 from agent.models_dev import PROVIDER_TO_MODELS_DEV, list_agentic_models, _NOISE_PATTERNS
@@ -135,6 +141,24 @@ class TestGeminiModelCatalog:
     def test_provider_label(self):
         assert "gemini" in _PROVIDER_LABELS
         assert _PROVIDER_LABELS["gemini"] == "Google AI Studio"
+
+    def test_provider_model_ids_prefers_live_v1beta_endpoint(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "proxy-key")
+        monkeypatch.setenv("GEMINI_BASE_URL", "http://127.0.0.1:8080/v1beta")
+
+        calls = []
+
+        def fake_fetch_api_models(api_key, base_url):
+            calls.append((api_key, base_url))
+            return ["gemini-3-flash-preview", "gemini-3-pro-preview"]
+
+        monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+        assert provider_model_ids("gemini") == [
+            "gemini-3-flash-preview",
+            "gemini-3-pro-preview",
+        ]
+        assert calls == [("proxy-key", "http://127.0.0.1:8080/v1beta")]
 
 
 # ── Model Normalization ──

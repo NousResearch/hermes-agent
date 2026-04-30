@@ -285,6 +285,32 @@ class TestFetchApiModels:
         assert probe["resolved_base_url"] == "http://localhost:8000/v1"
         assert probe["used_fallback"] is True
 
+    def test_probe_api_models_reads_gemini_native_v1beta_models(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"models": ['
+                    b'{"name": "models/gemini-3-flash-preview"},'
+                    b'{"name": "gemini-3-pro-preview"}'
+                    b"]}"
+                )
+
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()) as mock_urlopen:
+            probe = probe_api_models("proxy-key", "http://127.0.0.1:8080/v1beta")
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "http://127.0.0.1:8080/v1beta/models"
+        assert req.get_header("X-goog-api-key") == "proxy-key"
+        assert probe["models"] == ["gemini-3-flash-preview", "gemini-3-pro-preview"]
+        assert probe["resolved_base_url"] == "http://127.0.0.1:8080/v1beta"
+        assert probe["used_fallback"] is False
+
     def test_probe_api_models_uses_copilot_catalog(self):
         class _Resp:
             def __enter__(self):

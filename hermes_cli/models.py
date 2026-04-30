@@ -1975,6 +1975,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     return live
             except Exception:
                 pass
+    if normalized == "gemini":
+        api_key = os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GOOGLE_API_KEY", "").strip()
+        if api_key:
+            base = os.getenv("GEMINI_BASE_URL", "").strip().rstrip("/") or "https://generativelanguage.googleapis.com/v1beta"
+            try:
+                live = fetch_api_models(api_key, base)
+                if live:
+                    return live
+            except Exception:
+                pass
     if normalized == "gmi":
         try:
             from hermes_cli.auth import resolve_api_key_provider_credentials
@@ -2796,6 +2806,40 @@ def probe_api_models(
             "suggested_base_url": None,
             "used_fallback": False,
         }
+
+    if normalized.lower().endswith("/v1beta"):
+        headers = {"User-Agent": _HERMES_USER_AGENT}
+        if api_key:
+            headers["x-goog-api-key"] = api_key
+        url = normalized.rstrip("/") + "/models"
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                models = []
+                for item in data.get("models", []):
+                    if not isinstance(item, dict):
+                        continue
+                    name = str(item.get("name") or "").strip()
+                    if name.startswith("models/"):
+                        name = name.split("/", 1)[1]
+                    if name:
+                        models.append(name)
+                return {
+                    "models": models,
+                    "probed_url": url,
+                    "resolved_base_url": normalized,
+                    "suggested_base_url": None,
+                    "used_fallback": False,
+                }
+        except Exception:
+            return {
+                "models": None,
+                "probed_url": url,
+                "resolved_base_url": normalized,
+                "suggested_base_url": None,
+                "used_fallback": False,
+            }
 
     if normalized.endswith("/v1"):
         alternate_base = normalized[:-3].rstrip("/")

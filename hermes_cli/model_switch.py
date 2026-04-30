@@ -558,6 +558,13 @@ def resolve_display_context_length(
     only if the resolver returns nothing.
     """
     try:
+        from hermes_cli.config import get_provider_model_context_length
+        cfg_ctx = get_provider_model_context_length(provider, model)
+        if cfg_ctx:
+            return int(cfg_ctx)
+    except Exception:
+        pass
+    try:
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(
             model,
@@ -1135,7 +1142,9 @@ def list_authenticated_providers(
         # catalog so newly released models (e.g. mimo-v2.5-pro on opencode-go)
         # show up in the picker without requiring a Hermes release.
         model_ids = curated.get(hermes_id, [])
-        if hermes_id in _MODELS_DEV_PREFERRED:
+        if hermes_id == "gemini":
+            model_ids = provider_model_ids(hermes_id)
+        elif hermes_id in _MODELS_DEV_PREFERRED:
             model_ids = _merge_with_models_dev(hermes_id, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]

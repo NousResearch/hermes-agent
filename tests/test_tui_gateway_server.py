@@ -59,6 +59,147 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, terminal, ,memory")
+
+    assert server._load_enabled_toolsets() == ["web", "terminal", "memory"]
+
+
+def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    assert server._load_enabled_toolsets() == ["web"]
+    assert "nope" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "plugin_demo")
+
+    import toolsets
+
+    discovered = {"ready": False}
+    original_validate = toolsets.validate_toolset
+
+    def fake_validate(name):
+        return name == "plugin_demo" and discovered["ready"] or original_validate(name)
+
+    monkeypatch.setattr(toolsets, "validate_toolset", fake_validate)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: discovered.update({"ready": True})),
+    )
+
+    assert server._load_enabled_toolsets() == ["plugin_demo"]
+
+
+def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}})
+
+    assert server._load_enabled_toolsets() == ["memory"]
+    err = capsys.readouterr().err
+    assert "ignoring disabled MCP servers" in err
+    assert "mcp-off" in err
+    assert "using configured CLI toolsets" in err
+
+
+def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}})
+
+    assert server._load_enabled_toolsets() == ["memory"]
+    assert "using configured CLI toolsets" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_warns_when_config_fallback_fails(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    assert server._load_enabled_toolsets() is None
+    assert "could not be loaded" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_honors_builtin_env_if_config_fails(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web")
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    assert server._load_enabled_toolsets() == ["web"]
+
+
+def test_load_enabled_toolsets_all_env_means_all(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "all")
+
+    assert server._load_enabled_toolsets() is None
+
+
+def test_load_enabled_toolsets_all_env_warns_about_ignored_extra_entries(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "all,nope")
+
+    assert server._load_enabled_toolsets() is None
+    assert "ignoring additional entries: nope" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web,mcp-off,nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    )
+
+    assert server._load_enabled_toolsets() == ["web"]
+    err = capsys.readouterr().err
+    assert "ignoring unknown HERMES_TUI_TOOLSETS entries: nope" in err
+    assert "ignoring disabled MCP servers" in err
+    assert "mcp-off" in err
+
+
 def test_history_to_messages_preserves_tool_calls_for_resume_display():
     history = [
         {"role": "user", "content": "first prompt"},
@@ -879,6 +1020,36 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
     assert saved["display"]["tui_statusbar"] == "bottom"
 
 
+def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump(
+            {"display": {"sections": {"tools": "expanded", "activity": "hidden"}}}
+        )
+    )
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "details_mode", "value": "collapsed"},
+        }
+    )
+
+    assert resp["result"] == {"key": "details_mode", "value": "collapsed"}
+    saved = yaml.safe_load(cfg_path.read_text())
+    assert saved["display"]["details_mode"] == "collapsed"
+    assert saved["display"]["sections"] == {
+        "thinking": "collapsed",
+        "tools": "collapsed",
+        "subagents": "collapsed",
+        "activity": "collapsed",
+    }
+
+
 def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
     import yaml
 
@@ -1066,6 +1237,18 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     )
     assert resp_show["result"]["value"] == "show"
     assert server._sessions["sid"]["show_reasoning"] is True
+    assert server._load_cfg()["display"]["sections"]["thinking"] == "expanded"
+
+    resp_hide = server.handle_request(
+        {
+            "id": "3",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "hide"},
+        }
+    )
+    assert resp_hide["result"]["value"] == "hide"
+    assert server._sessions["sid"]["show_reasoning"] is False
+    assert server._load_cfg()["display"]["sections"]["thinking"] == "hidden"
 
 
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
@@ -2754,6 +2937,8 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
     )
 
     assert resp["result"]["session_id"] is None
+
+
 # ── browser.manage ───────────────────────────────────────────────────
 
 
@@ -2779,6 +2964,30 @@ def _stub_urlopen(monkeypatch, *, ok: bool):
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
 
 
+def _stub_urlopen_capture(monkeypatch, *, ok: bool):
+    urls: list[str] = []
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+        urls.append(url)
+        if not ok:
+            raise OSError("probe failed")
+        return _Resp()
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    return urls
+
+
 def test_browser_manage_status_reads_env_var(monkeypatch):
     """Status returns the env var verbatim (no network I/O)."""
     monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
@@ -2787,7 +2996,8 @@ def test_browser_manage_status_reads_env_var(monkeypatch):
         {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
     )
 
-    assert resp["result"] == {"connected": True, "url": "http://127.0.0.1:9222"}
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
 
 
 def test_browser_manage_status_falls_back_to_config_cdp_url(monkeypatch):
@@ -2850,10 +3060,205 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
             }
         )
 
-    assert resp["result"] == {"connected": True, "url": "http://127.0.0.1:9222"}
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert resp["result"]["messages"] == ["Chrome is already listening on port 9222"]
     assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
     # First cleanup runs against the OLD env (none here), second against the NEW.
     assert cleanup_calls == ["", "http://127.0.0.1:9222"]
+
+
+def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        urls = _stub_urlopen_capture(monkeypatch, ok=True)
+        resp = server.handle_request(
+            {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
+        )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert resp["result"]["messages"] == ["Chrome is already listening on port 9222"]
+    assert urls[0] == "http://127.0.0.1:9222/json/version"
+
+
+def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda evt, sid, payload=None: emitted.append((evt, payload or {})),
+    )
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=False)
+        with (
+            patch(
+                "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
+            ),
+            patch(
+                "hermes_cli.browser_connect.get_chrome_debug_candidates",
+                return_value=[],
+            ),
+        ):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "browser.manage",
+                    "params": {
+                        "action": "connect",
+                        "session_id": "sess-1",
+                        "url": "http://localhost:9222",
+                    },
+                }
+            )
+
+    assert resp["result"]["connected"] is False
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert (
+        resp["result"]["messages"][0]
+        == "Chrome isn't running with remote debugging — attempting to launch..."
+    )
+    assert any(
+        "No Chrome/Chromium executable was found" in line
+        for line in resp["result"]["messages"]
+    )
+    assert any(
+        "--remote-debugging-port=9222" in line for line in resp["result"]["messages"]
+    )
+    assert "BROWSER_CDP_URL" not in os.environ
+    progress = [p["message"] for evt, p in emitted if evt == "browser.progress"]
+    assert progress == resp["result"]["messages"]
+
+
+def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
+    """Without a session_id the TUI prints messages from the response;
+    emitting ``browser.progress`` events would double-render. Gate the
+    emit so callers without a session see the bundled list only."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    emitted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda evt, sid, payload=None: emitted.append((evt, payload or {})),
+    )
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=False)
+        with (
+            patch(
+                "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=False
+            ),
+            patch(
+                "hermes_cli.browser_connect.get_chrome_debug_candidates",
+                return_value=[],
+            ),
+        ):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "browser.manage",
+                    "params": {"action": "connect", "url": "http://localhost:9222"},
+                }
+            )
+
+    assert resp["result"]["connected"] is False
+    assert resp["result"]["messages"]  # bundled list still populated
+    assert [evt for evt, _ in emitted if evt == "browser.progress"] == []
+
+
+def test_browser_manage_connect_handles_null_url(monkeypatch):
+    """Explicit ``{"url": null}`` (or empty string) must fall back to the
+    default loopback URL instead of raising a TypeError that gets swallowed
+    by the outer 5031 catch."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=True)
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": None},
+            }
+        )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+
+
+def test_browser_manage_connect_rejects_non_string_url(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect", "url": 9222},
+        }
+    )
+
+    assert resp["error"]["code"] == 4015
+    assert "must be a string" in resp["error"]["message"]
+    assert "BROWSER_CDP_URL" not in os.environ
+
+
+def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    attempts = {"n": 0}
+
+    def _opener(_url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise OSError("not ready")
+        return _Resp()
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        with patch(
+            "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True
+        ):
+            resp = server.handle_request(
+                {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
+            )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert resp["result"]["messages"] == [
+        "Chrome isn't running with remote debugging — attempting to launch...",
+        "Chrome launched and listening on port 9222",
+    ]
+    assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
 
 
 def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
@@ -2861,7 +3266,9 @@ def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
     monkeypatch.setenv("BROWSER_CDP_URL", "http://existing:9222")
     cleanup_calls: list[str] = []
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: cleanup_calls.append(os.environ.get("BROWSER_CDP_URL", "")),
+        cleanup_all_browsers=lambda: cleanup_calls.append(
+            os.environ.get("BROWSER_CDP_URL", "")
+        ),
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
@@ -2941,14 +3348,19 @@ def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch)
     concrete = "ws://browserbase.example/devtools/browser/abc123"
 
     class _OkSocket:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
 
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         # If urlopen is reached for a concrete ws endpoint, the test
         # would still pass because _stub_urlopen returned ok=True before;
         # patch it to assert-fail so we prove the HTTP probe is skipped.
-        with patch("urllib.request.urlopen", side_effect=AssertionError("urlopen called")):
+        with patch(
+            "urllib.request.urlopen", side_effect=AssertionError("urlopen called")
+        ):
             with patch("socket.create_connection", return_value=_OkSocket()):
                 resp = server.handle_request(
                     {
@@ -2961,6 +3373,69 @@ def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch)
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == concrete
     assert os.environ["BROWSER_CDP_URL"] == concrete
+
+
+def test_browser_manage_connect_local_devtools_ws_preserves_path(monkeypatch):
+    """Regression: ``ws://127.0.0.1:9222/devtools/browser/<id>`` is a real
+    connectable endpoint; default-local normalization must not strip the
+    ``/devtools/browser/...`` path or it breaks valid local CDP connects."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    concrete = "ws://127.0.0.1:9222/devtools/browser/abc123"
+
+    class _OkSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        with patch("socket.create_connection", return_value=_OkSocket()):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "browser.manage",
+                    "params": {"action": "connect", "url": concrete},
+                }
+            )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == concrete
+    assert os.environ["BROWSER_CDP_URL"] == concrete
+
+
+def test_browser_manage_connect_rejects_invalid_port(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect", "url": "http://localhost:abc"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4015
+    assert "invalid port" in resp["error"]["message"]
+    assert "BROWSER_CDP_URL" not in os.environ
+
+
+def test_browser_manage_connect_rejects_missing_host(monkeypatch):
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "browser.manage",
+            "params": {"action": "connect", "url": "http://:9222"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4015
+    assert "missing host" in resp["error"]["message"]
+    assert "BROWSER_CDP_URL" not in os.environ
 
 
 def test_browser_manage_connect_concrete_ws_skips_http_probe(monkeypatch):
@@ -2977,8 +3452,11 @@ def test_browser_manage_connect_concrete_ws_skips_http_probe(monkeypatch):
     seen_targets: list[tuple[str, int]] = []
 
     class _OkSocket:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
 
     def _fake_create_connection(addr, timeout=None):
         seen_targets.append(addr)
@@ -2987,7 +3465,9 @@ def test_browser_manage_connect_concrete_ws_skips_http_probe(monkeypatch):
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         # urlopen would 404/ECONNREFUSED on a real hosted CDP endpoint;
         # asserting it's never called proves the probe was skipped.
-        with patch("urllib.request.urlopen", side_effect=AssertionError("urlopen called")):
+        with patch(
+            "urllib.request.urlopen", side_effect=AssertionError("urlopen called")
+        ):
             with patch("socket.create_connection", side_effect=_fake_create_connection):
                 resp = server.handle_request(
                     {
@@ -3031,7 +3511,9 @@ def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
     monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
     cleanup_count = {"n": 0}
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: cleanup_count.__setitem__("n", cleanup_count["n"] + 1),
+        cleanup_all_browsers=lambda: cleanup_count.__setitem__(
+            "n", cleanup_count["n"] + 1
+        ),
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
@@ -3099,11 +3581,16 @@ def test_config_get_indicator_falls_back_when_unset(monkeypatch):
 def test_config_set_indicator_accepts_known_value(monkeypatch):
     written: dict = {}
     monkeypatch.setattr(
-        server, "_write_config_key",
+        server,
+        "_write_config_key",
         lambda k, v: written.update({k: v}),
     )
     resp = server.handle_request(
-        {"id": "1", "method": "config.set", "params": {"key": "indicator", "value": "EMOJI"}}
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "indicator", "value": "EMOJI"},
+        }
     )
     assert resp["result"] == {"key": "indicator", "value": "emoji"}
     assert written == {"display.tui_status_indicator": "emoji"}
@@ -3117,7 +3604,11 @@ def test_config_set_indicator_falsy_non_string_surfaces_in_error(monkeypatch):
 
     for bad in (0, False, []):
         resp = server.handle_request(
-            {"id": "1", "method": "config.set", "params": {"key": "indicator", "value": bad}}
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"key": "indicator", "value": bad},
+            }
         )
         assert "error" in resp
         msg = resp["error"]["message"]
@@ -3132,7 +3623,47 @@ def test_config_set_indicator_none_keeps_blank_repr(monkeypatch):
     """`None` is the genuine 'no value' case — empty raw is acceptable."""
     monkeypatch.setattr(server, "_write_config_key", lambda *a, **k: None)
     resp = server.handle_request(
-        {"id": "1", "method": "config.set", "params": {"key": "indicator", "value": None}}
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "indicator", "value": None},
+        }
     )
     assert "error" in resp
     assert "unknown indicator: ''" in resp["error"]["message"]
+
+
+# ── reload.env ───────────────────────────────────────────────────────
+
+
+def test_reload_env_rpc_calls_hermes_cli_reload_env(monkeypatch):
+    """reload.env mirrors classic CLI's `/reload` — re-reads ~/.hermes/.env
+    into the gateway process and reports the count of vars updated."""
+    calls = {"n": 0}
+
+    def _fake_reload():
+        calls["n"] += 1
+        return 7
+
+    fake = types.SimpleNamespace(reload_env=_fake_reload)
+    with patch.dict(sys.modules, {"hermes_cli.config": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "reload.env", "params": {}}
+        )
+
+    assert resp["result"] == {"updated": 7}
+    assert calls["n"] == 1
+
+
+def test_reload_env_rpc_surfaces_errors(monkeypatch):
+    def _broken():
+        raise RuntimeError("env path locked")
+
+    fake = types.SimpleNamespace(reload_env=_broken)
+    with patch.dict(sys.modules, {"hermes_cli.config": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "reload.env", "params": {}}
+        )
+
+    assert "error" in resp
+    assert "env path locked" in resp["error"]["message"]

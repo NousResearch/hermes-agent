@@ -80,6 +80,11 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_cli.browser_connect import (
+    DEFAULT_BROWSER_CDP_URL,
+    manual_chrome_debug_command,
+    try_launch_chrome_debug,
+)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import base_url_host_matches
 
@@ -239,65 +244,6 @@ def _parse_service_tier_config(raw: str) -> str | None:
         return "priority"
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
-
-
-
-def _get_chrome_debug_candidates(system: str) -> list[str]:
-    """Return likely browser executables for local CDP auto-launch."""
-    candidates: list[str] = []
-    seen: set[str] = set()
-
-    def _add_candidate(path: str | None) -> None:
-        if not path:
-            return
-        normalized = os.path.normcase(os.path.normpath(path))
-        if normalized in seen:
-            return
-        if os.path.isfile(path):
-            candidates.append(path)
-            seen.add(normalized)
-
-    def _add_from_path(*names: str) -> None:
-        for name in names:
-            _add_candidate(shutil.which(name))
-
-    if system == "Darwin":
-        for app in (
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
-            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-        ):
-            _add_candidate(app)
-    elif system == "Windows":
-        _add_from_path(
-            "chrome.exe", "msedge.exe", "brave.exe", "chromium.exe",
-            "chrome", "msedge", "brave", "chromium",
-        )
-
-        for base in (
-            os.environ.get("ProgramFiles"),
-            os.environ.get("ProgramFiles(x86)"),
-            os.environ.get("LOCALAPPDATA"),
-        ):
-            if not base:
-                continue
-            for parts in (
-                ("Google", "Chrome", "Application", "chrome.exe"),
-                ("Chromium", "Application", "chrome.exe"),
-                ("Chromium", "Application", "chromium.exe"),
-                ("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-                ("Microsoft", "Edge", "Application", "msedge.exe"),
-            ):
-                _add_candidate(os.path.join(base, *parts))
-    else:
-        _add_from_path(
-            "google-chrome", "google-chrome-stable", "chromium-browser",
-            "chromium", "brave-browser", "microsoft-edge",
-        )
-
-    return candidates
-
 
 def load_cli_config() -> Dict[str, Any]:
     """
@@ -551,18 +497,20 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (docker, singularity, modal, daytona -- ignored for local/ssh)
+        # Container resource config (docker, singularity, modal, daytona, vercel_sandbox -- ignored for local/ssh)
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
         "container_disk": "TERMINAL_CONTAINER_DISK",
         "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
         "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
         "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+        "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
         # Persistent shell (non-local backends)
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
@@ -4862,6 +4810,22 @@ class HermesCLI:
                     )
                 except Exception:
                     pass
+            # Notify memory providers that session_id rotated to a fresh
+            # conversation. reset=True signals providers to flush accumulated
+            # per-session state (_session_turns, _turn_counter, _document_id).
+            # Fires BEFORE the plugin on_session_reset hook (shell hooks only
+            # see the new id; Python providers see the transition). See #6672.
+            try:
+                _mm = getattr(self.agent, "_memory_manager", None)
+                if _mm is not None:
+                    _mm.on_session_switch(
+                        self.session_id,
+                        parent_session_id=old_session_id or "",
+                        reset=True,
+                        reason="new_session",
+                    )
+            except Exception:
+                pass
             self._notify_session_boundary("on_session_reset")
 
         if not silent:
@@ -4914,6 +4878,7 @@ class HermesCLI:
             _cprint("  Already on that session.")
             return
 
+        old_session_id = self.session_id
         # End current session
         try:
             self._session_db.end_session(self.session_id, "resumed_other")
@@ -4950,6 +4915,22 @@ class HermesCLI:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
+
+            # Notify memory providers that session_id rotated to a resumed
+            # session. reset=False — the provider's accumulated state is
+            # still valid; it just needs to target the new session_id for
+            # subsequent writes. See #6672.
+            try:
+                _mm = getattr(self.agent, "_memory_manager", None)
+                if _mm is not None:
+                    _mm.on_session_switch(
+                        target_id,
+                        parent_session_id=old_session_id or "",
+                        reset=False,
+                        reason="resume",
+                    )
+            except Exception:
+                pass
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
@@ -5070,6 +5051,22 @@ class HermesCLI:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
+
+            # Notify memory providers that session_id forked to a new branch.
+            # reset=False — the branched session carries the transcript
+            # forward, so provider state tracks the lineage. parent_session_id
+            # links the branch back to the original. See #6672.
+            try:
+                _mm = getattr(self.agent, "_memory_manager", None)
+                if _mm is not None:
+                    _mm.on_session_switch(
+                        new_session_id,
+                        parent_session_id=parent_session_id or "",
+                        reset=False,
+                        reason="branch",
+                    )
+            except Exception:
+                pass
 
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
         _cprint(
@@ -5979,7 +5976,29 @@ class HermesCLI:
 
         print(f"(._.) Unknown cron command: {subcommand}")
         print("  Available: list, add, edit, pause, resume, run, remove")
-    
+
+    def _handle_curator_command(self, cmd: str):
+        """Handle /curator slash command.
+
+        Delegates to hermes_cli.curator so the CLI and the `hermes curator`
+        subcommand share the same handler set.
+        """
+        import shlex
+
+        tokens = shlex.split(cmd)[1:] if cmd else []
+        if not tokens:
+            tokens = ["status"]
+
+        try:
+            from hermes_cli.curator import cli_main
+            cli_main(tokens)
+        except SystemExit:
+            # argparse calls sys.exit() on --help or errors; swallow so we
+            # don't kill the interactive session.
+            pass
+        except Exception as exc:
+            print(f"(._.) curator: {exc}")
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
@@ -6223,6 +6242,8 @@ class HermesCLI:
             self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
+        elif canonical == "curator":
+            self._handle_curator_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
@@ -6606,34 +6627,7 @@ class HermesCLI:
 
         Returns True if a launch command was executed (doesn't guarantee success).
         """
-        import subprocess as _sp
-
-        candidates = _get_chrome_debug_candidates(system)
-
-        if not candidates:
-            return False
-
-        # Dedicated profile dir so debug Chrome won't collide with normal Chrome
-        data_dir = str(_hermes_home / "chrome-debug")
-        os.makedirs(data_dir, exist_ok=True)
-
-        chrome = candidates[0]
-        try:
-            _sp.Popen(
-                [
-                    chrome,
-                    f"--remote-debugging-port={port}",
-                    f"--user-data-dir={data_dir}",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                ],
-                stdout=_sp.DEVNULL,
-                stderr=_sp.DEVNULL,
-                start_new_session=True,  # detach from terminal
-            )
-            return True
-        except Exception:
-            return False
+        return try_launch_chrome_debug(port, system)
 
     def _handle_browser_command(self, cmd: str):
         """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
@@ -6642,13 +6636,44 @@ class HermesCLI:
         parts = cmd.strip().split(None, 1)
         sub = parts[1].lower().strip() if len(parts) > 1 else "status"
 
-        _DEFAULT_CDP = "http://127.0.0.1:9222"
+        _DEFAULT_CDP = DEFAULT_BROWSER_CDP_URL
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
         if sub.startswith("connect"):
             # Optionally accept a custom CDP URL: /browser connect ws://host:port
             connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
             cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
+            parsed_cdp = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
+            if parsed_cdp.scheme not in {"http", "https", "ws", "wss"}:
+                print()
+                print(
+                    f"   ⚠ Unsupported browser url scheme: {parsed_cdp.scheme or '(missing)'} "
+                    "(expected one of: http, https, ws, wss)"
+                )
+                print()
+                return
+            try:
+                _port = parsed_cdp.port or (443 if parsed_cdp.scheme in {"https", "wss"} else 80)
+            except ValueError:
+                print()
+                print(f"   ⚠ Invalid port in browser url: {cdp_url}")
+                print()
+                return
+            if not parsed_cdp.hostname:
+                print()
+                print(f"   ⚠ Missing host in browser url: {cdp_url}")
+                print()
+                return
+            _host = parsed_cdp.hostname
+            if parsed_cdp.path.startswith("/devtools/browser/"):
+                cdp_url = parsed_cdp.geturl()
+            else:
+                cdp_url = parsed_cdp._replace(
+                    path="",
+                    params="",
+                    query="",
+                    fragment="",
+                ).geturl()
 
             # Clear any existing browser sessions so the next tool call uses the new backend
             try:
@@ -6659,20 +6684,13 @@ class HermesCLI:
 
             print()
 
-            # Extract port for connectivity checks
-            _port = 9222
-            try:
-                _port = int(cdp_url.rsplit(":", 1)[-1].split("/")[0])
-            except (ValueError, IndexError):
-                pass
-
             # Check if Chrome is already listening on the debug port
             import socket
             _already_open = False
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.settimeout(1)
-                s.connect(("127.0.0.1", _port))
+                s.connect((_host, _port))
                 s.close()
                 _already_open = True
             except (OSError, socket.timeout):
@@ -6690,7 +6708,7 @@ class HermesCLI:
                         try:
                             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                             s.settimeout(1)
-                            s.connect(("127.0.0.1", _port))
+                            s.connect((_host, _port))
                             s.close()
                             _already_open = True
                             break
@@ -6703,32 +6721,21 @@ class HermesCLI:
                         print("     Try again in a few seconds — the debug instance may still be starting")
                 else:
                     print("   ⚠ Could not auto-launch Chrome")
-                    # Show manual instructions as fallback
-                    _data_dir = str(_hermes_home / "chrome-debug")
                     sys_name = _plat.system()
-                    if sys_name == "Darwin":
-                        chrome_cmd = (
-                            'open -a "Google Chrome" --args'
-                            f" --remote-debugging-port=9222"
-                            f' --user-data-dir="{_data_dir}"'
-                            " --no-first-run --no-default-browser-check"
-                        )
-                    elif sys_name == "Windows":
-                        chrome_cmd = (
-                            f'chrome.exe --remote-debugging-port=9222'
-                            f' --user-data-dir="{_data_dir}"'
-                            f" --no-first-run --no-default-browser-check"
-                        )
+                    chrome_cmd = manual_chrome_debug_command(_port, sys_name)
+                    if chrome_cmd:
+                        print(f"     Launch Chrome manually:")
+                        print(f"     {chrome_cmd}")
                     else:
-                        chrome_cmd = (
-                            f"google-chrome --remote-debugging-port=9222"
-                            f' --user-data-dir="{_data_dir}"'
-                            f" --no-first-run --no-default-browser-check"
-                        )
-                    print(f"     Launch Chrome manually:")
-                    print(f"     {chrome_cmd}")
+                        print("     No Chrome/Chromium executable found in this environment")
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
+
+            if not _already_open:
+                print()
+                print("Browser not connected — start Chrome with remote debugging and retry /browser connect")
+                print()
+                return
 
             os.environ["BROWSER_CDP_URL"] = cdp_url
             # Eagerly start the CDP supervisor so pending_dialogs + frame_tree
@@ -9344,6 +9351,21 @@ class HermesCLI:
             self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
         except Exception:
             pass  # Tips are non-critical — never break startup
+
+        # Curator — kick off a background skill-maintenance pass on startup
+        # if the schedule says we're due.  Runs in a daemon thread so it
+        # never blocks the interactive loop.  Best-effort; any failure is
+        # swallowed to avoid breaking session startup.
+        try:
+            from agent.curator import maybe_run_curator
+            maybe_run_curator(
+                idle_for_seconds=float("inf"),  # CLI startup = fully idle
+                on_summary=lambda msg: self._console_print(
+                    f"[dim #6b7684]💾 {msg}[/]"
+                ),
+            )
+        except Exception:
+            pass
         if self.preloaded_skills and not self._startup_skills_line_shown:
             skills_label = ", ".join(self.preloaded_skills)
             self._console_print(

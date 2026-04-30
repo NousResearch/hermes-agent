@@ -122,21 +122,25 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["think"] is False
 
-    def test_gemini_without_explicit_reasoning_config_keeps_existing_behavior(self, transport):
+    def test_gemini_native_without_explicit_reasoning_config_keeps_existing_behavior(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="gemini-3-flash-preview",
             messages=msgs,
             provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
         )
         assert "thinking_config" not in kw.get("extra_body", {})
+        assert "google" not in kw.get("extra_body", {})
+        assert "extra_body" not in kw.get("extra_body", {})
 
-    def test_gemini_flash_reasoning_maps_to_thinking_config(self, transport):
+    def test_gemini_native_flash_reasoning_maps_to_top_level_thinking_config(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="gemini-3-flash-preview",
             messages=msgs,
             provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
             reasoning_config={"enabled": True, "effort": "high"},
         )
         assert kw["extra_body"]["thinking_config"] == {
@@ -144,52 +148,85 @@ class TestChatCompletionsBuildKwargs:
             "thinkingLevel": "high",
         }
 
-    def test_gemini_25_reasoning_only_enables_visible_thoughts(self, transport):
+    def test_gemini_openai_compat_flash_reasoning_maps_to_nested_google_thinking_config(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert "thinking_config" not in kw["extra_body"]
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_level": "high",
+        }
+
+    def test_gemini_native_25_reasoning_only_enables_visible_thoughts(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="gemini-2.5-flash",
             messages=msgs,
             provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
             reasoning_config={"enabled": True, "effort": "high"},
         )
         assert kw["extra_body"]["thinking_config"] == {
             "includeThoughts": True,
         }
 
-    def test_gemini_pro_reasoning_clamps_to_supported_levels(self, transport):
+    def test_gemini_openai_compat_pro_reasoning_clamps_to_supported_levels(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="google/gemini-3.1-pro-preview",
             messages=msgs,
             provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             reasoning_config={"enabled": True, "effort": "medium"},
         )
-        assert kw["extra_body"]["thinking_config"] == {
-            "includeThoughts": True,
-            "thinkingLevel": "low",
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_level": "low",
         }
 
-    def test_gemini_disabled_reasoning_hides_thoughts(self, transport):
+    def test_gemini_native_disabled_reasoning_hides_thoughts(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="gemini-3-flash-preview",
             messages=msgs,
             provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta",
             reasoning_config={"enabled": False},
         )
         assert kw["extra_body"]["thinking_config"] == {
             "includeThoughts": False,
         }
 
-    def test_gemini_xhigh_clamps_to_high(self, transport):
+    def test_gemini_openai_compat_xhigh_clamps_to_high(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="gemini-3-flash-preview",
             messages=msgs,
             provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             reasoning_config={"enabled": True, "effort": "xhigh"},
         )
-        assert kw["extra_body"]["thinking_config"]["thinkingLevel"] == "high"
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_level"] == "high"
+
+    def test_google_gemini_cli_keeps_top_level_thinking_config(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="google-gemini-cli",
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+            "thinkingLevel": "high",
+        }
+        assert "google" not in kw["extra_body"]
 
     def test_gemini_flash_minimal_clamps_to_low(self, transport):
         # Gemini 3 Flash documents low/medium/high; "minimal" isn't accepted,
@@ -199,11 +236,12 @@ class TestChatCompletionsBuildKwargs:
             model="gemini-3-flash-preview",
             messages=msgs,
             provider_name="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             reasoning_config={"enabled": True, "effort": "minimal"},
         )
-        assert kw["extra_body"]["thinking_config"] == {
-            "includeThoughts": True,
-            "thinkingLevel": "low",
+        assert kw["extra_body"]["extra_body"]["google"]["thinking_config"] == {
+            "include_thoughts": True,
+            "thinking_level": "low",
         }
 
     def test_max_tokens_with_fn(self, transport):

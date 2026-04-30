@@ -1082,6 +1082,16 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": False,
+        "policy": {
+            "filesystem": {
+                # Constrain write_file/patch operations to this subtree when set.
+                # Equivalent to HERMES_WRITE_SAFE_ROOT, which takes precedence.
+                "write_safe_root": "",
+                # Block write_file/patch from mutating active Hermes control-plane
+                # files such as config.yaml, auth.json, and MCP token stores.
+                "deny_hermes_control_plane": True,
+            },
+        },
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,

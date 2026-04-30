@@ -5061,6 +5061,13 @@ def cmd_doctor(args):
     run_doctor(args)
 
 
+def cmd_security(args):
+    """Enterprise security posture and policy helpers."""
+    from hermes_cli.security_policy import security_command
+
+    security_command(args)
+
+
 def cmd_dump(args):
     """Dump setup summary for support/debugging."""
     from hermes_cli.dump import run_dump
@@ -7530,6 +7537,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "status",
         "cron",
         "doctor",
+        "security",
         "config",
         "pairing",
         "skills",
@@ -8727,6 +8735,47 @@ def main():
         "--fix", action="store_true", help="Attempt to fix issues automatically"
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # security command
+    # =========================================================================
+    security_parser = subparsers.add_parser(
+        "security",
+        help="Inspect enterprise security posture",
+        description=(
+            "Inspect Hermes' effective security posture and validate "
+            "OpenShell-inspired security policy files."
+        ),
+    )
+    security_sub = security_parser.add_subparsers(dest="security_action")
+    security_doctor = security_sub.add_parser(
+        "doctor",
+        help="Check enterprise security posture",
+    )
+    security_doctor.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero when any posture check is not pass",
+    )
+    security_doctor.add_argument("--json", action="store_true", help="Output JSON")
+
+    security_policy = security_sub.add_parser(
+        "policy",
+        help="Show or validate the effective security policy",
+    )
+    security_policy_sub = security_policy.add_subparsers(dest="policy_action")
+    security_policy_show = security_policy_sub.add_parser(
+        "show",
+        help="Show the effective policy derived from config and env",
+    )
+    security_policy_show.add_argument("--json", action="store_true", help="Output JSON")
+    security_policy_validate = security_policy_sub.add_parser(
+        "validate",
+        help="Validate a security policy YAML/JSON file",
+    )
+    security_policy_validate.add_argument("file", help="Policy file to validate")
+    security_policy_validate.add_argument("--json", action="store_true", help="Output JSON")
+    security_parser.set_defaults(func=cmd_security)
 
     # =========================================================================
     # dump command

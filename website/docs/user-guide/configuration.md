@@ -1494,6 +1494,10 @@ Pre-execution security scanning and secret redaction:
 ```yaml
 security:
   redact_secrets: false          # Redact API key patterns in tool output and logs (off by default)
+  policy:
+    filesystem:
+      write_safe_root: ""        # Optional write_file/patch safe root
+      deny_hermes_control_plane: true
   tirith_enabled: true           # Enable Tirith security scanning for terminal commands
   tirith_path: "tirith"          # Path to tirith binary (default: "tirith" in $PATH)
   tirith_timeout: 5              # Seconds to wait for tirith scan before timing out
@@ -1505,10 +1509,27 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **Off by default** — enable if you commonly work with real credentials in tool output and want a safety net. Set to `true` explicitly to turn on.
+- `policy.filesystem.write_safe_root` — when set, constrains file write and patch operations to that directory tree. `HERMES_WRITE_SAFE_ROOT` still takes precedence for backwards compatibility.
+- `policy.filesystem.deny_hermes_control_plane` — when `true` (default), blocks file write and patch operations from mutating active Hermes control-plane state such as `config.yaml`, `auth.json`, OAuth files, webhook subscriptions, and MCP token stores.
 - `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/StackGuardian/tirith) before execution to detect potentially dangerous operations.
 - `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
 - `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.
 - `tirith_fail_open` — when `true` (default), commands are allowed to execute if tirith is unavailable or fails. Set to `false` to block commands when tirith cannot verify them.
+
+Inspect the effective security posture with:
+
+```bash
+hermes security doctor
+hermes security doctor --strict
+hermes security policy show --json
+hermes security policy validate policy.yaml
+```
+
+The `security` command is inspired by OpenShell-style declarative posture
+checks: it reports the effective filesystem, environment, process, network,
+and inference controls that Hermes can enforce or inspect locally. It does not
+claim kernel-level or proxy-level enforcement beyond Hermes' existing runtime
+guards.
 
 ## Website Blocklist
 

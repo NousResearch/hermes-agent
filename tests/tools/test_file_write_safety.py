@@ -78,6 +78,42 @@ class TestSafeWriteRoot:
         monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", os.path.expanduser("~"))
         assert _is_write_denied(os.path.expanduser("~/.ssh/id_rsa")) is True
 
+    def test_safe_root_from_config(self, tmp_path: Path, monkeypatch):
+        safe_root = tmp_path / "workspace"
+        outside = tmp_path / "outside.txt"
+        safe_root.mkdir()
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        safe_root_yaml = str(safe_root).replace("'", "''")
+        (hermes_home / "config.yaml").write_text(
+            "security:\n"
+            "  policy:\n"
+            "    filesystem:\n"
+            f"      write_safe_root: '{safe_root_yaml}'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
+
+        assert _is_write_denied(str(safe_root / "file.txt")) is False
+        assert _is_write_denied(str(outside)) is True
+
+    def test_disable_hermes_control_plane_write_deny(self, tmp_path: Path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "security:\n"
+            "  policy:\n"
+            "    filesystem:\n"
+            "      deny_hermes_control_plane: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert _is_write_denied(str(hermes_home / "config.yaml")) is False
+        assert _is_write_denied(str(hermes_home / ".env")) is True
+
 
 class TestCheckSensitivePathMacOSBypass:
     """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""

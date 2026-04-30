@@ -493,6 +493,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # Smart retain (pre-filter + context tagging)
         self._retain_prefilter = False
         self._retain_context_tagging = "off"  # "off", "on", or "smart"
+        self._retain_dedup = False
 
     @property
     def name(self) -> str:
@@ -768,6 +769,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "retain_prefilter", "description": "Classify content with auxiliary LLM before retaining (requires bank_retain_mission)", "default": False},
+            {"key": "retain_dedup", "description": "Check for duplicate content via recall before retaining", "default": False},
             {"key": "retain_context_tagging", "description": "Scope-tag retained memories: 'off' (no tags), 'on' (always tag by platform:chat_id), 'smart' (classify general vs scoped via auxiliary LLM)", "default": "off", "choices": ["off", "on", "smart"]},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
@@ -1030,6 +1032,7 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # Smart retain
         self._retain_prefilter = self._config.get("retain_prefilter", False)
+        self._retain_dedup = self._config.get("retain_dedup", False)
         raw_tagging = self._config.get("retain_context_tagging", "off")
         # Backward compat: treat True as "smart", False as "off"
         if raw_tagging is True:
@@ -1395,6 +1398,83 @@ class HindsightMemoryProvider(MemoryProvider):
             tags.append(f"scope:{self._platform}:{self._chat_id}")
         return tags
 
+    def _check_dedup(self, content: str) -> bool:
+        """Check if content is a duplicate of existing memories via recall + auxiliary LLM.
+
+        Returns True if content is DUPLICATE (should skip retain), False if NOVEL.
+        Fails open (returns False) on any error so retain proceeds.
+        """
+        try:
+            # Truncate content for recall query
+            query = content[:2000]
+
+            # Build recall kwargs — cheap recall just to check for duplicates
+            recall_kwargs: dict = {
+                "bank_id": self._bank_id,
+                "query": query,
+                "budget": "low",
+            }
+
+            # Add scope tags if available
+            scope_tags = self._build_recall_scope_tags()
+            if scope_tags:
+                recall_kwargs["tags"] = scope_tags
+                recall_kwargs["tags_match"] = "any"
+
+            # Run recall against existing memories
+            resp = self._run_hindsight_operation(
+                lambda client: client.arecall(**recall_kwargs)
+            )
+
+            if not resp or not resp.results:
+                logger.info("Dedup check: NOVEL (no existing memories found) — %d chars", len(content))
+                return False
+
+            num_results = len(resp.results)
+            recall_text = "\n".join(f"- {r.text}" for r in resp.results if r.text)
+            if not recall_text:
+                logger.info("Dedup check: NOVEL (no text in recall results) — %d chars", len(content))
+                return False
+
+            # Truncate recall results to avoid huge prompts
+            recall_text = recall_text[:3000]
+            content_text = content[:2000]
+
+            # Ask auxiliary LLM to compare
+            from agent.auxiliary_client import get_text_auxiliary_client
+
+            task = "memory_retain_filter"
+            client, model = get_text_auxiliary_client(task)
+
+            if not client:
+                logger.debug("Dedup check: no auxiliary client for %s; skipping (NOVEL)", task)
+                return False
+
+            prompt = (
+                f"Existing memories from the knowledge bank:\n{recall_text}\n\n"
+                f"New content being considered for retention:\n{content_text}\n\n"
+                f"Does the new content contain meaningful facts, decisions, or knowledge "
+                f"NOT already captured in the existing memories? Minor wording differences "
+                f"don't count as novel. Answer with a single word: NOVEL or DUPLICATE"
+            )
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=0,
+            )
+            answer = response.choices[0].message.content.strip().upper()
+            is_dup = "DUPLICATE" in answer
+
+            logger.info("Dedup check: %s — %d chars against %d existing memories",
+                        "DUPLICATE" if is_dup else "NOVEL", len(content), num_results)
+            return is_dup
+
+        except Exception as exc:
+            logger.warning("Dedup check failed (proceeding with retain): %s", exc)
+            return False
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Enqueue a retain for the current turn. Non-blocking.
 
@@ -1456,6 +1536,12 @@ class HindsightMemoryProvider(MemoryProvider):
                 classification = self._classify_for_retain(content)
                 if self._retain_prefilter and classification == "SKIP":
                     logger.info("Smart retain: SKIP — not retaining %d chars", len(content))
+                    return
+
+            # Dedup check: query existing memories and skip if content is redundant
+            if self._retain_dedup:
+                if self._check_dedup(content):
+                    logger.info("Dedup check: DUPLICATE — skipping retain of %d chars", len(content))
                     return
 
             # Build scope tag based on tagging mode

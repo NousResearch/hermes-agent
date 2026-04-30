@@ -91,11 +91,27 @@ class GatewayStreamConsumer:
         chat_id: str,
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
+        on_new_message: Optional[callable] = None,
+        initial_reply_to_id: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
         self.cfg = config or StreamConsumerConfig()
         self.metadata = metadata
+        # Message ID that triggered this stream. The first platform send
+        # must reply to it so topic/thread-aware adapters (e.g. Feishu)
+        # do not create a top-level message before an editable message ID
+        # exists. Once the first send succeeds, this is consumed and
+        # subsequent sends use the platform-returned message ID for edits.
+        self._initial_reply_to_id = initial_reply_to_id
+        # Fired whenever a fresh content bubble is created on the platform
+        # (first-send of a new message, commentary, overflow chunk, or
+        # fallback continuation). The gateway uses this to linearize the
+        # tool-progress bubble: when content resumes after a tool batch,
+        # the next tool.started should open a NEW progress bubble below
+        # the content, not edit the old bubble above it.
+        # Called with no arguments. Exceptions are swallowed.
+        self._on_new_message = on_new_message
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
@@ -145,6 +161,16 @@ class GatewayStreamConsumer:
         """Queue a completed interim assistant commentary message."""
         if text:
             self._queue.put((_COMMENTARY, text))
+
+    def _notify_new_message(self) -> None:
+        """Fire the on_new_message callback, swallowing any errors."""
+        cb = self._on_new_message
+        if cb is None:
+            return
+        try:
+            cb()
+        except Exception:
+            logger.debug("on_new_message callback error", exc_info=True)
 
     def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
         if preserve_no_edit and self._message_id == "__no_edit__":
@@ -529,19 +555,12 @@ class GatewayStreamConsumer:
                 self._message_id = str(result.message_id)
                 self._already_sent = True
                 self._last_sent_text = text
+                # Fresh content bubble — close off any stale tool bubble
+                # above so the next tool starts a new bubble below.
+                self._notify_new_message()
                 return str(result.message_id)
             else:
                 self._edit_supported = False
-                logger.warning(
-                    "[StreamConsumer] Send failed (success=%s, msg_id=%s, error=%s) "
-                    "chat=%s reply_to=%s text_len=%d",
-                    result.success,
-                    result.message_id,
-                    getattr(result, "error", None),
-                    self.chat_id,
-                    reply_to_id,
-                    len(text),
-                )
                 return reply_to_id
         except Exception as e:
             logger.error("Stream send chunk error: %s", e)
@@ -638,6 +657,7 @@ class GatewayStreamConsumer:
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=chunk,
+                    reply_to=self._initial_reply_to_id,
                     metadata=self.metadata,
                 )
                 if result.success:
@@ -671,6 +691,9 @@ class GatewayStreamConsumer:
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
+            # Each fallback chunk is a fresh platform message — notify
+            # so any stale tool-progress bubble gets closed off.
+            self._notify_new_message()
 
         self._message_id = last_message_id
         self._already_sent = True
@@ -747,6 +770,7 @@ class GatewayStreamConsumer:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
+                reply_to=self._initial_reply_to_id,
                 metadata=self.metadata,
             )
             # Note: do NOT set _already_sent = True here.
@@ -754,6 +778,11 @@ class GatewayStreamConsumer:
             # tool..."), not the final response. Setting already_sent would cause
             # the final response to be incorrectly suppressed when there are
             # multiple tool calls. See: https://github.com/NousResearch/hermes-agent/issues/10454
+            if result.success:
+                # Commentary counts as fresh content — close off any
+                # stale tool bubble above it so the next tool starts a
+                # new bubble below.
+                self._notify_new_message()
             return result.success
         except Exception as e:
             logger.error("Commentary send error: %s", e)
@@ -959,10 +988,16 @@ class GatewayStreamConsumer:
                     # The final response will be sent by the fallback path.
                     return False
             else:
-                # First message — send new
+                # First message — send new.
+                # Use initial_reply_to_id if available so topic/thread-aware
+                # adapters (Feishu) reply into the originating thread instead
+                # of creating a new top-level message.
+                _first_reply_to = self._initial_reply_to_id
+                self._initial_reply_to_id = None  # consume after first use
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
+                    reply_to=_first_reply_to,
                     metadata=self.metadata,
                 )
                 if result.success:
@@ -983,6 +1018,11 @@ class GatewayStreamConsumer:
                         # every delta/tool boundary when platforms accept a
                         # message but do not return an editable message id.
                         self._message_id = "__no_edit__"
+                    # Notify the gateway that a fresh content bubble was
+                    # created so any accumulated tool-progress bubble above
+                    # gets closed off — the next tool fires into a new
+                    # bubble below, preserving chronological order.
+                    self._notify_new_message()
                     return True
                 else:
                     # Initial send failed — disable streaming for this session

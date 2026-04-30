@@ -28,11 +28,13 @@ import logging
 import os
 import re
 import tempfile
+
 from contextlib import contextmanager
 from pathlib import Path
-from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
+from hermes_cli.config import load_config, cfg_get
+from hermes_constants import get_hermes_home
 from utils import atomic_replace
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
@@ -115,7 +117,12 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = None, user_char_limit: int = None):
+        cfg = load_config()
+        if memory_char_limit is None:
+            memory_char_limit = cfg_get(cfg, "memory", "memory_char_limit", default=2200)
+        if user_char_limit is None:
+            user_char_limit = cfg_get(cfg, "memory", "user_char_limit", default=1375)
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit

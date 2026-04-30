@@ -1505,7 +1505,64 @@ class BasePlatformAdapter(ABC):
         Default is a no-op for platforms with one-shot typing indicators.
         """
         pass
-    
+
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images.
+
+        Accepts ``http(s)://``, ``file://`` URIs in the first tuple
+        element.
+
+        Default implementation sends each item individually,
+        routing animated GIFs through ``send_animation`` and local
+        files through ``send_image_file``.
+
+        Override in subclasses to bundle into a single native API call
+        (e.g. Signal's multi-attachment RPC)
+        """
+        from urllib.parse import unquote as _unquote
+
+        for image_url, alt_text in images:
+            if human_delay > 0:
+                await asyncio.sleep(human_delay)
+            try:
+                logger.info(
+                    "[%s] Sending image: %s (alt=%s)",
+                    self.name,
+                    safe_url_for_log(image_url),
+                    alt_text[:30] if alt_text else "",
+                )
+                if image_url.startswith("file://"):
+                    img_result = await self.send_image_file(
+                        chat_id=chat_id,
+                        image_path=_unquote(image_url[7:]),
+                        caption=alt_text if alt_text else None,
+                        metadata=metadata,
+                    )
+                elif self._is_animation_url(image_url):
+                    img_result = await self.send_animation(
+                        chat_id=chat_id,
+                        animation_url=image_url,
+                        caption=alt_text if alt_text else None,
+                        metadata=metadata,
+                    )
+                else:
+                    img_result = await self.send_image(
+                        chat_id=chat_id,
+                        image_url=image_url,
+                        caption=alt_text if alt_text else None,
+                        metadata=metadata,
+                    )
+                if not img_result.success:
+                    logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+            except Exception as img_err:
+                logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+
     async def send_image(
         self,
         chat_id: str,
@@ -2587,41 +2644,52 @@ class BasePlatformAdapter(ABC):
                 # Send extracted images as native attachments
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-                for image_url, alt_text in images:
-                    if human_delay > 0:
-                        await asyncio.sleep(human_delay)
                     try:
-                        logger.info(
-                            "[%s] Sending image: %s (alt=%s)",
-                            self.name,
-                            safe_url_for_log(image_url),
-                            alt_text[:30] if alt_text else "",
+                        await self.send_multiple_images(
+                            chat_id=event.source.chat_id,
+                            images=images,
+                            metadata=_thread_metadata,
+                            human_delay=human_delay,
                         )
-                        # Route animated GIFs through send_animation for proper playback
-                        if self._is_animation_url(image_url):
-                            img_result = await self.send_animation(
-                                chat_id=event.source.chat_id,
-                                animation_url=image_url,
-                                caption=alt_text if alt_text else None,
-                                metadata=_thread_metadata,
-                            )
-                        else:
-                            img_result = await self.send_image(
-                                chat_id=event.source.chat_id,
-                                image_url=image_url,
-                                caption=alt_text if alt_text else None,
-                                metadata=_thread_metadata,
-                            )
-                        if not img_result.success:
-                            logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
-                    except Exception as img_err:
-                        logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                    except Exception as batch_err:
+                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+
 
                 # Send extracted media files — route by file type
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
+                # Partition images out of media_files + local_files so they
+                # can be sent as a single batch (Signal RPC)
+                from urllib.parse import quote as _quote
+                _image_paths: list = []
+                _non_image_media: list = []
                 for media_path, is_voice in media_files:
+                    _ext = Path(media_path).suffix.lower()
+                    if _ext in _IMAGE_EXTS and not is_voice:
+                        _image_paths.append(media_path)
+                    else:
+                        _non_image_media.append((media_path, is_voice))
+                _non_image_local: list = []
+                for file_path in local_files:
+                    if Path(file_path).suffix.lower() in _IMAGE_EXTS:
+                        _image_paths.append(file_path)
+                    else:
+                        _non_image_local.append(file_path)
+
+                if _image_paths:
+                    try:
+                        _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
+                        await self.send_multiple_images(
+                            chat_id=event.source.chat_id,
+                            images=_batch,
+                            metadata=_thread_metadata,
+                            human_delay=human_delay,
+                        )
+                    except Exception as batch_err:
+                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+
+                for media_path, is_voice in _non_image_media:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
@@ -2638,12 +2706,6 @@ class BasePlatformAdapter(ABC):
                                 video_path=media_path,
                                 metadata=_thread_metadata,
                             )
-                        elif ext in _IMAGE_EXTS:
-                            media_result = await self.send_image_file(
-                                chat_id=event.source.chat_id,
-                                image_path=media_path,
-                                metadata=_thread_metadata,
-                            )
                         else:
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
@@ -2656,19 +2718,13 @@ class BasePlatformAdapter(ABC):
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
-                # Send auto-detected local files as native attachments
-                for file_path in local_files:
+                # Send auto-detected local non-image files as native attachments
+                for file_path in _non_image_local:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
                         ext = Path(file_path).suffix.lower()
-                        if ext in _IMAGE_EXTS:
-                            await self.send_image_file(
-                                chat_id=event.source.chat_id,
-                                image_path=file_path,
-                                metadata=_thread_metadata,
-                            )
-                        elif ext in _VIDEO_EXTS:
+                        if ext in _VIDEO_EXTS:
                             await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,

@@ -994,13 +994,23 @@ def _format_tirith_description(tirith_result: dict) -> str:
 
 
 def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+                             approval_callback=None,
+                             justification: str = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
     presents them as a single combined approval request. This prevents
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
+
+    Args:
+        command: The shell command to check.
+        env_type: Terminal backend type ('local', 'ssh', 'docker', etc.).
+        approval_callback: Optional CLI callback for interactive prompts.
+        justification: Agent's justification for why this command is needed.
+            When provided on retry, proceeds directly to user approval with
+            the justification included. When omitted on a flagged command,
+            returns justification_required first.
     """
     # Skip containers for both checks
     if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
@@ -1158,18 +1168,87 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_keys": [key for key, _, _ in warnings],
             }
 
+    # Combine descriptions for the approval prompt (used by both
+    # Phase 2.8 and Phase 3, so compute once here).
+    combined_desc = "; ".join(desc for _, desc, _ in warnings)
+    primary_key = warnings[0][0]
+    all_keys = [key for key, _, _ in warnings]
+    has_tirith = any(is_t for _, _, is_t in warnings)
+
+    # --- Phase 2.8: Justification gate (gateway/ask only) ---
+    # Before notifying the user, require the agent to justify why
+    # this command is necessary. If justification is provided in the
+    # call, proceed directly. Otherwise, return justification_required.
+    if is_gateway or is_ask:
+        cmd_hash = hashlib.sha256(command.encode()).hexdigest()[:16]
+        effective_justification = justification
+        if not effective_justification:
+            _, effective_justification, _, _ = _get_pending_justification(
+                session_key, cmd_hash)
+
+        if not effective_justification:
+            # No justification provided — request it from the agent
+            with _lock:
+                key = (session_key, cmd_hash)
+                pending = _pending_approvals.get(key, {})
+                retries = pending.get("retries", 0)
+                _pending_approvals[key] = {
+                    "command": command,
+                    "pattern_key": primary_key,
+                    "pattern_keys": all_keys,
+                    "description": combined_desc,
+                    "command_hash": cmd_hash,
+                    "retries": retries + 1,
+                }
+            # Auto-block after N retries without justification
+            if retries + 1 > _MAX_JUSTIFICATION_RETRIES:
+                with _lock:
+                    _pending_approvals.pop((session_key, cmd_hash), None)
+                    _pending_justifications.pop((session_key, cmd_hash), None)
+                return {
+                    "approved": False,
+                    "status": "justification_denied",
+                    "command": command,
+                    "description": combined_desc,
+                    "message": (
+                        f"⛔ Command permanently blocked after {_MAX_JUSTIFICATION_RETRIES} "
+                        f"attempts without justification ({combined_desc}).\n\n"
+                        f"**Command:**\n```\n{command}\n```\n\n"
+                        f"You must provide a `justification` parameter explaining why "
+                        f"this command is necessary. Find a safer alternative instead."
+                    ),
+                }
+            return {
+                "approved": False,
+                "status": "justification_required",
+                "command": command,
+                "description": combined_desc,
+                "pattern_key": primary_key,
+                "pattern_keys": all_keys,
+                "message": (
+                    f"⛔ This command needs approval ({combined_desc}).\n\n"
+                    f"**Command:**\n```\n{command}\n```\n\n"
+                    f"Before this can be sent to the user for approval, you MUST provide a justification. "
+                    f"Retry this command with the `justification` parameter explaining:\n"
+                    f"1. Why this command is necessary for the current task\n"
+                    f"2. Why it's safe (if applicable)\n\n"
+                    f"(Attempt {retries + 1}/{_MAX_JUSTIFICATION_RETRIES})"
+                ),
+            }
+
+        # Justification provided — clean up state and proceed to Phase 3
+        with _lock:
+            _pending_approvals.pop((session_key, cmd_hash), None)
+            _pending_justifications.pop((session_key, cmd_hash), None)
+    else:
+        effective_justification = None
+
     # --- Phase 3: Approval ---
 
     # Clear self-correction state so the gate works again next time
     with _lock:
         session_set = _session_approved.get(session_key, set())
         session_set.discard(_SELF_CORRECT_KEY)
-
-    # Combine descriptions for a single approval prompt
-    combined_desc = "; ".join(desc for _, desc, _ in warnings)
-    primary_key = warnings[0][0]
-    all_keys = [key for key, _, _ in warnings]
-    has_tirith = any(is_t for _, _, is_t in warnings)
 
     # Gateway/async approval — block the agent thread until the user
     # responds with /approve or /deny, mirroring the CLI's synchronous
@@ -1189,6 +1268,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                "justification": effective_justification,
             }
             entry = _ApprovalEntry(approval_data)
             with _lock:

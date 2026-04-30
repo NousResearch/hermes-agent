@@ -2996,6 +2996,7 @@ class DiscordAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
+        justification: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> SendResult:
         """
@@ -3026,6 +3027,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 color=discord.Color.orange(),
             )
             embed.add_field(name="Reason", value=description, inline=False)
+            if justification:
+                embed.add_field(name="Agent Justification", value=justification, inline=False)
+
 
             view = ExecApprovalView(
                 session_key=session_key,

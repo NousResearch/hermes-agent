@@ -1353,6 +1353,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
+        justification: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
@@ -1370,6 +1371,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Reason: {_html.escape(description)}"
             )
+            if justification:
+                text += f"\n\n<b>Agent justification:</b> {_html.escape(justification)}"
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)

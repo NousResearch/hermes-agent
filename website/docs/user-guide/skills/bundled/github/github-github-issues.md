@@ -1,14 +1,14 @@
 ---
-title: "Github Issues — Create, manage, triage, and close GitHub issues"
+title: "Github Issues — Create, triage, label, assign GitHub issues via gh or REST"
 sidebar_label: "Github Issues"
-description: "Create, manage, triage, and close GitHub issues"
+description: "Create, triage, label, assign GitHub issues via gh or REST"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Github Issues
 
-Create, manage, triage, and close GitHub issues. Search existing issues, add labels, assign people, and link to PRs. Works with gh CLI or falls back to git + GitHub REST API via curl.
+Create, triage, label, assign GitHub issues via gh or REST.
 
 ## Skill metadata
 

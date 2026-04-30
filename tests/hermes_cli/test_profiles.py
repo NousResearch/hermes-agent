@@ -171,6 +171,23 @@ class TestCreateProfile:
         assert not (profile_dir / "gateway_state.json").exists()
         assert not (profile_dir / "processes.json").exists()
 
+    def test_clone_all_excludes_sibling_profiles_tree(self, profile_env):
+        """--clone-all from default ~/.hermes must not copy profiles/* (nested explosion)."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        profiles_root = default_home / "profiles"
+        profiles_root.mkdir(exist_ok=True)
+        (profiles_root / "other").mkdir(parents=True, exist_ok=True)
+        (profiles_root / "other" / "marker.txt").write_text("sibling data")
+
+        (default_home / "memories").mkdir(exist_ok=True)
+        (default_home / "memories" / "note.md").write_text("remember this")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert (profile_dir / "memories" / "note.md").read_text() == "remember this"
+        assert not (profile_dir / "profiles").exists()
+
     def test_clone_config_missing_files_skipped(self, profile_env):
         """Clone config gracefully skips files that don't exist in source."""
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
@@ -383,6 +400,69 @@ class TestRenameProfile:
         assert not old_dir.is_dir()
         assert new_dir.is_dir()
         assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
+
+    def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
+        tmp_path = profile_env
+        create_profile("ssi_health", no_alias=True)
+        honcho_path = tmp_path / ".hermes" / "honcho.json"
+        honcho_path.write_text(json.dumps({
+            "hosts": {
+                "hermes.ssi_health": {
+                    "recallMode": "hybrid",
+                    "writeFrequency": "async",
+                    "sessionStrategy": "per-session",
+                    "saveMessages": True,
+                    "peerName": "user-peer",
+                    "aiPeer": "ssi_health",
+                    "workspace": "hermes",
+                    "enabled": True,
+                }
+            }
+        }))
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("ssi_health", "heimdall")
+
+        cfg = json.loads(honcho_path.read_text())
+        assert "hermes.ssi_health" not in cfg["hosts"]
+        assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "ssi_health"
+        assert cfg["hosts"]["hermes.heimdall"]["peerName"] == "user-peer"
+
+    def test_pins_ai_peer_when_absent_on_honcho_host_rename(self, profile_env):
+        tmp_path = profile_env
+        create_profile("ssi_health", no_alias=True)
+        honcho_path = tmp_path / ".hermes" / "honcho.json"
+        honcho_path.write_text(json.dumps({
+            "hosts": {
+                "hermes.ssi_health": {"workspace": "hermes", "enabled": True}
+            }
+        }))
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("ssi_health", "heimdall")
+
+        cfg = json.loads(honcho_path.read_text())
+        assert "hermes.ssi_health" not in cfg["hosts"]
+        assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "ssi_health"
+        assert cfg["hosts"]["hermes.heimdall"]["workspace"] == "hermes"
+
+    def test_does_not_overwrite_existing_honcho_host_on_rename(self, profile_env):
+        tmp_path = profile_env
+        create_profile("ssi_health", no_alias=True)
+        honcho_path = tmp_path / ".hermes" / "honcho.json"
+        honcho_path.write_text(json.dumps({
+            "hosts": {
+                "hermes.ssi_health": {"aiPeer": "ssi_health"},
+                "hermes.heimdall": {"aiPeer": "heimdall"},
+            }
+        }))
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("ssi_health", "heimdall")
+
+        cfg = json.loads(honcho_path.read_text())
+        assert cfg["hosts"]["hermes.ssi_health"]["aiPeer"] == "ssi_health"
+        assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "heimdall"
 
     def test_default_raises_value_error(self, profile_env):
         with pytest.raises(ValueError, match="default"):

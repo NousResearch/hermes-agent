@@ -39,7 +39,7 @@ docker run -d \
   nousresearch/hermes-agent gateway run
 ```
 
-Port 8642 exposes the gateway's [OpenAI-compatible API server](./api-server.md) and health endpoint. It's optional if you only use chat platforms (Telegram, Discord, etc.), but required if you want the dashboard or external tools to reach the gateway.
+Port 8642 exposes the gateway's [OpenAI-compatible API server](./features/api-server.md) and health endpoint. It's optional if you only use chat platforms (Telegram, Discord, etc.), but required if you want the dashboard or external tools to reach the gateway.
 
 Opening any port on an internet facing machine is a security risk. You should not do it unless you understand the risks.
 
@@ -105,6 +105,63 @@ The `/opt/data` volume is the single source of truth for all Hermes state. It ma
 Never run two Hermes **gateway** containers against the same data directory simultaneously — session files and memory stores are not designed for concurrent write access. Running a dashboard container alongside the gateway is safe since the dashboard only reads data.
 :::
 
+## Multi-profile support
+
+Hermes supports [multiple profiles](../reference/profile-commands.md) — separate `~/.hermes/` directories that let you run independent agents (different SOUL, skills, memory, sessions, credentials) from a single installation. **When running under Docker, using Hermes' built-in multi-profile feature is not recommended.**
+
+Instead, the recommended pattern is **one container per profile**, with each container bind-mounting its own host directory as `/opt/data`:
+
+```sh
+# Work profile
+docker run -d \
+  --name hermes-work \
+  --restart unless-stopped \
+  -v ~/.hermes-work:/opt/data \
+  -p 8642:8642 \
+  nousresearch/hermes-agent gateway run
+
+# Personal profile
+docker run -d \
+  --name hermes-personal \
+  --restart unless-stopped \
+  -v ~/.hermes-personal:/opt/data \
+  -p 8643:8642 \
+  nousresearch/hermes-agent gateway run
+```
+
+Why separate containers over profiles in Docker:
+
+- **Isolation** — each container has its own filesystem, process table, and resource limits. A crash, dependency change, or runaway session in one profile can't affect another.
+- **Independent lifecycle** — upgrade, restart, pause, or roll back each agent separately (`docker restart hermes-work` leaves `hermes-personal` untouched).
+- **Clean port and network separation** — each gateway binds its own host port; there's no risk of cross-talk between chat platforms or API servers.
+- **Simpler mental model** — the container *is* the profile. Backups, migrations, and permissions all follow the bind-mounted directory, with no extra `--profile` flags to remember.
+- **Avoids concurrent-write risk** — the warning above about never running two gateways against the same data directory still applies to profiles within a single container.
+
+In Docker Compose, this just means declaring one service per profile with distinct `container_name`, `volumes`, and `ports`:
+
+```yaml
+services:
+  hermes-work:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-work
+    restart: unless-stopped
+    command: gateway run
+    ports:
+      - "8642:8642"
+    volumes:
+      - ~/.hermes-work:/opt/data
+
+  hermes-personal:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-personal
+    restart: unless-stopped
+    command: gateway run
+    ports:
+      - "8643:8642"
+    volumes:
+      - ~/.hermes-personal:/opt/data
+```
+
 ## Environment variable forwarding
 
 API keys are read from `/opt/data/.env` inside the container. You can also pass environment variables directly:
@@ -151,7 +208,7 @@ services:
     image: nousresearch/hermes-agent:latest
     container_name: hermes-dashboard
     restart: unless-stopped
-    command: dashboard --host 0.0.0.0
+    command: dashboard --host 0.0.0.0 --insecure
     ports:
       - "9119:9119"
     volumes:
@@ -202,10 +259,12 @@ docker run -d \
 
 The official image is based on `debian:13.4` and includes:
 
-- Python 3 with all Hermes dependencies (`pip install -e ".[all]"`)
+- Python 3 with all Hermes dependencies (`uv pip install -e ".[all]"`)
 - Node.js + npm (for browser automation and WhatsApp bridge)
-- Playwright with Chromium (`npx playwright install --with-deps chromium`)
-- ripgrep and ffmpeg as system utilities
+- Playwright with Chromium (`npx playwright install --with-deps chromium --only-shell`)
+- ripgrep, ffmpeg, git, and tini as system utilities
+- **`docker-cli`** — so agents running inside the container can drive the host's Docker daemon (bind-mount `/var/run/docker.sock` to opt in) for `docker build`, `docker run`, container inspection, etc.
+- **`openssh-client`** — enables the [SSH terminal backend](/docs/user-guide/configuration#ssh-backend) from inside the container. The SSH backend shells out to the system `ssh` binary; without this, it failed silently in containerized installs.
 - The WhatsApp bridge (`scripts/whatsapp-bridge/`)
 
 The entrypoint script (`docker/entrypoint.sh`) bootstraps the data volume on first run:
@@ -253,7 +312,7 @@ Check logs: `docker logs hermes`. Common causes:
 
 ### "Permission denied" errors
 
-The container runs as root by default. If your host `~/.hermes/` was created by a non-root user, permissions should work. If you get errors, ensure the data directory is writable:
+The container's entrypoint drops privileges to the non-root `hermes` user (UID 10000) via `gosu`. If your host `~/.hermes/` is owned by a different UID, set `HERMES_UID`/`HERMES_GID` to match your host user, or ensure the data directory is writable:
 
 ```sh
 chmod -R 755 ~/.hermes

@@ -1,4 +1,5 @@
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
+import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
@@ -10,25 +11,16 @@ import type {
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
 import { fmtK } from '../../../lib/text.js'
-import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type { PanelSection } from '../../../types.js'
+import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
-const GLOBAL_MODEL_FLAG_RE = /(?:^|\s)--global(?:\s|$)/
-
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const TUI_SESSION_STRIP_RE = new RegExp(`\\s*${TUI_SESSION_MODEL_FLAG}\\b\\s*`, 'g')
 
-const persistedModelArg = (arg: string) => {
-  const trimmed = arg.trim()
-
-  return !trimmed || GLOBAL_MODEL_FLAG_RE.test(trimmed) ? trimmed : `${trimmed} --global`
-}
-
-const stripTuiSessionFlag = (trimmed: string) =>
-  trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
+const stripTuiSessionFlag = (trimmed: string) => trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
 
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
@@ -41,7 +33,7 @@ const modelValueForConfigSet = (arg: string) => {
     return stripTuiSessionFlag(trimmed)
   }
 
-  return persistedModelArg(trimmed)
+  return trimmed
 }
 
 export const sessionCommands: SlashCommand[] = [
@@ -162,6 +154,22 @@ export const sessionCommands: SlashCommand[] = [
               patchUiState(state => ({ ...state, usage: { ...state.usage, ...r.usage } }))
             }
 
+            if (r.summary?.headline) {
+              const prefix = r.summary.noop ? '' : '✓ '
+
+              ctx.transcript.sys(`${prefix}${r.summary.headline}`)
+
+              if (r.summary.token_line) {
+                ctx.transcript.sys(`  ${r.summary.token_line}`)
+              }
+
+              if (r.summary.note) {
+                ctx.transcript.sys(`  ${r.summary.note}`)
+              }
+
+              return
+            }
+
             if ((r.removed ?? 0) <= 0) {
               return ctx.transcript.sys('nothing to compress')
             }
@@ -171,6 +179,7 @@ export const sessionCommands: SlashCommand[] = [
             )
           })
         )
+        .catch(ctx.guardedErr)
     }
   },
 
@@ -278,6 +287,43 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    help: 'pick the busy indicator: kaomoji (default), emoji, unicode (braille), or ascii',
+    name: 'indicator',
+    usage: `/indicator [${INDICATOR_STYLES.join('|')}]`,
+    run: (arg, ctx) => {
+      const value = arg.trim().toLowerCase()
+
+      if (!value) {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'indicator' })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(r =>
+              ctx.transcript.sys(`indicator: ${r.value || DEFAULT_INDICATOR_STYLE}`)
+            )
+          )
+      }
+
+      if (!(INDICATOR_STYLES as readonly string[]).includes(value)) {
+        return ctx.transcript.sys(`usage: /indicator [${INDICATOR_STYLES.join('|')}]`)
+      }
+
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'indicator', value }).then(
+        ctx.guarded<ConfigSetResponse>(r => {
+          if (!r.value) {
+            return
+          }
+
+          // Hot-swap the running TUI immediately so the next render
+          // uses the new style without waiting for the 5s mtime poll
+          // to re-apply config.full.
+          patchUiState({ indicatorStyle: value as IndicatorStyle })
+          ctx.transcript.sys(`indicator → ${r.value}`)
+        })
+      )
+    }
+  },
+
+  {
     help: 'toggle yolo mode (per-session approvals)',
     name: 'yolo',
     run: (_arg, ctx) => {
@@ -303,7 +349,108 @@ export const sessionCommands: SlashCommand[] = [
 
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg })
-        .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`reasoning: ${r.value}`)))
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (!r.value) {
+              return
+            }
+
+            if (r.value === 'hide') {
+              patchUiState(state => ({
+                ...state,
+                sections: { ...state.sections, thinking: 'hidden' },
+                showReasoning: false
+              }))
+            } else if (r.value === 'show') {
+              patchUiState(state => ({
+                ...state,
+                sections: { ...state.sections, thinking: 'expanded' },
+                showReasoning: true
+              }))
+            }
+
+            ctx.transcript.sys(`reasoning: ${r.value}`)
+          })
+        )
+    }
+  },
+
+  {
+    help: 'toggle fast mode [normal|fast|status|on|off|toggle]',
+    name: 'fast',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const valid = new Set(['', 'status', 'normal', 'fast', 'on', 'off', 'toggle'])
+
+      if (!valid.has(mode)) {
+        return ctx.transcript.sys('usage: /fast [normal|fast|status|on|off|toggle]')
+      }
+
+      if (!mode || mode === 'status') {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'fast', session_id: ctx.sid })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(r =>
+              ctx.transcript.sys(`fast mode: ${r.value === 'fast' ? 'fast' : 'normal'}`)
+            )
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'fast', session_id: ctx.sid, value: mode })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            const next = r.value === 'fast' ? 'fast' : 'normal'
+            ctx.transcript.sys(`fast mode: ${next}`)
+            patchUiState(state => ({
+              ...state,
+              info: state.info
+                ? {
+                    ...state.info,
+                    fast: next === 'fast',
+                    service_tier: next === 'fast' ? 'priority' : ''
+                  }
+                : state.info
+            }))
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'control busy enter mode [queue|steer|interrupt|status]',
+    name: 'busy',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const valid = new Set(['', 'status', 'queue', 'steer', 'interrupt'])
+
+      if (!valid.has(mode)) {
+        return ctx.transcript.sys('usage: /busy [queue|steer|interrupt|status]')
+      }
+
+      if (!mode || mode === 'status') {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'busy' })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(r => {
+              const current = r.value || 'interrupt'
+              ctx.transcript.sys(`busy input mode: ${current}`)
+            })
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'busy', value: mode })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            const next = r.value || mode
+            ctx.transcript.sys(`busy input mode: ${next}`)
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 

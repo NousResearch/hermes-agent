@@ -1,14 +1,14 @@
 ---
-title: "Research Paper Writing"
+title: "Research Paper Writing — Write ML papers for NeurIPS/ICML/ICLR: design→submit"
 sidebar_label: "Research Paper Writing"
-description: "End-to-end pipeline for writing ML/AI research papers — from experiment design through analysis, drafting, revision, and submission"
+description: "Write ML papers for NeurIPS/ICML/ICLR: design→submit"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Research Paper Writing
 
-End-to-end pipeline for writing ML/AI research papers — from experiment design through analysis, drafting, revision, and submission. Covers NeurIPS, ICML, ICLR, ACL, AAAI, COLM. Integrates automated experiment monitoring, statistical analysis, iterative writing, and citation verification.
+Write ML papers for NeurIPS/ICML/ICLR: design→submit.
 
 ## Skill metadata
 
@@ -37,6 +37,7 @@ End-to-end pipeline for producing publication-ready ML/AI research papers target
 This is **not a linear pipeline** — it is an iterative loop. Results trigger new experiments. Reviews trigger new analysis. The agent must handle these feedback loops.
 
 <!-- ascii-guard-ignore -->
+<!-- ascii-guard-ignore -->
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    RESEARCH PAPER PIPELINE                  │
@@ -56,6 +57,7 @@ This is **not a linear pipeline** — it is an iterative loop. Results trigger n
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
+<!-- ascii-guard-ignore-end -->
 <!-- ascii-guard-ignore-end -->
 
 ---
@@ -739,6 +741,7 @@ Any output in this pipeline — paper drafts, experiment scripts, analysis — c
 
 **Core insight**: Autoreason's value depends on the gap between a model's generation capability and its self-evaluation capability.
 
+<!-- ascii-guard-ignore -->
 ```
 Model Tier        │ Generation │ Self-Eval │ Gap    │ Autoreason Value
 ──────────────────┼────────────┼───────────┼────────┼─────────────────
@@ -748,6 +751,7 @@ Mid (Gemini Flash)│ Decent     │ Moderate  │ Large  │ High — wins 2/3
 Strong (Sonnet 4) │ Good       │ Decent    │ Medium │ Moderate — wins 3/5
 Frontier (S4.6)   │ Excellent  │ Good      │ Small  │ Only with constraints
 ```
+<!-- ascii-guard-ignore-end -->
 
 This gap is structural, not temporary. As costs drop, today's frontier becomes tomorrow's mid-tier. The sweet spot moves but never disappears.
 

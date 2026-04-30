@@ -42,6 +42,7 @@ class TestProviderRegistry:
         ("minimax-cn", "MiniMax (China)", "api_key"),
         ("ai-gateway", "Vercel AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
+        ("gmi", "GMI Cloud", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):
         assert provider_id in PROVIDER_REGISTRY
@@ -106,6 +107,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
         assert pconfig.base_url_env_var == "KILOCODE_BASE_URL"
 
+    def test_gmi_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["gmi"]
+        assert pconfig.api_key_env_vars == ("GMI_API_KEY",)
+        assert pconfig.base_url_env_var == "GMI_BASE_URL"
+
     def test_huggingface_env_vars(self):
         pconfig = PROVIDER_REGISTRY["huggingface"]
         assert pconfig.api_key_env_vars == ("HF_TOKEN",)
@@ -121,6 +127,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
+        assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
 
     def test_oauth_providers_unchanged(self):
@@ -138,11 +145,13 @@ class TestProviderRegistry:
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "LM_API_KEY", "LM_BASE_URL",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "STEPFUN_API_KEY", "STEPFUN_BASE_URL",
     "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
+    "GMI_API_KEY", "GMI_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
     "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
@@ -178,6 +187,9 @@ class TestResolveProvider:
     def test_explicit_ai_gateway(self):
         assert resolve_provider("ai-gateway") == "ai-gateway"
 
+    def test_explicit_gmi(self):
+        assert resolve_provider("gmi") == "gmi"
+
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
 
@@ -204,6 +216,9 @@ class TestResolveProvider:
 
     def test_alias_vercel(self):
         assert resolve_provider("vercel") == "ai-gateway"
+
+    def test_alias_gmi_cloud(self):
+        assert resolve_provider("gmi-cloud") == "gmi"
 
     def test_explicit_kilocode(self):
         assert resolve_provider("kilocode") == "kilocode"
@@ -279,6 +294,10 @@ class TestResolveProvider:
     def test_auto_detects_ai_gateway_key(self, monkeypatch):
         monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-gw-key")
         assert resolve_provider("auto") == "ai-gateway"
+
+    def test_auto_detects_gmi_key(self, monkeypatch):
+        monkeypatch.setenv("GMI_API_KEY", "test-gmi-key")
+        assert resolve_provider("auto") == "gmi"
 
     def test_auto_detects_kilocode_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "test-kilo-key")
@@ -410,6 +429,29 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["base_url"] == "https://api.githubcopilot.com"
         assert creds["source"] == "gh auth token"
 
+    def test_resolve_lmstudio_uses_token_and_base_url_from_env(self, monkeypatch):
+        monkeypatch.setenv("LM_API_KEY", "lm-token")
+        monkeypatch.setenv("LM_BASE_URL", "http://lmstudio.remote:4321/v1")
+
+        creds = resolve_api_key_provider_credentials("lmstudio")
+
+        assert creds["provider"] == "lmstudio"
+        assert creds["api_key"] == "lm-token"
+        assert creds["base_url"] == "http://lmstudio.remote:4321/v1"
+
+    def test_resolve_lmstudio_no_api_key_substitutes_placeholder(self, monkeypatch):
+        # No-auth LM Studio: when LM_API_KEY isn't set, runtime credentials
+        # carry a placeholder so gateway/TUI/cron paths see the local server
+        # as configured. get_api_key_provider_status still reports unconfigured.
+        monkeypatch.delenv("LM_API_KEY", raising=False)
+        monkeypatch.delenv("LM_BASE_URL", raising=False)
+
+        creds = resolve_api_key_provider_credentials("lmstudio")
+
+        assert creds["provider"] == "lmstudio"
+        assert creds["api_key"] == "dummy-lm-api-key"
+        assert creds["base_url"] == "http://127.0.0.1:1234/v1"
+
     def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.copilot_auth.shutil.which", lambda command: None)
         monkeypatch.setattr(
@@ -496,6 +538,19 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["provider"] == "kilocode"
         assert creds["api_key"] == "kilo-secret-key"
         assert creds["base_url"] == "https://api.kilo.ai/api/gateway"
+
+    def test_resolve_gmi_with_key(self, monkeypatch):
+        monkeypatch.setenv("GMI_API_KEY", "gmi-secret-key")
+        creds = resolve_api_key_provider_credentials("gmi")
+        assert creds["provider"] == "gmi"
+        assert creds["api_key"] == "gmi-secret-key"
+        assert creds["base_url"] == "https://api.gmi-serving.com/v1"
+
+    def test_resolve_gmi_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("GMI_API_KEY", "gmi-key")
+        monkeypatch.setenv("GMI_BASE_URL", "https://custom.gmi.example/v1")
+        creds = resolve_api_key_provider_credentials("gmi")
+        assert creds["base_url"] == "https://custom.gmi.example/v1"
 
     def test_resolve_kilocode_custom_base_url(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-key")
@@ -593,6 +648,15 @@ class TestRuntimeProviderResolution:
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "kilo-key"
         assert "kilo.ai" in result["base_url"]
+
+    def test_runtime_gmi(self, monkeypatch):
+        monkeypatch.setenv("GMI_API_KEY", "gmi-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="gmi")
+        assert result["provider"] == "gmi"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "gmi-key"
+        assert result["base_url"] == "https://api.gmi-serving.com/v1"
 
     def test_runtime_auto_detects_api_key_provider(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "auto-kimi-key")
@@ -1033,3 +1097,63 @@ class TestHuggingFaceModels:
         from hermes_cli.models import _PROVIDER_LABELS
         assert "huggingface" in _PROVIDER_LABELS
         assert _PROVIDER_LABELS["huggingface"] == "Hugging Face"
+
+
+# =============================================================================
+# MiniMax OAuth provider tests (added by feat/minimax-oauth-provider)
+# =============================================================================
+
+class TestMinimaxOAuthProvider:
+    """Tests for the minimax-oauth OAuth provider."""
+
+    def test_minimax_oauth_in_provider_registry(self):
+        assert "minimax-oauth" in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["minimax-oauth"]
+        assert pconfig.auth_type == "oauth_minimax"
+        assert pconfig.id == "minimax-oauth"
+
+    def test_minimax_oauth_has_correct_endpoints(self):
+        from hermes_cli.auth import (
+            MINIMAX_OAUTH_GLOBAL_BASE,
+            MINIMAX_OAUTH_GLOBAL_INFERENCE,
+            MINIMAX_OAUTH_CN_BASE,
+            MINIMAX_OAUTH_CN_INFERENCE,
+        )
+        pconfig = PROVIDER_REGISTRY["minimax-oauth"]
+        assert pconfig.portal_base_url == MINIMAX_OAUTH_GLOBAL_BASE
+        assert pconfig.inference_base_url == MINIMAX_OAUTH_GLOBAL_INFERENCE
+        assert pconfig.extra["cn_portal_base_url"] == MINIMAX_OAUTH_CN_BASE
+        assert pconfig.extra["cn_inference_base_url"] == MINIMAX_OAUTH_CN_INFERENCE
+
+    def test_minimax_oauth_alias_resolves_portal(self):
+        result = resolve_provider("minimax-portal")
+        assert result == "minimax-oauth"
+
+    def test_minimax_oauth_alias_resolves_global(self):
+        result = resolve_provider("minimax-global")
+        assert result == "minimax-oauth"
+
+    def test_minimax_oauth_alias_resolves_underscore(self):
+        result = resolve_provider("minimax_oauth")
+        assert result == "minimax-oauth"
+
+    def test_minimax_oauth_listed_in_canonical_providers(self):
+        from hermes_cli.models import CANONICAL_PROVIDERS
+        slugs = [p.slug for p in CANONICAL_PROVIDERS]
+        assert "minimax-oauth" in slugs
+
+    def test_minimax_oauth_models_alias_in_models_py(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+        assert _PROVIDER_ALIASES.get("minimax-portal") == "minimax-oauth"
+        assert _PROVIDER_ALIASES.get("minimax-global") == "minimax-oauth"
+        assert _PROVIDER_ALIASES.get("minimax_oauth") == "minimax-oauth"
+
+    def test_minimax_oauth_has_models(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        models = _PROVIDER_MODELS.get("minimax-oauth", [])
+        assert len(models) >= 1
+
+    def test_minimax_oauth_aux_model_registered(self):
+        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
+        assert "minimax-oauth" in _API_KEY_PROVIDER_AUX_MODELS
+        assert _API_KEY_PROVIDER_AUX_MODELS["minimax-oauth"]  # non-empty

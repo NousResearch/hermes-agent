@@ -8,7 +8,7 @@ streaming, or the _run_codex_stream() call path.
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
-from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from agent.transports.types import NormalizedResponse, ToolCall
 
 
 class ResponsesApiTransport(ProviderTransport):
@@ -151,8 +151,6 @@ class ResponsesApiTransport(ProviderTransport):
         """Normalize Codex Responses API response to NormalizedResponse."""
         from agent.codex_responses_adapter import (
             _normalize_codex_response,
-            _extract_responses_message_text,
-            _extract_responses_reasoning_text,
         )
 
         # _normalize_codex_response returns (SimpleNamespace, finish_reason_str)

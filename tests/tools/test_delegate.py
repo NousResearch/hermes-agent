@@ -568,6 +568,163 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
 
 
+class TestSubagentCostRollup(unittest.TestCase):
+    """Port of Kilo-Org/kilocode#9448 — parent's session_estimated_cost_usd
+    must include subagent spend, not just the parent's own API calls."""
+
+    def _make_parent_with_cost_counters(self, depth=0, starting_cost=0.0):
+        parent = _make_mock_parent(depth=depth)
+        # The fields AIAgent exposes and the footer reads from.  Set real
+        # floats/strings so the rollup can add to them rather than tripping
+        # on MagicMock auto-attrs.
+        parent.session_estimated_cost_usd = starting_cost
+        parent.session_cost_status = "unknown"
+        parent.session_cost_source = "none"
+        return parent
+
+    def test_single_child_cost_folded_into_parent(self):
+        parent = self._make_parent_with_cost_counters(starting_cost=0.10)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 1000
+            mock_child.session_completion_tokens = 200
+            mock_child.session_estimated_cost_usd = 0.42
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 2,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="do stuff", parent_agent=parent))
+
+        # Parent footer must reflect parent_cost + child_cost.
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.52, places=6)
+        # Rollup must strip the internal field before serialising to the model.
+        self.assertNotIn("_child_cost_usd", result["results"][0])
+        self.assertNotIn("_child_role", result["results"][0])
+
+    def test_batch_children_costs_sum_into_parent(self):
+        parent = self._make_parent_with_cost_counters(starting_cost=0.00)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.side_effect = [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "A",
+                    "api_calls": 2,
+                    "duration_seconds": 1.0,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.15,
+                },
+                {
+                    "task_index": 1,
+                    "status": "completed",
+                    "summary": "B",
+                    "api_calls": 2,
+                    "duration_seconds": 1.0,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.27,
+                },
+                {
+                    "task_index": 2,
+                    "status": "failed",
+                    "summary": "",
+                    "error": "boom",
+                    "api_calls": 0,
+                    "duration_seconds": 0.1,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.03,
+                },
+            ]
+            result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": "A"}, {"goal": "B"}, {"goal": "C"}],
+                    parent_agent=parent,
+                )
+            )
+
+        # 0.15 + 0.27 + 0.03 even though one child failed — the API calls it
+        # made before failing still cost money.
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.45, places=6)
+        # cost_source promoted from "none" since the parent had no direct spend.
+        self.assertEqual(parent.session_cost_source, "subagent")
+        self.assertEqual(parent.session_cost_status, "estimated")
+        # All internal fields stripped from results.
+        for entry in result["results"]:
+            self.assertNotIn("_child_cost_usd", entry)
+            self.assertNotIn("_child_role", entry)
+
+    def test_zero_cost_children_leave_parent_source_untouched(self):
+        """If every child reports 0 cost (e.g. free local model), we should
+        not invent a fake 'subagent' source — the parent's 'none' stays."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.00)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.0,
+            }
+            delegate_task(goal="free local run", parent_agent=parent)
+
+        self.assertEqual(parent.session_estimated_cost_usd, 0.0)
+        self.assertEqual(parent.session_cost_source, "none")
+
+    def test_parent_with_real_source_not_overwritten(self):
+        """If the parent already has its own cost billed (cost_source != 'none'),
+        adding subagent cost must not clobber the existing source label."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.20)
+        parent.session_cost_status = "exact"
+        parent.session_cost_source = "openrouter"
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.30,
+            }
+            delegate_task(goal="billed run", parent_agent=parent)
+
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.50, places=6)
+        # Real source label preserved.
+        self.assertEqual(parent.session_cost_source, "openrouter")
+        self.assertEqual(parent.session_cost_status, "exact")
+
+    def test_rollup_tolerates_missing_cost_fields(self):
+        """Older fixtures / fabricated error entries may not carry
+        _child_cost_usd.  Rollup must degrade to zero-add silently."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.10)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                # no _child_role, no _child_cost_usd
+            }
+            result = json.loads(delegate_task(goal="legacy", parent_agent=parent))
+
+        # Parent cost unchanged.
+        self.assertEqual(parent.session_estimated_cost_usd, 0.10)
+        self.assertEqual(len(result["results"]), 1)
+
+
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:

@@ -1,3 +1,4 @@
+import { ListItem } from "@nous-research/ui";
 import {
   AlertCircle,
   Check,
@@ -87,12 +88,11 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
     <div
       className={`rounded-md border overflow-hidden ${STATUS_TONE[tool.status]}`}
     >
-      <button
-        type="button"
+      <ListItem
         onClick={() => setUserOverride(!open)}
         disabled={!hasBody}
         aria-expanded={open}
-        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-foreground/2 disabled:cursor-default cursor-pointer transition-colors"
+        className="px-2.5 py-1.5 text-xs hover:bg-foreground/2 disabled:cursor-default"
       >
         {hasBody ? (
           <Chevron className="h-3 w-3 shrink-0 text-muted-foreground" />
@@ -132,7 +132,7 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
             {elapsed}
           </span>
         )}
-      </button>
+      </ListItem>
 
       {open && hasBody && (
         <div className="border-t border-border/60 px-3 py-2 space-y-2 text-xs font-mono">

@@ -102,11 +102,13 @@ If you already have `provider: anthropic` configured and just want to point it a
 model:
   provider: anthropic
   base_url: https://my-resource.services.ai.azure.com/anthropic
-  api_key_env: AZURE_ANTHROPIC_KEY
+  key_env: AZURE_ANTHROPIC_KEY
   default: claude-sonnet-4-6
 ```
 
 With `AZURE_ANTHROPIC_KEY` set in `~/.hermes/.env`. Hermes detects `azure.com` in the base URL and short-circuits around the Claude Code OAuth token chain so the Azure key is used directly with `x-api-key` auth.
+
+`key_env` is the canonical snake_case field name; `api_key_env` (and the camelCase `keyEnv` / `apiKeyEnv`) are accepted as aliases. If both `key_env` and `AZURE_ANTHROPIC_KEY`/`ANTHROPIC_API_KEY` are set, the `key_env`-named env var wins.
 
 ## Model discovery
 

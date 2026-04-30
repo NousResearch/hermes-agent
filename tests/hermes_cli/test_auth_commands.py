@@ -1446,23 +1446,36 @@ def test_seed_custom_pool_respects_config_suppression(tmp_path, monkeypatch):
 def test_credential_sources_registry_has_expected_steps():
     """Sanity check — the registry contains the expected RemovalSteps.
 
-    Guards against accidentally dropping a step during future refactors.
-    If you add a new credential source, add it to the expected set below.
+    Adding a new credential source is routine, so this is a structural
+    invariant check (every step has a description, every step is unique,
+    core steps are present) rather than a frozen snapshot. Frozen
+    snapshots of catalog-like data violate the AGENTS.md "don't write
+    change-detector tests" rule — they break every time someone adds a
+    provider.
     """
     from agent.credential_sources import _REGISTRY
 
-    descriptions = {step.description for step in _REGISTRY}
-    expected = {
+    descriptions = [step.description for step in _REGISTRY]
+    # No empty descriptions, no duplicates.
+    assert all(d for d in descriptions), "Every removal step must have a description"
+    assert len(descriptions) == len(set(descriptions)), (
+        f"Registry has duplicate step descriptions: {descriptions}"
+    )
+    # Core steps must be present — these are the ones the rest of the code
+    # assumes exist. When deliberately dropping one, update this list.
+    required = {
         "gh auth token / COPILOT_GITHUB_TOKEN / GH_TOKEN",
         "Any env-seeded credential (XAI_API_KEY, DEEPSEEK_API_KEY, etc.)",
         "~/.claude/.credentials.json",
         "~/.hermes/.anthropic_oauth.json",
         "auth.json providers.nous",
         "auth.json providers.openai-codex + ~/.codex/auth.json",
+        "auth.json providers.minimax-oauth",
         "~/.qwen/oauth_creds.json",
         "Custom provider config.yaml api_key field",
     }
-    assert descriptions == expected, f"Registry mismatch. Got: {descriptions}"
+    missing = required - set(descriptions)
+    assert not missing, f"Registry missing required steps: {missing}"
 
 
 def test_credential_sources_find_step_returns_none_for_manual():

@@ -1566,7 +1566,7 @@ def test_session_compress_uses_compress_helper(monkeypatch):
     monkeypatch.setattr(
         server,
         "_compress_session_history",
-        lambda session, focus_topic=None: (2, {"total": 42}),
+        lambda session, focus_topic=None, **_kw: (2, {"total": 42}),
     )
     monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
 
@@ -1577,7 +1577,52 @@ def test_session_compress_uses_compress_helper(monkeypatch):
 
     assert resp["result"]["removed"] == 2
     assert resp["result"]["usage"]["total"] == 42
-    emit.assert_called_once_with("session.info", "sid", {"model": "x"})
+    emit.assert_any_call("session.info", "sid", {"model": "x"})
+    # Final status.update clears the pinned "compressing" indicator so the
+    # status bar can revert to the neutral state when compaction finishes.
+    emit.assert_any_call(
+        "status.update", "sid", {"kind": "status", "text": "ready"}
+    )
+
+
+def test_session_compress_syncs_session_key_after_rotation(monkeypatch):
+    """When AIAgent._compress_context rotates session_id (compression split),
+    the gateway session_key must follow so subsequent approval routing,
+    DB title/history lookups, and slash worker resume target the new
+    continuation session — mirrors HermesCLI._manual_compress's
+    session_id sync (cli.py).
+    """
+    agent = types.SimpleNamespace(session_id="rotated-id")
+    server._sessions["sid"] = _session(agent=agent)
+    server._sessions["sid"]["session_key"] = "old-key"
+    server._sessions["sid"]["pending_title"] = "stale title"
+
+    monkeypatch.setattr(
+        server,
+        "_compress_session_history",
+        lambda session, focus_topic=None, **_kw: (2, {"total": 42}),
+    )
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    restart_calls = []
+    monkeypatch.setattr(
+        server, "_restart_slash_worker", lambda s: restart_calls.append(s)
+    )
+
+    try:
+        with patch("tui_gateway.server._emit"):
+            server.handle_request(
+                {
+                    "id": "1",
+                    "method": "session.compress",
+                    "params": {"session_id": "sid"},
+                }
+            )
+
+        assert server._sessions["sid"]["session_key"] == "rotated-id"
+        assert server._sessions["sid"]["pending_title"] is None
+        assert len(restart_calls) == 1
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
@@ -2421,6 +2466,39 @@ def test_mirror_slash_side_effects_allowed_when_idle(monkeypatch):
     # Should NOT contain "session busy" — the switch went through.
     assert "session busy" not in warning
     assert applied["model"]
+
+
+def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
+    """Regression guard: /compress side effect must not hold history_lock
+    when calling _compress_session_history (the helper snapshots under
+    the same non-reentrant lock internally)."""
+    import types
+
+    seen = {"compress": False, "sync": False}
+    emitted = []
+
+    def _fake_compress(session, focus_topic=None, **_kw):
+        seen["compress"] = True
+        assert not session["history_lock"].locked()
+        return (0, {"total": 0})
+
+    def _fake_sync(_sid, _session):
+        seen["sync"] = True
+
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", _fake_sync)
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+
+    session = _session(running=False)
+    session["agent"] = types.SimpleNamespace(model="x")
+
+    warning = server._mirror_slash_side_effects("sid", session, "/compress")
+
+    assert warning == ""
+    assert seen["compress"]
+    assert seen["sync"]
+    assert ("session.info", "sid", {"model": "x"}) in emitted
 
 
 # ---------------------------------------------------------------------------

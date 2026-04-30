@@ -2546,6 +2546,99 @@ def _is_connected(config: PlatformConfig) -> bool:
     return bool(getattr(config, "enabled", False)) and _validate_config(config)
 
 
+def interactive_setup() -> None:
+    """Walk the user through Google Chat configuration via ``hermes setup``.
+
+    The setup wizard at ``hermes_cli/gateway.py`` calls this for plugin
+    platforms instead of using the in-tree ``_PLATFORMS`` data block. The
+    flow mirrors the in-tree built-ins: print the GCP setup instructions,
+    prompt for env vars, persist them to ``~/.hermes/.env`` so the next
+    gateway restart picks them up.
+    """
+    from hermes_cli.config import (
+        get_env_value,
+        save_env_value,
+        prompt,
+        prompt_yes_no,
+        print_info,
+        print_success,
+        print_warning,
+    )
+
+    existing_sub = get_env_value("GOOGLE_CHAT_SUBSCRIPTION_NAME")
+    if existing_sub:
+        print_info(f"Google Chat: already configured (subscription: {existing_sub})")
+        if not prompt_yes_no("Reconfigure Google Chat?", False):
+            return
+
+    print_info("Google Chat needs a GCP project, a Pub/Sub topic + subscription,")
+    print_info("and a Service Account with Pub/Sub Subscriber on the subscription.")
+    print_info("Walkthrough:")
+    print_info("  1. Create or select a GCP project; enable Google Chat API + Cloud Pub/Sub API.")
+    print_info("  2. Create a Service Account (no project-level IAM role needed).")
+    print_info("  3. Create a Pub/Sub topic (e.g. hermes-chat-events) and a Pull subscription.")
+    print_info("  4. On the TOPIC: add chat-api-push@system.gserviceaccount.com as Pub/Sub Publisher.")
+    print_info("  5. On the SUBSCRIPTION: grant your Service Account Pub/Sub Subscriber.")
+    print_info("  6. Download the Service Account JSON key.")
+    print_info("  7. Google Chat API console → Configuration: connection = Cloud Pub/Sub,")
+    print_info("     point at the topic, enable 1:1 + group, restrict visibility.")
+    print_info("  8. Install the bot in a space (fires ADDED_TO_SPACE and resolves its user_id).")
+    print_info("")
+    print_info("Full guide: website/docs/user-guide/messaging/google_chat.md")
+    print_info("")
+
+    project = prompt(
+        "GCP project ID (e.g. my-project)",
+        default=get_env_value("GOOGLE_CHAT_PROJECT_ID") or "",
+    )
+    if not project:
+        print_warning("Project ID is required — skipping Google Chat setup")
+        return
+    save_env_value("GOOGLE_CHAT_PROJECT_ID", project.strip())
+
+    subscription = prompt(
+        "Pub/Sub subscription (projects/<proj>/subscriptions/<sub>)",
+        default=get_env_value("GOOGLE_CHAT_SUBSCRIPTION_NAME") or "",
+    )
+    if not subscription:
+        print_warning("Subscription is required — skipping Google Chat setup")
+        return
+    save_env_value("GOOGLE_CHAT_SUBSCRIPTION_NAME", subscription.strip())
+
+    sa_path = prompt(
+        "Path to Service Account JSON (or inline JSON)",
+        default=get_env_value("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON") or "",
+        password=True,
+    )
+    if sa_path:
+        save_env_value("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON", sa_path.strip())
+
+    if prompt_yes_no("Restrict access to specific users? (recommended)", True):
+        allowed = prompt(
+            "Allowed user emails (comma-separated)",
+            default=get_env_value("GOOGLE_CHAT_ALLOWED_USERS") or "",
+        )
+        if allowed:
+            save_env_value("GOOGLE_CHAT_ALLOWED_USERS", allowed.replace(" ", ""))
+            print_success("Allowlist configured")
+        else:
+            save_env_value("GOOGLE_CHAT_ALLOWED_USERS", "")
+    else:
+        save_env_value("GOOGLE_CHAT_ALLOW_ALL_USERS", "true")
+        print_warning("⚠️  Open access — anyone who can DM the bot can command it.")
+
+    home = prompt(
+        "Home space for cron/notification delivery (e.g. spaces/AAAA, or empty)",
+        default=get_env_value("GOOGLE_CHAT_HOME_CHANNEL") or "",
+    )
+    if home:
+        save_env_value("GOOGLE_CHAT_HOME_CHANNEL", home.strip())
+
+    print()
+    print_success("Google Chat configuration saved to ~/.hermes/.env")
+    print_info("Restart the gateway: hermes gateway restart")
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system at startup.
 
@@ -2567,6 +2660,7 @@ def register(ctx) -> None:
             "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
         ],
         install_hint="pip install 'hermes-agent[google_chat]'",
+        setup_fn=interactive_setup,
         # Auth env vars for _is_user_authorized() integration.
         allowed_users_env="GOOGLE_CHAT_ALLOWED_USERS",
         allow_all_env="GOOGLE_CHAT_ALLOW_ALL_USERS",
@@ -2576,11 +2670,24 @@ def register(ctx) -> None:
         emoji="💬",
         allow_update_command=True,
         platform_hint=(
-            "You are chatting via Google Chat. The renderer accepts a "
-            "limited markdown subset: *bold*, _italic_, ~strike~, "
-            "`code`. Headings and lists do not render. Native file "
-            "attachments require the user to run /setup-files once in "
-            "their own DM — until they do, file requests fall back to "
-            "a text notice with the host path."
+            "You are on Google Chat. Limited markdown subset is rendered: "
+            "*bold*, _italic_, ~strike~, `code`. No headings or lists. "
+            "Message size limit: 4000 characters; longer responses are split "
+            "across multiple messages. You are in a space (DM or group). "
+            "Images render inline; audio, video, and document attachments "
+            "render as download cards (no native voice/video UI). To send "
+            "files, include MEDIA:/absolute/path/to/file in your response. "
+            "Native file attachments require the user to run /setup-files "
+            "once in their own DM — until they do, file requests fall back "
+            "to a text notice with the host path. Do NOT generate interactive "
+            "Card v2 buttons — Google Chat interactivity is not yet supported "
+            "by this gateway; ask for typed confirmations instead. While you "
+            "are generating a response, a 'Hermes is thinking…' marker message "
+            "appears in the space and is deleted once your response is ready. "
+            "You do NOT have access to Google Chat-specific APIs — you cannot "
+            "search space history, list space members, or manage spaces. Do "
+            "not promise to perform these actions; explain that you can only "
+            "read messages sent directly to you and respond in the same "
+            "space/thread."
         ),
     )

@@ -373,16 +373,6 @@ def build_session_context_prompt(
             "Use target='yuanbao:direct:<account_id>' for DM "
             "and target='yuanbao:group:<group_code>' for group chat."
         )
-    elif context.source.platform == Platform.GOOGLE_CHAT:
-        lines.append("")
-        lines.append(
-            "**Platform notes:** You are running inside Google Chat. "
-            "You do NOT have access to Google Chat-specific APIs — you cannot "
-            "search space history, list space members, manage spaces, or issue "
-            "Card v2 interactive buttons. Do not promise to perform these actions. "
-            "If the user asks, explain that you can only read messages sent "
-            "directly to you and respond in the same space/thread."
-        )
 
     # Connected platforms
     platforms_list = ["local (files on this machine)"]

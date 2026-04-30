@@ -392,19 +392,6 @@ PLATFORM_HINTS = {
         "attachments, audio as file attachments. You can also include image URLs "
         "in markdown format ![alt](url) and they will be uploaded as attachments."
     ),
-    "google_chat": (
-        "You are on Google Chat. Limited markdown subset is rendered: "
-        "*bold*, _italic_, ~strike~, `code`. No headings or lists. "
-        "Message size limit: 4000 characters; longer responses are split across "
-        "multiple messages. You are in a space (DM or group). Images render "
-        "inline; audio, video, and document attachments render as download "
-        "cards (no native voice/video UI). To send files, include "
-        "MEDIA:/absolute/path/to/file in your response. Do NOT generate "
-        "interactive Card v2 buttons — Google Chat interactivity is not yet "
-        "supported by this gateway; ask for typed confirmations instead. "
-        "While you are generating a response, a 'Hermes is thinking…' marker "
-        "message appears in the space and is deleted once your response is ready."
-    ),
     "signal": (
         "You are on a text messaging communication platform, Signal. "
         "Please do not use markdown as it does not render. "

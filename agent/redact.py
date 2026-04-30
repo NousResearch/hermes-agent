@@ -154,17 +154,6 @@ _DISCORD_MENTION_RE = re.compile(r"<@!?(\d{17,20})>")
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
-# Google Chat / GCP identifiers that leak project/subscription info via error
-# messages. These are not secrets per se, but they identify the deployment and
-# should not end up in shared logs or upstream issue reports.
-_GCP_SA_EMAIL_RE = re.compile(
-    r"[A-Za-z0-9._+-]+@[A-Za-z0-9-]+\.iam\.gserviceaccount\.com"
-)
-_GCP_SUBSCRIPTION_RE = re.compile(
-    r"projects/[^/\s]+/subscriptions/[^/\s]+"
-)
-_GCP_TOPIC_RE = re.compile(r"projects/[^/\s]+/topics/[^/\s]+")
-
 # URLs containing query strings — matches `scheme://...?...[# or end]`.
 # Used to scan text for URLs whose query params may contain secrets.
 # Ported from nearai/ironclaw#2529.
@@ -390,14 +379,6 @@ def redact_sensitive_text(text: str, *, force: bool = False) -> str:
             return phone[:2] + "****" + phone[-2:]
         return phone[:4] + "****" + phone[-4:]
     text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
-
-    # Google Chat / GCP identifiers: SA emails and subscription/topic resource
-    # names appearing in Pub/Sub error messages or logs.
-    text = _GCP_SA_EMAIL_RE.sub("<sa>@<project>.iam.gserviceaccount.com", text)
-    text = _GCP_SUBSCRIPTION_RE.sub(
-        "projects/<redacted>/subscriptions/<redacted>", text
-    )
-    text = _GCP_TOPIC_RE.sub("projects/<redacted>/topics/<redacted>", text)
 
     return text
 

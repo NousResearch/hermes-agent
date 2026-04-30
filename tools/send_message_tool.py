@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 import ssl
 import time
 
@@ -650,8 +650,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
-        elif platform == Platform.GOOGLE_CHAT:
-            result = await _send_google_chat(pconfig.extra, chat_id, chunk, thread_id=thread_id)
         else:
             # Plugin platform — route through the gateway's live adapter
             # if available, otherwise report the error.
@@ -1766,55 +1764,6 @@ async def _send_yuanbao(chat_id, message, media_files=None):
         return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
     except Exception as e:
         return _error(f"Yuanbao send failed: {e}")
-
-
-async def _send_google_chat(extra: Dict[str, Any], chat_id: str, message: str, thread_id: Optional[str] = None) -> Dict[str, Any]:
-    """Send a text message to Google Chat via REST API (standalone, no full adapter).
-
-    Used by send_message_tool and cron deliveries. Reuses the SA credentials
-    from PlatformConfig.extra; spins a Chat REST client just for this call.
-    """
-    try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build as build_service
-    except ImportError:
-        return _error("Google Chat deps not installed; run: pip install hermes-agent[google_chat]")
-
-    sa_path = extra.get("service_account_json") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-    if not sa_path:
-        return _error("Google Chat: no service_account_json configured")
-
-    try:
-        if sa_path.lstrip().startswith("{"):
-            info = json.loads(sa_path)
-            creds = service_account.Credentials.from_service_account_info(
-                info, scopes=["https://www.googleapis.com/auth/chat.bot"],
-            )
-        else:
-            creds = service_account.Credentials.from_service_account_file(
-                sa_path, scopes=["https://www.googleapis.com/auth/chat.bot"],
-            )
-    except Exception as e:
-        return _error(f"Google Chat: failed to load credentials: {e}")
-
-    def _do_send() -> Dict[str, Any]:
-        client = build_service("chat", "v1", credentials=creds, cache_discovery=False)
-        body: Dict[str, Any] = {"text": message[:4000]}
-        if thread_id:
-            body["thread"] = {"name": thread_id}
-        resp = client.spaces().messages().create(parent=chat_id, body=body).execute()
-        return resp
-
-    try:
-        resp = await asyncio.to_thread(_do_send)
-        return {
-            "success": True,
-            "platform": "google_chat",
-            "chat_id": chat_id,
-            "message_id": resp.get("name"),
-        }
-    except Exception as e:
-        return _error(f"Google Chat send failed: {e}")
 
 
 # --- Registry ---

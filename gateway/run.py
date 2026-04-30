@@ -2731,7 +2731,6 @@ class GatewayRunner:
             "BLUEBUBBLES_ALLOWED_USERS",
             "QQ_ALLOWED_USERS",
             "YUANBAO_ALLOWED_USERS",
-            "GOOGLE_CHAT_ALLOWED_USERS",
             "GATEWAY_ALLOWED_USERS",
         )
         _builtin_allow_all_vars = (
@@ -2747,7 +2746,6 @@ class GatewayRunner:
             "BLUEBUBBLES_ALLOW_ALL_USERS",
             "QQ_ALLOW_ALL_USERS",
             "YUANBAO_ALLOW_ALL_USERS",
-            "GOOGLE_CHAT_ALLOW_ALL_USERS",
         )
         # Also pick up plugin-registered platforms — each entry can declare
         # its own allowed_users_env / allow_all_env, so the warning stays
@@ -4228,11 +4226,6 @@ class GatewayRunner:
                 return None
             return YuanbaoAdapter(config)
 
-        # Google Chat used to live in this if/elif chain. It now ships as a
-        # bundled plugin under ``plugins/platforms/google_chat/`` and is
-        # picked up by the platform_registry lookup at the top of this
-        # method. The arm was removed in the plugin migration commit.
-
         return None
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -4276,7 +4269,6 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
-            Platform.GOOGLE_CHAT: "GOOGLE_CHAT_ALLOWED_USERS",
         }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -4303,7 +4295,6 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
-            Platform.GOOGLE_CHAT: "GOOGLE_CHAT_ALLOW_ALL_USERS",
         }
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
         platform_allow_bots_map = {
@@ -4498,7 +4489,6 @@ class GatewayRunner:
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
-                Platform.GOOGLE_CHAT: "GOOGLE_CHAT_ALLOWED_USERS",
             }
             platform_group_env_map = {
                 Platform.TELEGRAM: (

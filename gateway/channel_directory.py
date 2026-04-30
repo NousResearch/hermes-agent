@@ -346,9 +346,7 @@ def format_directory_for_display() -> str:
                     lines.append(f"  discord:{_channel_target_name(plat_name, ch)}")
             lines.append("")
         else:
-            # "google_chat" -> "Google Chat" (not "Google_Chat" which .title() produces).
-            display_name = plat_name.replace("_", " ").title()
-            lines.append(f"{display_name}:")
+            lines.append(f"{plat_name.title()}:")
             for ch in channels:
                 lines.append(f"  {plat_name}:{_channel_target_name(plat_name, ch)}")
             lines.append("")

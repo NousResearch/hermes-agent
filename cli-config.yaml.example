@@ -632,7 +632,7 @@ agent:
 #   homeassistant: hermes-homeassistant  (same as telegram)
 #   qqbot:            hermes-qqbot            (same as telegram)
 #   teams:            hermes-teams            (same as telegram)
-#   google_chat:      hermes-google-chat      (same as telegram)
+#   google_chat:      hermes-google_chat      (same as telegram)
 #
 platform_toolsets:
   cli: [hermes-cli]
@@ -645,7 +645,7 @@ platform_toolsets:
   qqbot: [hermes-qqbot]
   yuanbao: [hermes-yuanbao]
   teams: [hermes-teams]
-  google_chat: [hermes-google-chat]
+  google_chat: [hermes-google_chat]
 
 # =============================================================================
 # Gateway Platform Settings

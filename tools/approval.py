@@ -211,6 +211,10 @@ def _hardline_block_result(description: str) -> dict:
 # Dangerous command patterns
 # =========================================================================
 
+# Snapshot YOLO mode at import time so subprocesses cannot export it
+# to bypass approval in later commands within the same session.
+_YOLO_AT_STARTUP = bool(os.getenv("HERMES_YOLO_MODE"))
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -797,7 +801,7 @@ def check_dangerous_command(command: str, env_type: str,
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
-    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled():
+    if _YOLO_AT_STARTUP or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -922,7 +926,7 @@ def check_all_command_guards(command: str, env_type: str,
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
-    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled() or approval_mode == "off":
+    if _YOLO_AT_STARTUP or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
     is_cli = os.getenv("HERMES_INTERACTIVE")

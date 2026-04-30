@@ -892,6 +892,14 @@ class GatewayRunner:
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
 
+        # Slash-confirm state lives in tools.slash_confirm (module-level),
+        # so platform adapters can resolve callbacks without a backref to
+        # this runner.  Keep a local counter for confirm_id generation so
+        # IDs stay compact (button callback_data has a 64-byte cap on
+        # some platforms).
+        import itertools as _itertools
+        self._slash_confirm_counter = _itertools.count(1)
+
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
         # per-message AIAgent instances.
@@ -3804,6 +3812,50 @@ class GatewayRunner:
                         e,
                     )
                 _update_prompts.pop(_quick_key, None)
+
+        # Intercept messages that are responses to a pending /reload-mcp
+        # (or future) slash-confirm prompt.  Recognized confirm replies are
+        # /approve, /always, /cancel (plus short aliases).  Anything else
+        # falls through to normal dispatch — a stale pending confirm does
+        # NOT block other commands.
+        #
+        # Important: if a dangerous-command approval is ALSO pending (agent
+        # blocked inside tools/approval.py), the tool approval takes
+        # precedence — /approve there unblocks the waiting tool thread.
+        # Slash-confirm only catches /approve when no tool approval is live.
+        from tools import slash_confirm as _slash_confirm_mod
+        _pending_confirm = _slash_confirm_mod.get_pending(_quick_key)
+        _tool_approval_live = False
+        try:
+            from tools.approval import has_blocking_approval
+            _tool_approval_live = has_blocking_approval(_quick_key)
+        except Exception:
+            _tool_approval_live = False
+        if _pending_confirm and not _tool_approval_live:
+            _raw_reply = (event.text or "").strip()
+            _cmd_reply = event.get_command()
+            _confirm_choice = None
+            if _cmd_reply in ("approve", "yes", "ok", "confirm"):
+                _confirm_choice = "once"
+            elif _cmd_reply in ("always", "remember"):
+                _confirm_choice = "always"
+            elif _cmd_reply in ("cancel", "no", "deny", "nevermind"):
+                _confirm_choice = "cancel"
+            elif _raw_reply.lower() in ("approve", "approve once", "once"):
+                _confirm_choice = "once"
+            elif _raw_reply.lower() in ("always", "always approve"):
+                _confirm_choice = "always"
+            elif _raw_reply.lower() in ("cancel", "nevermind", "no"):
+                _confirm_choice = "cancel"
+            if _confirm_choice is not None:
+                _resolved = await _slash_confirm_mod.resolve(
+                    _quick_key, _pending_confirm.get("confirm_id"), _confirm_choice,
+                )
+                return _resolved or ""
+            # Stale pending + unrelated command: drop the pending state so
+            # the confirm doesn't block normal usage indefinitely.  The user
+            # clearly moved on.
+            _slash_confirm_mod.clear_if_stale(_quick_key)
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
@@ -8200,8 +8252,91 @@ class GatewayRunner:
             logger.error("Insights command error: %s", e, exc_info=True)
             return f"Error generating insights: {e}"
 
-    async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
-        """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""
+    async def _handle_reload_mcp_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /reload-mcp — reconnect MCP servers and rebuild the cached agent.
+
+        Reloading MCP tools invalidates the provider prompt cache for the
+        active session (tool schemas are baked into the system prompt).  The
+        next message re-sends full input tokens, which is expensive on
+        long-context or high-reasoning models.
+
+        To surface that cost, the command routes through the slash-confirm
+        primitive: users get an Approve Once / Always Approve / Cancel
+        prompt before the reload actually runs.  "Always Approve" persists
+        ``approvals.mcp_reload_confirm: false`` so the prompt is silenced
+        for subsequent reloads in any session.
+
+        Users can also skip the confirm by flipping the config key directly.
+        """
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        # Read the gate fresh from disk so a prior "always" click takes
+        # effect on the next invocation without restarting the gateway.
+        user_config = self._read_user_config()
+        approvals = user_config.get("approvals") if isinstance(user_config, dict) else None
+        confirm_required = True
+        if isinstance(approvals, dict):
+            confirm_required = bool(approvals.get("mcp_reload_confirm", True))
+
+        if not confirm_required:
+            return await self._execute_mcp_reload(event)
+
+        # Route through slash-confirm.  The primitive sends the prompt and
+        # stores the resume handler; the button/text response triggers
+        # ``_resolve_slash_confirm`` which invokes the handler with the
+        # chosen outcome.
+        async def _on_confirm(choice: str) -> Optional[str]:
+            if choice == "cancel":
+                return "🟡 /reload-mcp cancelled. MCP tools unchanged."
+            if choice == "always":
+                # Persist the opt-out and run the reload.
+                try:
+                    from cli import save_config_value
+                    save_config_value("approvals.mcp_reload_confirm", False)
+                    logger.info(
+                        "User opted out of /reload-mcp confirmation (session=%s)",
+                        session_key,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)
+            # once / always → run the reload
+            result = await self._execute_mcp_reload(event)
+            if choice == "always":
+                return (
+                    f"{result}\n\n"
+                    "ℹ️ Future `/reload-mcp` calls will run without confirmation. "
+                    "Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml."
+                )
+            return result
+
+        prompt_message = (
+            "⚠️ **Confirm /reload-mcp**\n\n"
+            "Reloading MCP servers rebuilds the tool set for this session "
+            "and **invalidates the provider prompt cache** — the next "
+            "message will re-send full input tokens.  On long-context or "
+            "high-reasoning models this can be expensive.\n\n"
+            "Choose:\n"
+            "• **Approve Once** — reload now\n"
+            "• **Always Approve** — reload now and silence this prompt permanently\n"
+            "• **Cancel** — leave MCP tools unchanged\n\n"
+            "_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
+        )
+        return await self._request_slash_confirm(
+            event=event,
+            command="reload-mcp",
+            title="/reload-mcp",
+            message=prompt_message,
+            handler=_on_confirm,
+        )
+
+    async def _execute_mcp_reload(self, event: MessageEvent) -> str:
+        """Actually disconnect, reconnect, and notify MCP tool changes.
+
+        Split out from ``_handle_reload_mcp_command`` so the confirmation
+        wrapper can invoke the same path whether the user confirmed via
+        button, text reply, or has the confirm gate disabled.
+        """
         loop = asyncio.get_running_loop()
         try:
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
@@ -8342,6 +8477,102 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Skills reload failed: %s", e)
             return f"❌ Skills reload failed: {e}"
+
+    # ------------------------------------------------------------------
+    # Slash-command confirmation primitive (generic)
+    # ------------------------------------------------------------------
+    # Used by slash commands that have a non-destructive but expensive
+    # side effect worth an explicit user confirmation (currently only
+    # /reload-mcp, which invalidates the prompt cache).  Two delivery
+    # paths:
+    #   1. Button UI — adapters that override ``send_slash_confirm``
+    #      (Telegram, Discord, Slack, Matrix, Feishu) render three
+    #      inline buttons.  The adapter routes the button click back via
+    #      ``tools.slash_confirm.resolve(session_key, confirm_id, choice)``.
+    #   2. Text fallback — adapters that don't override the hook get a
+    #      plain text prompt.  Users reply with /approve, /always, or
+    #      /cancel; the early intercept in ``_handle_message`` matches
+    #      those replies against ``tools.slash_confirm.get_pending()``.
+
+    async def _request_slash_confirm(
+        self,
+        *,
+        event: MessageEvent,
+        command: str,
+        title: str,
+        message: str,
+        handler,
+    ) -> Optional[str]:
+        """Ask the user to confirm an expensive slash command.
+
+        ``handler`` is an async callable ``handler(choice: str) -> str``
+        where ``choice`` is ``"once"``, ``"always"``, or ``"cancel"``.
+        The handler runs on the event loop when the user responds; its
+        return value is sent back as a gateway message.
+
+        Returns a short acknowledgment string to send immediately (before
+        the user's response).  If buttons rendered successfully the ack
+        is ``None`` (buttons are self-explanatory); if we fell back to
+        text the message itself IS the ack.
+        """
+        from tools import slash_confirm as _slash_confirm_mod
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        confirm_id = f"{next(self._slash_confirm_counter)}"
+
+        # Register the pending confirm FIRST so a super-fast button click
+        # cannot race the send_slash_confirm return.
+        _slash_confirm_mod.register(session_key, confirm_id, command, handler)
+
+        adapter = self.adapters.get(source.platform)
+        metadata = self._thread_metadata_for_source(source)
+
+        used_buttons = False
+        if adapter is not None:
+            try:
+                button_result = await adapter.send_slash_confirm(
+                    chat_id=source.chat_id,
+                    title=title,
+                    message=message,
+                    session_key=session_key,
+                    confirm_id=confirm_id,
+                    metadata=metadata,
+                )
+                if button_result and getattr(button_result, "success", False):
+                    used_buttons = True
+            except Exception as exc:
+                logger.debug(
+                    "send_slash_confirm failed for %s on %s: %s",
+                    command, source.platform, exc,
+                )
+
+        if used_buttons:
+            # Buttons rendered — no redundant text ack.
+            return None
+        # Text fallback — return the prompt message as the direct reply.
+        return message
+
+    def _read_user_config(self) -> Dict[str, Any]:
+        """Read the user's raw config.yaml (cached) for gate lookups.
+
+        Used by slash-confirm gates that must reflect on-disk state changes
+        (e.g. a prior "Always Approve" click) without a gateway restart.
+        """
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            return cfg if isinstance(cfg, dict) else {}
+        except Exception:
+            return {}
+
+    def _thread_metadata_for_source(self, source) -> Optional[Dict[str, Any]]:
+        """Build the metadata dict platforms need for thread-aware replies."""
+        thread_id = getattr(source, "thread_id", None)
+        if thread_id is None:
+            return None
+        return {"thread_id": thread_id}
+
 
     # ------------------------------------------------------------------
     # /approve & /deny — explicit dangerous-command approval

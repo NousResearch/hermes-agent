@@ -539,6 +539,7 @@ def resolve_display_context_length(
     api_key: str = "",
     model_info: Optional[ModelInfo] = None,
     custom_providers: list | None = None,
+    config_context_length: int | None = None,
 ) -> Optional[int]:
     """Resolve the context length to show in /model output.
 
@@ -565,6 +566,7 @@ def resolve_display_context_length(
             api_key=api_key or "",
             provider=provider or None,
             custom_providers=custom_providers,
+            config_context_length=config_context_length,
         )
         if ctx:
             return int(ctx)
@@ -1501,7 +1503,14 @@ def list_authenticated_providers(
                     current_base_url
                     and api_url == current_base_url.strip().rstrip("/")
                 ):
-                    slug = current_provider or custom_provider_slug(display_name)
+                    # Guard against bare "custom" slug left by a prior
+                    # failed switch — always resolve to the canonical
+                    # custom:<name> form.  (GH #17478)
+                    slug = (
+                        current_provider
+                        if current_provider and current_provider != "custom"
+                        else custom_provider_slug(display_name)
+                    )
                 else:
                     slug = custom_provider_slug(display_name)
                 groups[group_key] = {

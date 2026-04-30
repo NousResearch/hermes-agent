@@ -6,6 +6,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
@@ -369,6 +370,11 @@ class LocalEnvironment(BaseEnvironment):
             preexec_fn=None if _IS_WINDOWS else os.setsid,
             cwd=self.cwd,
         )
+        if not _IS_WINDOWS:
+            try:
+                proc._hermes_pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                pass
 
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
@@ -381,12 +387,42 @@ class LocalEnvironment(BaseEnvironment):
             if _IS_WINDOWS:
                 proc.terminate()
             else:
-                pgid = os.getpgid(proc.pid)
+                try:
+                    pgid = os.getpgid(proc.pid)
+                except ProcessLookupError:
+                    pgid = getattr(proc, "_hermes_pgid", None)
+                    if pgid is None:
+                        raise
                 os.killpg(pgid, signal.SIGTERM)
+                deadline = time.monotonic() + 1.0
+                while time.monotonic() < deadline:
+                    if proc.poll() is not None:
+                        try:
+                            os.killpg(pgid, 0)
+                        except ProcessLookupError:
+                            return
+                    time.sleep(0.05)
+
+                # The shell can exit quickly while a child in the same process
+                # group is still shutting down. Escalate based on the process
+                # group, not just the shell wrapper, so interrupted commands do
+                # not leave orphaned grandchildren under load.
+                try:
+                    # _IS_WINDOWS is guarded by the enclosing else branch.
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    return
                 try:
                     proc.wait(timeout=1.0)
                 except subprocess.TimeoutExpired:
-                    os.killpg(pgid, signal.SIGKILL)
+                    pass
+                deadline = time.monotonic() + 1.0
+                while time.monotonic() < deadline:
+                    try:
+                        os.killpg(pgid, 0)
+                    except ProcessLookupError:
+                        return
+                    time.sleep(0.05)
         except (ProcessLookupError, PermissionError):
             try:
                 proc.kill()

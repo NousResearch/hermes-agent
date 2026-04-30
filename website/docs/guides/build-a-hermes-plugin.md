@@ -242,7 +242,23 @@ def register(ctx):
 - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
+- `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below
+- `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - If this function crashes, the plugin is disabled but Hermes continues fine
+
+**`dispatch_tool` example — a slash command that runs a tool:**
+
+```python
+def handle_scan(ctx, argstr):
+    """Implement /scan by invoking the terminal tool through the registry."""
+    result = ctx.dispatch_tool("terminal", {"command": f"find . -name '{argstr}'"})
+    return result  # returned to the caller's chat UI
+
+def register(ctx):
+    ctx.register_command("scan", handle_scan, help="Find files matching a glob")
+```
+
+The dispatched tool goes through the normal approval, redaction, and budget pipelines — it's a real tool invocation, not a shortcut around them.
 
 ## Step 6: Test it
 

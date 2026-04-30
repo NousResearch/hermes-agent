@@ -1,8 +1,6 @@
 #!/usr/bin/env -S node --max-old-space-size=8192 --expose-gc
-// Must be first import — mutates process.env.FORCE_COLOR / COLORTERM before
-// any chalk / supports-color import so the banner gradient renders in
-// truecolor instead of being downsampled to 256-color (which collapses
-// gold #FFD700 and amber #FFBF00 to the same slot).
+// Must be first import. If the user explicitly opts into truecolor, this
+// nudges chalk / supports-color before either package is initialized.
 import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@hermes/ink'

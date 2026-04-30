@@ -192,7 +192,6 @@ OPTIONAL_ENV_VARS = {
 
 - [ ] Tool file created with handler, schema, check function, and registration
 - [ ] Added to appropriate toolset in `toolsets.py`
-- [ ] Discovery import added to `model_tools.py`
 - [ ] Handler returns JSON strings, errors returned as `{"error": "..."}`
 - [ ] Optional: API key added to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py`
 - [ ] Optional: Added to `toolset_distributions.py` for batch processing

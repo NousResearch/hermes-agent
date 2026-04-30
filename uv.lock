@@ -9,7 +9,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-21T16:31:09.86869Z"
+exclude-newer = "2026-04-23T16:10:07.059532Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -1964,6 +1964,7 @@ version = "0.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "croniter" },
     { name = "edge-tts" },
     { name = "exa-py" },
     { name = "fal-client" },
@@ -1995,7 +1996,6 @@ all = [
     { name = "alibabacloud-dingtalk" },
     { name = "asyncpg", marker = "sys_platform == 'linux'" },
     { name = "boto3" },
-    { name = "croniter" },
     { name = "daytona" },
     { name = "debugpy" },
     { name = "dingtalk-stream" },
@@ -2035,9 +2035,6 @@ bedrock = [
 ]
 cli = [
     { name = "simple-term-menu" },
-]
-cron = [
-    { name = "croniter" },
 ]
 daytona = [
     { name = "daytona" },
@@ -2115,7 +2112,6 @@ sms = [
 ]
 termux = [
     { name = "agent-client-protocol" },
-    { name = "croniter" },
     { name = "honcho-ai" },
     { name = "mcp" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
@@ -2155,7 +2151,7 @@ requires-dist = [
     { name = "asyncpg", marker = "extra == 'matrix'", specifier = ">=0.29" },
     { name = "atroposlib", marker = "extra == 'rl'", git = "https://github.com/NousResearch/atropos.git?rev=c20c85256e5a45ad31edf8b7276e9c5ee1995a30" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = ">=1.35.0,<2" },
-    { name = "croniter", marker = "extra == 'cron'", specifier = ">=6.0.0,<7" },
+    { name = "croniter", specifier = ">=6.0.0,<7" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = ">=0.148.0,<1" },
     { name = "debugpy", marker = "extra == 'dev'", specifier = ">=1.8.0,<2" },
     { name = "dingtalk-stream", marker = "extra == 'dingtalk'", specifier = ">=0.20,<1" },

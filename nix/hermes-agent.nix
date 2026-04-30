@@ -19,6 +19,10 @@
   pyproject-nix,
   pyproject-build-systems,
   npm-lockfile-fix,
+  # Locked git revision of the flake source — embedded so banner.py can
+  # check for updates without needing a local .git directory. Null for
+  # impure / dirty builds where flakes can't determine a rev.
+  rev ? null,
   # Overridable parameters
   extraPythonPackages ? [ ],
 }:
@@ -98,6 +102,7 @@ stdenv.mkDerivation {
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
           --set HERMES_NODE ${nodejs_22}/bin/node \
+          ${lib.optionalString (rev != null) ''--set HERMES_REVISION ${rev} \''}
           ${lib.optionalString (extraPythonPackages != [ ]) ''--suffix PYTHONPATH : "${pythonPath}"''}
       '')
       [

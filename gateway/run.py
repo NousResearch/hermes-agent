@@ -2668,13 +2668,16 @@ class GatewayRunner:
                 return True
             if enabled_platform_count > 0:
                 reason = "; ".join(startup_retryable_errors) or "all configured messaging platforms failed to connect"
-                logger.error("Gateway failed to connect any configured messaging platform: %s", reason)
+                logger.warning(
+                    "Gateway failed to connect any messaging platform at startup, "
+                    "keeping process alive for reconnect watcher: %s",
+                    reason,
+                )
                 try:
                     from gateway.status import write_runtime_status
-                    write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                    write_runtime_status(gateway_state="degraded", exit_reason=reason)
                 except Exception:
                     pass
-                return False
             logger.warning("No messaging platforms enabled.")
             logger.info("Gateway will continue running for cron job execution.")
         
@@ -2682,7 +2685,14 @@ class GatewayRunner:
         self.delivery_router.adapters = self.adapters
         
         self._running = True
-        self._update_runtime_status("running")
+        try:
+            from gateway.status import write_runtime_status
+            if connected_count == 0 and self._failed_platforms:
+                write_runtime_status(gateway_state="degraded")
+            else:
+                write_runtime_status(gateway_state="running", exit_reason=None)
+        except Exception:
+            pass
         
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)

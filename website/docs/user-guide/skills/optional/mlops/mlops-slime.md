@@ -54,6 +54,7 @@ slime is an LLM post-training framework from Tsinghua's THUDM team, powering GLM
 
 ## Architecture Overview
 
+<!-- ascii-guard-ignore -->
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                    Data Buffer                          │
@@ -69,6 +70,7 @@ slime is an LLM post-training framework from Tsinghua's THUDM team, powering GLM
 │ - Weight sync to rollout│ │ - Multi-turn support        │
 └─────────────────────────┘ └─────────────────────────────┘
 ```
+<!-- ascii-guard-ignore-end -->
 
 ## Installation
 

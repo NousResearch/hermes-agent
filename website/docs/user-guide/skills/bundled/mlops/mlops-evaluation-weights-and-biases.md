@@ -1,14 +1,14 @@
 ---
-title: "Weights And Biases"
+title: "Weights And Biases — W&B: log ML experiments, sweeps, model registry, dashboards"
 sidebar_label: "Weights And Biases"
-description: "Track ML experiments with automatic logging, visualize training in real-time, optimize hyperparameters with sweeps, and manage model registry with W&B - coll..."
+description: "W&B: log ML experiments, sweeps, model registry, dashboards"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Weights And Biases
 
-Track ML experiments with automatic logging, visualize training in real-time, optimize hyperparameters with sweeps, and manage model registry with W&B - collaborative MLOps platform
+W&B: log ML experiments, sweeps, model registry, dashboards.
 
 ## Skill metadata
 

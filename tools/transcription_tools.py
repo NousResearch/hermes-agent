@@ -42,6 +42,20 @@ from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_opena
 
 logger = logging.getLogger(__name__)
 
+def get_env_value(name, default=None):
+    """Read env values through the live config module.
+
+    Tests may monkeypatch and later restore ``hermes_cli.config.get_env_value``
+    before this module is imported. Resolve the helper at call time so STT does
+    not keep a stale imported function for the rest of the test process.
+    """
+    try:
+        from hermes_cli.config import get_env_value as _get_env_value
+    except ImportError:
+        return os.getenv(name, default)
+    value = _get_env_value(name)
+    return default if value is None else value
+
 # ---------------------------------------------------------------------------
 # Optional imports — graceful degradation
 # ---------------------------------------------------------------------------
@@ -222,7 +236,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "groq":
-            if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+            if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
                 return "groq"
             logger.warning(
                 "STT provider 'groq' configured but GROQ_API_KEY not set"
@@ -238,7 +252,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "mistral":
-            if _HAS_MISTRAL and os.getenv("MISTRAL_API_KEY"):
+            if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
                 return "mistral"
             logger.warning(
                 "STT provider 'mistral' configured but mistralai package "
@@ -247,7 +261,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "xai":
-            if os.getenv("XAI_API_KEY"):
+            if get_env_value("XAI_API_KEY"):
                 return "xai"
             logger.warning(
                 "STT provider 'xai' configured but XAI_API_KEY not set"
@@ -262,16 +276,16 @@ def _get_provider(stt_config: dict) -> str:
         return "local"
     if _has_local_command():
         return "local_command"
-    if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+    if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
-    if _HAS_MISTRAL and os.getenv("MISTRAL_API_KEY"):
+    if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
         logger.info("No local STT available, using Mistral Voxtral Transcribe API")
         return "mistral"
-    if os.getenv("XAI_API_KEY"):
+    if get_env_value("XAI_API_KEY"):
         logger.info("No local STT available, using xAI Grok STT API")
         return "xai"
     return "none"
@@ -527,7 +541,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
 
 def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using Groq Whisper API (free tier available)."""
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = get_env_value("GROQ_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
 
@@ -640,7 +654,7 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
     Uses the ``mistralai`` Python SDK to call ``/v1/audio/transcriptions``.
     Requires ``MISTRAL_API_KEY`` environment variable.
     """
-    api_key = os.getenv("MISTRAL_API_KEY")
+    api_key = get_env_value("MISTRAL_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "MISTRAL_API_KEY not set"}
 
@@ -680,7 +694,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     Supports Inverse Text Normalization, diarization, and word-level timestamps.
     Requires ``XAI_API_KEY`` environment variable.
     """
-    api_key = os.getenv("XAI_API_KEY")
+    api_key = get_env_value("XAI_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "XAI_API_KEY not set"}
 
@@ -688,7 +702,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     xai_config = stt_config.get("xai", {})
     base_url = str(
         xai_config.get("base_url")
-        or os.getenv("XAI_STT_BASE_URL")
+        or get_env_value("XAI_STT_BASE_URL")
         or XAI_STT_BASE_URL
     ).strip().rstrip("/")
     language = str(

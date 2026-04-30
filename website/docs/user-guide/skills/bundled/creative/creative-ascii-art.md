@@ -1,14 +1,14 @@
 ---
-title: "Ascii Art"
+title: "Ascii Art — ASCII art: pyfiglet, cowsay, boxes, image-to-ascii"
 sidebar_label: "Ascii Art"
-description: "Generate ASCII art using pyfiglet (571 fonts), cowsay, boxes, toilet, image-to-ascii, remote APIs (asciified, ascii"
+description: "ASCII art: pyfiglet, cowsay, boxes, image-to-ascii"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Ascii Art
 
-Generate ASCII art using pyfiglet (571 fonts), cowsay, boxes, toilet, image-to-ascii, remote APIs (asciified, ascii.co.uk), and LLM fallback. No API keys required.
+ASCII art: pyfiglet, cowsay, boxes, image-to-ascii.
 
 ## Skill metadata
 

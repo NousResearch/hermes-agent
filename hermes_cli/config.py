@@ -73,6 +73,8 @@ _EXTRA_ENV_KEYS = frozenset({
     "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",  # legacy aliases (pre-rename, still read for back-compat)
     "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
     "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
+    "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
+    "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
@@ -348,7 +350,7 @@ def ensure_hermes_home():
     else:
         home.mkdir(parents=True, exist_ok=True)
         _secure_dir(home)
-        for subdir in ("cron", "sessions", "logs", "memories"):
+        for subdir in ("cron", "sessions", "logs", "logs/curator", "memories"):
             d = home / subdir
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)
@@ -369,6 +371,10 @@ def _ensure_hermes_home_managed(home: Path):
                 f"{d} does not exist. "
                 "Run 'sudo nixos-rebuild switch' first."
             )
+    # Curator reports dir is a sub-path of logs/; create it if missing.
+    # In managed mode the activation script may not know about this subdir,
+    # so we mkdir it ourselves (it's inside an already-secured logs/ dir).
+    (home / "logs" / "curator").mkdir(parents=True, exist_ok=True)
     # Inside umask(0o007) scope — SOUL.md will be created as 0660
     _ensure_default_soul_md(home)
 
@@ -499,7 +505,8 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
+        "vercel_runtime": "node24",
+        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -706,6 +713,19 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
         },
+        # Curator — skill-usage review fork. Timeout is generous because the
+        # review pass can take several minutes on reasoning models (umbrella
+        # building over hundreds of candidate skills). "auto" = use main chat
+        # model; override via `hermes model` → auxiliary → Curator to route
+        # to a cheaper aux model (e.g. openrouter google/gemini-3-flash-preview).
+        "curator": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 600,
+            "extra_body": {},
+        },
     },
     
     "display": {
@@ -763,7 +783,7 @@ DEFAULT_CONFIG = {
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
     # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "neutts" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -792,6 +812,19 @@ DEFAULT_CONFIG = {
             "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
             "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
             "device": "cpu",  # cpu, cuda, or mps
+        },
+        "piper": {
+            # Voice name (e.g. "en_US-lessac-medium") downloaded on first
+            # use, OR an absolute path to a pre-downloaded .onnx file.
+            # Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md
+            "voice": "en_US-lessac-medium",
+            # "voices_dir": "",        # Override voice cache dir; default = ~/.hermes/cache/piper-voices/
+            # "use_cuda": False,       # Requires onnxruntime-gpu
+            # "length_scale": 1.0,     # 2.0 = twice as slow
+            # "noise_scale": 0.667,
+            # "noise_w_scale": 0.8,
+            # "volume": 1.0,
+            # "normalize_audio": True,
         },
     },
     
@@ -946,12 +979,6 @@ DEFAULT_CONFIG = {
         # Archive a skill (move to skills/.archive/) after this many days
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
-        # Optional per-task override for the curator's aux model. Leave null
-        # to use Hermes' main auxiliary client resolution.
-        "auxiliary": {
-            "provider": None,
-            "model": None,
-        },
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
@@ -1017,6 +1044,14 @@ DEFAULT_CONFIG = {
         "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
+        # When true, /reload-mcp asks the user to confirm before rebuilding
+        # the MCP tool set for the active session.  Reloading invalidates
+        # the provider prompt cache (tool schemas are baked into the system
+        # prompt), so the next message re-sends full input tokens — this can
+        # be expensive on long-context or high-reasoning models.  Users click
+        # "Always Approve" to silence the prompt permanently; that flips
+        # this key to false.
+        "mcp_reload_confirm": True,
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
@@ -1170,7 +1205,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 22,
+    "_config_version": 23,
 }
 
 # =============================================================================
@@ -2075,6 +2110,43 @@ OPTIONAL_ENV_VARS = {
         "prompt": "QQ Sandbox Mode",
         "category": "messaging",
     },
+    "IRC_SERVER": {
+        "description": "IRC server hostname (e.g. irc.libera.chat)",
+        "prompt": "IRC server",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "IRC_CHANNEL": {
+        "description": "IRC channel to join (e.g. #hermes)",
+        "prompt": "IRC channel",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "IRC_NICKNAME": {
+        "description": "Bot nickname on IRC (default: hermes-bot)",
+        "prompt": "IRC nickname",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "IRC_SERVER_PASSWORD": {
+        "description": "IRC server password (if required)",
+        "prompt": "IRC server password",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "IRC_NICKSERV_PASSWORD": {
+        "description": "NickServ password for nick identification",
+        "prompt": "NickServ password",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
+    },
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
         "prompt": "Allow all users (true/false)",
@@ -2237,19 +2309,55 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     return missing
 
 
-def _set_nested(config: dict, dotted_key: str, value):
+def _set_nested(config, dotted_key: str, value):
     """Set a value at an arbitrarily nested dotted key path.
 
-    Creates intermediate dicts as needed, e.g. ``_set_nested(c, "a.b.c", 1)``
-    ensures ``c["a"]["b"]["c"] == 1``.
+    Supports both dict and list navigation:
+      _set_nested(c, "a.b.c", 1)     → c["a"]["b"]["c"] = 1
+      _set_nested(c, "a.0.b", 1)     → c["a"][0]["b"] = 1
+      _set_nested(c, "providers.1", "x") → c["providers"][1] = "x"
+
+    Intermediate dicts are created on demand.  List indices are parsed
+    from numeric path segments; the referenced index must already exist
+    (we do not grow lists — the user is navigating into structure they
+    wrote themselves).  If a segment targets a non-container leaf
+    (scalar), the leaf is replaced with a fresh dict so the write can
+    proceed — this preserves the pre-existing behavior for bare scalar
+    overrides (e.g. setting ``a.b.c`` where ``a.b`` was previously a
+    string).
+
+    Guards against #17876: before this fix the code unconditionally
+    replaced any non-dict value (including lists) with ``{}``, silently
+    destroying list-typed config like ``custom_providers`` whenever a
+    caller used an indexed path.
     """
     parts = dotted_key.split(".")
     current = config
     for part in parts[:-1]:
-        if part not in current or not isinstance(current.get(part), dict):
-            current[part] = {}
-        current = current[part]
-    current[parts[-1]] = value
+        if isinstance(current, list):
+            try:
+                idx = int(part)
+            except (TypeError, ValueError):
+                raise TypeError(
+                    f"Cannot navigate into list at key {dotted_key!r}: "
+                    f"segment {part!r} is not a numeric index"
+                )
+            current = current[idx]
+        elif isinstance(current, dict):
+            existing = current.get(part)
+            # Preserve dicts and lists; replace missing/scalar with a fresh dict.
+            if part not in current or not isinstance(existing, (dict, list)):
+                current[part] = {}
+            current = current[part]
+        else:
+            raise TypeError(
+                f"Cannot navigate into {type(current).__name__} at key {dotted_key!r}"
+            )
+    last = parts[-1]
+    if isinstance(current, list):
+        current[int(last)] = value
+    else:
+        current[last] = value
 
 
 def get_missing_config_fields() -> List[Dict[str, Any]]:
@@ -3170,6 +3278,90 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         "Use `hermes plugins enable <name>` to activate."
                     )
 
+    # ── Version 22 → 23: seed curator defaults + create logs/curator/ ──
+    # The curator (background skill maintenance) was added in PR #16049, but
+    # existing configs from before that PR (or before the April 2026
+    # unification under `auxiliary.curator`) never wrote the curator section
+    # to disk. The runtime deep-merge in `load_config()` fills defaults at
+    # read time, so the curator *functions*; but users can't see/edit the
+    # settings in their `config.yaml`, and `hermes curator status` has no
+    # stable logs dir to point at until the first run mkdir's it.
+    #
+    # This migration:
+    #   1. Writes the `curator` top-level section to config.yaml (enabled,
+    #      interval_hours, min_idle_hours, stale_after_days, archive_after_days)
+    #      — only keys the user hasn't already overridden.
+    #   2. Writes the `auxiliary.curator` aux-task slot (provider, model,
+    #      base_url, api_key, timeout, extra_body) — canonical slot for
+    #      routing the curator fork to a cheaper aux model.
+    #   3. Creates `~/.hermes/logs/curator/` if missing (belt-and-suspenders
+    #      on top of ensure_hermes_home() — old profiles that predate this
+    #      migration still benefit).
+    if current_ver < 23:
+        try:
+            curator_dir = get_hermes_home() / "logs" / "curator"
+            curator_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            results["warnings"].append(f"Could not create {curator_dir}: {e}")
+
+        config = read_raw_config()
+        touched = False
+
+        # (1) Top-level curator section — only add missing keys
+        _curator_defaults = DEFAULT_CONFIG.get("curator", {})
+        raw_curator = config.get("curator")
+        if not isinstance(raw_curator, dict):
+            raw_curator = {}
+        added_curator: List[str] = []
+        for k, v in _curator_defaults.items():
+            if k not in raw_curator:
+                raw_curator[k] = copy.deepcopy(v)
+                added_curator.append(k)
+        if added_curator:
+            config["curator"] = raw_curator
+            touched = True
+
+        # (2) auxiliary.curator task slot
+        _aux_curator_defaults = (
+            DEFAULT_CONFIG.get("auxiliary", {}).get("curator", {})
+        )
+        raw_aux = config.get("auxiliary")
+        if not isinstance(raw_aux, dict):
+            raw_aux = {}
+        raw_aux_curator = raw_aux.get("curator")
+        if not isinstance(raw_aux_curator, dict):
+            raw_aux_curator = {}
+        added_aux: List[str] = []
+        for k, v in _aux_curator_defaults.items():
+            if k not in raw_aux_curator:
+                raw_aux_curator[k] = copy.deepcopy(v)
+                added_aux.append(k)
+        if added_aux:
+            raw_aux["curator"] = raw_aux_curator
+            config["auxiliary"] = raw_aux
+            touched = True
+
+        if touched:
+            save_config(config)
+            if added_curator:
+                results["config_added"].append(
+                    f"curator ({len(added_curator)} default key(s))"
+                )
+                if not quiet:
+                    print(
+                        "  ✓ Seeded curator defaults in config.yaml: "
+                        f"{', '.join(added_curator)}"
+                    )
+            if added_aux:
+                results["config_added"].append(
+                    f"auxiliary.curator ({len(added_aux)} default key(s))"
+                )
+                if not quiet:
+                    print(
+                        "  ✓ Seeded auxiliary.curator defaults in config.yaml: "
+                        f"{', '.join(added_aux)}"
+                    )
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -3442,17 +3634,17 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
 
 
 def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Move stale root-level provider/base_url into model section.
+    """Move stale root-level provider/base_url/context_length into model section.
 
-    Some users (or older code) placed ``provider:`` and ``base_url:`` at the
-    config root instead of inside ``model:``.  These root-level keys are only
-    used as a fallback when the corresponding ``model.*`` key is empty — they
-    never override an existing ``model.provider`` or ``model.base_url``.
+    Some users (or older code) placed ``provider:``, ``base_url:``, or
+    ``context_length:`` at the config root instead of inside ``model:``.
+    These root-level keys are only used as a fallback when the corresponding
+    ``model.*`` key is empty — they never override an existing value.
     After migration the root-level keys are removed so they can't cause
     confusion on subsequent loads.
     """
     # Only act if there are root-level keys to migrate
-    has_root = any(config.get(k) for k in ("provider", "base_url"))
+    has_root = any(config.get(k) for k in ("provider", "base_url", "context_length"))
     if not has_root:
         return config
 
@@ -3462,7 +3654,7 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
         model = {"default": model} if model else {}
         config["model"] = model
 
-    for key in ("provider", "base_url"):
+    for key in ("provider", "base_url", "context_length"):
         root_val = config.get(key)
         if root_val and not model.get(key):
             model[key] = root_val
@@ -4193,6 +4385,9 @@ def show_config():
         print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
+    elif terminal.get('backend') == 'vercel_sandbox':
+        print(f"  Vercel runtime: {terminal.get('vercel_runtime', 'node24')}")
+        print(f"  Vercel auth:    {'configured' if get_env_value('VERCEL_OIDC_TOKEN') or (get_env_value('VERCEL_TOKEN') and get_env_value('VERCEL_PROJECT_ID') and get_env_value('VERCEL_TEAM_ID')) else '(not set)'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
@@ -4350,15 +4545,11 @@ def set_config_value(key: str, value: str):
         except Exception:
             user_config = {}
     
-    # Handle nested keys (e.g., "tts.provider")
-    parts = key.split('.')
-    current = user_config
-    
-    for part in parts[:-1]:
-        if part not in current or not isinstance(current.get(part), dict):
-            current[part] = {}
-        current = current[part]
-    
+    # Handle nested keys (e.g., "tts.provider") including numeric list
+    # indices (e.g., "custom_providers.0.api_key").  Delegates to
+    # _set_nested which preserves list-typed nodes; before #17876 the
+    # inline navigation here silently overwrote lists with dicts.
+
     # Convert value to appropriate type
     if value.lower() in ('true', 'yes', 'on'):
         value = True
@@ -4368,8 +4559,8 @@ def set_config_value(key: str, value: str):
         value = int(value)
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
-    
-    current[parts[-1]] = value
+
+    _set_nested(user_config, key, value)
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
@@ -4385,6 +4576,7 @@ def set_config_value(key: str, value: str):
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "terminal.vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "terminal.cwd": "TERMINAL_CWD",

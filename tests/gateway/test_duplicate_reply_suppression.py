@@ -108,6 +108,15 @@ class TestBaseInterruptSuppression:
 
         await adapter._process_message_background(event_a, session_key)
 
+        # The in-band pending-drain now hands off to a fresh task instead
+        # of recursing (#17758).  Wait for that task to finish before
+        # checking the sent list.
+        for _ in range(200):
+            if any(s["content"] == pending_response for s in adapter.sent):
+                break
+            await asyncio.sleep(0.01)
+        await adapter.cancel_background_tasks()
+
         # The stale response should NOT have been sent.
         stale_sends = [s for s in adapter.sent if s["content"] == stale_response]
         assert len(stale_sends) == 0, (

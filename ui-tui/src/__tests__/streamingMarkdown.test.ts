@@ -67,6 +67,48 @@ describe('findStableBoundary', () => {
   it('handles empty input', () => {
     expect(findStableBoundary('')).toBe(-1)
   })
+
+  it('refuses to split inside an open $$ math block', () => {
+    // Display math has been opened but not closed; the only blank line
+    // sits inside the open block, so there's no safe boundary yet.
+    const text = '$$\nx + y\n\nmore math'
+
+    expect(findStableBoundary(text)).toBe(-1)
+  })
+
+  it('allows splitting after a $$ math block closes', () => {
+    const text = '$$\nx + y = z\n$$\n\nnarration continues'
+    const idx = findStableBoundary(text)
+
+    expect(text.slice(0, idx)).toBe('$$\nx + y = z\n$$\n\n')
+    expect(text.slice(idx)).toBe('narration continues')
+  })
+
+  it('splits before an open $$ block but not inside', () => {
+    // Mirror of the existing fenced-code test: prose, then an unclosed
+    // math block. The only safe boundary is the blank line BEFORE `$$`.
+    const text = 'intro paragraph\n\n$$\nx + y\n\nmore'
+    const idx = findStableBoundary(text)
+
+    expect(text.slice(0, idx)).toBe('intro paragraph\n\n')
+    expect(text.slice(idx).startsWith('$$')).toBe(true)
+  })
+
+  it('treats single-line $$x$$ as zero net toggle', () => {
+    // `$$x = y$$` opens AND closes on one line, so the stable boundary
+    // after it is allowed.
+    const text = 'intro\n\n$$x = y$$\n\nnarration'
+    const idx = findStableBoundary(text)
+
+    expect(text.slice(0, idx)).toBe('intro\n\n$$x = y$$\n\n')
+    expect(text.slice(idx)).toBe('narration')
+  })
+
+  it('refuses to split inside an open \\[ math block', () => {
+    const text = '\\[\nx + y\n\nmore'
+
+    expect(findStableBoundary(text)).toBe(-1)
+  })
 })
 
 describe('streaming theme assumption', () => {

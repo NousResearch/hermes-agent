@@ -100,8 +100,10 @@ _PLATFORM_MAP = {
     "windows": "win32",
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub"))
-_REMOTE_ENV_BACKENDS = frozenset({"docker", "singularity", "modal", "ssh", "daytona"})
+_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
+_REMOTE_ENV_BACKENDS = frozenset(
+    {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
+)
 _secret_capture_callback = None
 
 
@@ -1495,8 +1497,12 @@ def _skill_view_with_bump(args, **kw):
             # qualified forms ("plugin:skill") return with the canonical name.
             resolved = parsed.get("name") or name
             if resolved:
-                from tools.skill_usage import bump_view
+                from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))
+                # A skill_view tool call is the agent actively loading the skill
+                # to act on it — that counts as use, not just a browse/view.
+                # Curator's stale timer keys off last_used_at (see agent/curator.py).
+                bump_use(str(resolved))
     except Exception:
         pass
     return result
@@ -1510,3 +1516,4 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
+

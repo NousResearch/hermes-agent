@@ -142,6 +142,9 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 | [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the LLM loop (successful turns only) |
 | [`on_session_start`](/docs/user-guide/features/hooks#on_session_start) | New session created (first turn only) |
 | [`on_session_end`](/docs/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit handler |
+| [`on_session_finalize`](/docs/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session (`/new`, GC, CLI quit) |
+| [`on_session_reset`](/docs/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`, `/clear`, idle rotation) |
+| [`subagent_stop`](/docs/user-guide/features/hooks#subagent_stop) | Once per child after `delegate_task` finishes |
 | [`pre_gateway_dispatch`](/docs/user-guide/features/hooks#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch. Return `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow. |
 
 ## Plugin types

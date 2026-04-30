@@ -17,7 +17,7 @@ Usage in execute_code:
 import os, sys
 from pathlib import Path
 
-_gm_scripts_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills" / "red-teaming" / "godmode" / "scripts"
+_gm_scripts_dir = Path(os.getenv("HERMES_HOME") or str(Path.home() / ".hermes")) / "skills" / "red-teaming" / "godmode" / "scripts"
 
 _gm_old_argv = sys.argv
 sys.argv = ["_godmode_loader"]

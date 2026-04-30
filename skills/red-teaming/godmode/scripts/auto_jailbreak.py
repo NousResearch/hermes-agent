@@ -35,7 +35,7 @@ try:
     _SKILL_DIR = Path(__file__).resolve().parent.parent
 except NameError:
     # __file__ not defined when loaded via exec() — search standard paths
-    _SKILL_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills" / "red-teaming" / "godmode"
+    _SKILL_DIR = Path(os.getenv("HERMES_HOME") or str(Path.home() / ".hermes")) / "skills" / "red-teaming" / "godmode"
 
 _SCRIPTS_DIR = _SKILL_DIR / "scripts"
 _TEMPLATES_DIR = _SKILL_DIR / "templates"
@@ -57,7 +57,7 @@ if _race_path.exists():
 # Hermes config paths
 # ═══════════════════════════════════════════════════════════════════
 
-HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+HERMES_HOME = Path(os.getenv("HERMES_HOME") or str(Path.home() / ".hermes"))
 CONFIG_PATH = HERMES_HOME / "config.yaml"
 PREFILL_PATH = HERMES_HOME / "prefill.json"
 

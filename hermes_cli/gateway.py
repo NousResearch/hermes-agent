@@ -1509,7 +1509,7 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
       /opt/custom-hermes               → /opt/custom-hermes  (kept as-is)
     """
     current_hermes = get_hermes_home().resolve()
-    current_default = (Path.home() / ".hermes").resolve()
+    current_default = (Path.home() / ".hermes").resolve()  # intentional: literal default, not HERMES_HOME
     target_default = Path(target_home_dir) / ".hermes"
 
     # Default ~/.hermes → remap to target user's default

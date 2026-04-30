@@ -732,7 +732,7 @@ def _auth_file_path() -> Path:
     # hermetic conftest, or sandbox escapes via threads/subprocesses. In
     # production (no PYTEST_CURRENT_TEST) this is a single dict lookup.
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        real_home_auth = (Path.home() / ".hermes" / "auth.json").resolve(strict=False)
+        real_home_auth = (Path.home() / ".hermes" / "auth.json").resolve(strict=False)  # intentional: compare against literal default, not HERMES_HOME
         try:
             resolved = path.resolve(strict=False)
         except Exception:

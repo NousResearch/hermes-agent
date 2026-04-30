@@ -72,7 +72,8 @@ def resolve_config_path() -> Path:
     if local_path.exists():
         return local_path
 
-    # Default profile's config — host blocks accumulate here via setup/clone
+    # Intentional: fall back to the default profile's config, not the current
+    # HERMES_HOME, so profile-isolated instances inherit host blocks from setup/clone.
     default_path = Path.home() / ".hermes" / "honcho.json"
     if default_path != local_path and default_path.exists():
         return default_path

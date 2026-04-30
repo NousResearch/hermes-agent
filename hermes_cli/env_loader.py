@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from hermes_constants import get_hermes_home
 from utils import atomic_replace
 
 
@@ -154,7 +155,7 @@ def load_hermes_dotenv(
     """
     loaded: list[Path] = []
 
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    home_path = Path(hermes_home) if hermes_home else get_hermes_home()
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 

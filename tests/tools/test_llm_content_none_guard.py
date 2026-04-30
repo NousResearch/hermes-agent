@@ -292,3 +292,18 @@ class TestExtractContentOrReasoning:
         """When both content and reasoning exist, content wins."""
         response = _make_response("Actual answer", reasoning="Internal reasoning")
         assert extract_content_or_reasoning(response) == "Actual answer"
+
+    def test_think_block_in_reasoning_field_is_stripped(self):
+        """Think blocks inside the reasoning field must be stripped before returning."""
+        response = _make_response(
+            None,
+            reasoning="<think>some reasoning here...</think>\nSession Title Here",
+        )
+        assert extract_content_or_reasoning(response) == "Session Title Here"
+
+    def test_think_block_in_reasoning_details_summary_is_stripped(self):
+        """Think blocks inside reasoning_details summary must be stripped."""
+        response = _make_response(None, reasoning_details=[
+            {"type": "reasoning.summary", "summary": "<think>thinking...</think>\nFinal Title"},
+        ])
+        assert extract_content_or_reasoning(response) == "Final Title"

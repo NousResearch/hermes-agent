@@ -3675,7 +3675,13 @@ def extract_content_or_reasoning(response) -> str:
                     reasoning_parts.append(summary.strip() if isinstance(summary, str) else str(summary))
 
     if reasoning_parts:
-        return "\n\n".join(reasoning_parts)
+        joined = "\n\n".join(reasoning_parts)
+        return re.sub(
+            r"<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>"
+            r".*?"
+            r"</(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>",
+            "", joined, flags=re.DOTALL | re.IGNORECASE,
+        ).strip() or joined.strip()
 
     return ""
 

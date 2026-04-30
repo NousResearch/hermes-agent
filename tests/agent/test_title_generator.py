@@ -64,6 +64,30 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("no provider")):
             assert generate_title("question", "answer") is None
 
+    def test_strips_think_block_from_title(self):
+        """Models that emit <think> blocks should not leak them as the session title."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "<think>Reasoning about the session topic...</think>\n"
+            "Docker Setup Troubleshooting"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("docker build fails", "Here's what I found...")
+            assert title == "Docker Setup Troubleshooting"
+
+    def test_strips_reasoning_field_from_title(self):
+        """When content is empty and reasoning field has the title, extract it."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].message.reasoning = "SSH Key Configuration Issue"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("ssh not working", "Try this...")
+            assert title == "SSH Key Configuration Issue"
+
     def test_invokes_failure_callback_on_exception(self):
         """failure_callback must fire so the user sees a warning (issue #15775)."""
         captured = []

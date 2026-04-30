@@ -4,8 +4,8 @@ import { resetTerminalModes, TERMINAL_MODE_RESET } from '../lib/terminalModes.js
 
 describe('terminal mode reset', () => {
   it('includes common sticky input modes', () => {
-    expect(TERMINAL_MODE_RESET).toContain("\x1b[0'z")
-    expect(TERMINAL_MODE_RESET).toContain("\x1b[0'{")
+    expect(TERMINAL_MODE_RESET).toContain('\x1b[0\'z')
+    expect(TERMINAL_MODE_RESET).toContain('\x1b[0\'{')
     expect(TERMINAL_MODE_RESET).toContain('\x1b[?2029l')
     expect(TERMINAL_MODE_RESET).toContain('\x1b[?1016l')
     expect(TERMINAL_MODE_RESET).toContain('\x1b[?1015l')

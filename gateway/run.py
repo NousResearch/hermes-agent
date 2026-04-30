@@ -9090,6 +9090,7 @@ class GatewayRunner:
                     transcript = result["transcript"]
                     enriched_parts.append(
                         f'[The user sent a voice message~ '
+                        f'Audio file saved at: {path}. '
                         f'Here\'s what they said: "{transcript}"]'
                     )
                 else:

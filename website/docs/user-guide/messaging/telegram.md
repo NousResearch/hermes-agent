@@ -144,6 +144,22 @@ Then:
 If you already have a `docker_volumes:` section, add the new mount to the same
 list. YAML duplicate keys silently override earlier ones.
 
+### Supported `MEDIA:` file extensions
+
+The gateway extracts `MEDIA:/path/to/file` tags from agent replies and ships the referenced file as a platform-native attachment. Supported extensions across all gateway platforms:
+
+| Category | Extensions |
+|---|---|
+| Images | `png`, `jpg`, `jpeg`, `gif`, `webp`, `bmp`, `tiff`, `svg` |
+| Audio | `mp3`, `wav`, `ogg`, `m4a`, `opus`, `flac`, `aac` |
+| Video | `mp4`, `mov`, `webm`, `mkv`, `avi` |
+| **Documents** | `pdf`, `txt`, `md`, `csv`, `json`, `xml`, `html`, `yaml`, `yml`, `log` |
+| **Office** | `docx`, `xlsx`, `pptx`, `odt`, `ods`, `odp` |
+| **Archives** | `zip`, `rar`, `7z`, `tar`, `gz`, `bz2` |
+| **Books / packages** | `epub`, `apk`, `ipa` |
+
+Anything on this list delivered as a native attachment on platforms that support it (Telegram, Discord, Signal, Slack, WhatsApp, Feishu, Matrix, etc.); on platforms without native support it falls back to a link or plain-text indicator. The **bold** categories were added in the last few releases — if you were relying on the model saying `here is the file: /path/to/report.docx` instead, swap to `MEDIA:/path/to/report.docx` for native delivery.
+
 ## Webhook Mode
 
 By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.
@@ -450,6 +466,50 @@ To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and loo
 - **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. See [Private Chat Topics](#private-chat-topics-bot-api-94) above.
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
 - **Message streaming:** Bot API 9.x added support for streaming long responses, which can improve perceived latency for lengthy agent replies.
+
+## Rendering: Tables and Link Previews
+
+Telegram's MarkdownV2 has no native table syntax — pipe tables render as backslash-escaped noise if passed through raw. Hermes normalizes markdown tables automatically:
+
+- **Small tables** are flattened into **row-group bullets** — each row becomes a readable bulleted list under the column headings. Good for 2–4 columns and short cells.
+- **Larger or wider tables** fall back to a **fenced code block** with aligned columns so nothing collapses. A one-line prompt hint is added so the agent knows to prefer prose follow-ups over more tables on Telegram.
+
+There's nothing to configure — the adapter picks the right fallback per message. If you want the legacy "always code-block" behavior, disable table normalization by setting `telegram.pretty_tables: false` in `config.yaml` (default: `true`).
+
+**Link previews.** Telegram auto-generates link previews for URLs in bot messages. If you'd rather suppress those (long `/tools` output, agent reply that mentions ten links, etc.):
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        disable_link_previews: true
+```
+
+When enabled, Hermes attaches Telegram's `LinkPreviewOptions(is_disabled=True)` to every outgoing message and falls back to the legacy `disable_web_page_preview` parameter on older `python-telegram-bot` versions.
+
+## Group Allowlisting by Chat ID
+
+In addition to per-user access control via `TELEGRAM_ALLOWED_USERS`, you can allowlist entire group chats (and forum topics) by their numeric chat ID. Useful for team/support bots where any group member should be able to chat, but only in certain groups or topics.
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        group_allowed_chats:
+          - -1001234567890          # supergroup — all members allowed
+          - -1001234567891/42       # supergroup + forum thread_id 42 only
+```
+
+Equivalent env var: `TELEGRAM_GROUP_ALLOWED_USERS="-1001234567890,-1001234567891/42"` (comma-separated; the `/<thread_id>` suffix is optional).
+
+Behavior:
+
+- A chat that appears in `group_allowed_chats` bypasses `TELEGRAM_ALLOWED_USERS` for its members — anyone in the group can interact with the bot.
+- Omit the `/<thread_id>` suffix to allow the whole group; include it to allow just that forum topic.
+- DMs still require the user ID to be in `TELEGRAM_ALLOWED_USERS`.
+- This layers cleanly on top of `group_topics` (for topic-scoped skill binding) and `ignored_threads` (for silencing specific topics).
 
 ## Interactive Model Picker
 

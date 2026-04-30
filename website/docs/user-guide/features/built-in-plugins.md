@@ -162,6 +162,36 @@ Hermes-prefixed and standard SDK env vars (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECR
 
 **Disabling:** `hermes plugins disable observability/langfuse`. The plugin module is still discovered, but no module code runs until you re-enable.
 
+### google_meet
+
+Lets the agent **join, transcribe, and participate in Google Meet calls** — take notes on a meeting, summarize the back-and-forth after, follow up on specific points, and (optionally) speak replies back into the call via TTS.
+
+**What it adds:**
+
+- A headless virtual participant that joins a Meet URL using browser automation
+- Live transcription of the meeting audio via the configured STT provider
+- A `meet_summarize` / `meet_speak` / `meet_followup` toolset the agent invokes to act on what it heard
+- Post-meeting artifacts (transcript, speaker-attributed notes, action items) saved under `~/.hermes/cache/google_meet/<meeting_id>/`
+
+**Setup:**
+
+```bash
+hermes plugins enable google_meet
+# Prompts you to sign in via the plugin's OAuth flow on first use —
+# needs a Google account with Meet access. Host approval may be required
+# if the meeting enforces "only invited participants can join".
+```
+
+Usage from chat:
+
+> "Join meet.google.com/abc-defg-hij and take notes. After the call, send me a summary with action items."
+
+The agent kicks off the meeting join, streams the transcription back into its context as the call proceeds, and produces a structured summary when the meeting ends (or when you tell it to stop).
+
+**When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
+
+**Disabling:** `hermes plugins disable google_meet`. Any cached transcripts and recordings stay in `~/.hermes/cache/google_meet/` until you remove them.
+
 ## Adding a bundled plugin
 
 Bundled plugins are written exactly like any other Hermes plugin — see [Build a Hermes Plugin](/docs/guides/build-a-hermes-plugin). The only differences are:

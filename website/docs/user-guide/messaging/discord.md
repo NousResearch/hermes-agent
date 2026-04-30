@@ -482,6 +482,34 @@ Hermes automatically registers installed skills as **native Discord Application 
 
 No extra configuration is needed — any skill installed via `hermes skills install` is automatically registered as a Discord slash command on the next gateway restart.
 
+### Disabling Slash Command Registration
+
+If you run multiple Hermes gateways against the same Discord application (e.g. staging + production), only one of them should own the global slash-command registration — otherwise the last startup wins and the registrations flap. Turn slash registration off on the "follower" gateway:
+
+```yaml
+gateway:
+  platforms:
+    discord:
+      extra:
+        slash_commands: false   # default: true
+```
+
+Leaving this at `true` on the "primary" gateway keeps the normal behavior — global `/`-menu commands for built-ins and installed skills.
+
+## Sending Media (`send_message` + `MEDIA:` tags)
+
+The Discord adapter supports native file uploads for every common media type via the `send_message` tool and inline `MEDIA:/path/to/file` tags emitted by the agent:
+
+| Type | How it's delivered |
+|---|---|
+| Images (PNG/JPG/WebP) | Native Discord image attachment with inline preview |
+| Animated GIFs | `send_animation` uploads as `animation.gif` so Discord plays it inline (not as a static thumbnail) |
+| Video (MP4/MOV) | `send_video` — native video player |
+| Audio / Voice | `send_voice` — native voice message when possible, file attachment otherwise |
+| Documents (PDF/ZIP/docx/etc.) | `send_document` — native attachment with download button |
+
+Discord's per-upload size limit depends on the server's boost tier (25 MB free, up to 500 MB). If Hermes gets an HTTP 413, the adapter falls back to a link pointing at the local cache path rather than failing silently.
+
 ## Home Channel
 
 You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:

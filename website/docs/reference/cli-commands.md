@@ -64,12 +64,13 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes tools` | Configure enabled tools per platform. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
+| `hermes fallback` | Interactive manager for the fallback provider chain. |
 | `hermes claw` | OpenClaw migration helpers. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh). |
 | `hermes version` | Show version information. |
-| `hermes update` | Pull latest code and reinstall dependencies. |
+| `hermes update` | Pull latest code and reinstall dependencies. `--check` prints commit diff without pulling; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
 | `hermes uninstall` | Remove Hermes from the system. |
 
 ## `hermes chat`
@@ -85,7 +86,7 @@ Common options:
 | `-q`, `--query "..."` | One-shot, non-interactive prompt. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `google-gemini-cli`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry`. |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `google-gemini-cli`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `alibaba-coding-plan` (alias `alibaba_coding`), `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry`, `tencent-tokenhub` (alias `tencent`, `tokenhub`). |
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
@@ -111,6 +112,33 @@ hermes chat --quiet -q "Return only JSON"
 hermes chat --worktree -q "Review this repo and open a PR"
 hermes chat --ignore-user-config --ignore-rules -q "Repro without my personal setup"
 ```
+
+### `hermes -z <prompt>` — scripted one-shot
+
+For programmatic callers (shell scripts, CI, cron, parent processes piping in a prompt), `hermes -z` is the purest one-shot entry point: **single prompt in, final response text out, nothing else on stdout or stderr.** No banner, no spinner, no tool previews, no `Session:` line — just the agent's final reply as plain text.
+
+```bash
+hermes -z "What's the capital of France?"
+# → Paris.
+
+# Parent scripts can cleanly capture the response:
+answer=$(hermes -z "summarize this" < /path/to/file.txt)
+```
+
+Per-run overrides (no mutation to `~/.hermes/config.yaml`):
+
+| Flag | Equivalent env var | Purpose |
+|---|---|---|
+| `-m` / `--model <model>` | `HERMES_INFERENCE_MODEL` | Override the model for this run |
+| `--provider <provider>` | `HERMES_INFERENCE_PROVIDER` | Override the provider for this run |
+
+```bash
+hermes -z "…" --provider openrouter --model openai/gpt-5.5
+# or:
+HERMES_INFERENCE_MODEL=anthropic/claude-sonnet-4.6 hermes -z "…"
+```
+
+Same agent, same tools, same skills — just strips every interactive / cosmetic layer. If you need tool output in the transcript too, use `hermes chat -q` instead; `-z` is explicitly for "I only want the final answer".
 
 ## `hermes model`
 
@@ -180,6 +208,12 @@ Subcommands:
 | `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
 | `uninstall` | Remove the installed service. |
 | `setup` | Interactive messaging-platform setup. |
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `--all` | On `start` / `restart` / `stop`: act on **every profile's** gateway, not just the active `HERMES_HOME`. Useful if you run multiple profiles side-by-side and want to restart them all after `hermes update`. |
 
 :::tip WSL users
 Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'hermes gateway run'`. See [WSL FAQ](/docs/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
@@ -461,6 +495,12 @@ Create a zip archive of your Hermes configuration, skills, sessions, and data. T
 | `-l`, `--label <name>` | Label for the snapshot (only used with `--quick`). |
 
 The backup uses SQLite's `backup()` API for safe copying, so it works correctly even when Hermes is running (WAL-mode safe).
+
+**What's excluded from the zip:**
+
+- `*.db-wal`, `*.db-shm`, `*.db-journal` — SQLite's WAL / shared-memory / journal sidecars. The `*.db` file already got a consistent snapshot via `sqlite3.backup()`; shipping the live sidecars alongside it would let a restore see a half-committed state.
+- `checkpoints/` — per-session trajectory caches. Hash-keyed and regenerated per session; wouldn't port cleanly to another install anyway.
+- The `hermes-agent` code itself (this is a user-data backup, not a repo snapshot).
 
 ### Examples
 
@@ -909,6 +949,44 @@ hermes completion bash >> ~/.bashrc
 # Zsh
 hermes completion zsh >> ~/.zshrc
 ```
+
+## `hermes update`
+
+```bash
+hermes update [--check] [--backup] [--restart-gateway]
+```
+
+Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install.
+
+| Option | Description |
+|--------|-------------|
+| `--check` | Print the current commit and the latest `origin/main` commit side by side, and exit 0 if in sync or 1 if behind. Does not pull, install, or restart anything. |
+| `--backup` | Create a labeled pre-update snapshot of `HERMES_HOME` (config, auth, sessions, skills, pairing data) before pulling. Default is **off** — the previous always-backup behavior was adding minutes to every update on large homes. Flip it on permanently via `update.backup: true` in `config.yaml`. |
+| `--restart-gateway` | After a successful update, restart the running gateway service. Implies `--all` semantics if multiple profiles are installed. |
+
+Additional behavior:
+
+- **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
+- **Legacy `hermes.service` warning.** If Hermes detects a pre-rename `hermes.service` systemd unit (instead of the current `hermes-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.
+- **Exit codes.** `0` on success, `1` on pull/install/post-install errors, `2` on unexpected working-tree changes that block `git pull`.
+
+## `hermes fallback`
+
+```bash
+hermes fallback           # interactive manager
+```
+
+Manage the fallback provider chain (used when your primary provider hits a rate limit or returns a fatal error) without hand-editing `config.yaml`. Reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation.
+
+Typical session:
+
+1. Press `a` to add a fallback → pick a provider (OAuth-based providers open a browser; API-key providers prompt for the key), then pick the specific model.
+2. Use `↑`/`↓` to reorder fallbacks (first-in-list is tried first).
+3. Press `d` to remove one.
+
+All changes persist to `fallback_providers:` under `model:` in `config.yaml`. Interacts with [Credential Pools](/docs/user-guide/features/credential-pools): pools rotate keys *within* a provider, fallbacks switch to a *different* provider entirely.
+
+See [Fallback Providers](/docs/user-guide/features/fallback-providers) for behavior details and interaction with `fallback_model` (legacy single-fallback key).
 
 ## Maintenance commands
 

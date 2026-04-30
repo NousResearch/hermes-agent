@@ -585,7 +585,7 @@ class TeamsAdapter(BasePlatformAdapter):
 # ── Interactive setup ─────────────────────────────────────────────────────────
 
 def interactive_setup() -> None:
-    """Prompt the user for Teams credentials and save them to ~/.hermes/.env."""
+    """Guide the user through Teams setup using the Teams CLI."""
     from hermes_cli.config import (
         get_env_value,
         save_env_value,
@@ -602,49 +602,40 @@ def interactive_setup() -> None:
         if not prompt_yes_no("Reconfigure Teams?", False):
             return
 
-    print_info("Connect Hermes to Microsoft Teams via the Bot Framework.")
-    print_info("You'll need an Azure Bot registration with a client secret.")
-    print_info("See: https://learn.microsoft.com/azure/bot-service/")
+    print_info("You'll need the Teams CLI. If you haven't already:")
+    print_info("  npm install -g @microsoft/teams.cli@preview")
+    print_info("  teams login")
+    print()
+    print_info("Then expose port 3978 publicly (devtunnel / ngrok / cloudflared),")
+    print_info("and create your bot:")
+    print_info("  teams app create --name \"Hermes\" --endpoint \"https://<tunnel>/api/messages\"")
+    print()
+    print_info("The CLI will print CLIENT_ID, CLIENT_SECRET, and TENANT_ID. Paste them below.")
     print()
 
-    client_id = prompt(
-        "Azure App (client) ID",
-        default=existing_id or get_env_value("TEAMS_CLIENT_ID") or "",
-    )
+    client_id = prompt("Client ID", default=existing_id or "")
     if not client_id:
         print_warning("Client ID is required — skipping Teams setup")
         return
     save_env_value("TEAMS_CLIENT_ID", client_id.strip())
 
-    client_secret = prompt(
-        "Client secret",
-        default=get_env_value("TEAMS_CLIENT_SECRET") or "",
-        password=True,
-    )
+    client_secret = prompt("Client secret", default=get_env_value("TEAMS_CLIENT_SECRET") or "", password=True)
     if not client_secret:
         print_warning("Client secret is required — skipping Teams setup")
         return
     save_env_value("TEAMS_CLIENT_SECRET", client_secret.strip())
 
-    tenant_id = prompt(
-        "Tenant ID (or 'common' for multi-tenant)",
-        default=get_env_value("TEAMS_TENANT_ID") or "",
-    )
+    tenant_id = prompt("Tenant ID", default=get_env_value("TEAMS_TENANT_ID") or "")
     if not tenant_id:
         print_warning("Tenant ID is required — skipping Teams setup")
         return
     save_env_value("TEAMS_TENANT_ID", tenant_id.strip())
 
-    port = prompt(
-        "Webhook listen port",
-        default=get_env_value("TEAMS_PORT") or "3978",
-    )
-    save_env_value("TEAMS_PORT", port.strip() or "3978")
-
     print()
+    print_info("To find your AAD object ID for the allowlist: teams status --verbose")
     if prompt_yes_no("Restrict access to specific users? (recommended)", True):
         allowed = prompt(
-            "Allowed Azure AD object IDs (comma-separated)",
+            "Allowed AAD object IDs (comma-separated)",
             default=get_env_value("TEAMS_ALLOWED_USERS") or "",
         )
         if allowed:
@@ -658,8 +649,8 @@ def interactive_setup() -> None:
 
     print()
     print_success("Teams configuration saved to ~/.hermes/.env")
-    print_info("Set your bot's messaging endpoint to: https://<your-tunnel>/api/messages")
-    print_info("Restart the gateway for changes to take effect: hermes gateway restart")
+    print_info("Install the app in Teams:  teams app install --id <teamsAppId>")
+    print_info("Restart the gateway:       hermes gateway restart")
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────

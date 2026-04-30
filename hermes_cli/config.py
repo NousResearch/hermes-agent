@@ -73,6 +73,8 @@ _EXTRA_ENV_KEYS = frozenset({
     "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",  # legacy aliases (pre-rename, still read for back-compat)
     "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
     "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
+    "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
+    "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
@@ -499,7 +501,8 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
+        "vercel_runtime": "node24",
+        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
@@ -1017,6 +1020,14 @@ DEFAULT_CONFIG = {
         "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
+        # When true, /reload-mcp asks the user to confirm before rebuilding
+        # the MCP tool set for the active session.  Reloading invalidates
+        # the provider prompt cache (tool schemas are baked into the system
+        # prompt), so the next message re-sends full input tokens — this can
+        # be expensive on long-context or high-reasoning models.  Users click
+        # "Always Approve" to silence the prompt permanently; that flips
+        # this key to false.
+        "mcp_reload_confirm": True,
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
@@ -2074,6 +2085,43 @@ OPTIONAL_ENV_VARS = {
         "description": "Enable QQ sandbox mode for development testing (true/false)",
         "prompt": "QQ Sandbox Mode",
         "category": "messaging",
+    },
+    "IRC_SERVER": {
+        "description": "IRC server hostname (e.g. irc.libera.chat)",
+        "prompt": "IRC server",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "IRC_CHANNEL": {
+        "description": "IRC channel to join (e.g. #hermes)",
+        "prompt": "IRC channel",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "IRC_NICKNAME": {
+        "description": "Bot nickname on IRC (default: hermes-bot)",
+        "prompt": "IRC nickname",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "IRC_SERVER_PASSWORD": {
+        "description": "IRC server password (if required)",
+        "prompt": "IRC server password",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "IRC_NICKSERV_PASSWORD": {
+        "description": "NickServ password for nick identification",
+        "prompt": "NickServ password",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
     },
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
@@ -4193,6 +4241,9 @@ def show_config():
         print(f"  Daytona image: {terminal.get('daytona_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
         daytona_key = get_env_value('DAYTONA_API_KEY')
         print(f"  API key:      {'configured' if daytona_key else '(not set)'}")
+    elif terminal.get('backend') == 'vercel_sandbox':
+        print(f"  Vercel runtime: {terminal.get('vercel_runtime', 'node24')}")
+        print(f"  Vercel auth:    {'configured' if get_env_value('VERCEL_OIDC_TOKEN') or (get_env_value('VERCEL_TOKEN') and get_env_value('VERCEL_PROJECT_ID') and get_env_value('VERCEL_TEAM_ID')) else '(not set)'}")
     elif terminal.get('backend') == 'ssh':
         ssh_host = get_env_value('TERMINAL_SSH_HOST')
         ssh_user = get_env_value('TERMINAL_SSH_USER')
@@ -4385,6 +4436,7 @@ def set_config_value(key: str, value: str):
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "terminal.vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         "terminal.docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
         "terminal.docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
         "terminal.cwd": "TERMINAL_CWD",

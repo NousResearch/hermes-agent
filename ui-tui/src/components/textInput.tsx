@@ -4,7 +4,7 @@ import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'rea
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
-import { cursorLayout } from '../lib/inputMetrics.js'
+import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
 import { isActionMod, isMac, isMacActionFallback } from '../lib/platform.js'
 
 type InkExt = typeof Ink & {
@@ -170,57 +170,7 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
   return snapPos(s, Math.min(nextBreak + 1 + col, lineEnd))
 }
 
-export function offsetFromPosition(value: string, row: number, col: number, cols: number) {
-  if (!value.length) {
-    return 0
-  }
-
-  const targetRow = Math.max(0, Math.floor(row))
-  const targetCol = Math.max(0, Math.floor(col))
-  const w = Math.max(1, cols)
-
-  let line = 0
-  let column = 0
-  let lastOffset = 0
-
-  for (const { segment, index } of seg().segment(value)) {
-    lastOffset = index
-
-    if (segment === '\n') {
-      if (line === targetRow) {
-        return index
-      }
-
-      line++
-      column = 0
-
-      continue
-    }
-
-    const sw = Math.max(1, stringWidth(segment))
-
-    if (column + sw > w) {
-      if (line === targetRow) {
-        return index
-      }
-
-      line++
-      column = 0
-    }
-
-    if (line === targetRow && targetCol <= column + Math.max(0, sw - 1)) {
-      return index
-    }
-
-    column += sw
-  }
-
-  if (targetRow >= line) {
-    return value.length
-  }
-
-  return lastOffset
-}
+export { offsetFromPosition }
 
 function renderWithCursor(value: string, cursor: number) {
   const pos = Math.max(0, Math.min(cursor, value.length))
@@ -1059,7 +1009,7 @@ export function TextInput({
       ref={boxRef}
       width={columns}
     >
-      <Text wrap="wrap-char">{rendered}</Text>
+      <Text wrap="wrap">{rendered}</Text>
     </Box>
   )
 }

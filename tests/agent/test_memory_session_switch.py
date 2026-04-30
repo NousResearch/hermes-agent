@@ -205,6 +205,7 @@ def _make_hindsight_provider():
     bypassing __init__ and seeding the attributes on_session_switch
     reads/writes. This keeps the test hermetic.
     """
+    import threading
     hindsight_mod = pytest.importorskip("plugins.memory.hindsight")
     provider = object.__new__(hindsight_mod.HindsightMemoryProvider)
     provider._session_id = "old-sid"
@@ -213,6 +214,43 @@ def _make_hindsight_provider():
     provider._session_turns = ["turn-1", "turn-2"]
     provider._turn_counter = 2
     provider._turn_index = 2
+    # Attrs read by _build_metadata / _build_retain_kwargs when the
+    # buffer-flush path on session switch fires. Empty strings keep the
+    # metadata minimal but well-formed.
+    provider._retain_source = ""
+    provider._platform = ""
+    provider._user_id = ""
+    provider._user_name = ""
+    provider._chat_id = ""
+    provider._chat_name = ""
+    provider._chat_type = ""
+    provider._thread_id = ""
+    provider._agent_identity = ""
+    provider._agent_workspace = ""
+    provider._retain_tags = []
+    provider._retain_context = "test-context"
+    provider._retain_async = False
+    provider._bank_id = "test-bank"
+    # Prefetch state the switch path drains/clears.
+    provider._prefetch_thread = None
+    provider._prefetch_lock = threading.Lock()
+    provider._prefetch_result = ""
+    # Sync thread tracking (legacy alias at the writer).
+    provider._sync_thread = None
+    # Writer queue infra the flush-on-switch path enqueues onto. We stub
+    # _ensure_writer / _register_atexit so no real thread is spawned;
+    # tests exercising flush delivery live in
+    # tests/plugins/memory/test_hindsight_provider.py where the full
+    # writer-queue wiring is in place.
+    import queue as _queue
+    provider._retain_queue = _queue.Queue()
+    provider._shutting_down = threading.Event()
+    provider._atexit_registered = True
+    provider._ensure_writer = lambda: None
+    provider._register_atexit = lambda: None
+    # Stub the network-touching helper so any enqueued flush closure is
+    # a no-op if ever drained in a unit test.
+    provider._run_hindsight_operation = lambda _op: None
     return provider
 
 

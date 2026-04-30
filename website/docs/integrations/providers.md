@@ -28,7 +28,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
-| **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`, aliases: `dashscope`, `qwen`) |
+| **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`) |
+| **Alibaba Coding Plan** | `DASHSCOPE_API_KEY` (provider: `alibaba-coding-plan`, alias: `alibaba_coding`) — separate billing SKU, different endpoint |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
 | **Xiaomi MiMo** | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
 | **Tencent TokenHub** | `TOKENHUB_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`) |
@@ -136,7 +137,7 @@ The OpenAI Codex provider authenticates via device code (open a URL, enter a cod
 :::
 
 :::warning
-Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use a separate "auxiliary" model — by default Gemini Flash via OpenRouter. An `OPENROUTER_API_KEY` enables these tools automatically. You can also configure which model and provider these tools use — see [Auxiliary Models](/docs/user-guide/configuration#auxiliary-models).
+Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, web summarization, MoA) use a separate "auxiliary" model. By default (`auxiliary.*.provider: "auto"`), Hermes routes these tasks to your **main chat model** — the same model you picked in `hermes model`. You can override each task individually to route it to a cheaper/faster model (e.g. Gemini Flash on OpenRouter) — see [Auxiliary Models](/docs/user-guide/configuration#auxiliary-models).
 :::
 
 :::tip Nous Tool Gateway
@@ -409,6 +410,50 @@ Set `HERMES_QWEN_BASE_URL` only if the portal endpoint relocates (default: `http
 
 :::tip Qwen OAuth vs DashScope (Alibaba)
 `qwen-oauth` uses the consumer-facing Qwen Portal with OAuth login — ideal for individual users. The `alibaba` provider uses DashScope's enterprise API with a `DASHSCOPE_API_KEY` — ideal for programmatic / production workloads. Both route to Qwen-family models but live at different endpoints.
+:::
+
+### Alibaba Coding Plan
+
+If you're subscribed to Alibaba's **Coding Plan** (a pricing SKU separate from standard DashScope API access), Hermes exposes it as its own first-class provider: `alibaba-coding-plan`. Endpoint: `https://coding-intl.dashscope.aliyuncs.com/v1`. It's OpenAI-compatible like the regular `alibaba` provider but with a different base URL and billing surface.
+
+```yaml
+model:
+  provider: alibaba_coding     # alias for alibaba-coding-plan
+  model: qwen3-coder-plus
+```
+
+Or from the CLI:
+
+```bash
+hermes chat --provider alibaba_coding --model qwen3-coder-plus
+```
+
+`alibaba_coding` uses the same `DASHSCOPE_API_KEY` your `alibaba` entry already uses — no separate key needed, just a different routing target. Before this provider was registered, users who set `provider: alibaba_coding` in `config.yaml` silently fell through to OpenRouter routing.
+
+### MiniMax (OAuth)
+
+MiniMax-M2.7 via browser OAuth login — no API key needed. Pick **MiniMax (OAuth)** in `hermes model`, sign in through the browser, and Hermes persists the access + refresh tokens. Uses the Anthropic Messages-compatible endpoint (`/anthropic`) under the hood.
+
+```bash
+hermes model
+# → pick "MiniMax (OAuth)"
+# → browser opens; sign in with your MiniMax account (global or CN region)
+# → confirm — credentials are saved to ~/.hermes/auth.json
+
+hermes chat   # uses api.minimax.io/anthropic endpoint
+```
+
+Or configure `config.yaml`:
+```yaml
+model:
+  provider: "minimax-oauth"
+  default: "MiniMax-M2.7"
+```
+
+Supported models: `MiniMax-M2.7` (main) and `MiniMax-M2.7-highspeed` (wired as the default auxiliary model). The OAuth path ignores `MINIMAX_API_KEY` / `MINIMAX_BASE_URL`.
+
+:::tip MiniMax OAuth vs API key
+`minimax-oauth` uses MiniMax's consumer-facing portal with OAuth login — no billing setup required. The `minimax` and `minimax-cn` providers use `MINIMAX_API_KEY` / `MINIMAX_CN_API_KEY` — for programmatic access. See the [MiniMax OAuth guide](/docs/guides/minimax-oauth) for a full walkthrough.
 :::
 
 ### NVIDIA NIM
@@ -1194,7 +1239,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

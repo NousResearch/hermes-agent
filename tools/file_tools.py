@@ -380,12 +380,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in ("docker", "singularity", "modal", "daytona"):
+            if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),
                     "container_disk": config.get("container_disk", 51200),
                     "container_persistent": config.get("container_persistent", True),
+                    "vercel_runtime": config.get("vercel_runtime", ""),
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
@@ -488,12 +489,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
-                "dedup_hits": {},
+                "dedup_hits": {}, "read_timestamps": {},
             })
             # Backward-compat for pre-existing tracker entries that predate
-            # dedup_hits (long-lived task or crossed an upgrade boundary).
+            # dedup_hits/read_timestamps (long-lived task or crossed an
+            # upgrade boundary).
             if "dedup_hits" not in task_data:
                 task_data["dedup_hits"] = {}
+            if "read_timestamps" not in task_data:
+                task_data["read_timestamps"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
         if cached_mtime is not None:

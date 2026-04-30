@@ -16,7 +16,7 @@ This safety net is powered by an internal **Checkpoint Manager** that keeps a se
 Checkpoints are taken automatically before:
 
 - **File tools** — `write_file` and `patch`
-- **Destructive terminal commands** — `rm`, `mv`, `sed -i`, `truncate`, `shred`, output redirects (`>`), and `git reset`/`clean`/`checkout`
+- **Destructive terminal commands** — `rm`, `rmdir`, `cp`, `install`, `mv`, `sed -i`, `truncate`, `dd`, `shred`, output redirects (`>`), and `git reset`/`clean`/`checkout`
 
 The agent creates **at most one checkpoint per directory per turn**, so long-running sessions don't spam snapshots.
 

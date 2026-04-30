@@ -1998,6 +1998,7 @@ class TestAzureAnthropicEnvVarHint:
 
         assert resolved["api_key"] == "fallback-works"
 
+
     def test_no_key_anywhere_raises_helpful_error(self, monkeypatch):
         """When nothing resolves, the error message mentions key_env as an option."""
         monkeypatch.delenv("AZURE_ANTHROPIC_KEY", raising=False)
@@ -2168,3 +2169,67 @@ class TestTencentTokenhubRuntimeResolution:
         assert resolved["base_url"] == "https://explicit-proxy.example.com/v1"
         assert resolved["source"] == "explicit"
 
+# ---------------------------------------------------------------------------
+# minimax-oauth runtime resolution tests (added by feat/minimax-oauth-provider)
+# ---------------------------------------------------------------------------
+
+def test_minimax_oauth_runtime_returns_anthropic_messages_mode(monkeypatch):
+    """resolve_runtime_provider for minimax-oauth must return api_mode='anthropic_messages'."""
+    from hermes_cli.auth import MINIMAX_OAUTH_GLOBAL_INFERENCE
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-oauth")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "minimax-oauth"})
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(
+        rp,
+        "_resolve_named_custom_runtime",
+        lambda **k: None,
+    )
+    monkeypatch.setattr(
+        rp,
+        "_resolve_explicit_runtime",
+        lambda **k: None,
+    )
+
+    fake_creds = {
+        "provider": "minimax-oauth",
+        "api_key": "mock-access-token",
+        "base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE.rstrip("/"),
+        "source": "oauth",
+    }
+
+    import hermes_cli.auth as auth_mod
+    monkeypatch.setattr(auth_mod, "resolve_minimax_oauth_runtime_credentials",
+                        lambda **k: fake_creds)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax-oauth")
+
+    assert resolved["provider"] == "minimax-oauth"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["api_key"] == "mock-access-token"
+
+
+def test_minimax_oauth_runtime_uses_inference_base_url(monkeypatch):
+    """Base URL returned by resolve_runtime_provider should match the OAuth credentials."""
+    from hermes_cli.auth import MINIMAX_OAUTH_CN_INFERENCE
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-oauth")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "minimax-oauth"})
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(rp, "_resolve_named_custom_runtime", lambda **k: None)
+    monkeypatch.setattr(rp, "_resolve_explicit_runtime", lambda **k: None)
+
+    fake_creds = {
+        "provider": "minimax-oauth",
+        "api_key": "cn-token",
+        "base_url": MINIMAX_OAUTH_CN_INFERENCE.rstrip("/"),
+        "source": "oauth",
+    }
+
+    import hermes_cli.auth as auth_mod
+    monkeypatch.setattr(auth_mod, "resolve_minimax_oauth_runtime_credentials",
+                        lambda **k: fake_creds)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax-oauth")
+
+    assert MINIMAX_OAUTH_CN_INFERENCE.rstrip("/") in resolved["base_url"]

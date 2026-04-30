@@ -837,6 +837,61 @@ def _pool_may_recover_from_rate_limit(pool) -> bool:
     return len(pool.entries()) > 1
 
 
+def _build_hermes_context_usage_payload(
+    *,
+    canonical_usage: Any,
+    model: str,
+) -> Dict[str, Any]:
+    """Build the MC `hermes_context_usage` payload from a normalised usage object.
+
+    Total context tokens is the full provider-reported prefill the model saw:
+    ``input_tokens + cache_read_tokens + cache_write_tokens``. Output tokens are
+    recorded in ``components`` for debugging but excluded from the bar count.
+    Limit/floor come from the same env vars mc-api reads, so a single source of
+    truth controls bar scale on both sides.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+
+    _input = int(getattr(canonical_usage, "input_tokens", 0) or 0)
+    _output = int(getattr(canonical_usage, "output_tokens", 0) or 0)
+    _cache_read = int(getattr(canonical_usage, "cache_read_tokens", 0) or 0)
+    _cache_write = int(getattr(canonical_usage, "cache_write_tokens", 0) or 0)
+    total = _input + _cache_read + _cache_write
+
+    bar_limit = int(os.environ.get("HERMES_CONTEXT_LIMIT", 400_000))
+    floor = int(os.environ.get("HERMES_CONTEXT_FLOOR", 320_000))
+    pct = round(total / bar_limit * 100, 2) if bar_limit else 0.0
+    floor_pct = round(floor / bar_limit * 100, 2) if bar_limit else 0.0
+    if total >= floor:
+        status = "red"
+    elif total >= floor * 0.5:
+        status = "yellow"
+    else:
+        status = "green"
+
+    return {
+        "tokens": total,
+        "limit": bar_limit,
+        "floor": floor,
+        "remaining": max(0, floor - total),
+        "pct": pct,
+        "floor_pct": floor_pct,
+        "status": status,
+        "found": True,
+        "estimated": False,
+        "source": "provider_usage",
+        "model": model or "",
+        "updated_at": _dt.now(tz=_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "components": {
+            "input_tokens": _input,
+            "cache_read_input_tokens": _cache_read,
+            "cache_creation_input_tokens": _cache_write,
+            "output_tokens": _output,
+            "total_context_tokens": total,
+        },
+    }
+
+
 def _emit_dd_per_call_generation(
     *,
     dd_obs_module,
@@ -2099,7 +2154,9 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
-        
+
+        self._last_context_usage: Optional[Dict[str, Any]] = None
+
         # ── Ollama num_ctx injection ──
         # Ollama defaults to 2048 context regardless of the model's capabilities.
         # When running against an Ollama server, detect the model's max context
@@ -2201,7 +2258,9 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
-        
+
+        self._last_context_usage = None
+
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
@@ -4289,6 +4348,9 @@ class AIAgent:
                 "message_count": len(cleaned),
                 "messages": cleaned,
             }
+
+            if self._last_context_usage is not None:
+                entry["context_usage"] = self._last_context_usage
 
             atomic_json_write(
                 self.session_log_file,
@@ -11431,6 +11493,14 @@ class AIAgent:
                         self.session_cache_read_tokens += canonical_usage.cache_read_tokens
                         self.session_cache_write_tokens += canonical_usage.cache_write_tokens
                         self.session_reasoning_tokens += canonical_usage.reasoning_tokens
+
+                        try:
+                            self._last_context_usage = _build_hermes_context_usage_payload(
+                                canonical_usage=canonical_usage,
+                                model=self.model,
+                            )
+                        except Exception:
+                            pass  # never block the agent loop
 
                         # Log API call details for debugging/observability
                         _cache_pct = ""

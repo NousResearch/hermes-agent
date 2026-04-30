@@ -1048,3 +1048,83 @@ class TestImapConnectionCleanup(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestEmailAudioSupport(unittest.TestCase):
+    """Verify audio support in email platform (extraction and sending)."""
+
+    @patch.dict(os.environ, {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+        "EMAIL_SMTP_PORT": "587",
+    }, clear=False)
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.email import EmailAdapter
+        return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_extract_audio_attachment(self):
+        """Email with audio attachment should be dispatched as MessageType.AUDIO."""
+        import asyncio
+        from gateway.platforms.base import MessageType
+        adapter = self._make_adapter()
+        
+        # Build multipart email with audio attachment
+        msg = MIMEMultipart()
+        msg["From"] = "sender@test.com"
+        msg["Subject"] = "Audio test"
+        msg["Message-ID"] = "<audio@test.com>"
+        
+        part = MIMEBase("audio", "mpeg")
+        part.set_payload(b"fake audio data")
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", 'attachment; filename="test.mp3"')
+        msg.attach(part)
+
+        # Mock cache_audio_from_bytes to avoid file IO and return a predictable path
+        with patch("gateway.platforms.email.cache_audio_from_bytes", return_value="/tmp/audio.mp3") as mock_cache:
+            captured_event = None
+            async def mock_handle(event):
+                nonlocal captured_event
+                captured_event = event
+            
+            adapter.handle_message = mock_handle
+            
+            # Fetch and dispatch via mocked IMAP
+            mock_imap = MagicMock()
+            mock_imap.uid.side_effect = lambda cmd, *args: ("OK", [b"1"]) if cmd == "search" else ("OK", [(b"1", msg.as_bytes())])
+            
+            with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+                asyncio.run(adapter._check_inbox())
+                
+            self.assertIsNotNone(captured_event)
+            self.assertEqual(captured_event.message_type, MessageType.AUDIO)
+            self.assertIn("/tmp/audio.mp3", captured_event.media_urls)
+            mock_cache.assert_called_once()
+
+    def test_send_audio_mime_type(self):
+        """send_audio should use the correct audio/* MIME type based on extension."""
+        import asyncio
+        adapter = self._make_adapter()
+        
+        with patch("smtplib.SMTP") as mock_smtp, \
+             patch("pathlib.Path.is_file", return_value=True), \
+             patch("builtins.open", unittest.mock.mock_open(read_data=b"audio data")):
+            
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+            
+            asyncio.run(adapter.send_audio("user@test.com", "/tmp/test.wav"))
+            
+            # Verify sent message
+            self.assertTrue(mock_server.send_message.called)
+            sent_msg = mock_server.send_message.call_args[0][0]
+            
+            found_audio = False
+            for part in sent_msg.walk():
+                if part.get_content_maintype() == "audio":
+                    self.assertEqual(part.get_content_subtype(), "wav")
+                    found_audio = True
+            
+            self.assertTrue(found_audio, "Audio part with correct subtype not found in sent message")

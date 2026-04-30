@@ -42,6 +42,29 @@ def _make_agent(provider: str = "", model: str = "", base_url: str = "") -> AIAg
     return agent
 
 
+_ATTR_ABSENT = object()
+_EXPECT_NOT_PRESENT = object()
+
+
+def _sdk_tool_call(call_id: str = "c1", name: str = "terminal", arguments: str = "{}"):
+    """Minimal SDK-shaped tool_call object that satisfies the builder's iteration."""
+    return SimpleNamespace(
+        id=call_id,
+        call_id=call_id,
+        type="function",
+        function=SimpleNamespace(name=name, arguments=arguments),
+        extra_content=None,
+    )
+
+
+def _build_sdk_message(reasoning_content=_ATTR_ABSENT, **extra):
+    """SDK-shaped assistant message; ``reasoning_content`` defaults to absent."""
+    kwargs = {"content": "", **extra}
+    if reasoning_content is not _ATTR_ABSENT:
+        kwargs["reasoning_content"] = reasoning_content
+    return SimpleNamespace(**kwargs)
+
+
 class TestNeedsDeepSeekToolReasoning:
     """_needs_deepseek_tool_reasoning() recognises all three detection signals."""
 
@@ -303,6 +326,92 @@ class TestBuildAssistantMessageDeepSeekReasoningContent:
 
         assert msg["reasoning_content"] == ""
         assert msg["tool_calls"][0]["id"] == "call_1"
+
+
+class TestBuildAssistantMessagePadsStrictProviders:
+    """Regression for #17400: _build_assistant_message must pin reasoning_content
+    on tool-call turns when the active provider enforces echo-back, regardless
+    of whether the SDK exposed reasoning_content as None, omitted it entirely,
+    or returned an empty thinking block.
+
+    Prior to the fix, the pad branch was guarded by ``msg.get("tool_calls")``,
+    which was always falsy because tool_calls were assigned later in the same
+    method. Persisted history accumulated assistant tool-call turns with no
+    reasoning_content; the next replay 400'd on DeepSeek/Kimi.
+    """
+
+    @pytest.mark.parametrize(
+        "provider,model,base_url,sdk_reasoning_content,expected",
+        [
+            pytest.param(
+                "deepseek", "deepseek-v4-pro", "",
+                None, "",
+                id="deepseek-attr-none",
+            ),
+            pytest.param(
+                "deepseek", "deepseek-v4-pro", "",
+                _ATTR_ABSENT, "",
+                id="deepseek-attr-absent",
+            ),
+            pytest.param(
+                "kimi-coding", "kimi-k2.6", "",
+                None, "",
+                id="kimi-attr-none",
+            ),
+            pytest.param(
+                "custom", "kimi-k2", "https://api.moonshot.ai/v1",
+                _ATTR_ABSENT, "",
+                id="moonshot-base-url",
+            ),
+            pytest.param(
+                "openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1",
+                _ATTR_ABSENT, _EXPECT_NOT_PRESENT,
+                id="openrouter-no-pad",
+            ),
+        ],
+    )
+    def test_tool_call_reasoning_content_pad(
+        self, provider, model, base_url, sdk_reasoning_content, expected,
+    ) -> None:
+        agent = _make_agent(provider=provider, model=model, base_url=base_url)
+        msg_in = _build_sdk_message(
+            reasoning_content=sdk_reasoning_content,
+            tool_calls=[_sdk_tool_call()],
+        )
+        msg = agent._build_assistant_message(msg_in, finish_reason="tool_calls")
+        if expected is _EXPECT_NOT_PRESENT:
+            assert "reasoning_content" not in msg
+        else:
+            assert msg["reasoning_content"] == expected
+
+    def test_tool_call_preserves_real_reasoning_content(self) -> None:
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-pro")
+        msg_in = _build_sdk_message(
+            reasoning_content="actual chain of thought",
+            tool_calls=[_sdk_tool_call()],
+        )
+        msg = agent._build_assistant_message(msg_in, finish_reason="tool_calls")
+        assert msg["reasoning_content"] == "actual chain of thought"
+
+    def test_text_only_turn_not_padded_by_tool_call_branch(self) -> None:
+        """Plain-text turns rely on _copy_reasoning_content_for_api at replay
+        time, not on this builder's tool-call pad."""
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-pro")
+        msg_in = SimpleNamespace(content="hello", tool_calls=None)
+        msg = agent._build_assistant_message(msg_in, finish_reason="stop")
+        assert "tool_calls" not in msg
+        assert "reasoning_content" not in msg
+
+    def test_streamed_reasoning_text_promoted_over_pad(self) -> None:
+        """When ``.reasoning`` carries streamed thinking, it must be promoted
+        to reasoning_content rather than overwritten with the empty pad."""
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-pro")
+        msg_in = _build_sdk_message(
+            reasoning="streamed thoughts",
+            tool_calls=[_sdk_tool_call()],
+        )
+        msg = agent._build_assistant_message(msg_in, finish_reason="tool_calls")
+        assert msg["reasoning_content"] == "streamed thoughts"
 
 
 class TestNeedsKimiToolReasoning:

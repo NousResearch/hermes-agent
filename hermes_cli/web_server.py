@@ -23,7 +23,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -443,6 +443,20 @@ class EnvVarDelete(BaseModel):
 
 class EnvVarReveal(BaseModel):
     key: str
+
+
+class ModelAssignment(BaseModel):
+    """Payload for POST /api/model/set — assign a provider/model to a slot.
+
+    scope="main"        → writes model.provider + model.default
+    scope="auxiliary"   → writes auxiliary.<task>.provider + auxiliary.<task>.model
+    scope="auxiliary" with task=""  → applied to every auxiliary.* slot
+    scope="auxiliary" with task="__reset__"  → resets every slot to provider="auto"
+    """
+    scope: str
+    provider: str
+    model: str
+    task: str = ""
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -919,6 +933,206 @@ def get_model_info():
     except Exception:
         _log.exception("GET /api/model/info failed")
         return dict(_EMPTY_MODEL_INFO)
+
+
+# ---------------------------------------------------------------------------
+# Model assignment — pick provider+model for main slot or auxiliary slots.
+# Mirrors the model.options JSON-RPC from tui_gateway but uses REST so the
+# Models page (which has no chat PTY open) can drive it.
+# ---------------------------------------------------------------------------
+
+# Canonical auxiliary task slots. Keep in sync with DEFAULT_CONFIG["auxiliary"]
+# in hermes_cli/config.py — listed here for deterministic ordering in the UI.
+_AUX_TASK_SLOTS: Tuple[str, ...] = (
+    "vision",
+    "web_extract",
+    "compression",
+    "session_search",
+    "skills_hub",
+    "approval",
+    "mcp",
+    "title_generation",
+)
+
+
+@app.get("/api/model/options")
+def get_model_options():
+    """Return authenticated providers + their curated model lists.
+
+    REST equivalent of the ``model.options`` JSON-RPC on tui_gateway, so the
+    dashboard Models page can render the picker without a live chat session.
+    The response shape matches ``model.options`` 1:1 so ``ModelPickerDialog``
+    can share the same types.
+    """
+    try:
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
+            current_provider = model_cfg.get("provider", "") or ""
+            current_base_url = model_cfg.get("base_url", "") or ""
+        else:
+            current_model = str(model_cfg) if model_cfg else ""
+            current_provider = ""
+            current_base_url = ""
+
+        user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        custom_providers = (
+            cfg.get("custom_providers")
+            if isinstance(cfg.get("custom_providers"), list)
+            else []
+        )
+
+        providers = list_authenticated_providers(
+            current_provider=current_provider,
+            current_base_url=current_base_url,
+            current_model=current_model,
+            user_providers=user_providers,
+            custom_providers=custom_providers,
+            max_models=50,
+        )
+        return {
+            "providers": providers,
+            "model": current_model,
+            "provider": current_provider,
+        }
+    except Exception:
+        _log.exception("GET /api/model/options failed")
+        raise HTTPException(status_code=500, detail="Failed to list model options")
+
+
+@app.get("/api/model/auxiliary")
+def get_auxiliary_models():
+    """Return current auxiliary task assignments.
+
+    Shape:
+      {
+        "tasks": [
+          {"task": "vision", "provider": "auto", "model": "", "base_url": ""},
+          ...
+        ],
+        "main": {"provider": "openrouter", "model": "anthropic/claude-opus-4.7"},
+      }
+    """
+    try:
+        cfg = load_config()
+        aux_cfg = cfg.get("auxiliary", {})
+        if not isinstance(aux_cfg, dict):
+            aux_cfg = {}
+
+        tasks = []
+        for slot in _AUX_TASK_SLOTS:
+            slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
+            tasks.append({
+                "task": slot,
+                "provider": str(slot_cfg.get("provider", "auto") or "auto"),
+                "model": str(slot_cfg.get("model", "") or ""),
+                "base_url": str(slot_cfg.get("base_url", "") or ""),
+            })
+
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            main = {
+                "provider": str(model_cfg.get("provider", "") or ""),
+                "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
+            }
+        else:
+            main = {"provider": "", "model": str(model_cfg) if model_cfg else ""}
+
+        return {"tasks": tasks, "main": main}
+    except Exception:
+        _log.exception("GET /api/model/auxiliary failed")
+        raise HTTPException(status_code=500, detail="Failed to read auxiliary config")
+
+
+@app.post("/api/model/set")
+async def set_model_assignment(body: ModelAssignment):
+    """Assign a model to the main slot or an auxiliary task slot.
+
+    Writes to ``~/.hermes/config.yaml`` — applies to **new** sessions only.
+    The currently running chat PTY (if any) is not affected; use the
+    ``/model`` slash command inside a chat to hot-swap that specific session.
+    """
+    scope = (body.scope or "").strip().lower()
+    provider = (body.provider or "").strip()
+    model = (body.model or "").strip()
+    task = (body.task or "").strip().lower()
+
+    if scope not in ("main", "auxiliary"):
+        raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
+
+    try:
+        cfg = load_config()
+
+        if scope == "main":
+            if not provider or not model:
+                raise HTTPException(status_code=400, detail="provider and model required for main")
+            model_cfg = cfg.get("model", {})
+            if not isinstance(model_cfg, dict):
+                model_cfg = {}
+            model_cfg["provider"] = provider
+            model_cfg["default"] = model
+            # Clear stale base_url so the resolver picks the provider's own default.
+            if "base_url" in model_cfg and model_cfg.get("base_url"):
+                model_cfg["base_url"] = ""
+            # Also clear hardcoded context_length override — new model may have
+            # a different context window.
+            if "context_length" in model_cfg:
+                model_cfg.pop("context_length", None)
+            cfg["model"] = model_cfg
+            save_config(cfg)
+            return {"ok": True, "scope": "main", "provider": provider, "model": model}
+
+        # scope == "auxiliary"
+        aux = cfg.get("auxiliary")
+        if not isinstance(aux, dict):
+            aux = {}
+
+        if task == "__reset__":
+            # Reset every slot to provider="auto", model="" — keeps other fields intact.
+            for slot in _AUX_TASK_SLOTS:
+                slot_cfg = aux.get(slot)
+                if not isinstance(slot_cfg, dict):
+                    slot_cfg = {}
+                slot_cfg["provider"] = "auto"
+                slot_cfg["model"] = ""
+                aux[slot] = slot_cfg
+            cfg["auxiliary"] = aux
+            save_config(cfg)
+            return {"ok": True, "scope": "auxiliary", "reset": True}
+
+        if not provider:
+            raise HTTPException(status_code=400, detail="provider required for auxiliary")
+
+        targets = [task] if task else list(_AUX_TASK_SLOTS)
+        for slot in targets:
+            if slot not in _AUX_TASK_SLOTS:
+                raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
+            slot_cfg = aux.get(slot)
+            if not isinstance(slot_cfg, dict):
+                slot_cfg = {}
+            slot_cfg["provider"] = provider
+            slot_cfg["model"] = model
+            aux[slot] = slot_cfg
+
+        cfg["auxiliary"] = aux
+        save_config(cfg)
+        return {
+            "ok": True,
+            "scope": "auxiliary",
+            "tasks": targets,
+            "provider": provider,
+            "model": model,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/model/set failed")
+        raise HTTPException(status_code=500, detail="Failed to save model assignment")
+
+
 
 
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:

@@ -564,6 +564,30 @@ def _save_enabled_set(enabled: set) -> None:
     save_config(config)
 
 
+def _resolve_plugin_config_name(name: str) -> str:
+    """Return the manifest-declared key used by plugin discovery/listing."""
+    user_dir = _plugins_dir()
+    if user_dir.is_dir():
+        direct = user_dir / name
+        if direct.is_dir():
+            return _read_manifest(direct).get("name") or name
+        for child in user_dir.iterdir():
+            if not child.is_dir():
+                continue
+            manifest_name = _read_manifest(child).get("name")
+            if manifest_name == name:
+                return name
+
+    from hermes_cli.plugins import get_bundled_plugins_dir
+
+    repo_plugins = get_bundled_plugins_dir()
+    if repo_plugins.is_dir():
+        direct = repo_plugins / name
+        if direct.is_dir():
+            return _read_manifest(direct).get("name") or name
+    return name
+
+
 def cmd_enable(name: str) -> None:
     """Add a plugin to the enabled allow-list (and remove it from disabled)."""
     from rich.console import Console
@@ -574,19 +598,22 @@ def cmd_enable(name: str) -> None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
 
+    config_name = _resolve_plugin_config_name(name)
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
 
-    if name in enabled and name not in disabled:
-        console.print(f"[dim]Plugin '{name}' is already enabled.[/dim]")
+    if config_name in enabled and name not in disabled and config_name not in disabled:
+        console.print(f"[dim]Plugin '{config_name}' is already enabled.[/dim]")
         return
 
-    enabled.add(name)
+    enabled.discard(name)
+    enabled.add(config_name)
     disabled.discard(name)
+    disabled.discard(config_name)
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
     console.print(
-        f"[green]✓[/green] Plugin [bold]{name}[/bold] enabled. "
+        f"[green]✓[/green] Plugin [bold]{config_name}[/bold] enabled. "
         "Takes effect on next session."
     )
 
@@ -600,19 +627,21 @@ def cmd_disable(name: str) -> None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
 
+    config_name = _resolve_plugin_config_name(name)
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
 
-    if name not in enabled and name in disabled:
-        console.print(f"[dim]Plugin '{name}' is already disabled.[/dim]")
+    if name not in enabled and config_name not in enabled and config_name in disabled:
+        console.print(f"[dim]Plugin '{config_name}' is already disabled.[/dim]")
         return
 
     enabled.discard(name)
-    disabled.add(name)
+    enabled.discard(config_name)
+    disabled.add(config_name)
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
     console.print(
-        f"[yellow]\u2298[/yellow] Plugin [bold]{name}[/bold] disabled. "
+        f"[yellow]\u2298[/yellow] Plugin [bold]{config_name}[/bold] disabled. "
         "Takes effect on next session."
     )
 

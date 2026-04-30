@@ -212,6 +212,28 @@ class TestCmdInstall:
         mock_display_after_install.assert_not_called()
 
 
+# ── cmd_enable tests ─────────────────────────────────────────────────────────
+
+
+class TestCmdEnable:
+    """Test enabling installed plugins."""
+
+    def test_enable_by_directory_stores_manifest_name(self, tmp_path, monkeypatch):
+        """Directory aliases should persist the manifest key used by plugin list."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        plugin_dir = tmp_path / "plugins" / "ping_island"
+        plugin_dir.mkdir(parents=True)
+        plugin_dir.joinpath("plugin.yaml").write_text(
+            "name: ping-island\nversion: 1.0.0\ndescription: test plugin\n"
+        )
+
+        from hermes_cli.plugins_cmd import _get_enabled_set, cmd_enable
+
+        cmd_enable("ping_island")
+
+        assert _get_enabled_set() == {"ping-island"}
+
+
 # ── cmd_update tests ─────────────────────────────────────────────────────────
 
 

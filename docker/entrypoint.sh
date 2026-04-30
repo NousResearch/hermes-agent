@@ -39,6 +39,11 @@ if [ "$(id -u)" = "0" ]; then
         # by the mapped user on the host side.
         chown -R hermes:hermes "$HERMES_HOME" 2>/dev/null || \
             echo "Warning: chown failed (rootless container?) — continuing anyway"
+        # The venv lives outside the data volume.  Without this, plugin
+        # installs (e.g. `hermes memory setup`) fail with EACCES whenever
+        # HERMES_UID is remapped away from the build-time uid 10000. See #17636.
+        chown -R hermes:hermes "$INSTALL_DIR/.venv" 2>/dev/null || \
+            echo "Warning: chown of $INSTALL_DIR/.venv failed — plugin installs may need root"
     fi
 
     # Ensure config.yaml is readable by the hermes runtime user even if it was

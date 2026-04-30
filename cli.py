@@ -1240,8 +1240,73 @@ def _cprint(text: str):
     Raw ANSI escapes written via print() are swallowed by patch_stdout's
     StdoutProxy.  Routing through print_formatted_text(ANSI(...)) lets
     prompt_toolkit parse the escapes and render real colors.
+
+    When called from a background thread while a prompt_toolkit
+    ``Application`` is running (the common case for the self-improvement
+    background review's ``💾 …`` summary, curator summaries, and other
+    bg-thread emissions), a direct ``_pt_print`` races with the input
+    area's redraw and the line can end up visually buried behind the
+    prompt.  Route those cases through ``run_in_terminal`` via
+    ``loop.call_soon_threadsafe``, which pauses the input area, prints
+    the line above it, and redraws the prompt cleanly.
     """
-    _pt_print(_PT_ANSI(text))
+    try:
+        from prompt_toolkit.application import get_app_or_none, run_in_terminal
+    except Exception:
+        _pt_print(_PT_ANSI(text))
+        return
+
+    app = None
+    try:
+        app = get_app_or_none()
+    except Exception:
+        app = None
+
+    # No active app, or we're already on the app's main thread: the
+    # direct prompt_toolkit print is safe and matches existing behavior
+    # (spinner frames, streamed tokens, tool activity prefixes, …).
+    if app is None or not getattr(app, "_is_running", False):
+        _pt_print(_PT_ANSI(text))
+        return
+
+    try:
+        loop = app.loop  # type: ignore[attr-defined]
+    except Exception:
+        loop = None
+    if loop is None:
+        _pt_print(_PT_ANSI(text))
+        return
+
+    import asyncio as _asyncio
+    try:
+        current_loop = _asyncio.get_event_loop_policy().get_event_loop()
+    except Exception:
+        current_loop = None
+    # Same thread as the app's loop → safe to print directly.
+    if current_loop is loop and loop.is_running():
+        _pt_print(_PT_ANSI(text))
+        return
+
+    # Cross-thread emission: ask the app's event loop to schedule a
+    # ``run_in_terminal`` that wraps ``_pt_print``.  This hides the
+    # prompt, prints, and redraws.  Fire-and-forget — if scheduling
+    # fails we fall back to a direct print so the line isn't lost.
+    def _schedule():
+        try:
+            run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
+        except Exception:
+            try:
+                _pt_print(_PT_ANSI(text))
+            except Exception:
+                pass
+
+    try:
+        loop.call_soon_threadsafe(_schedule)
+    except Exception:
+        try:
+            _pt_print(_PT_ANSI(text))
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

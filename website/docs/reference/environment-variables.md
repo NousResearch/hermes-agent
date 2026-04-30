@@ -93,7 +93,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `custom`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `gemini`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth` (browser OAuth login — no API key required; see [MiniMax OAuth guide](../guides/minimax-oauth.md)), `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `google-gemini-cli`, `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `ai-gateway` (default: `auto`) |
+| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `custom`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `gemini`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth` (browser OAuth login — no API key required; see [MiniMax OAuth guide](../guides/minimax-oauth.md)), `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `alibaba-coding-plan` (alias `alibaba_coding`), `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `google-gemini-cli`, `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `ai-gateway`, `tencent-tokenhub` (default: `auto`) |
 | `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing) |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |
@@ -110,6 +110,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `FIRECRAWL_API_KEY` | Web scraping and cloud browser ([firecrawl.dev](https://firecrawl.dev/)) |
 | `FIRECRAWL_API_URL` | Custom Firecrawl API endpoint for self-hosted instances (optional) |
 | `TAVILY_API_KEY` | Tavily API key for AI-native web search, extract, and crawl ([app.tavily.com](https://app.tavily.com/home)) |
+| `TAVILY_BASE_URL` | Override the Tavily API endpoint. Useful for corporate proxies and self-hosted Tavily-compatible search backends. Same pattern as `GROQ_BASE_URL`. |
 | `EXA_API_KEY` | Exa API key for AI-native web search and contents ([exa.ai](https://exa.ai/)) |
 | `BROWSERBASE_API_KEY` | Browser automation ([browserbase.com](https://browserbase.com/)) |
 | `BROWSERBASE_PROJECT_ID` | Browserbase project ID |
@@ -128,6 +129,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `GITHUB_TOKEN` | GitHub token for Skills Hub (higher API rate limits, skill publish) |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |
+| `HINDSIGHT_TIMEOUT` | Timeout in seconds for Hindsight memory-provider API calls (default: `60`). Bump this if your Hindsight instance is slow to respond during `/sync` or `on_session_switch` and you're seeing timeouts in `errors.log`. |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
@@ -169,6 +171,7 @@ These variables configure the [Tool Gateway](/docs/user-guide/features/tool-gate
 | Variable | Description |
 |----------|-------------|
 | `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona`, `vercel_sandbox` |
+| `HERMES_DOCKER_BINARY` | Override the container binary Hermes shells out to (e.g. `podman`, `/usr/local/bin/docker`). When unset, Hermes auto-discovers `docker` or `podman` on `PATH`. Needed when both are installed and you want the non-default, or when the binary lives outside `PATH`. |
 | `TERMINAL_DOCKER_IMAGE` | Docker image (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
 | `TERMINAL_DOCKER_FORWARD_ENV` | JSON array of env var names to explicitly forward into Docker terminal sessions. Note: skill-declared `required_environment_variables` are forwarded automatically — you only need this for vars not declared by any skill. |
 | `TERMINAL_DOCKER_VOLUMES` | Additional Docker volume mounts (comma-separated `host:container` pairs) |
@@ -404,6 +407,9 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 |----------|-------------|
 | `HERMES_TUI` | Launch the [TUI](../user-guide/tui.md) instead of the classic CLI when set to `1`. Equivalent to passing `--tui`. |
 | `HERMES_TUI_DIR` | Path to a prebuilt `ui-tui/` directory (must contain `dist/entry.js` and populated `node_modules`). Used by distros and Nix to skip the first-launch `npm install`. |
+| `HERMES_TUI_RESUME` | Resume a specific TUI session by ID on launch. When set, `hermes --tui` skips forging a fresh session and picks up the named session instead — useful for re-attaching after a disconnect or terminal crash. |
+| `HERMES_TUI_THEME` | Force the TUI color theme: `light`, `dark`, or a raw 6-character background hex (e.g. `ffffff` or `1a1a2e`). When unset, Hermes auto-detects using `COLORFGBG` and terminal background queries; this variable overrides detection on terminals (Ghostty, Warp, iTerm2, etc.) that don't set `COLORFGBG`. |
+| `HERMES_INFERENCE_MODEL` | Force the model for `hermes -z` / `hermes chat` without mutating `config.yaml`. Pairs with `HERMES_INFERENCE_PROVIDER`. Useful for scripted callers (sweeper, CI, batch runners) that need to override the default model per run. |
 
 ## Cron Scheduler
 

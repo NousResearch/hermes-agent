@@ -33,6 +33,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/snapshot [create\|restore <id>\|prune]` (alias: `/snap`) | Create or restore state snapshots of Hermes config/state. `create [label]` saves a snapshot, `restore <id>` reverts to it, `prune [N]` removes old snapshots, or list all with no args. |
 | `/stop` | Kill all running background processes |
 | `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn (doesn't interrupt the current agent response). **Note:** `/q` is claimed by both `/queue` and `/quit`; the last registration wins, so `/q` resolves to `/quit` in practice. Use `/queue` explicitly. |
+| `/steer <prompt>` | Inject a mid-run note that arrives at the agent **after the next tool call** — no interrupt, no new user turn. The text is appended to the last tool result's content once the current tool completes, giving the agent new context without breaking the current tool-calling loop. Use this to nudge direction mid-task (e.g. "focus on the auth module" while the agent is running tests). |
 | `/resume [name]` | Resume a previously-named session |
 | `/status` | Show session info |
 | `/agents` (alias: `/tasks`) | Show active agents and running tasks across the current session. |
@@ -72,7 +73,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | Command | Description |
 |---------|-------------|
 | `/help` | Show this help message |
-| `/usage` | Show token usage, cost breakdown, and session duration |
+| `/usage` | Show token usage, cost breakdown, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits / plan usage pulled live from the provider's API. |
 | `/insights` | Show usage insights and analytics (last 30 days) |
 | `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status |
 | `/paste` | Attach a clipboard image |
@@ -140,7 +141,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/compress [focus topic]` | Manually compress conversation context. Optional focus topic narrows what the summary preserves. |
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |
-| `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, and session duration. |
+| `/usage` | Show token usage, estimated cost breakdown (input/output), context window state, session duration, and — when available from the active provider — an **Account limits** section with remaining quota / credits pulled live from the provider's API. |
 | `/insights [days]` | Show usage analytics. |
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display. |
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |
@@ -159,7 +160,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 ## Notes
 
-- `/skin`, `/snapshot`, `/gquota`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/skills`, `/platforms`, `/paste`, `/image`, `/terminal-setup`, `/statusbar`, and `/plugins` are **CLI-only** commands.
+- `/skin`, `/snapshot`, `/gquota`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/skills`, `/platforms`, `/paste`, `/image`, `/terminal-setup`, `/statusbar`, `/mouse`, `/plugins`, and `/steer` are **CLI-only** (the `/mouse` command is TUI-exclusive; `/steer` works in both classic CLI and TUI).
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
 - `/sethome`, `/update`, `/restart`, `/approve`, `/deny`, and `/commands` are **messaging-only** commands.
 - `/status`, `/background`, `/voice`, `/reload-mcp`, `/rollback`, `/debug`, `/fast`, and `/yolo` work in **both** the CLI and the messaging gateway.

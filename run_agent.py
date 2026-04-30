@@ -3213,8 +3213,16 @@ class AIAgent:
             cfg = load_config()
             provider = (getattr(self, "provider", "") or "").strip()
             model = (getattr(self, "model", "") or "").strip()
-            for keys in (("model", "supports_vision"),
-                         ("providers", provider, "models", model, "supports_vision")):
+            # self.provider is the runtime-resolved value, which is rewritten
+            # to "custom" for named custom providers (see
+            # hermes_cli/runtime_provider.py:_resolve_named_custom_runtime),
+            # while the config still holds the user-declared name (e.g.
+            # "my-vllm") under model.provider. Try both as provider keys.
+            config_provider = str(cfg_get(cfg, "model", "provider") or "").strip()
+            candidates = [("model", "supports_vision")]
+            for p in dict.fromkeys(filter(None, (provider, config_provider))):
+                candidates.append(("providers", p, "models", model, "supports_vision"))
+            for keys in candidates:
                 override = cfg_get(cfg, *keys)
                 if override is not None:
                     return bool(override)

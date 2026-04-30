@@ -186,6 +186,21 @@ class TestModelSupportsVision:
              patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is True
 
+    def test_named_custom_provider_resolved_via_config_provider(self):
+        # Named custom providers get runtime self.provider rewritten to
+        # "custom" while the config keeps the original name under
+        # model.provider. The override must still resolve.
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.model = "my-llava"
+        cfg = {
+            "model": {"provider": "my-vllm", "default": "my-llava"},
+            "providers": {"my-vllm": {"models": {"my-llava": {"supports_vision": True}}}},
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert agent._model_supports_vision() is True
+
     def test_override_false_disables_vision_for_models_dev_models(self):
         agent = _make_agent()
         fake_caps = MagicMock()

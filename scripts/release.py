@@ -53,6 +53,9 @@ AUTHOR_MAP = {
     "sr@samirusani": "samrusani",
     "angelclaw@AngelMacBook.local": "angel12",
     "charles@cryptoassetrecovery.com": "charles-brooks",
+    # DeepSeek v4 + Kimi thinking-mode reasoning_content salvage (April 2026)
+    "luwinyang@deepseek.com": "lsdsjy",
+    "season.saw@gmail.com": "season179",
     "heathley@Heathley-MacBook-Air.local": "heathley",
     "vlad19@gmail.com": "dandaka",
     "adamrummer@gmail.com": "cyclingwithelephants",

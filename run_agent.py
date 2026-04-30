@@ -8568,11 +8568,14 @@ class AIAgent:
                 raw_reasoning_content = model_extra["reasoning_content"]
         if raw_reasoning_content is not None:
             msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
-        elif assistant_tool_calls and self._needs_deepseek_tool_reasoning():
-            # DeepSeek thinking mode requires reasoning_content on every
-            # assistant tool-call message. Without it, replaying the
-            # persisted message causes HTTP 400. Include empty string
-            # only when no structured reasoning text was captured.
+        elif assistant_tool_calls and self._needs_thinking_reasoning_pad():
+            # DeepSeek v4 thinking mode and Kimi / Moonshot thinking mode
+            # both require reasoning_content on every assistant tool-call
+            # message. Without it, replaying the persisted message causes
+            # HTTP 400 ("The reasoning_content in the thinking mode must
+            # be passed back to the API"). Include streamed reasoning
+            # text when captured; otherwise pad with empty string.
+            # Refs #15250, #17400.
             msg["reasoning_content"] = reasoning_text or ""
 
         # Additive fallback (refs #16844, #16884). Streaming-only providers
@@ -8681,6 +8684,18 @@ class AIAgent:
 
         return msg
 
+    def _needs_thinking_reasoning_pad(self) -> bool:
+        """Return True when the active provider enforces reasoning_content echo-back.
+
+        DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
+        of assistant tool-call messages that omit ``reasoning_content`` (refs
+        #15250, #17400).
+        """
+        return (
+            self._needs_deepseek_tool_reasoning()
+            or self._needs_kimi_tool_reasoning()
+        )
+
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.
 
@@ -8723,10 +8738,7 @@ class AIAgent:
             api_msg["reasoning_content"] = existing
             return
 
-        needs_thinking_pad = (
-            self._needs_kimi_tool_reasoning()
-            or self._needs_deepseek_tool_reasoning()
-        )
+        needs_thinking_pad = self._needs_thinking_reasoning_pad()
 
         # 2. Cross-provider poisoned history (#15748): on DeepSeek/Kimi,
         # if the source turn has tool_calls AND a 'reasoning' field but no

@@ -1,27 +1,25 @@
 /**
- * Force 24-bit truecolor output before any chalk / supports-color import.
+ * Targeted 24-bit truecolor override before chalk / supports-color imports.
  *
- * Why this exists:
- *   The base CLI (Python/Rich) emits banner colors as truecolor ANSI
- *   (`\033[38;2;R;G;Bm`). The TUI renders through Ink → chalk, whose
- *   supports-color auto-detection defaults to 256-color on macOS Terminal.app
- *   and any terminal that does NOT set `COLORTERM=truecolor`. In 256-color
- *   mode, chalk downsamples `#FFD700` (gold) and `#FFBF00` (amber) to the
- *   *same* xterm-256 palette slot (220) — collapsing the banner gradient
- *   into a single flat yellow band. The bronze and dim rows also lose
- *   contrast against each other.
- *
- *   Terminal.app (macOS 12+), iTerm2, kitty, Alacritty, VS Code, Cursor,
- *   and WezTerm all render truecolor correctly. The few that don't
- *   (ancient xterm, some CI environments) can set `HERMES_TUI_TRUECOLOR=0`
- *   to opt out.
- *
- * This MUST run before any `chalk` or `supports-color` import. supports-color
- * caches its level on first load, so nudging env vars after that point has
- * no effect.
+ * macOS Terminal.app before Tahoe 26 does not support RGB SGR, so do not
+ * infer truecolor from TERM_PROGRAM=Apple_Terminal. Users can still opt in
+ * explicitly on terminals that support RGB but do not advertise COLORTERM.
  */
 
-if (process.env.HERMES_TUI_TRUECOLOR !== '0' && !process.env.NO_COLOR && !process.env.FORCE_COLOR) {
+const TRUE_RE = /^(?:1|true|yes|on)$/i
+const FALSE_RE = /^(?:0|false|no|off)$/i
+
+export function shouldForceTruecolor(env: NodeJS.ProcessEnv = process.env): boolean {
+  const override = (env.HERMES_TUI_TRUECOLOR ?? '').trim()
+
+  if (FALSE_RE.test(override) || 'NO_COLOR' in env) {
+    return false
+  }
+
+  return TRUE_RE.test(override)
+}
+
+if (shouldForceTruecolor()) {
   if (!process.env.COLORTERM) {
     process.env.COLORTERM = 'truecolor'
   }

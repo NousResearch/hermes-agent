@@ -10,7 +10,6 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Switch } from "@nous-research/ui/ui/components/switch";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { CommandBlock } from "@nous-research/ui/ui/components/command-block";
-import { H2 } from "@/components/NouiTypography";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,6 +18,7 @@ import { Toast } from "@/components/Toast";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
+import { usePageHeader } from "@/contexts/usePageHeader";
 
 /** Select value for built-in memory (`config` uses empty string). Never use `""` — UI Select maps empty value to an empty label. */
 const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
@@ -38,6 +38,7 @@ export default function PluginsPage() {
 
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const { setEnd } = usePageHeader();
 
   const loadHub = useCallback(() => {
     return api
@@ -55,6 +56,22 @@ export default function PluginsPage() {
     setLoading(true);
     void loadHub().finally(() => setLoading(false));
   }, [loadHub]);
+
+  useEffect(() => {
+    setEnd(
+      <Button
+        ghost
+        size="sm"
+        className="shrink-0 gap-2"
+        disabled={loading || rescanBusy}
+        onClick={() => void onRescan()}
+      >
+        {rescanBusy ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
+        {t.pluginsPage.refreshDashboard}
+      </Button>,
+    );
+    return () => setEnd(null);
+  }, [loading, rescanBusy, setEnd, t.pluginsPage.refreshDashboard]);
 
   const onInstall = async () => {
     const id = installId.trim();
@@ -135,32 +152,6 @@ export default function PluginsPage() {
       <PluginSlot name="plugins:top" />
 
       <div className={cn("flex w-full flex-col gap-8")}>
-
-
-        <div className="flex flex-wrap items-start justify-between gap-4">
-
-          <div>
-
-
-            <H2>{t.app.nav.plugins}</H2>
-
-
-            <p className="mt-1 max-w-xl text-[0.75rem] tracking-[0.06em] text-midground/55 normal-case">
-              {t.pluginsPage.headline}
-            </p>
-          </div>
-
-          <Button
-            ghost
-            size="sm"
-            className="shrink-0 gap-2"
-            disabled={loading || rescanBusy}
-            onClick={() => void onRescan()}
-          >
-            {rescanBusy ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
-            {t.pluginsPage.refreshDashboard}
-          </Button>
-        </div>
 
         {providers && (
           <Card>

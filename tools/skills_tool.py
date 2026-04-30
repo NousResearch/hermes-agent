@@ -976,6 +976,35 @@ def skill_view(
                 if skill_md:
                     break
 
+        # Search by displayed frontmatter name so names copied from skills_list work.
+        if not skill_md:
+            for search_dir in all_dirs:
+                from agent.skill_utils import iter_skill_index_files
+
+                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                    try:
+                        content_head = found_skill_md.read_text(encoding="utf-8")[:4000]
+                        frontmatter, _ = _parse_frontmatter(content_head)
+                    except (UnicodeDecodeError, PermissionError):
+                        continue
+                    except Exception:
+                        logger.debug(
+                            "Skipping skill at %s: failed to parse frontmatter",
+                            found_skill_md,
+                            exc_info=True,
+                        )
+                        continue
+
+                    displayed_name = str(
+                        frontmatter.get("name", found_skill_md.parent.name)
+                    )[:MAX_NAME_LENGTH]
+                    if displayed_name == name and skill_matches_platform(frontmatter):
+                        skill_dir = found_skill_md.parent
+                        skill_md = found_skill_md
+                        break
+                if skill_md:
+                    break
+
         # Legacy: flat .md files
         if not skill_md:
             for search_dir in all_dirs:

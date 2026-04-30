@@ -347,6 +347,28 @@ class TestSkillView:
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
 
+    def test_view_accepts_frontmatter_name_when_directory_differs(self, tmp_path):
+        skill_dir = tmp_path / "darwin"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: darwin-skill\n"
+            "description: Darwin Skill\n"
+            "---\n\n"
+            "# Darwin\n\n"
+            "Step 1: Evolve.\n"
+        )
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            list_result = json.loads(skills_list())
+            raw = skill_view("darwin-skill")
+
+        result = json.loads(raw)
+        assert [skill["name"] for skill in list_result["skills"]] == ["darwin-skill"]
+        assert result["success"] is True
+        assert result["name"] == "darwin-skill"
+        assert "Step 1: Evolve." in result["content"]
+
     def test_skill_view_applies_template_vars(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

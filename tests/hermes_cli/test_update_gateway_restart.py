@@ -227,6 +227,53 @@ class TestLaunchdPlistCurrentness:
 
         assert gateway_cli.launchd_plist_is_current() is True
 
+    def test_plist_uses_configured_launchd_wrapper(self, tmp_path, monkeypatch):
+        wrapper = tmp_path / "hermes-with-keychain.sh"
+        wrapper.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"launchd_wrapper": str(wrapper)}},
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert f"<string>{wrapper}</string>" in plist
+        assert "<string>-m</string>" not in plist
+        assert "<string>hermes_cli.main</string>" not in plist
+        assert "<string>gateway</string>" in plist
+        assert "<string>run</string>" in plist
+        assert "<string>--replace</string>" in plist
+
+    def test_launchd_plist_is_current_with_configured_wrapper(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        wrapper = tmp_path / "hermes-with-keychain.sh"
+        wrapper.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"launchd_wrapper": str(wrapper)}},
+        )
+
+        monkeypatch.setenv("PATH", "/custom/bin:/usr/bin:/bin")
+        default_plist = gateway_cli.generate_launchd_plist()
+        python_triplet = "\n        ".join([
+            f"<string>{gateway_cli.get_python_path()}</string>",
+            "<string>-m</string>",
+            "<string>hermes_cli.main</string>",
+        ])
+        wrapper_plist = default_plist.replace(
+            python_triplet,
+            f"<string>{wrapper}</string>",
+            1,
+        )
+        plist_path.write_text(wrapper_plist, encoding="utf-8")
+
+        monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
 
 # ---------------------------------------------------------------------------
 # cmd_update — macOS launchd detection

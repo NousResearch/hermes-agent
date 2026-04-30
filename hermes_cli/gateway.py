@@ -2772,6 +2772,23 @@ def _launchd_domain() -> str:
     return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
 
 
+def _get_launchd_wrapper_override() -> str | None:
+    """Return an optional launchd wrapper script path for gateway services.
+
+    This lets macOS instances use a wrapper (for example, to inject Keychain
+    secrets) while still treating that wrapperized plist as the canonical
+    service definition for staleness checks and `hermes gateway start`.
+    """
+    raw = os.getenv("HERMES_LAUNCHD_WRAPPER", "").strip()
+    if not raw:
+        cfg = read_raw_config()
+        gateway_cfg = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
+        raw = str(gateway_cfg.get("launchd_wrapper", "") or "").strip()
+    if not raw:
+        return None
+    return str(Path(raw).expanduser())
+
+
 def generate_launchd_plist() -> str:
     python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
@@ -2780,6 +2797,7 @@ def generate_launchd_plist() -> str:
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     profile_arg = _profile_arg(hermes_home)
+    launchd_wrapper = _get_launchd_wrapper_override()
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
     # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
@@ -2799,12 +2817,17 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
-    ]
+    # Build ProgramArguments array, including --profile when using a named profile.
+    # When a launchd wrapper is configured, treat it as the canonical launcher so
+    # status/currentness checks and `hermes gateway start` preserve the wrapper.
+    if launchd_wrapper:
+        prog_args = [f"<string>{launchd_wrapper}</string>"]
+    else:
+        prog_args = [
+            f"<string>{python_path}</string>",
+            "<string>-m</string>",
+            "<string>hermes_cli.main</string>",
+        ]
     if profile_arg:
         for part in profile_arg.split():
             prog_args.append(f"<string>{part}</string>")

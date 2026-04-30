@@ -2028,9 +2028,28 @@ async def send_weixin_direct(
     token_store.restore(account_id)
     context_token = token_store.get(account_id, chat_id)
 
+    def _session_matches_current_loop(session: Any) -> bool:
+        """Avoid reusing aiohttp sessions across event loops.
+
+        aiohttp sessions are bound to the loop they were created with. Reusing a
+        live gateway session from a one-shot send path (e.g., cron/CLI) can raise
+        "got Future attached to a different loop".
+        """
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        session_loop = getattr(session, "_loop", None)
+        return session_loop is None or session_loop is current_loop
+
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if live_adapter is not None and send_session is not None and not send_session.closed:
+    if (
+        live_adapter is not None
+        and send_session is not None
+        and not send_session.closed
+        and _session_matches_current_loop(send_session)
+    ):
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:

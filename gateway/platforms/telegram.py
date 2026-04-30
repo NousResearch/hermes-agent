@@ -512,6 +512,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            # start_polling() returning is necessary but not sufficient:
+            # PTB's Updater can be left in a state where `running` is True
+            # but the underlying long-poll task is wedged on a stale httpx
+            # connection and never makes progress. No error_callback fires
+            # in that state, so the reconnect ladder won't advance on its
+            # own. Schedule a deferred probe to detect the wedge and
+            # re-enter the ladder if needed.
+            if not self.has_fatal_error:
+                probe = asyncio.ensure_future(self._verify_polling_after_reconnect())
+                self._background_tasks.add(probe)
+                probe.add_done_callback(self._background_tasks.discard)
         except Exception as retry_err:
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
             # start_polling failed — polling is dead and no further error
@@ -522,6 +533,50 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
+
+    async def _verify_polling_after_reconnect(self) -> None:
+        """Heartbeat probe scheduled after a successful reconnect.
+
+        PTB's Updater can survive a botched stop()+start_polling() cycle
+        with `running=True` but a wedged consumer task. No error callback
+        fires, so the reconnect ladder doesn't advance on its own. This
+        probe detects the wedge by:
+
+        1. Sleeping HEARTBEAT_PROBE_DELAY so a healthy long-poll has time
+           to complete at least one cycle.
+        2. Verifying `Updater.running` is still True.
+        3. Probing the bot endpoint with a tight asyncio timeout. A
+           wedged httpx pool fails this probe; a healthy one returns
+           well under the timeout.
+
+        On any failure, re-enter the reconnect ladder so the existing
+        MAX_NETWORK_RETRIES path can ultimately escalate to fatal-error.
+        """
+        HEARTBEAT_PROBE_DELAY = 60
+        PROBE_TIMEOUT = 10
+
+        await asyncio.sleep(HEARTBEAT_PROBE_DELAY)
+
+        if self.has_fatal_error:
+            return
+        if not (self._app and self._app.updater and self._app.updater.running):
+            logger.warning(
+                "[%s] Updater not running %ds after reconnect — treating as wedged",
+                self.name, HEARTBEAT_PROBE_DELAY,
+            )
+            await self._handle_polling_network_error(
+                RuntimeError("Updater not running after reconnect heartbeat")
+            )
+            return
+
+        try:
+            await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
+        except Exception as probe_err:
+            logger.warning(
+                "[%s] Polling heartbeat probe failed %ds after reconnect: %s",
+                self.name, HEARTBEAT_PROBE_DELAY, probe_err,
+            )
+            await self._handle_polling_network_error(probe_err)
 
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":

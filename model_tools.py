@@ -93,21 +93,49 @@ def _get_worker_loop():
 def _run_async_in_oneoff_thread(coro, timeout: float = _ASYNC_BRIDGE_TIMEOUT):
     """Run a coroutine on a temporary worker thread and event loop."""
     done = threading.Event()
+    cancel_requested = threading.Event()
+    state_lock = threading.Lock()
     result = {}
+    state = {"loop": None, "task": None}
 
     def _target():
         loop = asyncio.new_event_loop()
         try:
             asyncio.set_event_loop(loop)
-            result["value"] = loop.run_until_complete(coro)
+            task = loop.create_task(coro)
+            with state_lock:
+                state["loop"] = loop
+                state["task"] = task
+            if cancel_requested.is_set():
+                task.cancel()
+            result["value"] = loop.run_until_complete(task)
         except BaseException as exc:
             result["error"] = exc
         finally:
             try:
-                loop.close()
+                pending = [
+                    task
+                    for task in asyncio.all_tasks(loop)
+                    if not task.done()
+                ]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+                loop.run_until_complete(loop.shutdown_asyncgens())
             finally:
-                asyncio.set_event_loop(None)
-                done.set()
+                try:
+                    with state_lock:
+                        state["loop"] = None
+                        state["task"] = None
+                finally:
+                    asyncio.set_event_loop(None)
+                try:
+                    loop.close()
+                finally:
+                    done.set()
 
     thread = threading.Thread(
         target=_target,
@@ -116,6 +144,20 @@ def _run_async_in_oneoff_thread(coro, timeout: float = _ASYNC_BRIDGE_TIMEOUT):
     )
     thread.start()
     if not done.wait(timeout=timeout):
+        cancel_requested.set()
+        with state_lock:
+            loop = state["loop"]
+            task = state["task"]
+        if (
+            loop is not None
+            and task is not None
+            and not loop.is_closed()
+            and not task.done()
+        ):
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except RuntimeError as exc:
+                logger.debug("One-off async bridge cancellation failed: %s", exc)
         raise TimeoutError()
     if "error" in result:
         raise result["error"]

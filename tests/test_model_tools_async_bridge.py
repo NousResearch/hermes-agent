@@ -492,6 +492,48 @@ class TestRunAsyncWithRunningLoop:
         finally:
             shutdown_async_bridge_loop()
 
+    def test_nested_bridge_loop_timeout_cancels_oneoff_task(self, monkeypatch):
+        """Timed-out nested bridge-loop calls must cancel the one-off task."""
+        import model_tools
+
+        from model_tools import _run_async, shutdown_async_bridge_loop
+
+        cancel_observed = threading.Event()
+        release_uncancelled = threading.Event()
+        oneoff_finished = threading.Event()
+
+        async def _inner_waits_for_cancellation():
+            try:
+                await asyncio.to_thread(release_uncancelled.wait)
+            except asyncio.CancelledError:
+                cancel_observed.set()
+                raise
+            finally:
+                oneoff_finished.set()
+
+        async def _outer_runs_on_bridge_loop():
+            with pytest.raises(TimeoutError):
+                _run_async(_inner_waits_for_cancellation())
+            return cancel_observed.wait(timeout=1)
+
+        monkeypatch.setattr(model_tools, "_ASYNC_BRIDGE_TIMEOUT", 0.05)
+
+        try:
+            bridge_loop = model_tools._get_async_bridge_loop()
+            future = asyncio.run_coroutine_threadsafe(
+                _outer_runs_on_bridge_loop(),
+                bridge_loop,
+            )
+
+            assert future.result(timeout=2), (
+                "Nested one-off coroutine never received CancelledError after "
+                "the bridge-loop fallback timed out"
+            )
+        finally:
+            release_uncancelled.set()
+            oneoff_finished.wait(timeout=1)
+            shutdown_async_bridge_loop()
+
     def test_bridge_loop_startup_failure_closes_and_resets(self, monkeypatch):
         """A failed bridge-thread startup should not publish a dead loop."""
         import model_tools

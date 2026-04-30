@@ -199,6 +199,59 @@ class TestCreateProfile:
 
 
 # ===================================================================
+# TestReservedNames — regression coverage for the corner-case branch of
+# #12099 in which a user could create a profile literally named "main"
+# (or any other supposedly-reserved name) and re-introduce the original
+# session-key collision because validate_profile_name() only enforced
+# the regex, not _RESERVED_NAMES.
+# ===================================================================
+
+class TestReservedNames:
+    """create_profile() must reject every entry in _RESERVED_NAMES."""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["main", "hermes", "default", "test", "tmp", "root", "sudo"],
+    )
+    def test_reserved_name_rejected(self, profile_env, name):
+        """Each reserved name must raise ValueError before any directory is
+        created.  Without this guard, ``hermes profile create main`` would
+        succeed and silently produce ``agent:main:*`` session keys that
+        collide with the default profile — re-introducing #12099."""
+        with pytest.raises(ValueError, match="reserved"):
+            create_profile(name, no_alias=True)
+
+    def test_reserved_name_error_lists_all_reserved(self, profile_env):
+        """The error message should help the user pick a non-reserved name
+        without forcing them to read the source."""
+        from hermes_cli.profiles import _RESERVED_NAMES
+
+        with pytest.raises(ValueError) as exc_info:
+            create_profile("main", no_alias=True)
+
+        message = str(exc_info.value)
+        # Mentions the offending name and at least a few reserved names so
+        # the user can immediately see what to avoid.
+        assert "'main'" in message
+        for reserved in ("hermes", "default", "main"):
+            assert reserved in message, f"error should list {reserved!r}; got: {message}"
+        assert sorted(_RESERVED_NAMES) == sorted(
+            {"hermes", "default", "main", "test", "tmp", "root", "sudo"}
+        ), "reserved set drift — update this test if intentional"
+
+    def test_reserved_name_creates_no_directory(self, profile_env):
+        """Bug-shaped check: rejection must happen before mkdir, so a failed
+        attempt must not leave an orphan directory that blocks later use of
+        the same name once it stops being reserved."""
+        from hermes_cli.profiles import get_profile_dir
+
+        with pytest.raises(ValueError):
+            create_profile("main", no_alias=True)
+
+        assert not get_profile_dir("main").exists()
+
+
+# ===================================================================
 # TestDeleteProfile
 # ===================================================================
 

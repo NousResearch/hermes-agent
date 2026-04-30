@@ -122,9 +122,13 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "logs",                 # gateway logs
 })
 
-# Names that cannot be used as profile aliases
+# Names that cannot be used as profile aliases or as new-profile names.
+# "main" is reserved because creating a profile literally named "main" would
+# re-introduce #12099 — the resulting `agent:main:*` session-key prefix
+# collides with the default profile's namespace, which is exactly the bug
+# the profile-aware session-key work was meant to fix.
 _RESERVED_NAMES = frozenset({
-    "hermes", "default", "test", "tmp", "root", "sudo",
+    "hermes", "default", "main", "test", "tmp", "root", "sudo",
 })
 
 # Hermes subcommands that cannot be used as profile names/aliases
@@ -422,9 +426,10 @@ def create_profile(
     """
     validate_profile_name(name)
 
-    if name == "default":
+    if name in _RESERVED_NAMES:
         raise ValueError(
-            "Cannot create a profile named 'default' — it is the built-in profile (~/.hermes)."
+            f"Cannot create a profile named {name!r} — it is reserved. "
+            f"Reserved names: {', '.join(sorted(_RESERVED_NAMES))}."
         )
 
     profile_dir = get_profile_dir(name)

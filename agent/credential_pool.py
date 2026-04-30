@@ -173,7 +173,14 @@ class PooledCredential:
         return self.base_url
 
 
-_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_CONTROL_CHAR_RE = re.compile(
+    "["
+    "\x00-\x1f\x7f-\x9f"           # C0 / C1 control chars (ANSI escapes, NUL, etc.)
+    "‎‏"                 # LRM, RLM
+    "‪-‮"                # LRE, RLE, PDF, LRO, RLO
+    "⁦-⁩"                # LRI, RLI, FSI, PDI
+    "]"
+)
 
 
 def label_from_token(token: str, fallback: str) -> str:
@@ -181,9 +188,9 @@ def label_from_token(token: str, fallback: str) -> str:
     for key in ("email", "preferred_username", "upn"):
         value = claims.get(key)
         if isinstance(value, str) and value.strip():
-            # Strip control characters (ANSI escapes, null bytes, bidi
-            # overrides) and cap length to prevent terminal injection
-            # via crafted JWT claims.
+            # Strip C0/C1 control characters plus Unicode bidi marks and
+            # isolates (U+200E/F, U+202A-E, U+2066-9) to prevent terminal
+            # spoofing via crafted JWT claims, then cap length.
             return _CONTROL_CHAR_RE.sub("", value.strip())[:120]
     return fallback
 

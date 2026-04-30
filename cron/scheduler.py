@@ -1722,8 +1722,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id, _mcp_exc,
             )
 
+        # Cron context max_tokens cap (env-controlled, default None = no cap).
+        # Mitigates degenerate-loop hallucinations on small / open-source models
+        # where a single repetition trap can produce 64KB+ of output before the
+        # API max-tokens limit fires. Caps the response so any worst-case
+        # hallucination is bounded to e.g. ~6000 chars (3 Discord messages)
+        # instead of 33+ message bursts via cron deliver mechanism.
+        # Set HERMES_CRON_MAX_TOKENS=2048 (or similar) to enable.
+        _cron_max_tokens_env = os.getenv("HERMES_CRON_MAX_TOKENS", "").strip()
+        _cron_max_tokens = int(_cron_max_tokens_env) if _cron_max_tokens_env else None
+
         agent = AIAgent(
             model=model,
+            max_tokens=_cron_max_tokens,
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
             provider=runtime.get("provider"),

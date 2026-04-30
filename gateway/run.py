@@ -1689,66 +1689,6 @@ class GatewayRunner:
             self._session_reasoning_overrides[session_key] = dict(reasoning_config)
 
     @staticmethod
-    def _parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
-        """Parse `/reasoning` args into `(value, persist_global)`.
-
-        `/reasoning <level>` is session-scoped by default. `--global` may be
-        supplied in any position to persist the change to config.yaml.
-        """
-        import shlex
-
-        text = str(raw_args or "").strip().replace("—", "--")
-        if not text:
-            return "", False
-        try:
-            tokens = shlex.split(text)
-        except ValueError:
-            tokens = text.split()
-
-        persist_global = False
-        value_tokens = []
-        for token in tokens:
-            if token == "--global":
-                persist_global = True
-            else:
-                value_tokens.append(token)
-        return " ".join(value_tokens).strip().lower(), persist_global
-
-    def _resolve_session_reasoning_config(
-        self,
-        *,
-        source: Optional[SessionSource] = None,
-        session_key: Optional[str] = None,
-    ) -> dict | None:
-        """Resolve reasoning effort for a session, honoring session overrides."""
-        resolved_session_key = session_key
-        if not resolved_session_key and source is not None:
-            try:
-                resolved_session_key = self._session_key_for_source(source)
-            except Exception:
-                resolved_session_key = None
-
-        overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
-        if resolved_session_key and resolved_session_key in overrides:
-            return overrides[resolved_session_key]
-        return self._load_reasoning_config()
-
-    def _set_session_reasoning_override(
-        self,
-        session_key: str,
-        reasoning_config: Optional[dict],
-    ) -> None:
-        """Set or clear the session-scoped reasoning override."""
-        if not session_key:
-            return
-        if not hasattr(self, "_session_reasoning_overrides"):
-            self._session_reasoning_overrides = {}
-        if reasoning_config is None:
-            self._session_reasoning_overrides.pop(session_key, None)
-        else:
-            self._session_reasoning_overrides[session_key] = dict(reasoning_config)
-
-    @staticmethod
     def _load_service_tier() -> str | None:
         """Load Priority Processing setting from config.yaml.
 
@@ -10777,22 +10717,6 @@ class GatewayRunner:
                         return
 
                     raw = progress_queue.get_nowait()
-
-                    # Drain silently when interrupted: events queued in the
-                    # window between tool parse and interrupt processing
-                    # should not render as bubbles.  The "⚡ Interrupting
-                    # current task" message is sent separately and is the
-                    # last progress-flavored bubble the user should see.
-                    try:
-                        _agent_for_interrupt = agent_holder[0] if agent_holder else None
-                        if _agent_for_interrupt is not None and getattr(
-                            _agent_for_interrupt, "is_interrupted", False
-                        ):
-                            # Drop this event and continue draining.
-                            await asyncio.sleep(0)
-                            continue
-                    except Exception:
-                        pass
 
                     # Drain silently when interrupted: events queued in the
                     # window between tool parse and interrupt processing

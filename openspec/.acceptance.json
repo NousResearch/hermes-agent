@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "language": "JavaScript",
+  "framework": "node-test",
+  "specDirectory": "openspec/specs",
+  "filterSyntax": "node --test --test-name-pattern",
+  "domains": {
+    "ACCEPTANCE": {
+      "capability": "acceptance-test-workflow",
+      "unit": {
+        "project": "tools/acceptance/fixtures/node-test",
+        "subfolder": ".",
+        "namespace": "Acceptance.Generated",
+        "framework": "node-test"
+      },
+      "integration": {
+        "project": "tools/acceptance/fixtures/node-test",
+        "subfolder": ".",
+        "namespace": "Acceptance.Generated",
+        "framework": "node-test"
+      }
+    }
+  }
+}

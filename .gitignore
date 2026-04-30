@@ -70,3 +70,9 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
+
+# Acceptance-test transient outputs
+tools/acceptance/.work/
+tools/acceptance/fixtures/node-test/Generated/.results/
+TestResults/
+test-results/

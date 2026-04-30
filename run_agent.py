@@ -6921,8 +6921,18 @@ class AIAgent:
                     # interrupt entirely.  On slow providers (ollama-cloud) each
                     # retry can block for the full stream-read timeout (120s+),
                     # causing multi-minute delays between /stop and response.
+                    #
+                    # Return silently rather than raising: the main polling
+                    # thread (below, ~L7249) observes self._interrupt_requested
+                    # on its next 0.3s tick and raises InterruptedError from
+                    # there, which the outer run_conversation loop handles
+                    # cleanly.  Raising from here instead would escape this
+                    # worker thread unhandled (this function has only a
+                    # finally, no except) and dump a noisy "Exception in
+                    # thread Thread-N" traceback to stderr in parallel with
+                    # the clean interrupt path.
                     if self._interrupt_requested:
-                        raise InterruptedError("Agent interrupted before stream retry")
+                        return
                     try:
                         if self.api_mode == "anthropic_messages":
                             self._try_refresh_anthropic_client_credentials()

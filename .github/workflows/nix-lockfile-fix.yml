@@ -28,7 +28,7 @@ concurrency:
 jobs:
   # ── Auto-fix on main ───────────────────────────────────────────────
   # Fires when a push to main touches package.json or package-lock.json
-  # in ui-tui/ or web/. Runs fix-lockfiles --apply and pushes the hash
+  # in ui-tui/ or web/. Runs fix-lockfiles and pushes the hash
   # update commit directly to main so Nix builds never stay broken.
   #
   # Safety invariants:
@@ -207,7 +207,7 @@ jobs:
 
       - name: Apply lockfile hashes
         id: apply
-        run: nix run .#fix-lockfiles -- --apply
+        run: nix run .#fix-lockfiles
 
       - name: Commit & push
         if: steps.apply.outputs.changed == 'true'

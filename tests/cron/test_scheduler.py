@@ -935,6 +935,120 @@ class TestRunJobSessionPersistence:
         # But the output log should show the placeholder
         assert "(No response generated)" in output
 
+    @pytest.mark.parametrize(
+        "agent_result,expected_err_substring",
+        [
+            (
+                {
+                    "final_response": "API call failed after 3 retries: Request timed out.",
+                    "failed": True,
+                    "completed": False,
+                    "error": "API call failed after 3 retries: Request timed out.",
+                },
+                "API call failed",
+            ),
+            (
+                {"final_response": None, "completed": False, "failed": True},
+                "agent reported failure",
+            ),
+            (
+                {"final_response": "", "completed": False},
+                "agent reported failure",
+            ),
+            (
+                {
+                    "final_response": "partial reply before crash",
+                    "failed": True,
+                    "completed": False,
+                    "error": "model abort: connection reset",
+                },
+                "model abort",
+            ),
+        ],
+    )
+    def test_run_job_treats_agent_failure_flag_as_failure(
+        self, tmp_path, agent_result, expected_err_substring
+    ):
+        """Issue #17855: run_conversation returns ``failed=True``/``completed=False``
+        when the agent's API call exhausts retries or aborts mid-run. run_job
+        must surface this as success=False so cron's last_status reflects the
+        failure and the user gets an error notification, instead of treating
+        the (often non-empty) error string in final_response as a legitimate
+        agent reply.
+        """
+        job = {
+            "id": "failing-api-job",
+            "name": "failing api",
+            "prompt": "do something",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = agent_result
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert error is not None and expected_err_substring in error
+        # Output should be the FAILED template, not the success template.
+        assert "(FAILED)" in output
+        # Ephemeral cron agent must still be closed even on agent-flagged failure.
+        mock_agent.close.assert_called_once()
+
+    def test_run_job_completed_true_without_failed_flag_succeeds(self, tmp_path):
+        """Regression guard: a normal success result (``completed=True``,
+        ``failed`` absent) must not trip the failure-flag check.
+        """
+        job = {
+            "id": "ok-job",
+            "name": "ok",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "all good",
+                "completed": True,
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "all good"
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.

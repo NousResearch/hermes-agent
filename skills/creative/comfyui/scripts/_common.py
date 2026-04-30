@@ -142,11 +142,11 @@ MODEL_LOADERS: dict[str, list[tuple[str, str]]] = {
     "StyleModelLoader":         [("style_model_name", "style_models")],
     "GLIGENLoader":             [("gligen_name", "gligen")],
     "HypernetworkLoader":       [("hypernetwork_name", "hypernetworks")],
-    # IPAdapter family (community)
+    # IPAdapter family (community).
+    # Note: IPAdapterUnifiedLoader's `preset` and IPAdapterInsightFaceLoader's
+    # `provider` are enums (not file paths), so they're intentionally omitted —
+    # check_deps would otherwise treat enum values as missing model files.
     "IPAdapterModelLoader":     [("ipadapter_file", "ipadapter")],
-    "IPAdapterUnifiedLoader":   [("preset", "ipadapter")],
-    "IPAdapterInsightFaceLoader": [("provider", "insightface")],
-    "InsightFaceLoader":        [("provider", "insightface")],
     "InstantIDModelLoader":     [("instantid_file", "instantid")],
     # AnimateDiff / video
     "ADE_LoadAnimateDiffModel": [("model_name", "animatediff_models")],
@@ -195,7 +195,7 @@ PARAM_PATTERNS: list[tuple[str, str, str]] = [
     ("BasicScheduler", "scheduler", "scheduler"),
     ("BasicScheduler", "denoise", "denoise"),
     ("KSamplerSelect", "sampler_name", "sampler_name"),
-    ("BasicGuider", "cfg", "cfg"),
+    # NB: BasicGuider has no cfg input (it just bundles model+conditioning).
     ("CFGGuider", "cfg", "cfg"),
     ("DualCFGGuider", "cfg_conds", "cfg"),
     ("DualCFGGuider", "cfg_cond2_negative", "cfg_negative"),
@@ -209,7 +209,7 @@ PARAM_PATTERNS: list[tuple[str, str, str]] = [
     ("SDTurboScheduler", "denoise", "denoise"),
     ("SamplerCustom", "noise_seed", "seed"),
     ("SamplerCustom", "cfg", "cfg"),
-    ("SamplerCustomAdvanced", "noise_seed", "seed"),
+    # NB: SamplerCustomAdvanced takes a NOISE input (from RandomNoise) — no seed field directly.
 
     # ---- Dimensions / latent ----
     ("EmptyLatentImage", "width", "width"),

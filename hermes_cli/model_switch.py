@@ -891,14 +891,19 @@ def switch_model(
     if not validation.get("accepted"):
         override = False
         if user_providers:
-            for up in user_providers:
-                if isinstance(up, dict) and up.get("provider") == target_provider:
-                    cfg_models = up.get("models", [])
-                    if new_model in cfg_models or any(
-                        m.get("name") == new_model for m in cfg_models if isinstance(m, dict)
-                    ):
+            # user_providers is a dict: {provider_slug: config_dict}
+            for slug, cfg in user_providers.items():
+                if slug == target_provider:
+                    cfg_models = cfg.get("models", {})
+                    # Direct membership works for dict (keys) and list (strings)
+                    if new_model in cfg_models:
                         override = True
                         break
+                    # Also accept if models is a list of dicts with 'name' field
+                    if isinstance(cfg_models, list):
+                        if any(m.get("name") == new_model for m in cfg_models if isinstance(m, dict)):
+                            override = True
+                            break
         if override:
             validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
         else:
@@ -1412,14 +1417,17 @@ def list_authenticated_providers(
                         models_list = list(fb)
 
             # Prefer the endpoint's live /models list when credentials are
-            # available. This keeps OpenAI-compatible relays (for example CRS)
-            # in sync when the server catalog changes without requiring the
-            # user to mirror every model into config.yaml.
+            # available, unless the provider explicitly opts out via
+            # discover_models: false (e.g. dedicated endpoints that expose
+            # the entire aggregator catalog via /models).
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
-            if api_url and api_key:
+            discover = ep_cfg.get("discover_models", True)
+            if isinstance(discover, str):
+                discover = discover.lower() not in ("false", "no", "0")
+            if api_url and api_key and discover:
                 try:
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)

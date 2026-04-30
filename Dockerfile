@@ -45,13 +45,7 @@ COPY --chown=hermes:hermes . .
 
 # Build browser dashboard and terminal UI assets.
 RUN cd web && npm run build && \
-    cd ../ui-tui && npm run build && \
-    rm -rf node_modules/@hermes/ink && \
-    rm -rf packages/hermes-ink/node_modules && \
-    cp -R packages/hermes-ink node_modules/@hermes/ink && \
-    npm install --omit=dev --prefer-offline --no-audit --prefix node_modules/@hermes/ink && \
-    rm -rf node_modules/@hermes/ink/node_modules/react && \
-    node --input-type=module -e "await import('@hermes/ink')"
+    cd ../ui-tui && npm run build
 
 # ---------- Permissions ----------
 # Make install dir world-readable so any HERMES_UID can read it at runtime.

@@ -95,12 +95,25 @@ def test_no_install_prebuilt_bundle_mode(tmp_path: Path, main_mod) -> None:
     assert main_mod._tui_need_npm_install(tmp_path) is False
 
 
-def test_build_needed_when_local_ink_bundle_missing(tmp_path: Path, main_mod) -> None:
+def test_build_needed_when_source_newer_than_entry(tmp_path: Path, main_mod) -> None:
+    _touch_tui_entry(tmp_path)
+    _touch_ink(tmp_path)
+    src = tmp_path / "src" / "entry.tsx"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("console.log('newer')")
+    os.utime(src, (200, 200))
+    os.utime(tmp_path / "dist" / "entry.js", (100, 100))
+
+    assert main_mod._tui_need_npm_install(tmp_path) is False
+    assert main_mod._tui_build_needed(tmp_path) is True
+
+
+def test_build_not_needed_when_entry_exists_and_sources_unchanged(tmp_path: Path, main_mod) -> None:
     _touch_tui_entry(tmp_path)
     _touch_ink(tmp_path)
 
     assert main_mod._tui_need_npm_install(tmp_path) is False
-    assert main_mod._tui_build_needed(tmp_path) is True
+    assert main_mod._tui_build_needed(tmp_path) is False
 
 
 def test_build_not_needed_when_entry_and_ink_bundle_present(tmp_path: Path, main_mod) -> None:

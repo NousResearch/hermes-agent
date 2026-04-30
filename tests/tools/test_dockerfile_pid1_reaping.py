@@ -121,20 +121,6 @@ def test_dockerfile_builds_tui_assets(dockerfile_text):
     )
 
 
-def test_dockerfile_materializes_local_tui_ink_package(dockerfile_text):
-    assert any(
-        "ui-tui" in step
-        and "node_modules/@hermes/ink" in step
-        and "packages/hermes-ink" in step
-        and "rm -rf packages/hermes-ink/node_modules" in step
-        and "npm install --omit=dev" in step
-        and "--prefix node_modules/@hermes/ink" in step
-        and "rm -rf node_modules/@hermes/ink/node_modules/react" in step
-        and "await import('@hermes/ink')" in step
-        for step in _run_steps(dockerfile_text)
-    )
-
-
 def test_dockerignore_excludes_nested_dependency_dirs():
     if not DOCKERIGNORE.exists():
         pytest.skip(".dockerignore not present in this checkout")

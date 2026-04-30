@@ -59,6 +59,11 @@ class LcmContextEngine(ContextEngine):
         else:
             self._config = LcmConfig()
 
+        # Honour lcm.enabled=false — build a stub engine only so other methods
+        # (reset, get_status) remain safe to call, but skip all heavy init and
+        # suppress tool surface.
+        self._disabled: bool = not self._config.enabled
+
         self._engine = LcmEngine(
             config=self._config,
             model=model,
@@ -66,12 +71,13 @@ class LcmContextEngine(ContextEngine):
             context_length=context_length,
         )
 
-        # Try to init HRR persistent store (L3)
-        try:
-            from plugins.context_engine.lcm.hrr.store import MemoryStore as _HrrStore
-            self._engine.hrr_store = _HrrStore()
-        except (ImportError, Exception):
-            pass
+        if not self._disabled:
+            # Try to init HRR persistent store (L3)
+            try:
+                from plugins.context_engine.lcm.hrr.store import MemoryStore as _HrrStore
+                self._engine.hrr_store = _HrrStore()
+            except (ImportError, Exception):
+                pass
 
         # Track ingestion state — how many messages we've ingested so far
         self._ingested_count: int = 0
@@ -82,8 +88,9 @@ class LcmContextEngine(ContextEngine):
         self.protect_last_n = self._config.protect_last_n
         self.threshold_tokens = int(context_length * self._config.tau_soft)
 
-        # Try to init DAM retriever (L2)
-        self._try_init_dam()
+        if not self._disabled:
+            # Try to init DAM retriever (L2)
+            self._try_init_dam()
 
     def _try_init_dam(self) -> None:
         """Best-effort DAM initialization (requires numpy)."""
@@ -117,7 +124,7 @@ class LcmContextEngine(ContextEngine):
         # Also update the engine's token estimator if it tracks real usage
         self._engine.token_estimator._last_prompt_tokens = prompt_tokens
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int = None) -> bool:  # type: ignore[override]
         """Check if compaction should fire (covers both async and blocking).
 
         Uses the real token count from the API response (prompt_tokens) when
@@ -126,6 +133,9 @@ class LcmContextEngine(ContextEngine):
         (messages are only ingested during compress()), so relying solely on
         active_tokens() creates a chicken-and-egg where compression never fires.
         """
+        if self._disabled:
+            return False
+
         if prompt_tokens is not None:
             self.last_prompt_tokens = prompt_tokens
 
@@ -154,6 +164,9 @@ class LcmContextEngine(ContextEngine):
         We ingest messages the engine hasn't seen yet, then
         run compaction and return the active message list.
         """
+        if self._disabled:
+            return messages
+
         # Ingest new messages since last call
         new_count = len(messages) - self._ingested_count
         if new_count > 0:
@@ -314,11 +327,16 @@ class LcmContextEngine(ContextEngine):
         imported at module load time and fall back to an empty dict when the
         HRR sub-package is not installed.
         """
+        if self._disabled:
+            return []
         return list(LCM_TOOL_SCHEMAS.values()) + list(MEMORY_TOOL_SCHEMAS.values())
 
     def handle_tool_call(self, name: str, args: Dict[str, Any], **kwargs) -> str:
         """Dispatch LCM and memory_* tool calls."""
         import json as _json
+
+        if self._disabled:
+            return _json.dumps({"error": "LCM is disabled"})
 
         # Route to the internal tool handlers via the engine
         from plugins.context_engine.lcm import tools as lcm_tools

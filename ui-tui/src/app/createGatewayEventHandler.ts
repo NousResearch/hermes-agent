@@ -510,6 +510,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'review.summary': {
+        // Self-improvement background review emitted a persistent summary
+        // of what it saved to memory/skills. Surface it as a system line
+        // in the transcript so it never gets lost to a transient status
+        // flash. Python-side already formats it as "💾 Self-improvement
+        // review: …".
+        const text = String(ev.payload?.text ?? '').trim()
+        if (text) {
+          sys(text)
+        }
+
+        return
+      }
+
       case 'subagent.spawn_requested':
         // Child built but not yet running (waiting on ThreadPoolExecutor slot).
         // Preserve completed state if a later event races in before this one.

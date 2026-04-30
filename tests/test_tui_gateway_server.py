@@ -2773,6 +2773,129 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
 
 
 # --------------------------------------------------------------------------
+# session.delete — TUI resume picker `d` key
+# --------------------------------------------------------------------------
+
+
+def test_session_delete_requires_session_id(monkeypatch):
+    """Empty / missing session_id is a 4006 client error (no DB call)."""
+    called: list[tuple] = []
+
+    class _DB:
+        def delete_session(self, *a, **kw):
+            called.append((a, kw))
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request({"id": "1", "method": "session.delete", "params": {}})
+    assert "error" in resp
+    assert resp["error"]["code"] == 4006
+    assert called == []
+
+
+def test_session_delete_returns_db_unavailable_when_no_db(monkeypatch):
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_db_error", "locked")
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.delete", "params": {"session_id": "abc"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 5036
+    assert "state.db unavailable" in resp["error"]["message"]
+
+
+def test_session_delete_refuses_active_session(monkeypatch):
+    """Cannot delete a session currently bound to a live TUI session."""
+    called: list[str] = []
+
+    class _DB:
+        def delete_session(self, sid, sessions_dir=None):
+            called.append(sid)
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setitem(server._sessions, "live", {"session_key": "key-live"})
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.delete",
+                "params": {"session_id": "key-live"},
+            }
+        )
+    finally:
+        server._sessions.pop("live", None)
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4023
+    assert "active session" in resp["error"]["message"]
+    assert called == [], "delete_session must not be called for active sessions"
+
+
+def test_session_delete_returns_4007_when_missing(monkeypatch):
+    class _DB:
+        def delete_session(self, sid, sessions_dir=None):
+            return False
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.delete", "params": {"session_id": "ghost"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4007
+
+
+def test_session_delete_propagates_db_exception(monkeypatch):
+    class _DB:
+        def delete_session(self, sid, sessions_dir=None):
+            raise RuntimeError("disk full")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.delete", "params": {"session_id": "x"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 5036
+    assert "disk full" in resp["error"]["message"]
+
+
+def test_session_delete_success_returns_deleted_id(monkeypatch):
+    """Happy path — DB delete succeeds, response carries the deleted id
+    and the on-disk sessions dir is forwarded so transcript files get
+    cleaned up alongside the row."""
+    captured: dict = {}
+
+    class _DB:
+        def delete_session(self, sid, sessions_dir=None):
+            captured["sid"] = sid
+            captured["sessions_dir"] = sessions_dir
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.delete", "params": {"session_id": "old-1"}}
+    )
+
+    assert "result" in resp, resp
+    assert resp["result"] == {"deleted": "old-1"}
+    assert captured["sid"] == "old-1"
+    # sessions_dir must be forwarded so transcript files get cleaned up
+    # too — not just the SQLite row.  The autouse _isolate_hermes_home
+    # fixture pins HERMES_HOME to a temp dir; the handler should append
+    # /sessions to it.
+    assert captured["sessions_dir"] is not None
+    assert str(captured["sessions_dir"]).endswith("sessions")
+
+
+# --------------------------------------------------------------------------
 # model.options — curated-list parity with `hermes model` and classic /model
 # --------------------------------------------------------------------------
 

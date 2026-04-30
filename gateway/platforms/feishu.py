@@ -384,6 +384,7 @@ class FeishuAdapterSettings:
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
     ws_ping_timeout: Optional[int] = None
+    ws_stale_timeout: int = 120
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
@@ -1366,6 +1367,8 @@ class FeishuAdapter(BasePlatformAdapter):
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        self._last_message_time: float = 0.0
+        self._health_monitor_task: Optional[asyncio.Task] = None
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1443,6 +1446,7 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
+            ws_stale_timeout=_coerce_required_int(extra.get("ws_stale_timeout"), default=120, min_value=10),
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
@@ -1476,6 +1480,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
+        self._ws_stale_timeout = settings.ws_stale_timeout
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1541,6 +1546,12 @@ class FeishuAdapter(BasePlatformAdapter):
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             self._mark_connected()
+            if self._connection_mode == "websocket":
+                self._last_message_time = 0.0
+                self._health_monitor_task = asyncio.create_task(
+                    self._connection_health_monitor(),
+                    name="feishu-health-monitor",
+                )
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             return True
         except Exception as exc:
@@ -1553,6 +1564,13 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        if self._health_monitor_task and not self._health_monitor_task.done():
+            self._health_monitor_task.cancel()
+            try:
+                await self._health_monitor_task
+            except asyncio.CancelledError:
+                pass
+        self._health_monitor_task = None
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
@@ -1617,6 +1635,38 @@ class FeishuAdapter(BasePlatformAdapter):
             pass
         finally:
             self._ws_client = None
+
+    async def _connection_health_monitor(self) -> None:
+        """Detect silent WebSocket disconnects by tracking inbound message timestamps.
+
+        Wakes every 60 seconds. If no message has arrived for longer than
+        ``_ws_stale_timeout`` seconds the connection is considered silently dead
+        and a reconnect is triggered via the gateway's standard retryable-fatal
+        error path (same as any other transient connection failure).
+        """
+        _CHECK_INTERVAL = 60
+        while self._running:
+            await asyncio.sleep(_CHECK_INTERVAL)
+            if not self._running:
+                break
+            if self._last_message_time == 0.0:
+                # No message received yet — don't count startup silence as stale.
+                continue
+            elapsed = time.time() - self._last_message_time
+            if elapsed > self._ws_stale_timeout:
+                logger.warning(
+                    "[Feishu] WebSocket stale: no inbound message for %.0fs "
+                    "(threshold=%ds) — triggering reconnect",
+                    elapsed,
+                    self._ws_stale_timeout,
+                )
+                self._set_fatal_error(
+                    "feishu_ws_stale",
+                    f"WebSocket stale: no message received for {elapsed:.0f}s",
+                    retryable=True,
+                )
+                await self._notify_fatal_error()
+                return
 
     async def _stop_webhook_server(self) -> None:
         if self._webhook_runner is None:
@@ -2186,6 +2236,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _handle_message_event_data(self, data: Any) -> None:
         """Shared inbound message handling for websocket and webhook transports."""
+        self._last_message_time = time.time()
         event = getattr(data, "event", None)
         message = getattr(event, "message", None)
         sender = getattr(event, "sender", None)

@@ -368,6 +368,8 @@ if _config_path.exists():
                 os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
             if "gateway_notify_interval" in _agent_cfg and "HERMES_AGENT_NOTIFY_INTERVAL" not in os.environ:
                 os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
+            if "gateway_notify_silent" in _agent_cfg and "HERMES_AGENT_NOTIFY_SILENT" not in os.environ:
+                os.environ["HERMES_AGENT_NOTIFY_SILENT"] = str(_agent_cfg["gateway_notify_silent"])
             if "restart_drain_timeout" in _agent_cfg and "HERMES_RESTART_DRAIN_TIMEOUT" not in os.environ:
                 os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
             if (
@@ -11884,6 +11886,7 @@ class GatewayRunner:
         # 0 = disable notifications.
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
+        _NOTIFY_SILENT = is_truthy_value(os.getenv("HERMES_AGENT_NOTIFY_SILENT", "true"))
         _notify_start = time.time()
 
         async def _notify_long_running():
@@ -11910,10 +11913,14 @@ class GatewayRunner:
                     except Exception:
                         pass
                 try:
+                    _notify_metadata = dict(_status_thread_metadata or {})
+                    if _NOTIFY_SILENT:
+                        _notify_metadata["silent"] = True
+                        _notify_metadata["disable_notification"] = True
                     await _notify_adapter.send(
                         source.chat_id,
                         f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
-                        metadata=_status_thread_metadata,
+                        metadata=_notify_metadata,
                     )
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)

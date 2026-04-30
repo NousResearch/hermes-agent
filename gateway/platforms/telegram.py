@@ -84,7 +84,7 @@ from gateway.platforms.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
-from utils import atomic_replace
+from utils import atomic_replace, is_truthy_value
 
 
 def check_telegram_requirements() -> bool:
@@ -1083,6 +1083,11 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
+            disable_notification = False
+            if metadata:
+                disable_notification = is_truthy_value(
+                    metadata.get("disable_notification", metadata.get("silent", False))
+                )
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -1115,6 +1120,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 message_thread_id=effective_thread_id,
+                                disable_notification=disable_notification,
                                 **self._link_preview_kwargs(),
                             )
                         except Exception as md_error:
@@ -1128,6 +1134,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
                                     message_thread_id=effective_thread_id,
+                                    disable_notification=disable_notification,
                                     **self._link_preview_kwargs(),
                                 )
                             else:

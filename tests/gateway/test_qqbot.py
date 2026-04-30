@@ -503,9 +503,28 @@ class TestBuildTextBody:
 
 
 # ---------------------------------------------------------------------------
+# _read_events closed websocket handling
+# ---------------------------------------------------------------------------
+class TestReadEventsClosedWebSocket:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    @pytest.mark.asyncio
+    async def test_closed_websocket_raises_so_listener_keeps_reconnecting(self):
+        """A closed-but-present ws must not make _listen_loop think reads ended cleanly."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = True
+        adapter._ws = mock.Mock()
+        adapter._ws.closed = True
+
+        with pytest.raises(RuntimeError, match="WebSocket closed"):
+            await adapter._read_events()
+
+
+# ---------------------------------------------------------------------------
 # _wait_for_reconnection / send reconnection wait
 # ---------------------------------------------------------------------------
-
 class TestWaitForReconnection:
     """Test that send() waits for reconnection instead of silently dropping."""
 

@@ -583,6 +583,8 @@ class QQAdapter(BasePlatformAdapter):
         """Read WebSocket frames until connection closes."""
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
+        if self._ws.closed:
+            raise RuntimeError("WebSocket closed")
 
         while self._running and self._ws and not self._ws.closed:
             msg = await self._ws.receive()

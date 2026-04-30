@@ -57,6 +57,73 @@ class TestDetectDangerousRm:
         assert "delete" in desc.lower()
 
 
+class TestRmRootPathRegexPrecision:
+    """The "delete in root path" pattern must fire on actual system-root targets
+    only, not on every absolute path. The previous shape required just a single
+    `/` after the rm flags, so any `rm /home/<user>/<file>`, `rm /tmp/x`, etc.
+    was incorrectly flagged as "delete in root path" and forced an approval
+    prompt for routine cleanup. See #18083.
+
+    True-positives (system root + top-level system directories) must still
+    fire; false-positives (deep paths under non-system top-level dirs) must
+    no longer fire from this rule. Recursive-rm of any path is still caught
+    by the separate "recursive delete" pattern (`-r`/`--recursive`).
+    """
+
+    def test_rm_root_filesystem_still_flagged(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm -rf /")
+        assert is_dangerous is True
+        assert "delete" in desc.lower() or "root" in desc.lower()
+
+    def test_rm_root_glob_still_flagged(self):
+        is_dangerous, _, _ = detect_dangerous_command("rm -rf /*")
+        assert is_dangerous is True
+
+    def test_rm_root_dotglob_still_flagged(self):
+        is_dangerous, _, _ = detect_dangerous_command("rm -rf /.*")
+        assert is_dangerous is True
+
+    def test_rm_etc_subpath_still_flagged(self):
+        is_dangerous, _, _ = detect_dangerous_command("rm -rf /etc/passwd")
+        assert is_dangerous is True
+
+    def test_rm_var_log_still_flagged(self):
+        is_dangerous, _, _ = detect_dangerous_command("rm -rf /var/log")
+        assert is_dangerous is True
+
+    def test_rm_usr_bin_still_flagged(self):
+        is_dangerous, _, _ = detect_dangerous_command("rm /usr/bin/something")
+        assert is_dangerous is True
+
+    def test_rm_home_user_file_not_flagged(self):
+        """Plain non-recursive rm of a file under /home must not require approval."""
+        is_dangerous, _, _ = detect_dangerous_command("rm /home/user/foo")
+        assert is_dangerous is False
+
+    def test_rm_dash_f_home_user_file_not_flagged(self):
+        """rm -f under /home is the routine cleanup case from #18083."""
+        is_dangerous, _, _ = detect_dangerous_command(
+            "rm -f /home/scott/hermes-home/fawn_lily_temp.html"
+        )
+        assert is_dangerous is False
+
+    def test_rm_tmp_file_not_flagged(self):
+        is_dangerous, _, _ = detect_dangerous_command("rm /tmp/x")
+        assert is_dangerous is False
+
+    def test_rm_mnt_path_not_flagged(self):
+        """WSL-style /mnt/c/... must not trigger root-path approval."""
+        is_dangerous, _, _ = detect_dangerous_command("rm /mnt/c/Users/user/foo")
+        assert is_dangerous is False
+
+    def test_rm_recursive_under_home_still_flagged_by_recursive_rule(self):
+        """Recursive rm of any path stays dangerous via the -r/--recursive
+        rule, regardless of the root-path tightening."""
+        is_dangerous, _, desc = detect_dangerous_command("rm -rf /home/user/.cache")
+        assert is_dangerous is True
+        assert "recursive" in desc.lower() or "delete" in desc.lower()
+
+
 class TestDetectDangerousSudo:
     def test_shell_via_c_flag(self):
         is_dangerous, key, desc = detect_dangerous_command("bash -c 'echo pwned'")

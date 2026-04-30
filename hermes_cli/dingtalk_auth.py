@@ -29,7 +29,7 @@ REGISTRATION_BASE_URL = os.environ.get(
     "DINGTALK_REGISTRATION_BASE_URL", "https://oapi.dingtalk.com"
 ).rstrip("/")
 
-REGISTRATION_SOURCE = os.environ.get("DINGTALK_REGISTRATION_SOURCE", "openClaw")
+REGISTRATION_SOURCE = os.environ.get("DINGTALK_REGISTRATION_SOURCE", "DING_DWS_CLAW")
 
 
 # ── API helpers ────────────────────────────────────────────────────────────

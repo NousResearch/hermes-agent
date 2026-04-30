@@ -91,10 +91,10 @@ This is useful when you want a scheduled agent to inherit reusable workflows wit
 Cron jobs default to running detached from any repo — no `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` is loaded, and the terminal / file / code-exec tools run from whatever working directory the gateway started in. Pass `--workdir` (CLI) or `workdir=` (tool call) to change that:
 
 ```bash
-# Standalone CLI
-hermes cron create --schedule "every 1d at 09:00" \
-  --workdir /home/me/projects/acme \
-  --prompt "Audit open PRs, summarize CI health, and post to #eng"
+# Standalone CLI (schedule and prompt are positional)
+hermes cron create "every 1d at 09:00" \
+  "Audit open PRs, summarize CI health, and post to #eng" \
+  --workdir /home/me/projects/acme
 ```
 
 ```python

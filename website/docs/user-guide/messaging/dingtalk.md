@@ -123,6 +123,13 @@ DINGTALK_ALLOWED_USERS=user-id-1
 
 # Multiple allowed users (comma-separated)
 # DINGTALK_ALLOWED_USERS=user-id-1,user-id-2
+
+# Optional: group-chat gating (mirrors Slack/Telegram/Discord/WhatsApp)
+# DINGTALK_REQUIRE_MENTION=true
+# DINGTALK_FREE_RESPONSE_CHATS=cidABC==,cidDEF==
+# DINGTALK_MENTION_PATTERNS=^小马
+# DINGTALK_HOME_CHANNEL=cidXXXX==
+# DINGTALK_ALLOW_ALL_USERS=true
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:

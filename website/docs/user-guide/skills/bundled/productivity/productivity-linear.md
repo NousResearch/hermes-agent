@@ -1,14 +1,14 @@
 ---
-title: "Linear — Manage Linear issues, projects, and teams via the GraphQL API"
+title: "Linear — Linear: manage issues, projects, teams via GraphQL + curl"
 sidebar_label: "Linear"
-description: "Manage Linear issues, projects, and teams via the GraphQL API"
+description: "Linear: manage issues, projects, teams via GraphQL + curl"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Linear
 
-Manage Linear issues, projects, and teams via the GraphQL API. Create, update, search, and organize issues. Uses API key auth (no OAuth needed). All operations via curl — no dependencies.
+Linear: manage issues, projects, teams via GraphQL + curl.
 
 ## Skill metadata
 

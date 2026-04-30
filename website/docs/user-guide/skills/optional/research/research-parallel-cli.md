@@ -131,6 +131,7 @@ If auth requires browser interaction, run with `pty=true`.
 
 ## Quick reference
 
+<!-- ascii-guard-ignore -->
 ```text
 parallel-cli
 ├── auth
@@ -143,6 +144,7 @@ parallel-cli
 ├── findall run|ingest|status|poll|result|enrich|extend|schema|cancel
 └── monitor create|list|get|update|delete|events|event-group|simulate
 ```
+<!-- ascii-guard-ignore-end -->
 
 ## Common flags and patterns
 

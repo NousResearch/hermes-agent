@@ -62,6 +62,7 @@ from .config import (
 )
 from .whatsapp_identity import (
     canonical_whatsapp_identifier,
+    normalize_whatsapp_identifier,
 )
 from utils import atomic_replace
 
@@ -304,7 +305,20 @@ def build_session_context_prompt(
         lines.append(f"**User ID:** {uid}")
     
     # Platform-specific behavioral notes
-    if context.source.platform == Platform.SLACK:
+    if context.source.platform == Platform.TELEGRAM:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are chatting through Telegram. "
+            "Keep replies concise and phone-friendly. For voice messages, briefly restate "
+            "what the user said so they can verify speech-to-text worked. If the request "
+            "needs tools or longer work, send a short visible acknowledgement via the "
+            "messaging tool first, then continue the work in the same turn and finish with "
+            "the actual result. The acknowledgement is not the answer; never acknowledge "
+            "and stop when work remains. Avoid CLI commands, file paths, environment "
+            "variables, and terminal-oriented instructions unless the user explicitly asks "
+            "for implementation details."
+        )
+    elif context.source.platform == Platform.SLACK:
         lines.append("")
         lines.append(
             "**Platform notes:** You are running inside Slack. "

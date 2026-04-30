@@ -188,6 +188,9 @@ class TestBuildSessionContextPrompt:
 
         assert "Telegram" in prompt
         assert "Home Chat" in prompt
+        assert "voice messages" in prompt
+        assert "visible acknowledgement" in prompt
+        assert "phone-friendly" in prompt
 
     def test_bluebubbles_prompt_mentions_short_conversational_i_message_format(self):
         config = GatewayConfig(

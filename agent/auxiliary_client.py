@@ -355,6 +355,13 @@ def _to_openai_base_url(base_url: str) -> str:
         rewritten = url[: -len("/anthropic")] + "/v1"
         logger.debug("Auxiliary client: rewrote base URL %s → %s", url, rewritten)
         return rewritten
+    if "api.kimi.com" in url and url.endswith("/coding"):
+        # Kimi Code uses /coding/v1/messages for Anthropic SDK (appends /v1/messages)
+        # but /coding/v1/chat/completions for OpenAI SDK (appends /chat/completions)
+        # Without /v1 here, OpenAI SDK hits /coding/chat/completions — a 404.
+        rewritten = url + "/v1"
+        logger.debug("Auxiliary client: rewrote Kimi base URL %s → %s", url, rewritten)
+        return rewritten
     return url
 
 
@@ -1086,9 +1093,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if not api_key:
                 continue
 
-            base_url = _to_openai_base_url(
-                _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
-            )
+            raw_base_url = _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
+            base_url = _to_openai_base_url(raw_base_url)
             model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id)
             if model is None:
                 continue  # skip provider if we don't know a valid aux model
@@ -1106,7 +1112,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
                 extra["default_headers"] = copilot_default_headers()
             _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
-            _client = _maybe_wrap_anthropic(_client, model, api_key, base_url)
+            _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
             return _client, model
 
         creds = resolve_api_key_provider_credentials(provider_id)
@@ -1114,9 +1120,8 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if not api_key:
             continue
 
-        base_url = _to_openai_base_url(
-            str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
-        )
+        raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+        base_url = _to_openai_base_url(raw_base_url)
         model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id)
         if model is None:
             continue  # skip provider if we don't know a valid aux model
@@ -1134,7 +1139,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
             extra["default_headers"] = copilot_default_headers()
         _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
-        _client = _maybe_wrap_anthropic(_client, model, api_key, base_url)
+        _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
         return _client, model
 
     return None, None
@@ -2184,8 +2189,10 @@ def resolve_provider_client(
                 # Anthropic fallback SDK still sees the original URL.
                 if entry_api_mode == "anthropic_messages":
                     openai_base = custom_base
+                    raw_base_for_wrap = custom_base
                 else:
                     openai_base = _to_openai_base_url(custom_base)
+                    raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
                 logger.debug(
@@ -2229,7 +2236,7 @@ def resolve_provider_client(
                 ):
                     client = CodexAuxiliaryClient(client, final_model)
                 else:
-                    client = _wrap_if_needed(client, final_model, openai_base, custom_key)
+                    client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
             logger.warning(
@@ -2275,9 +2282,8 @@ def resolve_provider_client(
                          provider, ", ".join(tried_sources))
             return None, None
 
-        base_url = _to_openai_base_url(
-            str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
-        )
+        raw_base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+        base_url = _to_openai_base_url(raw_base_url)
 
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
         final_model = _normalize_resolved_model(model or default_model, provider)
@@ -2326,7 +2332,7 @@ def resolve_provider_client(
         # Anthropic-wire endpoints (Kimi Coding Plan api.kimi.com/coding,
         # /anthropic-suffixed gateways) so named providers like kimi-coding
         # land on the right transport without needing per-provider branches.
-        client = _wrap_if_needed(client, final_model, base_url, api_key)
+        client = _wrap_if_needed(client, final_model, raw_base_url, api_key)
 
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode

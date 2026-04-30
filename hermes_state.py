@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_content TEXT,
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
-    codex_message_items TEXT
+    codex_message_items TEXT,
+    message_embedding BLOB
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -179,9 +180,39 @@ class SessionDB:
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
 
+    # ── Embedding config ──
+
+    def _try_load_embedding_config(self):
+        """Load embedding endpoint config from config.yaml."""
+        try:
+            import yaml
+            from pathlib import Path as _Path
+
+            config_path = _Path.home() / ".hermes" / "config.yaml"
+            if not config_path.exists():
+                return
+            with open(config_path, "r") as f:
+                cfg = yaml.safe_load(f) or {}
+            emb = cfg.get("embedding", {}) or {}
+            self._embedding_base_url = emb.get("base_url") or emb.get("endpoint")
+            self._embedding_model = emb.get("model", self._embedding_model)
+            self._embedding_api_key = emb.get("api_key") or None
+            dim = emb.get("dimension")
+            if dim:
+                self._embedding_dim = int(dim)
+        except Exception as e:
+            logger.debug("Failed to load embedding config: %s", e)
+
     def __init__(self, db_path: Path = None):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Embedding config (v12 vector search)
+        self._embedding_base_url = None
+        self._embedding_model = "Qwen3-Embedding-0.6B"
+        self._embedding_api_key = None
+        self._embedding_dim = 1024
+        self._try_load_embedding_config()
 
         self._lock = threading.Lock()
         self._write_count = 0
@@ -277,6 +308,68 @@ class SessionDB:
                     )
         except Exception:
             pass  # Best effort — never fatal.
+
+    # ── Embedding helpers (v12 vector search) ──
+
+    def _compute_embedding(self, text: str) -> Optional[bytes]:
+        """Compute embedding for text via the local embedding endpoint.
+
+        Uses the Ollama-compatible /v1/embeddings endpoint on the
+        configured embedding server. Returns packed float32 bytes or
+        None if the service is unavailable or not configured.
+        """
+        if not text or not text.strip():
+            return None
+        try:
+            import urllib.request
+            import json as _json
+
+            base_url = self._embedding_base_url
+            if not base_url:
+                return None
+
+            payload = _json.dumps({
+                "model": self._embedding_model,
+                "input": text[:2048],  # truncate to avoid token limit
+                "encoding_type": "float",
+            }).encode("utf-8")
+
+            req = urllib.request.Request(
+                f"{base_url}/v1/embeddings",
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._embedding_api_key}" if self._embedding_api_key else "",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                result = _json.loads(resp.read())
+
+            data = result.get("data", [])
+            if data and len(data) > 0:
+                embedding = data[0].get("embedding")
+                if embedding and isinstance(embedding, list):
+                    import struct
+                    return struct.pack(f"{len(embedding)}f", *embedding)
+        except Exception as e:
+            logger.debug("Embedding computation failed: %s", e, exc_info=True)
+        return None
+
+    def _cosine_similarity(self, vec_a: bytes, vec_b: bytes, dim: int) -> float:
+        """Compute cosine similarity between two packed float32 vectors."""
+        import struct
+
+        a = struct.unpack(f"{dim}f", vec_a)
+        b = struct.unpack(f"{dim}f", vec_b)
+
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sum(x * x for x in a) ** 0.5
+        norm_b = sum(x * x for x in b) ** 0.5
+
+        if norm_a < 1e-8 or norm_b < 1e-8:
+            return 0.0
+        return dot / (norm_a * norm_b)
 
     def close(self):
         """Close the database connection.
@@ -1130,13 +1223,17 @@ class SessionDB:
         if tool_calls is not None:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
+        # Compute embedding outside the write txn (I/O operation)
+        embed_text = (content or "").strip()
+        message_embedding = self._compute_embedding(embed_text) if self._embedding_base_url else None
+
         def _do(conn):
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, message_embedding)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -1152,6 +1249,7 @@ class SessionDB:
                     reasoning_details_json,
                     codex_items_json,
                     codex_message_items_json,
+                    message_embedding,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -1538,7 +1636,11 @@ class SessionDB:
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """
-        Full-text search across session messages using FTS5.
+        Hybrid search across session messages: FTS5 BM25 + cosine similarity.
+
+        Uses FTS5 to get candidate matches, then re-ranks using vector
+        cosine similarity for better semantic recall. Falls back to pure
+        FTS5 if embeddings are unavailable.
 
         Supports FTS5 query syntax:
           - Simple keywords: "docker deployment"
@@ -1589,7 +1691,8 @@ class SessionDB:
                 m.tool_name,
                 s.source,
                 s.model,
-                s.started_at AS session_started
+                s.started_at AS session_started,
+                m.message_embedding
             FROM messages_fts
             JOIN messages m ON m.id = messages_fts.rowid
             JOIN sessions s ON s.id = m.session_id
@@ -1646,7 +1749,8 @@ class SessionDB:
                         m.tool_name,
                         s.source,
                         s.model,
-                        s.started_at AS session_started
+                        s.started_at AS session_started,
+                        m.message_embedding
                     FROM messages_fts_trigram
                     JOIN messages m ON m.id = messages_fts_trigram.rowid
                     JOIN sessions s ON s.id = m.session_id
@@ -1683,7 +1787,8 @@ class SessionDB:
                                   max(1, instr(m.content, ?) - 40),
                                   120) AS snippet,
                            m.content, m.timestamp, m.tool_name,
-                           s.source, s.model, s.started_at AS session_started
+                           s.source, s.model, s.started_at AS session_started,
+                           m.message_embedding
                     FROM messages m
                     JOIN sessions s ON s.id = m.session_id
                     WHERE {' AND '.join(like_where)}
@@ -1705,6 +1810,34 @@ class SessionDB:
                     return []
                 else:
                     matches = [dict(row) for row in cursor.fetchall()]
+
+        # ── Vector fallback: if FTS returned nothing, try pure cosine search ──
+        if not matches and self._embedding_base_url:
+            try:
+                query_embed = self._compute_embedding(query)
+                if query_embed:
+                    with self._lock:
+                        cursor = self._conn.execute(
+                            "SELECT id, session_id, role, content, timestamp, tool_name, message_embedding "
+                            "FROM messages WHERE message_embedding IS NOT NULL"
+                        )
+                        all_msgs = [dict(r) for r in cursor.fetchall()]
+
+                    scored = []
+                    for msg in all_msgs:
+                        embed = msg.pop("message_embedding", None)
+                        if embed:
+                            sim = self._cosine_similarity(query_embed, embed, self._embedding_dim)
+                            msg["score"] = sim
+                            msg["vector_score"] = sim
+                            content = msg.get("content") or ""
+                            msg["snippet"] = content[:120] + "..." if len(content) > 120 else content
+                            scored.append(msg)
+
+                    scored.sort(key=lambda x: x["score"], reverse=True)
+                    matches = scored[:limit]
+            except Exception as e:
+                logger.debug("Vector fallback failed: %s", e)
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.
@@ -1751,6 +1884,42 @@ class SessionDB:
                 match["context"] = context_msgs
             except Exception:
                 match["context"] = []
+
+        # ── Hybrid re-ranking with cosine similarity ──
+        if matches and self._embedding_base_url:
+            try:
+                query_embed = self._compute_embedding(query)
+                if query_embed:
+                    scored = []
+                    for match in matches:
+                        embed = match.pop("message_embedding", None)
+                        if embed:
+                            sim = self._cosine_similarity(query_embed, embed, self._embedding_dim)
+                            # Combine FTS rank (from list position) and vector similarity
+                            fts_rank = matches.index(match) + 1
+                            combined = 0.3 * (1.0 / (1.0 + fts_rank)) + 0.7 * sim
+                            match["score"] = combined
+                            match["vector_score"] = sim
+                        else:
+                            match["score"] = 0.0
+                            match["vector_score"] = 0.0
+                        scored.append(match)
+
+                    scored.sort(key=lambda x: x["score"], reverse=True)
+                    matches = scored[:limit]
+                else:
+                    matches = matches[:limit]
+                    for m in matches:
+                        m.pop("message_embedding", None)
+            except Exception as e:
+                logger.debug("Hybrid re-ranking failed, using FTS rank: %s", e)
+                matches = matches[:limit]
+                for m in matches:
+                    m.pop("message_embedding", None)
+        else:
+            matches = matches[:limit]
+            for m in matches:
+                m.pop("message_embedding", None)
 
         # Remove full content from result (snippet is enough, saves tokens)
         for match in matches:

@@ -157,6 +157,19 @@ _ROUTED_HISTORY_MAX_MESSAGES = 3
 # (last 3 turns) is enough for follow-up questions; older context lives
 # in session storage if needed.
 _ROUTED_HISTORY_MAX_CHARS = 2400
+
+# Persistent memory injection (added 2026-04-30).
+# Standard-routed conversations load memory via MemoryManager in run_agent.py,
+# but force-moa / force-moa-spar bypass that path and call remote reference
+# models directly. Without injecting memory here, MoA references correctly
+# but unhelpfully say "I have no persistent memory" because the routed_prompt
+# they receive has none. Injecting MEMORY.md + USER.md restores the parity.
+_ROUTED_MEMORY_MAX_CHARS = 4000
+_ROUTED_MEMORY_FILES: tuple[tuple[str, str], ...] = (
+    ("MEMORY.md", "MEMORY"),
+    ("USER.md", "USER PROFILE"),
+)
+_ROUTED_MEMORY_DISABLE_ENV = "HERMES_MOA_NO_MEMORY"
 _ROUTED_LOCAL_FILE_MAX_CHARS = 30000
 _ROUTED_LOCAL_FILE_MAX_COUNT = 3
 _ROUTE_FORENSICS_LOG = "route_forensics.jsonl"
@@ -457,8 +470,11 @@ def _log_route_forensics(
 
 _NO_TOOL_FRAMING = (
     "OPERATING CONSTRAINTS (read before responding):\n"
-    "1. You are a stateless text reasoner. You have NO tools available — no file "
-    "reads, no shell, no edits, no network, no execution.\n"
+    "1. You are a Hermes Agent reasoner. You have NO execution tools in this "
+    "turn — no file reads, no shell, no edits, no network, no live execution. "
+    "Anything you need to know about the user, their machines, or their work "
+    "is provided as text below (persistent memory, conversation history, and "
+    "any local files Hermes resolved before routing).\n"
     "2. Do NOT emit `<tool_call>`, `<function=...>`, `tool_code` fenced blocks, "
     "or any XML/JSON tool-invocation markup. Tool-call markup will be discarded "
     "by the caller and treated as a failed answer.\n"
@@ -467,9 +483,59 @@ _NO_TOOL_FRAMING = (
     "as a task list to execute. Default to reviewing the report's claims unless "
     "the user explicitly asks you to extend or implement it.\n"
     "4. Refer to files, code, or commands in plain prose ('the diff in X shows…') "
-    "rather than pretending to read them.\n"
+    "rather than pretending to read them. Use the persistent memory below as "
+    "ground truth for facts about the user and their infrastructure — do NOT "
+    "claim those facts are unknown to you when the memory clearly lists them.\n"
     "5. Produce a complete natural-language answer in this single turn.\n\n"
 )
+
+
+def _load_routed_memory(
+    max_chars: int = _ROUTED_MEMORY_MAX_CHARS,
+    home: Path | None = None,
+) -> str:
+    """Load Hermes persistent memory (MEMORY.md + USER.md) for injection.
+
+    Returns an empty string if memory injection is disabled via the
+    `HERMES_MOA_NO_MEMORY` env var, if the memory dir does not exist, or
+    if no memory files contain content. The returned block is plain text
+    intended to be embedded in the routed prompt — no Markdown fencing —
+    and is hard-capped at ``max_chars`` total across all files combined.
+    """
+    if os.getenv(_ROUTED_MEMORY_DISABLE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+        return ""
+    base = (home or Path.home()) / ".hermes" / "memories"
+    if not base.is_dir():
+        return ""
+
+    parts: list[str] = []
+    consumed = 0
+    for filename, label in _ROUTED_MEMORY_FILES:
+        path = base / filename
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not text:
+            continue
+        # Reserve at least 100 chars of headroom for label + separators before
+        # bothering to include another file.
+        remaining = max_chars - consumed
+        if remaining < 100:
+            break
+        # Account for the header overhead so files that are nearly at the cap
+        # still produce a coherent block instead of a header with no body.
+        header = f"=== {label} ({filename}) ==="
+        body_budget = remaining - len(header) - 2
+        if body_budget < 50:
+            break
+        if len(text) > body_budget:
+            text = text[:body_budget].rstrip() + "\n...[truncated by Hermes before routing]"
+        block = f"{header}\n{text}"
+        parts.append(block)
+        consumed += len(block) + 2
+
+    return "\n\n".join(parts)
 
 
 def _build_routed_prompt(
@@ -482,6 +548,14 @@ def _build_routed_prompt(
     current_request = f"User: {user_text}"
     if local_file_context:
         current_request = f"{current_request}\n\n{local_file_context}"
+
+    memory_block = _load_routed_memory()
+    memory_section = (
+        f"Persistent memory the user has saved (use these facts as ground truth "
+        f"and do not claim ignorance of them):\n{memory_block}\n\n"
+        if memory_block
+        else ""
+    )
 
     recent_messages: list[tuple[str, str]] = []
     consumed = 0
@@ -511,12 +585,13 @@ def _build_routed_prompt(
             break
 
     if not recent_messages:
-        return f"{_NO_TOOL_FRAMING}{current_request}"
+        return f"{_NO_TOOL_FRAMING}{memory_section}{current_request}"
 
     recent_messages.reverse()
     transcript = "\n\n".join(f"{label}: {content}" for label, content in recent_messages)
     return (
         f"{_NO_TOOL_FRAMING}"
+        f"{memory_section}"
         "Use the recent conversation context below when answering the current request. "
         "Do not ask for context that is already present unless it is still genuinely missing.\n\n"
         f"Recent conversation:\n{transcript}\n\n"

@@ -36,6 +36,7 @@ from acp_adapter.server import (
     _ROUTE_FORENSICS_LOG,
     _append_route_forensics,
     _build_routed_prompt,
+    _load_routed_memory,
     _parse_tool_json,
     _route_turn_id_from_kwargs,
 )
@@ -529,21 +530,30 @@ class TestPrompt:
         assert "# Draft\n\nCheck this claim." in routed
         assert f"User: review {local_file}" in routed
 
-    def test_build_routed_prompt_includes_no_tool_framing_no_history(self):
+    def test_build_routed_prompt_includes_no_tool_framing_no_history(self, tmp_path, monkeypatch):
         """Routed prompt MUST include the no-tool-framing prefix even when
         history is empty, so MoA reference models do not hallucinate
         <tool_call>/<function=...> XML markup."""
+        # Isolate from the developer's real ~/.hermes/memories during tests.
+        monkeypatch.setattr(
+            "acp_adapter.server.Path.home", classmethod(lambda cls: tmp_path)
+        )
+
         routed = _build_routed_prompt("audit this report", [])
 
         assert "OPERATING CONSTRAINTS" in routed
-        assert "no tools" in routed.lower()
+        assert "no execution tools" in routed.lower()
         assert "<tool_call>" in routed  # forbidden tokens listed in prefix
         assert "<function=" in routed
         assert "CONTENT TO ANALYZE" in routed
         assert "User: audit this report" in routed
 
-    def test_build_routed_prompt_includes_no_tool_framing_with_history(self):
+    def test_build_routed_prompt_includes_no_tool_framing_with_history(self, tmp_path, monkeypatch):
         """Same prefix must apply when history is present."""
+        monkeypatch.setattr(
+            "acp_adapter.server.Path.home", classmethod(lambda cls: tmp_path)
+        )
+
         routed = _build_routed_prompt(
             "is this AAA?",
             [{"role": "user", "content": "previous turn"}],
@@ -557,6 +567,123 @@ class TestPrompt:
         assert routed.index("OPERATING CONSTRAINTS") < routed.index(
             "Recent conversation:"
         )
+
+    def test_load_routed_memory_reads_memory_md(self, tmp_path, monkeypatch):
+        """MEMORY.md from ~/.hermes/memories/ must be loaded so MoA references
+        see the user's persistent memory rather than claiming ignorance."""
+        memories = tmp_path / ".hermes" / "memories"
+        memories.mkdir(parents=True)
+        (memories / "MEMORY.md").write_text(
+            "VPS: 49.12.7.18\nKey: ~/.ssh/binance_futures_tool",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("HERMES_MOA_NO_MEMORY", raising=False)
+
+        block = _load_routed_memory(home=tmp_path)
+
+        assert "MEMORY (MEMORY.md)" in block
+        assert "49.12.7.18" in block
+        assert "binance_futures_tool" in block
+
+    def test_load_routed_memory_reads_user_md_alongside(self, tmp_path):
+        memories = tmp_path / ".hermes" / "memories"
+        memories.mkdir(parents=True)
+        (memories / "MEMORY.md").write_text("memory body", encoding="utf-8")
+        (memories / "USER.md").write_text("user profile body", encoding="utf-8")
+
+        block = _load_routed_memory(home=tmp_path)
+
+        assert "MEMORY (MEMORY.md)" in block
+        assert "USER PROFILE (USER.md)" in block
+        assert "memory body" in block
+        assert "user profile body" in block
+
+    def test_load_routed_memory_truncates_oversized_file(self, tmp_path):
+        memories = tmp_path / ".hermes" / "memories"
+        memories.mkdir(parents=True)
+        big = "x" * 8000
+        (memories / "MEMORY.md").write_text(big, encoding="utf-8")
+
+        block = _load_routed_memory(max_chars=500, home=tmp_path)
+
+        assert len(block) <= 700  # cap + header overhead
+        assert "[truncated by Hermes before routing]" in block
+
+    def test_load_routed_memory_disabled_via_env(self, tmp_path, monkeypatch):
+        memories = tmp_path / ".hermes" / "memories"
+        memories.mkdir(parents=True)
+        (memories / "MEMORY.md").write_text("should not appear", encoding="utf-8")
+        monkeypatch.setenv("HERMES_MOA_NO_MEMORY", "1")
+
+        block = _load_routed_memory(home=tmp_path)
+
+        assert block == ""
+
+    def test_load_routed_memory_returns_empty_when_dir_missing(self, tmp_path):
+        # tmp_path has no .hermes/memories
+        assert _load_routed_memory(home=tmp_path) == ""
+
+    def test_build_routed_prompt_injects_memory_no_history(self, tmp_path, monkeypatch):
+        """When the user has saved memory, MoA references must see it even
+        on the first turn (no conversation history yet)."""
+        memories = tmp_path / ".hermes" / "memories"
+        memories.mkdir(parents=True)
+        (memories / "MEMORY.md").write_text(
+            "VPS Brain: ssh -i ~/.ssh/binance_futures_tool root@49.12.7.18",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "acp_adapter.server.Path.home", classmethod(lambda cls: tmp_path)
+        )
+        monkeypatch.delenv("HERMES_MOA_NO_MEMORY", raising=False)
+
+        routed = _build_routed_prompt("audit my VPS setup", [])
+
+        assert "Persistent memory" in routed
+        assert "49.12.7.18" in routed
+        # Memory must precede the user's current request so the model reads
+        # the facts before being asked the question.
+        assert routed.index("Persistent memory") < routed.index(
+            "User: audit my VPS setup"
+        )
+
+    def test_build_routed_prompt_injects_memory_with_history(self, tmp_path, monkeypatch):
+        memories = tmp_path / ".hermes" / "memories"
+        memories.mkdir(parents=True)
+        (memories / "MEMORY.md").write_text("VPS: 49.12.7.18", encoding="utf-8")
+        monkeypatch.setattr(
+            "acp_adapter.server.Path.home", classmethod(lambda cls: tmp_path)
+        )
+        monkeypatch.delenv("HERMES_MOA_NO_MEMORY", raising=False)
+
+        routed = _build_routed_prompt(
+            "follow-up question",
+            [{"role": "user", "content": "earlier turn"}],
+        )
+
+        assert "Persistent memory" in routed
+        assert "49.12.7.18" in routed
+        # Order must be: framing -> memory -> conversation -> current request
+        assert (
+            routed.index("OPERATING CONSTRAINTS")
+            < routed.index("Persistent memory")
+            < routed.index("Recent conversation:")
+            < routed.index("User: follow-up question")
+        )
+
+    def test_build_routed_prompt_omits_memory_section_when_empty(self, tmp_path, monkeypatch):
+        """When no memory is available, the memory section must be omitted
+        cleanly — not rendered as an empty 'Persistent memory:' header."""
+        # tmp_path has no .hermes/memories at all
+        monkeypatch.setattr(
+            "acp_adapter.server.Path.home", classmethod(lambda cls: tmp_path)
+        )
+
+        routed = _build_routed_prompt("hello", [])
+
+        assert "Persistent memory" not in routed
+        assert "OPERATING CONSTRAINTS" in routed
+        assert "User: hello" in routed
 
     @pytest.mark.asyncio
     async def test_prompt_returns_refusal_for_unknown_session(self, agent):

@@ -110,6 +110,51 @@ export const api = {
   // Session search (FTS5)
   searchSessions: (q: string) =>
     fetchJSON<SessionSearchResponse>(`/api/sessions/search?q=${encodeURIComponent(q)}`),
+
+  // Desk
+  getProjects: () => fetchJSON<ProjectsResponse>("/api/projects"),
+  createProject: (project: { name?: string; path: string }) =>
+    fetchJSON<ProjectInfo>("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(project),
+    }),
+  updateProject: (id: string, updates: Partial<ProjectInfo>) =>
+    fetchJSON<ProjectInfo>(`/api/projects/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    }),
+  deleteProject: (id: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/projects/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  createDeskSession: (body: { project_id?: string | null; title?: string | null; model?: string | null; toolsets?: string[] | null }) =>
+    fetchJSON<DeskSessionCreateResponse>("/api/desk/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  startDeskRun: (body: { session_id: string; message: string }) =>
+    fetchJSON<DeskRunStartResponse>("/api/desk/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  interruptDeskRun: (runId: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/desk/runs/${encodeURIComponent(runId)}/interrupt`, {
+      method: "POST",
+    }),
+
+  // Memory
+  getBuiltinMemory: () => fetchJSON<BuiltinMemoryResponse>("/api/memory/builtin"),
+  saveBuiltinMemory: (target: "memory" | "user", entries: string[]) =>
+    fetchJSON<BuiltinMemoryResponse>("/api/memory/builtin", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target, entries }),
+    }),
+  getMemoryProviders: () => fetchJSON<MemoryProvidersResponse>("/api/memory/providers"),
 };
 
 export interface PlatformStatus {
@@ -259,4 +304,62 @@ export interface SessionSearchResult {
 
 export interface SessionSearchResponse {
   results: SessionSearchResult[];
+}
+
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  path: string;
+  notes?: string;
+  default_model?: string;
+  default_toolsets?: string[];
+  last_session_id?: string;
+  created_at: number;
+  updated_at: number;
+  metadata?: {
+    exists: boolean;
+    git_branch: string | null;
+    git_dirty: boolean | null;
+    context_files: string[];
+  };
+}
+
+export interface ProjectsResponse {
+  projects: ProjectInfo[];
+}
+
+export interface DeskSessionCreateResponse {
+  session_id: string;
+  source: "desk";
+  project?: ProjectInfo | null;
+}
+
+export interface DeskRunStartResponse {
+  run_id: string;
+  status: string;
+}
+
+export type DeskRunEvent =
+  | { event: "message.delta"; run_id: string; timestamp: number; delta: string }
+  | { event: "tool.started"; run_id: string; timestamp: number; tool?: string; preview?: string }
+  | { event: "tool.completed"; run_id: string; timestamp: number; tool?: string; duration?: number; error?: boolean }
+  | { event: "reasoning.available"; run_id: string; timestamp: number; text: string }
+  | { event: "run.completed"; run_id: string; timestamp: number; output: string }
+  | { event: "run.failed"; run_id: string; timestamp: number; error: string };
+
+export interface BuiltinMemoryTarget {
+  entries: string[];
+  usage: number;
+  limit: number;
+}
+
+export interface BuiltinMemoryResponse {
+  memory: BuiltinMemoryTarget;
+  user: BuiltinMemoryTarget;
+}
+
+export interface MemoryProvidersResponse {
+  active_provider: string;
+  builtin_enabled: boolean;
+  external_configured: boolean;
 }

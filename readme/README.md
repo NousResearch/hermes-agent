@@ -10,7 +10,8 @@
 2. [开发者指南](./development-guide.md)：解决本地安装、测试、提改动的基本问题。
 3. [系统架构](./architecture.md)：建立对 `AIAgent`、工具系统、CLI、gateway 的整体认识。
 4. [CLI 命令指南](./cli-guide.md)：知道平时怎么跑、怎么调、怎么切模型和工具。
-5. [配置参考](./configuration-reference.md)：需要改行为时再查具体配置项。
+5. [Hermes Desk 使用 SOP](./desk-sop.md)：用本地 Web Desk 管理项目、会话、记忆和工具运行过程。
+6. [配置参考](./configuration-reference.md)：需要改行为时再查具体配置项。
 
 之后按目标分支阅读：
 
@@ -30,6 +31,7 @@
 | [Onboarding 别名入口](./onboarding-guide.md) | 给外部引用保留的更直观入口名 | 从旧链接或外部导航进入的人 |
 | [系统架构](./architecture.md) | 核心循环、模块关系、设计模式 | 想理解代码整体结构的开发者 |
 | [CLI 命令指南](./cli-guide.md) | 交互式终端、斜杠命令、常见工作流 | 日常使用者 / 开发者 |
+| [Hermes Desk 使用 SOP](./desk-sop.md) | 本地 Web Desk 的启动、项目、会话、运行和记忆管理流程 | 想通过浏览器使用 Hermes 的用户 |
 | [工具参考手册](./tools-reference.md) | 核心工具名、toolset、注册和调试方法 | 开发者 / 高级用户 |
 | [Skills 技能系统](./skills-guide.md) | Skills 的使用、编写和维护 | 想沉淀 SOP 或扩展提示词能力的用户 |
 | [消息网关指南](./gateway-guide.md) | Telegram/Discord/Slack 等平台接入 | 想部署到聊天平台的用户 |

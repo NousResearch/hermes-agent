@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { Activity, BarChart3, Clock, FileText, KeyRound, MessageSquare, Package, Settings } from "lucide-react";
+import { Activity, BarChart3, Brain, Clock, FileText, KeyRound, MessageSquare, Package, Settings, Workflow } from "lucide-react";
+import DeskPage from "@/pages/DeskPage";
 import StatusPage from "@/pages/StatusPage";
 import ConfigPage from "@/pages/ConfigPage";
 import EnvPage from "@/pages/EnvPage";
@@ -8,13 +9,16 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
+import MemoryPage from "@/pages/MemoryPage";
 
 const NAV_ITEMS = [
+  { id: "desk", label: "Desk", icon: Workflow },
   { id: "status", label: "Status", icon: Activity },
   { id: "sessions", label: "Sessions", icon: MessageSquare },
   { id: "analytics", label: "Analytics", icon: BarChart3 },
   { id: "logs", label: "Logs", icon: FileText },
   { id: "cron", label: "Cron", icon: Clock },
+  { id: "memory", label: "Memory", icon: Brain },
   { id: "skills", label: "Skills", icon: Package },
   { id: "config", label: "Config", icon: Settings },
   { id: "env", label: "Keys", icon: KeyRound },
@@ -23,18 +27,20 @@ const NAV_ITEMS = [
 type PageId = (typeof NAV_ITEMS)[number]["id"];
 
 const PAGE_COMPONENTS: Record<PageId, React.FC> = {
+  desk: DeskPage,
   status: StatusPage,
   sessions: SessionsPage,
   analytics: AnalyticsPage,
   logs: LogsPage,
   cron: CronPage,
+  memory: MemoryPage,
   skills: SkillsPage,
   config: ConfigPage,
   env: EnvPage,
 };
 
 export default function App() {
-  const [page, setPage] = useState<PageId>("status");
+  const [page, setPage] = useState<PageId>("desk");
   const [animKey, setAnimKey] = useState(0);
 
   useEffect(() => {
@@ -87,7 +93,7 @@ export default function App() {
           {/* Version badge */}
           <div className="ml-auto flex items-center px-4 text-muted-foreground">
             <span className="font-display text-[0.7rem] tracking-[0.15em] uppercase opacity-50">
-              Web UI
+              Desk
             </span>
           </div>
         </div>

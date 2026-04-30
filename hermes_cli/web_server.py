@@ -14,6 +14,10 @@ import os
 import secrets
 import sys
 import time
+import asyncio
+import json
+import threading
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -43,7 +47,7 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -68,6 +72,11 @@ _SESSION_TOKEN = secrets.token_urlsafe(32)
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
+
+# Desk runs are local, browser-initiated agent turns.  They intentionally live
+# in this process: if the web server stops, active runs stop too.
+_DESK_RUNS: Dict[str, Dict[str, Any]] = {}
+_DESK_ENV_LOCK = threading.Lock()
 
 # CORS: restrict to localhost origins only.  The web UI is intended to run
 # locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
@@ -258,6 +267,193 @@ class EnvVarDelete(BaseModel):
 
 class EnvVarReveal(BaseModel):
     key: str
+
+
+class ProjectCreate(BaseModel):
+    name: str = ""
+    path: str
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    path: Optional[str] = None
+    notes: Optional[str] = None
+    default_model: Optional[str] = None
+    default_toolsets: Optional[List[str]] = None
+
+
+class DeskSessionCreate(BaseModel):
+    project_id: Optional[str] = None
+    title: Optional[str] = None
+    model: Optional[str] = None
+    toolsets: Optional[List[str]] = None
+
+
+class DeskRunCreate(BaseModel):
+    session_id: str
+    message: str
+
+
+class BuiltinMemoryUpdate(BaseModel):
+    target: str
+    entries: List[str]
+
+
+def _projects_path() -> Path:
+    return get_hermes_home() / "projects.json"
+
+
+def _read_projects() -> List[Dict[str, Any]]:
+    path = _projects_path()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            projects = data.get("projects", [])
+        else:
+            projects = data
+        return [p for p in projects if isinstance(p, dict)]
+    except Exception:
+        _log.exception("Failed to read projects registry")
+        return []
+
+
+def _write_projects(projects: List[Dict[str, Any]]) -> None:
+    path = _projects_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps({"projects": projects}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+def _resolve_project_path(raw_path: str) -> Path:
+    if not raw_path or not raw_path.strip():
+        raise HTTPException(status_code=400, detail="Project path is required")
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        raise HTTPException(status_code=400, detail="Project path must be absolute")
+    try:
+        path = path.resolve()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not path.exists() or not path.is_dir():
+        raise HTTPException(status_code=400, detail="Project path must be an existing directory")
+    return path
+
+
+def _project_metadata(path_str: str) -> Dict[str, Any]:
+    path = Path(path_str)
+    exists = path.exists() and path.is_dir()
+    metadata: Dict[str, Any] = {
+        "exists": exists,
+        "git_branch": None,
+        "git_dirty": None,
+        "context_files": [],
+    }
+    if not exists:
+        return metadata
+
+    for name in ("AGENTS.md", "agents.md", "HERMES.md", ".hermes.md", "CLAUDE.md", ".cursorrules"):
+        if (path / name).is_file():
+            metadata["context_files"].append(name)
+    if (path / ".cursor" / "rules").is_dir():
+        metadata["context_files"].append(".cursor/rules")
+
+    try:
+        import subprocess
+
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if branch.returncode == 0:
+            metadata["git_branch"] = branch.stdout.strip() or None
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if dirty.returncode == 0:
+            metadata["git_dirty"] = bool(dirty.stdout.strip())
+    except Exception:
+        pass
+    return metadata
+
+
+def _project_with_metadata(project: Dict[str, Any]) -> Dict[str, Any]:
+    enriched = dict(project)
+    enriched["metadata"] = _project_metadata(str(project.get("path", "")))
+    return enriched
+
+
+def _find_project(project_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not project_id:
+        return None
+    for project in _read_projects():
+        if project.get("id") == project_id:
+            return project
+    return None
+
+
+def _memory_store_snapshot() -> Dict[str, Any]:
+    from tools.memory_tool import MemoryStore
+
+    store = MemoryStore()
+    store.load_from_disk()
+    memory_usage = len("\n§\n".join(store.memory_entries)) if store.memory_entries else 0
+    user_usage = len("\n§\n".join(store.user_entries)) if store.user_entries else 0
+    return {
+        "memory": {
+            "entries": store.memory_entries,
+            "usage": memory_usage,
+            "limit": store.memory_char_limit,
+        },
+        "user": {
+            "entries": store.user_entries,
+            "usage": user_usage,
+            "limit": store.user_char_limit,
+        },
+    }
+
+
+async def _emit_desk_sse(queue: "asyncio.Queue[Optional[Dict[str, Any]]]"):
+    while True:
+        event = await queue.get()
+        if event is None:
+            yield ": stream closed\n\n"
+            return
+        yield f"data: {json.dumps(event, default=str)}\n\n"
+
+
+def _desk_agent_kwargs(session_id: str, project: Optional[Dict[str, Any]], body: DeskSessionCreate | None = None) -> Dict[str, Any]:
+    from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model
+    from hermes_cli.tools_config import _get_platform_tools
+
+    config = load_config()
+    runtime_kwargs = _resolve_runtime_agent_kwargs()
+    model = (body.model if body and body.model else None) or (project or {}).get("default_model") or _resolve_gateway_model(config)
+    toolsets = body.toolsets if body and body.toolsets else (project or {}).get("default_toolsets")
+    if not toolsets:
+        toolsets = sorted(_get_platform_tools(config, "cli"))
+    return {
+        "model": model,
+        "runtime_kwargs": runtime_kwargs,
+        "enabled_toolsets": toolsets,
+        "model_config": {
+            "project_id": (project or {}).get("id"),
+            "project_path": (project or {}).get("path"),
+            "toolsets": toolsets,
+        },
+    }
 
 
 @app.get("/api/status")
@@ -595,6 +791,339 @@ async def delete_session_endpoint(session_id: str):
         return {"ok": True}
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Desk projects, runs, and memory endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/projects")
+async def list_projects():
+    projects = sorted(_read_projects(), key=lambda p: str(p.get("updated_at", "")), reverse=True)
+    return {"projects": [_project_with_metadata(p) for p in projects]}
+
+
+@app.post("/api/projects")
+async def create_project(body: ProjectCreate):
+    project_path = _resolve_project_path(body.path)
+    now = time.time()
+    projects = _read_projects()
+    for project in projects:
+        if project.get("path") == str(project_path):
+            return _project_with_metadata(project)
+
+    project = {
+        "id": f"proj_{uuid.uuid4().hex[:12]}",
+        "name": body.name.strip() or project_path.name or str(project_path),
+        "path": str(project_path),
+        "notes": "",
+        "default_model": "",
+        "default_toolsets": [],
+        "last_session_id": "",
+        "created_at": now,
+        "updated_at": now,
+    }
+    projects.append(project)
+    _write_projects(projects)
+    return _project_with_metadata(project)
+
+
+@app.put("/api/projects/{project_id}")
+async def update_project(project_id: str, body: ProjectUpdate):
+    projects = _read_projects()
+    for project in projects:
+        if project.get("id") != project_id:
+            continue
+        if body.name is not None:
+            project["name"] = body.name.strip() or project.get("name") or "Untitled Project"
+        if body.path is not None:
+            project["path"] = str(_resolve_project_path(body.path))
+        if body.notes is not None:
+            project["notes"] = body.notes
+        if body.default_model is not None:
+            project["default_model"] = body.default_model
+        if body.default_toolsets is not None:
+            project["default_toolsets"] = [str(t) for t in body.default_toolsets if str(t).strip()]
+        project["updated_at"] = time.time()
+        _write_projects(projects)
+        return _project_with_metadata(project)
+    raise HTTPException(status_code=404, detail="Project not found")
+
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str):
+    projects = _read_projects()
+    remaining = [p for p in projects if p.get("id") != project_id]
+    if len(remaining) == len(projects):
+        raise HTTPException(status_code=404, detail="Project not found")
+    _write_projects(remaining)
+    return {"ok": True}
+
+
+@app.post("/api/desk/sessions")
+async def create_desk_session(body: DeskSessionCreate):
+    from hermes_state import SessionDB
+
+    project = _find_project(body.project_id)
+    if body.project_id and not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    session_id = f"desk_{uuid.uuid4().hex}"
+    kwargs = _desk_agent_kwargs(session_id, project, body)
+    db = SessionDB()
+    try:
+        db.create_session(
+            session_id=session_id,
+            source="desk",
+            model=kwargs["model"],
+            model_config=kwargs["model_config"],
+        )
+        if body.title:
+            db.set_session_title(session_id, body.title)
+    finally:
+        db.close()
+
+    if project:
+        projects = _read_projects()
+        for item in projects:
+            if item.get("id") == project.get("id"):
+                item["last_session_id"] = session_id
+                item["updated_at"] = time.time()
+                break
+        _write_projects(projects)
+
+    return {"session_id": session_id, "source": "desk", "project": project}
+
+
+@app.post("/api/desk/runs")
+async def start_desk_run(body: DeskRunCreate):
+    from hermes_state import SessionDB
+
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    db = SessionDB()
+    try:
+        session = db.get_session(body.session_id)
+    finally:
+        db.close()
+    if not session or session.get("source") != "desk":
+        raise HTTPException(status_code=404, detail="Desk session not found")
+
+    run_id = f"run_{uuid.uuid4().hex}"
+    loop = asyncio.get_running_loop()
+    queue: "asyncio.Queue[Optional[Dict[str, Any]]]" = asyncio.Queue()
+    agent_ref: Dict[str, Any] = {"agent": None}
+    _DESK_RUNS[run_id] = {
+        "queue": queue,
+        "session_id": body.session_id,
+        "agent_ref": agent_ref,
+        "started_at": time.time(),
+    }
+
+    async def _run_agent_task():
+        def _push(event: Dict[str, Any]) -> None:
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, event)
+            except Exception:
+                pass
+
+        def _on_delta(delta: Optional[str]) -> None:
+            if delta:
+                _push({
+                    "event": "message.delta",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "delta": delta,
+                })
+
+        def _on_tool(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
+            if event_type == "tool.started":
+                _push({
+                    "event": "tool.started",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "tool": tool_name,
+                    "preview": preview or "",
+                })
+            elif event_type == "tool.completed":
+                _push({
+                    "event": "tool.completed",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "tool": tool_name,
+                    "duration": round(float(kwargs.get("duration", 0) or 0), 3),
+                    "error": bool(kwargs.get("is_error", False)),
+                })
+            elif event_type == "reasoning.available":
+                _push({
+                    "event": "reasoning.available",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "text": preview or "",
+                })
+
+        def _run_sync():
+            from run_agent import AIAgent
+            from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model
+            from hermes_cli.tools_config import _get_platform_tools
+            from tools.terminal_tool import register_task_env_overrides, clear_task_env_overrides
+
+            run_db = SessionDB()
+            terminal_cwd_previous = os.environ.get("TERMINAL_CWD")
+            try:
+                fresh_session = run_db.get_session(body.session_id) or session
+                model_config = {}
+                if fresh_session.get("model_config"):
+                    try:
+                        model_config = json.loads(fresh_session["model_config"])
+                    except (TypeError, json.JSONDecodeError):
+                        model_config = {}
+                project_path = model_config.get("project_path") or None
+                toolsets = model_config.get("toolsets") or sorted(_get_platform_tools(load_config(), "cli"))
+                model = fresh_session.get("model") or _resolve_gateway_model(load_config())
+                history = run_db.get_messages_as_conversation(body.session_id)
+
+                if project_path:
+                    register_task_env_overrides(body.session_id, {"cwd": project_path})
+
+                with _DESK_ENV_LOCK:
+                    if project_path:
+                        os.environ["TERMINAL_CWD"] = project_path
+                    elif terminal_cwd_previous is None:
+                        os.environ.pop("TERMINAL_CWD", None)
+                    runtime_kwargs = _resolve_runtime_agent_kwargs()
+                    agent = AIAgent(
+                        model=model,
+                        **runtime_kwargs,
+                        max_iterations=int(os.getenv("HERMES_MAX_ITERATIONS", "90")),
+                        quiet_mode=True,
+                        verbose_logging=False,
+                        enabled_toolsets=toolsets,
+                        session_id=body.session_id,
+                        platform="desk",
+                        stream_delta_callback=_on_delta,
+                        tool_progress_callback=_on_tool,
+                        session_db=run_db,
+                    )
+                    agent_ref["agent"] = agent
+                    return agent.run_conversation(
+                        user_message=message,
+                        conversation_history=history,
+                        task_id=body.session_id,
+                    )
+            finally:
+                if terminal_cwd_previous is None:
+                    os.environ.pop("TERMINAL_CWD", None)
+                else:
+                    os.environ["TERMINAL_CWD"] = terminal_cwd_previous
+                clear_task_env_overrides(body.session_id)
+                run_db.close()
+
+        try:
+            result = await loop.run_in_executor(None, _run_sync)
+            _push({
+                "event": "run.completed",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "output": result.get("final_response", "") if isinstance(result, dict) else "",
+            })
+        except Exception as exc:
+            _log.exception("Desk run failed")
+            _push({
+                "event": "run.failed",
+                "run_id": run_id,
+                "timestamp": time.time(),
+                "error": str(exc),
+            })
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    task = asyncio.create_task(_run_agent_task())
+    _DESK_RUNS[run_id]["task"] = task
+    return {"run_id": run_id, "status": "started"}
+
+
+@app.get("/api/desk/runs/{run_id}/events")
+async def stream_desk_run_events(run_id: str):
+    run = _DESK_RUNS.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    async def _stream():
+        try:
+            async for chunk in _emit_desk_sse(run["queue"]):
+                yield chunk
+        finally:
+            task = run.get("task")
+            if task and task.done():
+                _DESK_RUNS.pop(run_id, None)
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/desk/runs/{run_id}/interrupt")
+async def interrupt_desk_run(run_id: str):
+    run = _DESK_RUNS.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    agent = run.get("agent_ref", {}).get("agent")
+    if agent is not None:
+        try:
+            agent.interrupt("Desk interrupt requested")
+        except Exception:
+            _log.exception("Failed to interrupt Desk run")
+    return {"ok": True}
+
+
+@app.get("/api/memory/builtin")
+async def get_builtin_memory():
+    return _memory_store_snapshot()
+
+
+@app.put("/api/memory/builtin")
+async def update_builtin_memory(body: BuiltinMemoryUpdate):
+    if body.target not in ("memory", "user"):
+        raise HTTPException(status_code=400, detail="target must be 'memory' or 'user'")
+    from tools.memory_tool import ENTRY_DELIMITER, MemoryStore, _scan_memory_content
+
+    store = MemoryStore()
+    store.load_from_disk()
+    clean_entries: List[str] = []
+    for entry in body.entries:
+        clean = str(entry).strip()
+        if not clean:
+            continue
+        scan_error = _scan_memory_content(clean)
+        if scan_error:
+            raise HTTPException(status_code=400, detail=scan_error)
+        if clean not in clean_entries:
+            clean_entries.append(clean)
+    limit = store.user_char_limit if body.target == "user" else store.memory_char_limit
+    total = len(ENTRY_DELIMITER.join(clean_entries)) if clean_entries else 0
+    if total > limit:
+        raise HTTPException(status_code=400, detail=f"Memory would exceed limit ({total}/{limit} chars)")
+    store._set_entries(body.target, clean_entries)
+    store.save_to_disk(body.target)
+    return _memory_store_snapshot()
+
+
+@app.get("/api/memory/providers")
+async def get_memory_providers():
+    config = load_config()
+    memory_cfg = config.get("memory", {}) if isinstance(config.get("memory"), dict) else {}
+    provider = memory_cfg.get("provider", "builtin")
+    return {
+        "active_provider": provider or "builtin",
+        "builtin_enabled": bool(memory_cfg.get("memory_enabled") or memory_cfg.get("user_profile_enabled")),
+        "external_configured": bool(provider and provider != "builtin"),
+    }
 
 
 # ---------------------------------------------------------------------------

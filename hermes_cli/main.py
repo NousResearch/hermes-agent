@@ -4147,7 +4147,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout", "auth",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
         "mcp", "sessions", "insights", "version", "update", "uninstall",
-        "profile", "dashboard",
+        "profile", "dashboard", "desk", "web",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -5942,12 +5942,13 @@ Examples:
     completion_parser.set_defaults(func=cmd_completion)
 
     # =========================================================================
-    # dashboard command
+    # dashboard / desk command
     # =========================================================================
     dashboard_parser = subparsers.add_parser(
         "dashboard",
-        help="Start the web UI dashboard",
-        description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
+        aliases=["desk", "web"],
+        help="Start the Hermes Desk web UI",
+        description="Launch Hermes Desk for chat, projects, memory, config, API keys, and sessions",
     )
     dashboard_parser.add_argument("--port", type=int, default=9119, help="Port (default 9119)")
     dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host (default 127.0.0.1)")

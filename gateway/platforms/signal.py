@@ -1252,7 +1252,7 @@ class SignalAdapter(BasePlatformAdapter):
             "attachments": [file_path],
         }
         if voice_note:
-            params["voiceNote"] = True
+            params["voice-note"] = True
 
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]

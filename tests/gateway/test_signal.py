@@ -591,7 +591,7 @@ class TestSignalSendVoice:
         assert captured[0]["method"] == "send"
         assert captured[0]["params"]["attachments"] == [str(audio_path)]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
-        assert captured[0]["params"]["voiceNote"] is True
+        assert captured[0]["params"]["voice-note"] is True
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
         assert 1234567890 in adapter._recent_sent_timestamps
 
@@ -621,7 +621,7 @@ class TestSignalSendVoice:
 
         assert result.success is True
         assert captured[0]["params"]["groupId"] == "grp1=="
-        assert captured[0]["params"]["voiceNote"] is True
+        assert captured[0]["params"]["voice-note"] is True
 
     @pytest.mark.asyncio
     async def test_send_voice_too_large(self, monkeypatch, tmp_path):

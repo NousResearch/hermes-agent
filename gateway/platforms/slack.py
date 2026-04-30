@@ -734,6 +734,10 @@ class SlackAdapter(BasePlatformAdapter):
 
                 last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
 
+            # Clear Slack Assistant status as soon as the final message is posted.
+            if thread_ts:
+                await self.stop_typing(chat_id)
+
             # Track the sent message ts so we can auto-respond to thread
             # replies without requiring @mention.
             sent_ts = last_result.get("ts") if last_result else None
@@ -811,6 +815,8 @@ class SlackAdapter(BasePlatformAdapter):
                 ts=message_id,
                 text=formatted,
             )
+            if finalize:
+                await self.stop_typing(chat_id)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
@@ -851,7 +857,7 @@ class SlackAdapter(BasePlatformAdapter):
             # in an assistant-enabled context. Falls back to reactions.
             logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
 
-    async def stop_typing(self, chat_id: str) -> None:
+    async def stop_typing(self, chat_id: str, metadata=None) -> None:
         """Clear the assistant thread status indicator."""
         if not self._app:
             return

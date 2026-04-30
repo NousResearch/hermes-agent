@@ -2093,6 +2093,42 @@ def _(rid, params: dict) -> dict:
     )
 
 
+@method("session.delete")
+def _(rid, params: dict) -> dict:
+    """Delete a stored session and its on-disk transcript files.
+
+    Used by the TUI resume picker (``d`` key) so users can prune old
+    sessions without dropping to the CLI.  Refuses to delete a session
+    that is currently active in this gateway process — those rows are
+    still being written to and removing them out from under the live
+    agent corrupts message ordering and trips FK constraints when the
+    next message append flushes.
+    """
+    target = params.get("session_id", "")
+    if not target:
+        return _err(rid, 4006, "session_id required")
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5036)
+    # Block deletion of any session currently bound to a live TUI session
+    # in this process.  The picker hides the active session anyway, but a
+    # racing caller could still target it.
+    try:
+        active = {s.get("session_key") for s in _sessions.values() if s.get("session_key")}
+    except Exception:
+        active = set()
+    if target in active:
+        return _err(rid, 4023, "cannot delete an active session")
+    sessions_dir = get_hermes_home() / "sessions"
+    try:
+        deleted = db.delete_session(target, sessions_dir=sessions_dir)
+    except Exception as e:
+        return _err(rid, 5036, f"delete failed: {e}")
+    if not deleted:
+        return _err(rid, 4007, "session not found")
+    return _ok(rid, {"deleted": target})
+
+
 @method("session.title")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)

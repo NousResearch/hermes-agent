@@ -349,9 +349,30 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # User-authed Chat API client built lazily from the OAuth refresh
         # token persisted by ``google_chat_user_oauth.py``. Required for
         # native ``media.upload`` (bot identity is rejected by that
-        # endpoint). ``None`` until the user runs ``/setup-files`` once.
+        # endpoint).
+        #
+        # Multi-user mode: each user runs ``/setup-files`` ONCE in their
+        # own DM and the resulting refresh token is stored under their
+        # email. ``_send_file`` looks up the requesting user's email via
+        # ``_last_sender_by_chat`` and uses THAT user's token, so when
+        # User B asks for a file in B's DM the bot uploads as B (not as
+        # whoever first set up files long ago).
+        #
+        # ``_user_credentials`` / ``_user_chat_api`` keep their old names
+        # but now hold the LEGACY single-user token (if any) — used as a
+        # last-ditch fallback when the requesting user has no per-user
+        # token yet. Pre-multi-user installs continue to work unchanged.
         self._user_chat_api: Optional[Any] = None
         self._user_credentials: Optional[Any] = None
+        # Per-email caches. Populated lazily by ``_get_user_chat_for_chat``.
+        self._user_creds_by_email: Dict[str, Any] = {}
+        self._user_chat_api_by_email: Dict[str, Any] = {}
+        # chat_id → most-recent inbound sender's email. Populated in
+        # ``_build_message_event`` whenever the inbound event carries a
+        # non-empty ``sender.email``. Drives the per-user token lookup
+        # in ``_send_file`` so the bot uploads as the user who triggered
+        # the request, not as some other authorized user.
+        self._last_sender_by_chat: Dict[str, str] = {}
         self._credentials: Optional[Any] = None
         self._project_id: Optional[str] = None
         self._subscription_path: Optional[str] = None
@@ -616,16 +637,18 @@ class GoogleChatAdapter(BasePlatformAdapter):
             self._set_fatal_error(code="chat_api_init", message=msg, retryable=False)
             return False
 
-        # Attempt to load user OAuth credentials for native attachment
-        # delivery. The Chat ``media.upload`` endpoint refuses SA auth, so
-        # uploads need a user-issued token. Failure here is NON-fatal:
-        # text messaging continues to work; only attachments degrade to
-        # a setup-instructions text notice. The user runs ``/setup-files``
-        # in chat once to grant chat.messages.create scope.
+        # Attempt to load LEGACY single-user OAuth credentials at startup.
+        # In multi-user mode each user's token is loaded lazily by
+        # ``_load_per_user_chat_api`` on first send. The legacy slot is
+        # kept as a last-ditch fallback for pre-multi-user installs and
+        # for groups where the asker has no per-user token yet. Failure
+        # here is NON-fatal: text messaging continues to work; only
+        # attachments degrade to a setup-instructions text notice.
         try:
             from gateway.platforms.google_chat_user_oauth import (
                 load_user_credentials as _load_user_creds,
                 build_user_chat_service as _build_user_chat,
+                list_authorized_emails as _list_emails,
             )
             user_creds = await asyncio.to_thread(_load_user_creds)
             if user_creds is not None:
@@ -634,14 +657,21 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     lambda: _build_user_chat(user_creds)
                 )
                 logger.info(
-                    "[GoogleChat] User OAuth loaded — native attachment "
-                    "delivery enabled"
+                    "[GoogleChat] Legacy user OAuth loaded — fallback "
+                    "attachment delivery enabled"
                 )
-            else:
+            authorized = await asyncio.to_thread(_list_emails)
+            if authorized:
                 logger.info(
-                    "[GoogleChat] No user OAuth token at setup — file "
-                    "attachments will degrade to text-only fallback. Run "
-                    "/setup-files in chat to enable native attachments."
+                    "[GoogleChat] %d per-user OAuth tokens on disk: %s",
+                    len(authorized), ", ".join(authorized),
+                )
+            elif user_creds is None:
+                logger.info(
+                    "[GoogleChat] No user OAuth tokens at setup — file "
+                    "attachments will degrade to text-only fallback. "
+                    "Each user runs /setup-files once in their own DM "
+                    "to enable native attachments."
                 )
         except Exception as exc:
             logger.warning(
@@ -965,10 +995,21 @@ class GoogleChatAdapter(BasePlatformAdapter):
             # Short-circuit /setup-files before the agent dispatch.
             text = (event.text or "").strip()
             if text.startswith("/setup-files") and event.source is not None:
+                # The sender's email (user_id_alt) is the per-user OAuth
+                # key — the bot stores this user's token at
+                # ${HERMES_HOME}/google_chat_user_tokens/<sanitized>.json
+                # so when User B asks for a file later in B's DM, B's
+                # token gets used (not the first person who set up files).
+                sender_email = (
+                    event.source.user_id_alt
+                    if event.source and event.source.user_id_alt
+                    else None
+                )
                 handled = await self._handle_setup_files_command(
                     chat_id=event.source.chat_id,
                     thread_id=event.source.thread_id,
                     raw_text=text,
+                    sender_email=sender_email,
                 )
                 if handled:
                     return
@@ -982,11 +1023,19 @@ class GoogleChatAdapter(BasePlatformAdapter):
         chat_id: str,
         thread_id: Optional[str],
         raw_text: str,
+        sender_email: Optional[str] = None,
     ) -> bool:
         """Run the in-chat OAuth setup flow for native attachment delivery.
 
         Returns ``True`` if the message was consumed (no agent dispatch),
         ``False`` if it should fall through.
+
+        Multi-user mode: ``sender_email`` is the asker's identity, which
+        is also the per-user OAuth key. ``status`` / ``start`` / ``revoke``
+        / code-exchange all operate on THIS user's token slot. When
+        ``sender_email`` is ``None`` (e.g. tests, or older inbound events
+        without a populated email field) the handler falls back to the
+        legacy single-user path so pre-multi-user installs keep working.
 
         Subcommands:
           /setup-files                  → show status + next step
@@ -999,6 +1048,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
         do that if it's missing.
         """
         from gateway.platforms import google_chat_user_oauth as oauth_helper
+
+        # Normalize the email: lowercase + strip. The on-disk token path
+        # is sanitized further inside the helper, but having the same
+        # normalization at both ends keeps cache lookups consistent.
+        sender_key = sender_email.strip().lower() if sender_email else None
 
         parts = raw_text.split(maxsplit=1)
         # parts[0] is "/setup-files"; parts[1..] is the optional argument
@@ -1021,13 +1075,18 @@ class GoogleChatAdapter(BasePlatformAdapter):
             client_secret_present = (
                 oauth_helper._client_secret_path().exists()
             )
-            token_present = oauth_helper._token_path().exists()
-            creds = oauth_helper.load_user_credentials() if token_present else None
+            token_path = oauth_helper._token_path(sender_key)
+            token_present = token_path.exists()
+            creds = (
+                oauth_helper.load_user_credentials(sender_key)
+                if token_present else None
+            )
             if creds is not None:
+                who = sender_key or "shared (legacy)"
                 await _reply(
-                    "✅ Native attachment delivery is **active**.\n"
-                    "Token: "
-                    f"`{oauth_helper._token_path()}`\n"
+                    "✅ Native attachment delivery is **active** for "
+                    f"`{who}`.\n"
+                    f"Token: `{token_path}`\n"
                     "Send `/setup-files revoke` to disable."
                 )
                 return True
@@ -1066,7 +1125,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 import contextlib
                 buf = io.StringIO()
                 with contextlib.redirect_stdout(buf):
-                    await asyncio.to_thread(oauth_helper.get_auth_url)
+                    await asyncio.to_thread(
+                        oauth_helper.get_auth_url, sender_key,
+                    )
                 auth_url = buf.getvalue().strip().splitlines()[-1]
             except SystemExit:
                 await _reply(
@@ -1098,7 +1159,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 import contextlib
                 buf = io.StringIO()
                 with contextlib.redirect_stdout(buf):
-                    await asyncio.to_thread(oauth_helper.revoke)
+                    await asyncio.to_thread(oauth_helper.revoke, sender_key)
                 output = buf.getvalue().strip() or "Revoked."
             except SystemExit:
                 output = "Revoke completed (some steps may have been skipped)."
@@ -1109,9 +1170,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 await _reply(f"❌ Error revoking: {exc}")
                 return True
             # Wipe in-memory creds so subsequent uploads fall through to
-            # the setup-instructions text notice immediately.
-            self._user_credentials = None
-            self._user_chat_api = None
+            # the setup-instructions text notice immediately. Scope the
+            # eviction to the sender's slot — Bob revoking shouldn't
+            # break Alice's per-user token nor wipe the shared legacy
+            # fallback that other users may still depend on.
+            if sender_key:
+                self._user_creds_by_email.pop(sender_key, None)
+                self._user_chat_api_by_email.pop(sender_key, None)
+            else:
+                self._user_credentials = None
+                self._user_chat_api = None
             await _reply(f"✅ Done.\n```\n{output}\n```")
             return True
 
@@ -1123,7 +1191,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 await asyncio.to_thread(
-                    oauth_helper.exchange_auth_code, arg,
+                    oauth_helper.exchange_auth_code, arg, sender_key,
                 )
             output = buf.getvalue().strip()
         except SystemExit:
@@ -1143,12 +1211,19 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # Re-load credentials into the adapter so the next file send uses
         # them WITHOUT a gateway restart.
         try:
-            new_creds = await asyncio.to_thread(oauth_helper.load_user_credentials)
+            new_creds = await asyncio.to_thread(
+                oauth_helper.load_user_credentials, sender_key,
+            )
             if new_creds is not None:
-                self._user_credentials = new_creds
-                self._user_chat_api = await asyncio.to_thread(
+                new_api = await asyncio.to_thread(
                     lambda: oauth_helper.build_user_chat_service(new_creds)
                 )
+                if sender_key:
+                    self._user_creds_by_email[sender_key] = new_creds
+                    self._user_chat_api_by_email[sender_key] = new_api
+                else:
+                    self._user_credentials = new_creds
+                    self._user_chat_api = new_api
                 await _reply(
                     "✅ Authorized! Native attachment delivery is now "
                     "active. Try asking me to send you a PDF."
@@ -1162,8 +1237,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         await _reply(
             "⚠️ Token exchanged but the gateway couldn't load the new "
             "credentials in-memory. Restart the gateway and the token "
-            f"at `{oauth_helper._token_path()}` will be picked up.\n"
-            f"Helper output:\n```\n{output}\n```"
+            f"at `{oauth_helper._token_path(sender_key)}` will be picked "
+            f"up.\nHelper output:\n```\n{output}\n```"
         )
         return True
 
@@ -1180,6 +1255,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
         sender_name = sender.get("name") or ""
         sender_display = sender.get("displayName") or sender.get("email") or sender_name
         sender_email = sender.get("email") or ""
+
+        # Cache the asker's email per chat_id so _send_file can pick the
+        # right per-user OAuth token when the agent later wants to send
+        # an attachment in this conversation. Lower-cased so cache hits
+        # match the sanitized token-file lookup.
+        if sender_email and space_name:
+            self._last_sender_by_chat[space_name] = sender_email.strip().lower()
 
         chat_type = "dm" if space_type in ("DIRECT_MESSAGE", "DM") else "group"
         text = msg.get("argumentText") or msg.get("text") or ""
@@ -2084,6 +2166,119 @@ class GoogleChatAdapter(BasePlatformAdapter):
             or "ACCESS_TOKEN_SCOPE_INSUFFICIENT" in text
         )
 
+    _LEGACY_USER_IDENTITY = "__legacy__"
+
+    async def _load_per_user_chat_api(self, email: str) -> Optional[Any]:
+        """Get (or build + cache) a user-authed Chat client for ``email``.
+
+        Hits ``self._user_chat_api_by_email`` first; on miss, loads the
+        per-user token from disk, refreshes if needed, builds an API
+        client, and caches both. Refresh failures evict the slot so the
+        next request goes back through the disk path (and ultimately the
+        text-notice fallback if the user has revoked).
+        """
+        from gateway.platforms.google_chat_user_oauth import (
+            load_user_credentials as _load,
+            build_user_chat_service as _build,
+            refresh_or_none as _refresh,
+        )
+
+        cached_api = self._user_chat_api_by_email.get(email)
+        cached_creds = self._user_creds_by_email.get(email)
+        if cached_api is not None and cached_creds is not None:
+            try:
+                refreshed = await asyncio.to_thread(_refresh, cached_creds, email)
+            except Exception:
+                logger.debug(
+                    "[GoogleChat] cached per-user refresh raised", exc_info=True,
+                )
+                refreshed = None
+            if refreshed is None:
+                self._user_chat_api_by_email.pop(email, None)
+                self._user_creds_by_email.pop(email, None)
+                return None
+            self._user_creds_by_email[email] = refreshed
+            return cached_api
+
+        try:
+            creds = await asyncio.to_thread(_load, email)
+            if creds is None:
+                return None
+            api = await asyncio.to_thread(lambda: _build(creds))
+        except Exception:
+            logger.debug(
+                "[GoogleChat] per-user creds load/build failed for %s",
+                email, exc_info=True,
+            )
+            return None
+
+        self._user_creds_by_email[email] = creds
+        self._user_chat_api_by_email[email] = api
+        return api
+
+    async def _acquire_user_chat_api(
+        self, sender_email: Optional[str]
+    ) -> Tuple[Optional[Any], Optional[str]]:
+        """Resolve the user-authed Chat client for an outbound attachment.
+
+        Lookup order:
+          1. Per-user token for ``sender_email`` — the asker's identity.
+          2. Legacy single-user fallback (``self._user_chat_api``) for
+             pre-multi-user installs.
+          3. None — caller posts the setup-instructions text notice.
+
+        Returns ``(client, identity_label)`` where ``identity_label`` is
+        the sanitized email or the literal ``"__legacy__"`` sentinel.
+        ``_invalidate_user_creds`` uses the label to evict the right slot
+        on auth failure.
+        """
+        if sender_email:
+            api = await self._load_per_user_chat_api(sender_email)
+            if api is not None:
+                return api, sender_email
+
+        if self._user_chat_api is not None:
+            try:
+                from gateway.platforms.google_chat_user_oauth import (
+                    refresh_or_none as _refresh,
+                )
+                refreshed = await asyncio.to_thread(
+                    _refresh, self._user_credentials, None,
+                )
+            except Exception:
+                logger.debug(
+                    "[GoogleChat] legacy creds refresh raised", exc_info=True,
+                )
+                refreshed = None
+            if refreshed is None:
+                logger.warning(
+                    "[GoogleChat] legacy user-OAuth refresh returned None — "
+                    "evicting fallback creds"
+                )
+                self._user_credentials = None
+                self._user_chat_api = None
+                return None, None
+            self._user_credentials = refreshed
+            return self._user_chat_api, self._LEGACY_USER_IDENTITY
+
+        return None, None
+
+    def _invalidate_user_creds(self, identity: Optional[str]) -> None:
+        """Drop creds for ``identity`` after an auth failure.
+
+        ``identity`` comes from ``_acquire_user_chat_api`` — either the
+        sender email (per-user slot) or ``__legacy__`` for the fallback
+        slot. None is a no-op.
+        """
+        if not identity:
+            return
+        if identity == self._LEGACY_USER_IDENTITY:
+            self._user_credentials = None
+            self._user_chat_api = None
+            return
+        self._user_creds_by_email.pop(identity, None)
+        self._user_chat_api_by_email.pop(identity, None)
+
     async def _send_file(
         self,
         chat_id: str,
@@ -2097,14 +2292,15 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         Two-step on the wire: ``media.upload`` then
         ``spaces.messages.create`` with the returned ``attachmentDataRef``.
-        BOTH calls go through the user-authed Chat API client
-        (``self._user_chat_api``) — the SA-authed client is rejected by
-        ``media.upload`` regardless of scopes.
+        BOTH calls go through a user-authed Chat API client — the
+        SA-authed client is rejected by ``media.upload`` regardless of
+        scopes.
 
-        If user OAuth is not configured (``self._user_chat_api is None``)
-        or the upload fails with auth errors, the method posts a
-        text-only fallback message explaining how to run ``/setup-files``
-        and returns ``success=False`` so callers know delivery failed.
+        Multi-user routing: the bot looks up the most recent inbound
+        sender for this ``chat_id`` and uses THAT user's stored OAuth
+        token. Falls back to a legacy single-user token when present
+        (for pre-multi-user installs), and to a setup-instructions text
+        notice when neither is available.
 
         Google Chat ``messages.patch`` cannot add an attachment to an
         existing message, so we cannot transform the typing card directly
@@ -2118,9 +2314,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
         filename = override_filename or os.path.basename(path) or "upload.bin"
         mime = mime_hint or "application/octet-stream"
 
+        sender_email = self._last_sender_by_chat.get(chat_id)
+        chat_api, identity = await self._acquire_user_chat_api(sender_email)
+
         # No user OAuth → can't upload natively. Surface clear setup
         # instructions in chat instead of silently failing.
-        if self._user_chat_api is None:
+        if chat_api is None:
             return await self._post_attachment_fallback(
                 chat_id=chat_id,
                 path=path,
@@ -2140,40 +2339,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
 
-        # Refresh user creds if expired (token may have aged out between
-        # adapter startup and now).
-        try:
-            from gateway.platforms.google_chat_user_oauth import (
-                refresh_or_none as _refresh_creds,
-            )
-            refreshed = await asyncio.to_thread(
-                _refresh_creds, self._user_credentials,
-            )
-            if refreshed is None:
-                logger.warning(
-                    "[GoogleChat] User OAuth refresh returned None — "
-                    "treating as unconfigured"
-                )
-                self._user_credentials = None
-                self._user_chat_api = None
-                return await self._post_attachment_fallback(
-                    chat_id=chat_id,
-                    path=path,
-                    filename=filename,
-                    caption=caption,
-                    thread_id=thread_id,
-                )
-            self._user_credentials = refreshed
-        except Exception:
-            logger.debug(
-                "[GoogleChat] user-OAuth refresh failed (continuing with "
-                "existing creds)", exc_info=True,
-            )
-
         def _upload() -> Dict[str, Any]:
             media = MediaFileUpload(path, mimetype=mime, resumable=False)
             return (
-                self._user_chat_api.media()
+                chat_api.media()
                 .upload(
                     parent=chat_id,
                     body={"filename": filename},
@@ -2188,12 +2357,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
             status = getattr(getattr(exc, "resp", None), "status", None)
             if status in (401, 403):
                 logger.warning(
-                    "[GoogleChat] media.upload auth failure (token "
-                    "revoked or scope missing) — falling back to text "
-                    "notice. Status=%s", status,
+                    "[GoogleChat] media.upload auth failure for identity=%s "
+                    "(token revoked or scope missing) — falling back to "
+                    "text notice. Status=%s", identity, status,
                 )
-                self._user_credentials = None
-                self._user_chat_api = None
+                self._invalidate_user_creds(identity)
                 return await self._post_attachment_fallback(
                     chat_id=chat_id,
                     path=path,
@@ -2233,7 +2401,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         def _create_with_attachment() -> Dict[str, Any]:
             return (
-                self._user_chat_api.spaces()
+                chat_api.spaces()
                 .messages()
                 .create(**create_kwargs)
                 .execute()

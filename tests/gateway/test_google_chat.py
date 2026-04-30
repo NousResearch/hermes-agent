@@ -1351,6 +1351,326 @@ class TestUserOAuthHelper:
         from gateway.platforms.google_chat_user_oauth import SCOPES
         assert SCOPES == ["https://www.googleapis.com/auth/chat.messages.create"]
 
+    def test_sanitize_email_lowercases_and_replaces_unsafe_chars(self):
+        """Path components must be filesystem-safe across users.
+        ``a@B.com`` and ``A@b.com`` must collapse to the same key, and
+        path-traversal characters must NOT escape into the filename."""
+        from gateway.platforms.google_chat_user_oauth import _sanitize_email
+        assert _sanitize_email("Ramon@NTTData.com") == "ramon@nttdata.com"
+        assert _sanitize_email("user+tag@x.io") == "user_tag@x.io"
+        # Slashes are stripped (path separator); dots inside names are
+        # preserved for the .com / .json suffix UX. The resulting filename
+        # is harmless when joined onto a directory.
+        assert _sanitize_email("../etc/passwd") == ".._etc_passwd"
+        assert _sanitize_email("") == "_unknown_"
+
+    def test_per_user_token_path_isolated_from_legacy(self, tmp_path, monkeypatch):
+        """Per-user files live under a dedicated subdirectory so the
+        legacy single-user JSON stays addressable on disk."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from gateway.platforms.google_chat_user_oauth import (
+            _token_path, _legacy_token_path,
+        )
+        per_user = _token_path("alice@example.com")
+        legacy = _legacy_token_path()
+        assert per_user.parent.name == "google_chat_user_tokens"
+        assert per_user != legacy
+        assert per_user.name == "alice@example.com.json"
+
+    def test_load_user_credentials_per_email_returns_none_when_missing(
+        self, tmp_path, monkeypatch
+    ):
+        """A user who has not authorized has no token file; load returns
+        ``None`` and never throws — same contract as the legacy path."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from gateway.platforms.google_chat_user_oauth import load_user_credentials
+        assert load_user_credentials("nobody@example.com") is None
+
+    def test_list_authorized_emails_lists_per_user_files(
+        self, tmp_path, monkeypatch
+    ):
+        """``list_authorized_emails`` enumerates the per-user dir; the
+        legacy file is intentionally excluded (its owner is unknown)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        users_dir = tmp_path / "google_chat_user_tokens"
+        users_dir.mkdir(parents=True)
+        (users_dir / "alice@example.com.json").write_text("{}")
+        (users_dir / "bob@example.com.json").write_text("{}")
+        # Legacy file should NOT appear in the list.
+        (tmp_path / "google_chat_user_token.json").write_text("{}")
+
+        from gateway.platforms.google_chat_user_oauth import list_authorized_emails
+        assert list_authorized_emails() == [
+            "alice@example.com", "bob@example.com",
+        ]
+
+    def test_list_authorized_emails_empty_when_dir_missing(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from gateway.platforms.google_chat_user_oauth import list_authorized_emails
+        assert list_authorized_emails() == []
+
+    def test_pending_auth_path_is_per_user_when_email_given(
+        self, tmp_path, monkeypatch
+    ):
+        """Two users running /setup-files start in parallel must not
+        clobber each other's PKCE verifier — the pending state file
+        is namespaced by email."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from gateway.platforms.google_chat_user_oauth import _pending_auth_path
+        a = _pending_auth_path("alice@example.com")
+        b = _pending_auth_path("bob@example.com")
+        legacy = _pending_auth_path(None)
+        assert a != b
+        assert a != legacy
+        assert "google_chat_user_oauth_pending" in str(a.parent)
+
+
+class TestPerUserAttachmentRouting:
+    """The bot must use the *requesting user's* OAuth token when sending
+    an attachment, not the first user who happened to have one stored.
+    Backward compat: when no per-user token exists, fall back to a legacy
+    single-user token; only when both are missing does the user see the
+    setup-instructions notice."""
+
+    @pytest.mark.asyncio
+    async def test_build_message_event_caches_sender_email(self, adapter):
+        """The asker's email is captured per chat_id at inbound time so
+        a later outbound attachment can pick the right per-user token."""
+        envelope = _make_chat_envelope(
+            text="hi", sender_email="Alice@Example.com",
+        )
+        msg = envelope["chat"]["messagePayload"]["message"]
+        await adapter._build_message_event(msg, envelope["chat"]["messagePayload"])
+        # Lower-cased to match the on-disk sanitized key.
+        assert adapter._last_sender_by_chat["spaces/S"] == "alice@example.com"
+
+    @pytest.mark.asyncio
+    async def test_send_file_uses_per_user_token_when_sender_known(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """sender_email maps to a per-user file → that user's API client
+        is built and used for the upload, NOT the legacy fallback."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        users_dir = tmp_path / "google_chat_user_tokens"
+        users_dir.mkdir(parents=True)
+        (users_dir / "alice@example.com.json").write_text(json.dumps({
+            "type": "authorized_user",
+            "client_id": "cid", "client_secret": "csec",
+            "refresh_token": "rtok", "token": "atok",
+        }))
+        adapter._last_sender_by_chat["spaces/S"] = "alice@example.com"
+
+        per_user_api = MagicMock()
+        per_user_api.media.return_value.upload.return_value.execute.return_value = {
+            "attachmentDataRef": {"resourceName": "ref-alice"}
+        }
+        per_user_api.spaces.return_value.messages.return_value.create.return_value.execute.return_value = {
+            "name": "spaces/S/messages/MID",
+            "thread": {"name": "spaces/S/threads/T"},
+        }
+        # Force legacy path NOT to be picked even if per-user breaks.
+        adapter._user_chat_api = MagicMock()
+        adapter._user_credentials = MagicMock(valid=True)
+        adapter._consume_typing_card_with_text = AsyncMock(return_value=None)
+
+        from gateway.platforms import google_chat_user_oauth as helper
+        with patch.object(
+            helper, "load_user_credentials",
+            return_value=MagicMock(valid=True),
+        ), patch.object(
+            helper, "build_user_chat_service", return_value=per_user_api,
+        ):
+            f = tmp_path / "doc.pdf"
+            f.write_bytes(b"%PDF")
+            result = await adapter._send_file(
+                "spaces/S", str(f), caption=None,
+                mime_hint="application/pdf",
+            )
+
+        assert result.success is True
+        # Per-user client was used; legacy was untouched.
+        per_user_api.media.return_value.upload.assert_called_once()
+        adapter._user_chat_api.media.assert_not_called()
+        # Cache populated for next call.
+        assert "alice@example.com" in adapter._user_chat_api_by_email
+
+    @pytest.mark.asyncio
+    async def test_send_file_falls_back_to_legacy_when_per_user_missing(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """sender known but no per-user token → legacy creds fill in.
+        This is the migration window: legacy keeps working until each
+        user runs /setup-files."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter._last_sender_by_chat["spaces/S"] = "newuser@example.com"
+
+        legacy_api = MagicMock()
+        legacy_api.media.return_value.upload.return_value.execute.return_value = {
+            "attachmentDataRef": {"resourceName": "ref-legacy"}
+        }
+        legacy_api.spaces.return_value.messages.return_value.create.return_value.execute.return_value = {
+            "name": "spaces/S/messages/MID",
+            "thread": {"name": "spaces/S/threads/T"},
+        }
+        adapter._user_chat_api = legacy_api
+        adapter._user_credentials = MagicMock(valid=True)
+        adapter._consume_typing_card_with_text = AsyncMock(return_value=None)
+
+        f = tmp_path / "doc.pdf"
+        f.write_bytes(b"%PDF")
+        result = await adapter._send_file(
+            "spaces/S", str(f), caption=None,
+            mime_hint="application/pdf",
+        )
+
+        assert result.success is True
+        legacy_api.media.return_value.upload.assert_called_once()
+        # Cache untouched — the per-user slot stays empty so the next
+        # /setup-files for newuser will write into a clean state.
+        assert "newuser@example.com" not in adapter._user_chat_api_by_email
+
+    @pytest.mark.asyncio
+    async def test_send_file_no_creds_anywhere_posts_setup_notice(
+        self, adapter, tmp_path
+    ):
+        """Sender unknown AND no legacy fallback → setup-instructions
+        notice. Same shape as the existing single-user path; the test
+        confirms the multi-user routing didn't accidentally bypass it."""
+        adapter._last_sender_by_chat["spaces/S"] = "ghost@example.com"
+        adapter._user_chat_api = None
+        adapter._user_credentials = None
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True, "message_id": "m",
+                                        "error": None})()
+        )
+
+        f = tmp_path / "x.pdf"
+        f.write_bytes(b"%PDF")
+        from gateway.platforms import google_chat_user_oauth as helper
+        with patch.object(helper, "load_user_credentials", return_value=None):
+            result = await adapter._send_file(
+                "spaces/S", str(f), caption=None,
+                mime_hint="application/pdf",
+            )
+
+        assert result.success is False
+        sent = adapter._create_message.call_args.args[1]["text"]
+        assert "/setup-files" in sent
+
+    @pytest.mark.asyncio
+    async def test_send_file_per_user_401_evicts_only_that_user(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """A 401 from one user's token must NOT clobber another user's
+        cache nor the legacy slot. The eviction is scoped."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter._last_sender_by_chat["spaces/S"] = "alice@example.com"
+
+        alice_api = MagicMock()
+        alice_api.media.return_value.upload.return_value.execute.side_effect = (
+            _FakeHttpError(status=401, reason="Unauthorized")
+        )
+        bob_api = MagicMock()
+        adapter._user_chat_api_by_email["alice@example.com"] = alice_api
+        adapter._user_creds_by_email["alice@example.com"] = MagicMock(valid=True)
+        adapter._user_chat_api_by_email["bob@example.com"] = bob_api
+        adapter._user_creds_by_email["bob@example.com"] = MagicMock(valid=True)
+        # Legacy untouched.
+        adapter._user_chat_api = MagicMock()
+        adapter._user_credentials = MagicMock(valid=True)
+        adapter._consume_typing_card_with_text = AsyncMock(return_value=None)
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True, "message_id": "m",
+                                        "error": None})()
+        )
+
+        f = tmp_path / "x.pdf"
+        f.write_bytes(b"%PDF")
+        result = await adapter._send_file(
+            "spaces/S", str(f), caption=None,
+            mime_hint="application/pdf",
+        )
+
+        assert result.success is False
+        # Alice evicted, Bob and legacy preserved.
+        assert "alice@example.com" not in adapter._user_chat_api_by_email
+        assert "bob@example.com" in adapter._user_chat_api_by_email
+        assert adapter._user_chat_api is not None
+        assert adapter._user_credentials is not None
+
+    @pytest.mark.asyncio
+    async def test_setup_files_writes_to_per_user_path(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """``/setup-files <code>`` from sender alice writes to alice's
+        token slot; bob's slot stays untouched."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True, "message_id": "m",
+                                        "error": None})()
+        )
+        from gateway.platforms import google_chat_user_oauth as helper
+        # Stub the costly bits; we're verifying routing, not OAuth I/O.
+        alice_creds = MagicMock(valid=True)
+        with patch.object(helper, "exchange_auth_code") as ex, \
+             patch.object(helper, "load_user_credentials", return_value=alice_creds), \
+             patch.object(helper, "build_user_chat_service",
+                          return_value=MagicMock()):
+            await adapter._handle_setup_files_command(
+                chat_id="spaces/S",
+                thread_id=None,
+                raw_text="/setup-files PASTED_CODE",
+                sender_email="alice@example.com",
+            )
+
+        # Helper was invoked with the sender email, so the token lands in
+        # the per-user path (not the legacy file).
+        assert ex.call_args.args[0] == "PASTED_CODE"
+        assert ex.call_args.args[1] == "alice@example.com"
+        # Adapter cache populated for alice only.
+        assert "alice@example.com" in adapter._user_chat_api_by_email
+        assert "bob@example.com" not in adapter._user_chat_api_by_email
+
+    @pytest.mark.asyncio
+    async def test_setup_files_revoke_drops_only_that_user(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """Per-user revoke clears alice's slot; bob and the legacy
+        fallback both keep working. Alice's choice to revoke must not
+        knock out unrelated users."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter._user_chat_api_by_email["alice@example.com"] = MagicMock()
+        adapter._user_creds_by_email["alice@example.com"] = MagicMock()
+        adapter._user_chat_api_by_email["bob@example.com"] = MagicMock()
+        adapter._user_creds_by_email["bob@example.com"] = MagicMock()
+        legacy_api = MagicMock()
+        legacy_creds = MagicMock()
+        adapter._user_chat_api = legacy_api
+        adapter._user_credentials = legacy_creds
+        adapter._create_message = AsyncMock(
+            return_value=type("R", (), {"success": True, "message_id": "m",
+                                        "error": None})()
+        )
+
+        from gateway.platforms import google_chat_user_oauth as helper
+        with patch.object(helper, "revoke") as rev:
+            await adapter._handle_setup_files_command(
+                chat_id="spaces/S",
+                thread_id=None,
+                raw_text="/setup-files revoke",
+                sender_email="alice@example.com",
+            )
+
+        # Helper called with alice's email
+        assert rev.call_args.args[0] == "alice@example.com"
+        assert "alice@example.com" not in adapter._user_chat_api_by_email
+        assert "bob@example.com" in adapter._user_chat_api_by_email
+        # Legacy fallback survives an unrelated user's revoke.
+        assert adapter._user_chat_api is legacy_api
+        assert adapter._user_credentials is legacy_creds
+
 
 # ===========================================================================
 # Persistent thread-count store (restart-safe side-thread heuristic)

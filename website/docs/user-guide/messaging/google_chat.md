@@ -197,7 +197,7 @@ Google Chat renders a limited markdown subset:
 |-----------|---------------|
 | `*bold*`, `_italic_`, `~strike~`, `` `code` `` | Headings, lists |
 | Inline images via URL | Interactive Card v2 buttons (v1 of this gateway) |
-| Attachment download cards for audio/video/documents | Native voice notes / circular video notes |
+| Native file attachments (after `/setup-files` — see Step 10) | Native voice notes / circular video notes |
 
 The agent's system prompt includes a Google Chat–specific hint so it knows these
 limits and avoids formatting that won't render.
@@ -208,6 +208,80 @@ automatically split across multiple messages.
 Thread support: when a user replies inside a thread, Hermes detects the
 `thread.name` and posts its reply in the same thread, so each thread gets a
 separate Hermes session.
+
+---
+
+## Step 10: Native attachment delivery (optional)
+
+Out of the box the bot can post text, inline images via URL, and download cards
+for audio/video/documents. To deliver **native** Chat attachments — the same
+file widget you get when a human drags-and-drops a file — each user authorizes
+the bot once via a per-user OAuth flow.
+
+### Why a separate flow
+
+Google Chat's `media.upload` endpoint hard-rejects service-account auth:
+
+> This method doesn't support app authentication with a service account.
+> Authenticate with a user account.
+
+There's no IAM role or scope that fixes this. The endpoint only accepts user
+credentials. So the bot has to act *as a user* whenever it uploads a file —
+specifically, as the user who asked for the file.
+
+### One-time host setup
+
+1. Go to **APIs & Services → Credentials** in the same GCP project.
+2. **Create credentials → OAuth client ID → Desktop app**.
+3. Download the JSON. Move it onto the host that runs Hermes.
+4. On the host, register the client with Hermes:
+
+```bash
+python -m gateway.platforms.google_chat_user_oauth \
+    --client-secret /path/to/client_secret.json
+```
+
+That writes `~/.hermes/google_chat_user_client_secret.json`. This is shared
+infrastructure — it identifies the OAuth *app*, not any individual user. One
+file per host is enough no matter how many users authorize later.
+
+### Per-user authorization (in chat)
+
+Each user runs the flow once, in their own DM with the bot:
+
+1. They send `/setup-files` to the bot. It replies with status and the next
+   step.
+2. They send `/setup-files start`. The bot replies with an OAuth URL.
+3. They open the URL, click **Allow**, and watch the browser fail to load
+   `http://localhost:1/?...&code=...`. That failure is expected — the auth
+   code is in the URL bar.
+4. They copy the failed URL (or just the `code=...` value) and paste it back
+   into chat as `/setup-files <PASTED_URL>`. The bot exchanges it for a
+   refresh token.
+
+The token lands at `~/.hermes/google_chat_user_tokens/<sanitized_email>.json`.
+Subsequent file requests in that user's DM use *their* token, so the bot
+uploads as them and the message lands in their space.
+
+To revoke later: `/setup-files revoke` deletes only that user's token. Other
+users' tokens are untouched.
+
+### Scope
+
+The flow requests exactly one scope: `chat.messages.create`. That covers both
+`media.upload` and the `messages.create` that references the uploaded
+`attachmentDataRef`. No Drive, no broader Chat scopes — this is least-privilege
+on purpose.
+
+### Multi-user behavior
+
+When the asker has no per-user token yet, the bot falls back to a legacy
+single-user token at `~/.hermes/google_chat_user_token.json` (if present from
+a pre-multi-user install). When neither is available, the bot posts a clear
+text notice telling the asker to run `/setup-files`.
+
+A user revoking only clears their own slot. A 401/403 from one user's token
+evicts only that user's cache. Users don't disrupt each other.
 
 ---
 
@@ -244,6 +318,29 @@ agent produces long streaming responses that exceed that, the adapter retries
 with exponential backoff — but you'll still see user-visible latency. Consider
 concise responses or raising the quota in the GCP console.
 
+**Bot keeps posting the "/setup-files" notice instead of files.**
+
+The asker has no per-user OAuth token and there's no legacy fallback. Run
+`/setup-files` in their DM and follow Step 10. After the exchange completes
+the next file request uploads natively without a gateway restart.
+
+**`/setup-files start` says "No client credentials stored on the host."**
+
+The one-time host setup wasn't done. From a terminal on the host that runs
+Hermes:
+
+```bash
+python -m gateway.platforms.google_chat_user_oauth \
+    --client-secret /path/to/client_secret.json
+```
+
+Then send `/setup-files start` again.
+
+**`/setup-files <PASTED_URL>` says "Token exchange failed."**
+
+The auth code is single-use and short-lived (typically a few minutes). Send
+`/setup-files start` to get a fresh URL and retry.
+
 ---
 
 ## Security notes
@@ -265,3 +362,9 @@ concise responses or raising the quota in the GCP console.
 - **Compliance**: if you plan to connect this bot to a regulated workspace
   (anything with a data-residency or AI-governance policy), get that approval
   before the first install.
+- **User OAuth scope**: the per-user attachment flow requests *only*
+  `chat.messages.create` — the minimum that covers `media.upload` plus the
+  follow-up `messages.create`. Tokens are persisted as plain JSON at
+  `~/.hermes/google_chat_user_tokens/<sanitized_email>.json` (filesystem
+  permissions are the protection — same model as the SA key file). Each
+  token is owned by exactly one user; revoke is scoped to that user.

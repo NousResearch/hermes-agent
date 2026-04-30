@@ -341,6 +341,69 @@ class TestRunAsyncWithRunningLoop:
             ):
                 stuck_loop.close()
 
+    @pytest.mark.asyncio
+    async def test_retired_bridge_loop_closes_after_thread_exits(self, monkeypatch):
+        """A retired unhealthy bridge loop should close when its thread exits."""
+        import time as _time
+        import model_tools
+
+        from model_tools import _run_async, shutdown_async_bridge_loop
+
+        blocker = threading.Event()
+        started = threading.Event()
+        stuck_loop = None
+        stuck_thread = None
+
+        async def _blocks_bridge_loop():
+            nonlocal stuck_loop, stuck_thread
+            stuck_loop = asyncio.get_running_loop()
+            stuck_thread = threading.current_thread()
+            started.set()
+            blocker.wait()
+
+        monkeypatch.setattr(model_tools, "_ASYNC_BRIDGE_TIMEOUT", 0.05)
+        monkeypatch.setattr(model_tools, "_ASYNC_BRIDGE_HEALTH_PROBE_TIMEOUT", 0.01)
+
+        try:
+            with pytest.raises(TimeoutError):
+                _run_async(_blocks_bridge_loop())
+
+            assert started.is_set()
+            assert stuck_loop is not None
+            assert stuck_thread is not None and stuck_thread.is_alive()
+            assert model_tools._async_bridge_loop is None
+
+            blocker.set()
+            deadline = _time.monotonic() + 2
+            while stuck_thread.is_alive() and _time.monotonic() < deadline:
+                stuck_thread.join(timeout=0.05)
+
+            assert not stuck_thread.is_alive()
+            assert stuck_loop.is_closed(), (
+                "Retired bridge loop thread exited but left its event loop open"
+            )
+        finally:
+            blocker.set()
+            shutdown_async_bridge_loop()
+            if (
+                stuck_thread is not None
+                and stuck_thread.is_alive()
+                and stuck_loop is not None
+                and not stuck_loop.is_closed()
+            ):
+                try:
+                    stuck_loop.call_soon_threadsafe(stuck_loop.stop)
+                except RuntimeError:
+                    pass
+                stuck_thread.join(timeout=1)
+            if (
+                stuck_thread is not None
+                and not stuck_thread.is_alive()
+                and stuck_loop is not None
+                and not stuck_loop.is_closed()
+            ):
+                stuck_loop.close()
+
     def test_timeout_does_not_stop_healthy_bridge_submission(self, monkeypatch):
         """A timed-out call must not stop another in-flight bridge submission."""
         import concurrent.futures as _cf

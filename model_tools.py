@@ -166,9 +166,29 @@ def _run_async_in_oneoff_thread(coro, timeout: float = _ASYNC_BRIDGE_TIMEOUT):
 
 def _run_bridge_loop(loop: asyncio.AbstractEventLoop, ready: threading.Event) -> None:
     """Run the async-context bridge loop forever on its dedicated thread."""
-    asyncio.set_event_loop(loop)
-    ready.set()
-    loop.run_forever()
+    try:
+        asyncio.set_event_loop(loop)
+        ready.set()
+        loop.run_forever()
+    finally:
+        try:
+            if not loop.is_closed():
+                pending = [
+                    task
+                    for task in asyncio.all_tasks(loop)
+                    if not task.done()
+                ]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+                loop.run_until_complete(loop.shutdown_asyncgens())
+        finally:
+            asyncio.set_event_loop(None)
+            if not loop.is_closed():
+                loop.close()
 
 
 def _retire_async_bridge_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -265,10 +285,11 @@ def shutdown_async_bridge_loop(timeout: float = 5.0) -> None:
         logger.warning("Async bridge loop thread did not stop within %.1fs", timeout)
         return
 
-    try:
-        loop.close()
-    except RuntimeError as exc:
-        logger.debug("Async bridge loop close failed: %s", exc)
+    if thread is None and not loop.is_closed():
+        try:
+            loop.close()
+        except RuntimeError as exc:
+            logger.debug("Async bridge loop close failed: %s", exc)
 
 
 def _get_async_bridge_loop():

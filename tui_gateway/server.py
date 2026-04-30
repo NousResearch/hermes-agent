@@ -1078,9 +1078,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         from hermes_cli.config import get_compatible_custom_providers, load_config
 
         cfg = load_config()
-        user_provs = [
-            {"provider": k, **v} for k, v in (cfg.get("providers") or {}).items()
-        ]
+        user_provs = cfg.get("providers")
         custom_provs = get_compatible_custom_providers(cfg)
     except Exception:
         pass

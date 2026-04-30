@@ -2015,13 +2015,29 @@ def run_capacity_stress(backend: BenchmarkableStore, scenarios: list,
                         judge: MemoryJudge) -> CategoryResult:
     """Run capacity stress scenarios (Suite I2).
 
-    Tests retrieval quality under high fact counts (50-1000 facts).
-    Measures how well the backend discriminates signal from noise at scale.
+    Tests retrieval quality under high fact counts (50-1000 facts).  The
+    fixture schema intentionally supports adversarial pressure, not only bulk
+    padding: same-domain distractors, stale lexical traps, multi-needle slate
+    checks, and forbidden wrong answers.  This keeps the suite from rewarding a
+    backend merely for returning the most lexically obvious memory.
     """
     correct = 0
     details = []
     total_recall_tokens = 0
     total_recall_chars = 0
+
+    def _content(item):
+        return item.get("content", "") if isinstance(item, dict) else str(item)
+
+    def _importance(item, default):
+        return float(item.get("importance", default)) if isinstance(item, dict) else default
+
+    def _store(item, default_importance):
+        backend.store(_content(item), category="factual", importance=_importance(item, default_importance))
+
+    def _contains_any(text: str, needles: list[str]) -> bool:
+        haystack = text.lower()
+        return any(str(needle).lower() in haystack for needle in needles)
 
     for sc in scenarios:
         backend.reset()
@@ -2030,52 +2046,78 @@ def run_capacity_stress(backend: BenchmarkableStore, scenarios: list,
         template = sc.get("noise_template", "Fact {i}: value is {val}")
         noise_importance = sc.get("noise_importance", 0.1)
 
-        # Store target fact
+        leading_noise = list(sc.get("leading_noise", []))
+        for item in leading_noise:
+            _store(item, noise_importance)
+
         if "old_fact" in sc:
-            # Time-series: old fact stored first
-            backend.store(sc["old_fact"], category="factual", importance=0.5)
+            # Time-series: old fact stored first, then the benchmark clock moves
+            # toward the current fact.  Stale facts are often deliberately strong
+            # lexical traps, so correctness requires currentness, not just overlap.
+            _store(sc["old_fact"], 0.5)
             backend.simulate_time(sc.get("old_days_ago", 90) - sc.get("new_days_ago", 5))
 
-        target_fact = sc.get("target_fact") or sc.get("new_fact", "")
+        target_facts = list(sc.get("target_facts", []))
+        if not target_facts:
+            target_fact = sc.get("target_fact") or sc.get("new_fact", "")
+            target_facts = [target_fact]
         target_importance = sc.get("target_importance", 0.8)
-        backend.store(target_fact, category="factual", importance=target_importance)
+        for item in target_facts:
+            _store(item, target_importance)
 
-        # Store topically-related noise first. These same-domain distractors
-        # create real retrieval pressure; template padding alone is too easy
-        # and produces ceiling effects for keyword/recency baselines.
+        # Store topically-related noise. These same-domain distractors create
+        # retrieval pressure; template padding alone is too easy and produces
+        # ceiling effects for keyword/recency baselines.
         related_noise = list(sc.get("related_noise", []))
-        for content in related_noise:
-            backend.store(content, category="factual", importance=noise_importance)
+        for item in related_noise:
+            _store(item, noise_importance)
 
         # Store remaining template noise up to the requested capacity.
-        # One slot is reserved for the target/new fact. Time-series scenarios
-        # also stored an old_fact above, so reserve that slot too.
-        reserved = 1 + len(related_noise) + (1 if "old_fact" in sc else 0)
+        reserved = len(leading_noise) + len(target_facts) + len(related_noise) + (1 if "old_fact" in sc else 0)
         for i in range(max(num_facts - reserved, 0)):
             content = template.format(i=i, val=f"value_{i}")
             backend.store(content, category="factual", importance=noise_importance)
 
-        # Time-series: advance remaining days
         if "new_days_ago" in sc:
             backend.simulate_time(sc["new_days_ago"])
 
-        results = backend.recall(sc["query"], top_k=5)
-        actual = results[0] if results else ""
+        top_k = int(sc.get("top_k", 5))
+        results = backend.recall(sc["query"], top_k=top_k)
+        answer_mode = sc.get("answer_mode", "top1")
+        slate_k = int(sc.get("slate_k", top_k))
+        actual = " | ".join(results[:slate_k]) if answer_mode == "slate" else (results[0] if results else "")
+        top1 = results[0] if results else ""
         rt, rc = count_recall_tokens(results)
         total_recall_tokens += rt
         total_recall_chars += rc
 
-        jr = judge.judge_answer(sc["query"], sc["gold_answer"], actual)
-        if jr.correct:
+        gold_answers = list(sc.get("required_answers", [])) or [sc["gold_answer"]]
+        if answer_mode == "slate":
+            judge_gold = " and ".join(gold_answers)
+            jr = judge.judge_answer(sc["query"], judge_gold, actual)
+            all_required_present = all(str(ans).lower() in actual.lower() for ans in gold_answers)
+        else:
+            jr = judge.judge_answer(sc["query"], sc["gold_answer"], actual)
+            all_required_present = True
+
+        forbidden_answers = list(sc.get("forbidden_answers", []))
+        forbidden_present = _contains_any(actual, forbidden_answers) if forbidden_answers else False
+        forbidden_top1 = _contains_any(top1, forbidden_answers) if forbidden_answers else False
+        scenario_correct = jr.correct and all_required_present and not forbidden_present and not forbidden_top1
+        if scenario_correct:
             correct += 1
 
         details.append({
             "id": sc["id"],
             "difficulty": sc["difficulty"],
-            "correct": jr.correct,
+            "correct": scenario_correct,
             "num_facts": num_facts,
             "actual": actual,
+            "top1": top1,
             "gold": sc["gold_answer"],
+            "answer_mode": answer_mode,
+            "forbidden_present": forbidden_present,
+            "required_answers": gold_answers,
         })
         scenario_metrics = compute_scenario_metrics(results, sc["gold_answer"])
         details[-1]["metrics"] = scenario_metrics
@@ -2085,6 +2127,10 @@ def run_capacity_stress(backend: BenchmarkableStore, scenarios: list,
         subset = [d for d in details if d["difficulty"] == diff]
         if subset:
             sub_scores[diff] = sum(1 for d in subset if d["correct"]) / len(subset)
+    for mode in ["top1", "slate"]:
+        subset = [d for d in details if d.get("answer_mode") == mode]
+        if subset:
+            sub_scores[mode] = sum(1 for d in subset if d["correct"]) / len(subset)
 
     all_metrics = [d.get("metrics", {}) for d in details if "metrics" in d]
     avg_retrieval_metrics = {}

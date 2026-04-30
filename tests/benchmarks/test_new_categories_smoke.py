@@ -167,3 +167,76 @@ def test_capacity_stress_stores_related_noise_before_template_padding():
     assert "The staging API payload limit is 5MB." in backend.stored
     assert "The production API timeout limit is 30 seconds." in backend.stored
     assert len(backend.stored) == 6
+
+
+class FixedRecallStore(FlatMemoryStore):
+    def __init__(self, results):
+        super().__init__()
+        self._results = results
+
+    def recall(self, query: str, top_k: int = 10, scope: str | None = None):
+        return self._results[:top_k]
+
+
+def test_capacity_stress_rejects_forbidden_top1_even_if_gold_is_later():
+    backend = FixedRecallStore([
+        "The search backend decision is Elasticsearch for Project Selene.",
+        "Project Selene now uses OpenSearch as the retrieval cluster.",
+    ])
+    judge = HeuristicJudge()
+
+    result = run_capacity_stress(
+        backend,
+        [
+            {
+                "id": "cs_forbidden_top1_smoke",
+                "num_facts": 10,
+                "target_fact": "Project Selene now uses OpenSearch as the retrieval cluster.",
+                "query": "What is the current search backend decision for Project Selene?",
+                "gold_answer": "OpenSearch",
+                "forbidden_answers": ["Elasticsearch"],
+                "noise_template": "Decision archive entry {i}: historical option {val}",
+                "difficulty": "hard",
+            }
+        ],
+        judge,
+    )
+
+    assert result.score == 0.0
+    assert result.details[0]["forbidden_present"] is True
+    assert result.details[0]["top1"].startswith("The search backend decision")
+
+
+def test_capacity_stress_slate_requires_all_required_answers():
+    backend = FixedRecallStore([
+        "Project Aurora production region is eu-west-1.",
+        "Project Aurora staging region is us-east-1.",
+    ])
+    judge = HeuristicJudge()
+
+    result = run_capacity_stress(
+        backend,
+        [
+            {
+                "id": "cs_multi_needle_smoke",
+                "num_facts": 10,
+                "target_facts": [
+                    "Project Aurora production region is eu-west-1.",
+                    "Project Aurora incident owner is Team Nightjar.",
+                ],
+                "query": "Which region and incident owner are assigned to Project Aurora?",
+                "gold_answer": "eu-west-1 and Team Nightjar",
+                "required_answers": ["eu-west-1", "Team Nightjar"],
+                "answer_mode": "slate",
+                "top_k": 2,
+                "slate_k": 2,
+                "noise_template": "Project registry row {i}: operational note {val}",
+                "difficulty": "hard",
+            }
+        ],
+        judge,
+    )
+
+    assert result.score == 0.0
+    assert result.details[0]["answer_mode"] == "slate"
+    assert result.details[0]["required_answers"] == ["eu-west-1", "Team Nightjar"]

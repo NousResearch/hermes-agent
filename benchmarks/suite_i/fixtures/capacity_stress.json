@@ -1,74 +1,75 @@
 [
   {
     "id": "cs_01",
-    "description": "50 facts, find the needle among same-domain contact distractors",
+    "description": "50 facts, exact contact needle among same-domain contact distractors",
     "num_facts": 50,
-    "target_fact": "The emergency contact number is 555-0199",
-    "query": "What is the emergency contact number?",
+    "target_fact": "The verified emergency contact number is 555-0199",
+    "query": "What is the verified emergency contact number?",
     "gold_answer": "555-0199",
+    "forbidden_answers": ["555-0142", "555-0188", "555-0100"],
     "related_noise": [
-      "The facilities contact number is 555-0100",
-      "The payroll emergency escalation number is 555-0142",
-      "The office reception contact number is 555-0123",
-      "The after-hours security contact number is 555-0188"
+      {"content": "The facilities contact number is 555-0100", "importance": 0.25},
+      {"content": "The payroll emergency escalation number is 555-0142", "importance": 0.3},
+      {"content": "The office reception contact number is 555-0123", "importance": 0.2},
+      {"content": "The after-hours security contact number is 555-0188", "importance": 0.35}
     ],
-    "noise_template": "Office policy item {i}: standard procedure {val}",
+    "noise_template": "Office contact registry item {i}: standard procedure {val}",
     "difficulty": "easy"
   },
   {
     "id": "cs_02",
-    "description": "100 facts, retrieve recent server port over old and neighboring config ports",
+    "description": "100 facts, retrieve current server port over stale stronger lexical match",
     "num_facts": 100,
-    "old_fact": "Server port was 3000",
-    "new_fact": "Server port changed to 8080",
+    "old_fact": {"content": "Server port does run on 3000 in the archived deployment guide", "importance": 0.9},
+    "new_fact": {"content": "Current production listener is bound to 8080 for the server runtime", "importance": 0.7},
     "old_days_ago": 90,
     "new_days_ago": 5,
-    "query": "What port does the server run on?",
+    "query": "What port does the server run on now?",
     "gold_answer": "8080",
+    "forbidden_answers": ["3000", "9090", "5173", "8443"],
     "related_noise": [
-      "The metrics server port is 9090",
-      "The local development server port is 5173",
-      "The database port remains 5432",
-      "The admin console port is 8443",
-      "The legacy server port 3000 appears only in archived docs"
+      {"content": "The metrics server port does run on 9090", "importance": 0.55},
+      {"content": "The local development server port does run on 5173", "importance": 0.5},
+      {"content": "The database port remains 5432", "importance": 0.4},
+      {"content": "The admin console port does run on 8443", "importance": 0.45}
     ],
     "noise_template": "Config parameter {i} is set to {val}",
     "difficulty": "medium"
   },
   {
     "id": "cs_03",
-    "description": "200 facts, importance discrimination with database security distractors",
+    "description": "200 facts, paraphrased target with exact-keyword password distractors",
     "num_facts": 200,
-    "target_fact": "CRITICAL: database master password is rotated monthly",
-    "target_importance": 0.95,
+    "target_fact": {"content": "CRITICAL: the primary database credential follows a monthly rotation cadence", "importance": 0.95},
     "query": "How often is the database password rotated?",
     "gold_answer": "monthly",
+    "forbidden_answers": ["quarterly", "90 days", "weekly", "annually"],
     "related_noise": [
-      "Database read-only passwords are reviewed quarterly",
-      "The database backup password rotates every 90 days",
-      "The API service password is rotated weekly",
-      "Database encryption keys rotate annually",
-      "The staging database password is reset after every demo"
+      {"content": "Database read-only passwords are reviewed quarterly", "importance": 0.5},
+      {"content": "The database backup password rotates every 90 days", "importance": 0.55},
+      {"content": "The API service password is rotated weekly", "importance": 0.45},
+      {"content": "Database encryption keys rotate annually", "importance": 0.45},
+      {"content": "The staging database password is reset after every demo", "importance": 0.4}
     ],
     "noise_template": "System metric {i}: current reading {val}",
     "noise_importance": 0.1,
-    "difficulty": "medium"
+    "difficulty": "hard"
   },
   {
     "id": "cs_04",
-    "description": "500 facts, find important API payload detail among same-domain limits",
+    "description": "500 facts, API payload size with overlapping request/response/upload traps",
     "num_facts": 500,
-    "target_fact": "Maximum request payload size is 10MB for all API endpoints",
-    "target_importance": 0.9,
-    "query": "What is the max request size?",
+    "target_fact": {"content": "Production API accepts request bodies up to 10MB", "importance": 0.9},
+    "query": "What is the max request payload size for the production API?",
     "gold_answer": "10MB",
+    "forbidden_answers": ["25MB", "5MB", "64MB", "30 seconds", "12"],
     "related_noise": [
-      "Maximum response payload size is 25MB for export endpoints",
-      "The staging API request payload size is capped at 5MB",
-      "Maximum multipart upload chunk size is 64MB",
-      "The request timeout is 30 seconds for all API endpoints",
-      "Webhook request payloads are retried three times after failures",
-      "Maximum GraphQL query depth is 12 for public API endpoints"
+      {"content": "Maximum response payload size is 25MB for export endpoints", "importance": 0.5},
+      {"content": "The staging API request payload size is capped at 5MB", "importance": 0.55},
+      {"content": "Maximum multipart upload chunk size is 64MB", "importance": 0.5},
+      {"content": "The production API request timeout is 30 seconds", "importance": 0.45},
+      {"content": "Webhook request payloads are retried three times after failures", "importance": 0.35},
+      {"content": "Maximum GraphQL query depth is 12 for public API endpoints", "importance": 0.4}
     ],
     "noise_template": "Log entry {i}: operation completed with code {val}",
     "noise_importance": 0.05,
@@ -76,22 +77,85 @@
   },
   {
     "id": "cs_05",
-    "description": "1000 facts, stress test with JWT/KMS/security distractors",
+    "description": "1000 facts, JWT signing key cadence against security lookalikes",
     "num_facts": 1000,
-    "target_fact": "The JWT signing key rotates every 24 hours using AWS KMS",
-    "target_importance": 0.85,
-    "query": "How often does the JWT signing key rotate?",
+    "target_fact": {"content": "The production JWT signing key uses AWS KMS and rotates every 24 hours", "importance": 0.85},
+    "query": "How often does the production JWT signing key rotate?",
     "gold_answer": "24 hours",
+    "forbidden_answers": ["30 days", "7 days", "12 hours", "quarterly", "48 hours", "14 days"],
     "related_noise": [
-      "The JWT refresh token expires after 30 days",
-      "The API encryption key rotates every 7 days using AWS KMS",
-      "The session cookie signing secret rotates every 12 hours",
-      "The OAuth client secret rotates quarterly",
-      "The staging JWT signing key rotates every 48 hours",
-      "AWS KMS data keys are cached for 5 minutes",
-      "The webhook HMAC signing key rotates every 14 days"
+      {"content": "The JWT refresh token expires after 30 days", "importance": 0.45},
+      {"content": "The API encryption key rotates every 7 days using AWS KMS", "importance": 0.55},
+      {"content": "The session cookie signing secret rotates every 12 hours", "importance": 0.55},
+      {"content": "The OAuth client secret rotates quarterly", "importance": 0.45},
+      {"content": "The staging JWT signing key rotates every 48 hours", "importance": 0.65},
+      {"content": "AWS KMS data keys are cached for 5 minutes", "importance": 0.35},
+      {"content": "The webhook HMAC signing key rotates every 14 days", "importance": 0.55}
     ],
     "noise_template": "Telemetry data point {i}: value={val} timestamp=2024-01-{i}",
+    "noise_importance": 0.05,
+    "difficulty": "hard"
+  },
+  {
+    "id": "cs_06",
+    "description": "300 facts, multi-needle coverage must retrieve region and owner in the returned slate",
+    "num_facts": 300,
+    "target_facts": [
+      {"content": "Project Aurora production region is eu-west-1", "importance": 0.85},
+      {"content": "Project Aurora incident owner is Team Nightjar", "importance": 0.85}
+    ],
+    "query": "Which region and incident owner are assigned to Project Aurora?",
+    "gold_answer": "eu-west-1 and Team Nightjar",
+    "required_answers": ["eu-west-1", "Team Nightjar"],
+    "answer_mode": "slate",
+    "top_k": 5,
+    "slate_k": 5,
+    "forbidden_answers": ["us-east-1", "Team Cedar", "ap-southeast-2"],
+    "related_noise": [
+      {"content": "Project Aurora staging region is us-east-1", "importance": 0.55},
+      {"content": "Project Aurora analytics owner is Team Cedar", "importance": 0.5},
+      {"content": "Project Borealis production region is ap-southeast-2", "importance": 0.45},
+      {"content": "Team Nightjar owns the billing export service, not Project Borealis", "importance": 0.35}
+    ],
+    "noise_template": "Project registry row {i}: operational note {val}",
+    "noise_importance": 0.05,
+    "difficulty": "hard"
+  },
+  {
+    "id": "cs_07",
+    "description": "750 facts, stale decision has exact query words but current decision is paraphrased",
+    "num_facts": 750,
+    "old_fact": {"content": "The search backend decision is Elasticsearch for Project Selene", "importance": 0.9},
+    "new_fact": {"content": "Project Selene now uses OpenSearch as the retrieval cluster", "importance": 0.8},
+    "old_days_ago": 120,
+    "new_days_ago": 3,
+    "query": "What is the current search backend decision for Project Selene?",
+    "gold_answer": "OpenSearch",
+    "forbidden_answers": ["Elasticsearch", "Meilisearch", "Typesense"],
+    "related_noise": [
+      {"content": "The search backend decision for Project Lyra is Meilisearch", "importance": 0.55},
+      {"content": "The search backend decision for Project Orion is Typesense", "importance": 0.55},
+      {"content": "Project Selene indexing workers run every 15 minutes", "importance": 0.35}
+    ],
+    "noise_template": "Decision archive entry {i}: historical option {val}",
+    "noise_importance": 0.05,
+    "difficulty": "hard"
+  },
+  {
+    "id": "cs_08",
+    "description": "600 facts, negative lexical trap: billing owner for same project but wrong environment",
+    "num_facts": 600,
+    "target_fact": {"content": "For production, Project Lumen billing escalation goes to Mina", "importance": 0.8},
+    "query": "Who owns production billing escalation for Project Lumen?",
+    "gold_answer": "Mina",
+    "forbidden_answers": ["Ravi", "Noor", "Ilya"],
+    "related_noise": [
+      {"content": "Project Lumen staging billing escalation owner is Ravi", "importance": 0.6},
+      {"content": "Project Lumen production deployment escalation owner is Noor", "importance": 0.55},
+      {"content": "Project Lumen billing analytics owner is Ilya", "importance": 0.5},
+      {"content": "Project Lumen support rotation changes every Friday", "importance": 0.35}
+    ],
+    "noise_template": "Team directory item {i}: escalation placeholder {val}",
     "noise_importance": 0.05,
     "difficulty": "hard"
   }

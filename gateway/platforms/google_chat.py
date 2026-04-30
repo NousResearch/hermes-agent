@@ -263,6 +263,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
         #       replies still land in the right visual thread without
         #       re-coupling sessions to threads.
         self._last_inbound_thread: Dict[str, str] = {}
+        # In-flight typing-card creates per chat_id. send_typing() reserves
+        # an Event here BEFORE starting the API call so concurrent calls
+        # from base.py's _keep_typing wait instead of duplicating cards.
+        # Cleared in the create_and_record finally.
+        self._typing_card_inflight: Dict[str, asyncio.Event] = {}
+        # Orphaned typing cards (created by background tasks that lost a
+        # race with send() / another concurrent create). Cleaned up at
+        # end-of-turn by on_processing_complete via patch-to-empty so
+        # they don't sit in the chat forever as "Hermes is thinking…".
+        self._orphan_typing_messages: Dict[str, List[str]] = {}
         # FlowControl knobs (env-configurable).
         self._max_messages = int(os.getenv("GOOGLE_CHAT_MAX_MESSAGES", "1"))
         self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
@@ -1545,11 +1555,40 @@ class GoogleChatAdapter(BasePlatformAdapter):
         and the user is replying inside thread T, send() will patch the
         top-level card in place — leaving the bot's whole response
         stranded outside the user's thread. We resolve the thread the
-        same way send() does (metadata override + last-inbound-thread
-        cache) so the typing card and the patched reply share a thread.
+        same way send() does.
+
+        IMPORTANT — cancellation safety:
+        ``base.py``'s ``_keep_typing`` calls this through
+        ``asyncio.wait_for(send_typing, timeout=1.5)``. When the
+        create-API call takes longer than 1.5s, ``wait_for`` cancels
+        ``send_typing`` mid-flight — but the underlying ``asyncio.to_thread``
+        keeps running and creates a card in Chat that we have NO way to
+        track (the storage line never runs). Next ``_keep_typing`` tick
+        sees an empty slot and creates a SECOND card. Result: one orphan
+        "Hermes is thinking…" stuck in chat forever, plus one card that
+        gets patched into the reply.
+
+        Fix: reserve the slot with an in-flight ``Event``, run the
+        create in a background task, and ``await asyncio.shield`` it.
+        Cancellation of THIS coroutine no longer cancels the create —
+        the task runs to completion and the msg_id lands in the slot
+        regardless.
         """
-        # If already showing a typing marker, do nothing.
+        # Already have a card (real msg_id, sentinel, or in-flight) — bail.
         if chat_id in self._typing_messages:
+            return
+        if chat_id in self._typing_card_inflight:
+            # Another create is already running for this chat. Wait for
+            # it to finish so we honor the contract "if called, the card
+            # is up by the time we return". Bounded wait — if the
+            # background task is stuck, _keep_typing will retry.
+            try:
+                await asyncio.wait_for(
+                    self._typing_card_inflight[chat_id].wait(),
+                    timeout=5.0,
+                )
+            except (asyncio.TimeoutError, KeyError):
+                pass
             return
 
         thread_id = self._resolve_thread_id(
@@ -1558,13 +1597,47 @@ class GoogleChatAdapter(BasePlatformAdapter):
         body: Dict[str, Any] = {"text": "Hermes is thinking…"}
         if thread_id:
             body["thread"] = {"name": thread_id}
+
+        completed = asyncio.Event()
+        self._typing_card_inflight[chat_id] = completed
+
+        async def _create_and_record() -> None:
+            try:
+                result = await self._create_message(chat_id, body)
+                if result.success and result.message_id:
+                    # Only overwrite the slot if nothing else has claimed it
+                    # in the meantime (e.g. send() racing ahead of us).
+                    if chat_id not in self._typing_messages:
+                        self._typing_messages[chat_id] = result.message_id
+                    else:
+                        # Slot already populated — likely send() patched
+                        # something or another create completed first.
+                        # Our card is ORPHANED here, but at least it's a
+                        # known orphan we can clean up at end of turn.
+                        # Track for cleanup by on_processing_complete.
+                        self._orphan_typing_messages.setdefault(
+                            chat_id, []
+                        ).append(result.message_id)
+            except Exception:
+                logger.debug(
+                    "[GoogleChat] send_typing background create failed",
+                    exc_info=True,
+                )
+            finally:
+                self._typing_card_inflight.pop(chat_id, None)
+                completed.set()
+
+        task = asyncio.create_task(_create_and_record())
+        # Shield the task from cancellation of our awaiter. If
+        # _keep_typing's wait_for times out, our coroutine is cancelled
+        # but the task continues in the background — so the msg_id
+        # eventually lands in the slot even when the API call is slow.
         try:
-            result = await self._create_message(chat_id, body)
-        except Exception:
-            logger.debug("[GoogleChat] send_typing failed; skipping")
-            return
-        if result.success and result.message_id:
-            self._typing_messages[chat_id] = result.message_id
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # The shielded task keeps running. Re-raise so the caller's
+            # cancellation semantics are preserved.
+            raise
 
     async def stop_typing(self, chat_id: str) -> None:
         """Stop the typing indicator — NO-OP when a live card is tracked.
@@ -1606,7 +1679,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome
     ) -> None:
-        """Reap typing card after the message-handling cycle ends.
+        """Reap typing card(s) after the message-handling cycle ends.
 
         SUCCESS: ``send()`` set the SENTINEL after patching. Pop it.
 
@@ -1615,24 +1688,46 @@ class GoogleChatAdapter(BasePlatformAdapter):
         (``"(interrupted)"``) avoids the tombstone that ``messages.delete``
         would create. If ``send()`` did run (e.g. base.py error-send branch
         patched it), the slot holds the SENTINEL — pop and exit.
+
+        Orphan cards: when a background ``send_typing`` task creates a
+        card AFTER ``send()`` already populated the slot (race window
+        when the API call takes longer than _keep_typing's wait_for
+        timeout), the orphan id is stashed in ``self._orphan_typing_messages``.
+        Patch each orphan with an empty-ish marker so the user doesn't
+        see "Hermes is thinking…" stuck forever.
         """
         if event.source is None:
             return
         chat_id = event.source.chat_id
         try:
             current = self._typing_messages.pop(chat_id, None)
-            if not current or current == _TYPING_CONSUMED_SENTINEL:
-                return
-            # Real message_name still in slot — send() never ran.  Patch the
-            # card with a benign final state instead of deleting (no tombstone).
-            label = "(interrupted)" if outcome == ProcessingOutcome.CANCELLED else "(no reply)"
-            try:
-                await self._patch_message(current, {"text": label})
-            except Exception:
-                logger.debug(
-                    "[GoogleChat] on_processing_complete patch fallback failed",
-                    exc_info=True,
+            if current and current != _TYPING_CONSUMED_SENTINEL:
+                # Real message_name still in slot — send() never ran. Patch
+                # with a benign final state instead of deleting (no tombstone).
+                label = (
+                    "(interrupted)" if outcome == ProcessingOutcome.CANCELLED
+                    else "(no reply)"
                 )
+                try:
+                    await self._patch_message(current, {"text": label})
+                except Exception:
+                    logger.debug(
+                        "[GoogleChat] on_processing_complete patch fallback failed",
+                        exc_info=True,
+                    )
+            # Reap orphan typing cards (background creates that lost a
+            # race with send()). Patch them to a single dot so they
+            # gracefully retire — the user already saw the real reply
+            # in another card, this one is just visual noise to clear.
+            orphans = self._orphan_typing_messages.pop(chat_id, [])
+            for orphan_id in orphans:
+                try:
+                    await self._patch_message(orphan_id, {"text": "·"})
+                except Exception:
+                    logger.debug(
+                        "[GoogleChat] orphan typing-card patch failed: %s",
+                        orphan_id, exc_info=True,
+                    )
         except Exception:
             logger.debug(
                 "[GoogleChat] cleanup in on_processing_complete failed", exc_info=True

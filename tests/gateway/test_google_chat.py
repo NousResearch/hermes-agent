@@ -783,6 +783,117 @@ class TestTypingLifecycle:
         assert "thread" not in sent_body
 
     @pytest.mark.asyncio
+    async def test_send_typing_concurrent_calls_create_only_one_card(self, adapter):
+        """When _keep_typing fires send_typing twice in flight (the
+        first call slow, the second arriving before the first stores
+        its msg_id), only ONE create should hit the API. Without this
+        guard the second call would create a duplicate card → orphan
+        'Hermes is thinking…' stuck in chat. Race fix via
+        _typing_card_inflight Event.
+        """
+        call_count = 0
+        first_call_started = asyncio.Event()
+        release_first_call = asyncio.Event()
+
+        async def _slow_create(chat_id, body):
+            nonlocal call_count
+            call_count += 1
+            first_call_started.set()
+            await release_first_call.wait()
+            return type("R", (), {"success": True,
+                                  "message_id": f"spaces/S/messages/CARD_{call_count}",
+                                  "error": None})()
+
+        adapter._create_message = _slow_create
+
+        # Fire two send_typing tasks concurrently (mimics _keep_typing
+        # firing while a previous tick is still in-flight).
+        t1 = asyncio.create_task(adapter.send_typing("spaces/S"))
+        await first_call_started.wait()
+        t2 = asyncio.create_task(adapter.send_typing("spaces/S"))
+        # Give t2 a moment to bail out via the in-flight check.
+        await asyncio.sleep(0.05)
+        # Release the first call to complete.
+        release_first_call.set()
+        await asyncio.gather(t1, t2)
+
+        assert call_count == 1
+        assert adapter._typing_messages["spaces/S"] == "spaces/S/messages/CARD_1"
+
+    @pytest.mark.asyncio
+    async def test_send_typing_survives_caller_cancellation(self, adapter):
+        """base.py's _keep_typing wraps send_typing in
+        asyncio.wait_for(timeout=1.5). When the create-API call takes
+        longer than 1.5s, wait_for cancels the awaiter — but the create
+        itself MUST complete and the msg_id MUST land in the slot,
+        otherwise the next tick spawns a SECOND card (orphan).
+
+        This test simulates that: cancel the awaiter while the create
+        is in flight. The shielded background task should still
+        populate the slot.
+        """
+        first_call_started = asyncio.Event()
+        release_first_call = asyncio.Event()
+
+        async def _slow_create(chat_id, body):
+            first_call_started.set()
+            await release_first_call.wait()
+            return type("R", (), {"success": True,
+                                  "message_id": "spaces/S/messages/CARD_X",
+                                  "error": None})()
+
+        adapter._create_message = _slow_create
+
+        task = asyncio.create_task(adapter.send_typing("spaces/S"))
+        await first_call_started.wait()
+        # Simulate wait_for timeout cancelling the awaiter.
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        # The shielded background create is still running. Release it.
+        release_first_call.set()
+        # Give the background task time to complete + record.
+        for _ in range(20):
+            await asyncio.sleep(0.05)
+            if "spaces/S" in adapter._typing_messages:
+                break
+        # Slot SHOULD be populated despite the cancellation.
+        assert adapter._typing_messages.get("spaces/S") == "spaces/S/messages/CARD_X"
+
+    @pytest.mark.asyncio
+    async def test_orphan_typing_cards_reaped_on_completion(self, adapter):
+        """If a background send_typing task created a card AFTER send()
+        already populated the slot (race), the orphan id is tracked in
+        _orphan_typing_messages. on_processing_complete must patch each
+        orphan to a benign marker so users don't see stuck
+        'Hermes is thinking…' messages."""
+        from gateway.platforms.google_chat import _TYPING_CONSUMED_SENTINEL
+        adapter._orphan_typing_messages["spaces/S"] = [
+            "spaces/S/messages/ORPHAN1",
+            "spaces/S/messages/ORPHAN2",
+        ]
+        adapter._typing_messages["spaces/S"] = _TYPING_CONSUMED_SENTINEL
+        adapter._patch_message = AsyncMock(
+            return_value=type("R", (), {"success": True,
+                                        "message_id": "x",
+                                        "error": None})()
+        )
+        event = MagicMock()
+        event.source = MagicMock()
+        event.source.chat_id = "spaces/S"
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        # Both orphans patched (typing_messages cleared too).
+        assert adapter._patch_message.await_count == 2
+        patched_ids = [
+            call.args[0] for call in adapter._patch_message.call_args_list
+        ]
+        assert "spaces/S/messages/ORPHAN1" in patched_ids
+        assert "spaces/S/messages/ORPHAN2" in patched_ids
+        assert "spaces/S" not in adapter._orphan_typing_messages
+
+    @pytest.mark.asyncio
     async def test_stop_typing_is_noop_for_live_card(self, adapter):
         """Anti-tombstone: stop_typing leaves a real msg_id in place so
         send() can patch it. Deleting would create a "Message deleted by

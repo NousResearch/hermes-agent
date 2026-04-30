@@ -80,15 +80,19 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             secret_file = root / "config.env"
             secret_file.write_text("OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012")
 
-            response = self._dispatch(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 3,
-                    "method": "fs/read_text_file",
-                    "params": {"path": str(secret_file)},
-                },
-                cwd=str(root),
-            )
+            # agent.redact snapshots HERMES_REDACT_SECRETS at import time into
+            # _REDACT_ENABLED, so patching os.environ is a no-op. Flip the
+            # module-level constant directly for the duration of the call.
+            with patch("agent.redact._REDACT_ENABLED", True):
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "fs/read_text_file",
+                        "params": {"path": str(secret_file)},
+                    },
+                    cwd=str(root),
+                )
 
         content = ((response.get("result") or {}).get("content") or "")
         self.assertNotIn("abc123def456", content)
@@ -144,3 +148,60 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── HOME env propagation tests (from PR #11285) ─────────────────────
+
+from unittest.mock import patch as _patch
+import pytest
+
+
+def _make_home_client(tmp_path):
+    return CopilotACPClient(
+        api_key="copilot-acp",
+        base_url="acp://copilot",
+        acp_command="copilot",
+        acp_args=["--acp", "--stdio"],
+        acp_cwd=str(tmp_path),
+    )
+
+
+def _fake_popen_capture(captured):
+    def _fake(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        raise FileNotFoundError("copilot not found")
+    return _fake
+
+
+def test_run_prompt_prefers_profile_home_when_available(monkeypatch, tmp_path):
+    hermes_home = tmp_path / "hermes"
+    profile_home = hermes_home / "home"
+    profile_home.mkdir(parents=True)
+
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    captured = {}
+    client = _make_home_client(tmp_path)
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+            client._run_prompt("hello", timeout_seconds=1)
+
+    assert captured["kwargs"]["env"]["HOME"] == str(profile_home)
+
+
+def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    captured = {}
+    client = _make_home_client(tmp_path)
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+            client._run_prompt("hello", timeout_seconds=1)
+
+    assert "env" in captured["kwargs"]
+    assert captured["kwargs"]["env"]["HOME"]

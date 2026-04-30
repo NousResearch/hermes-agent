@@ -231,3 +231,60 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         assert updated["job"]["skills"] == []
         assert updated["job"]["skill"] is None
+
+    def test_create_normalizes_list_form_deliver(self):
+        """deliver=['telegram'] (list) is stored as the string 'telegram'.
+
+        Regression for #17139: MCP clients / scripts sometimes pass ``deliver``
+        as an array.  Prior to the fix, ``['telegram']`` was written verbatim
+        to ``jobs.json`` and the scheduler then tried to resolve the literal
+        string ``"['telegram']"`` as a platform, failing with
+        "no delivery target resolved".
+        """
+        from cron.jobs import get_job
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Daily briefing",
+                schedule="every 1h",
+                deliver=["telegram"],
+            )
+        )
+        assert created["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["deliver"] == "telegram"
+
+    def test_create_normalizes_multi_element_list_deliver(self):
+        """deliver=['telegram', 'discord'] is stored as 'telegram,discord'."""
+        from cron.jobs import get_job
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Daily briefing",
+                schedule="every 1h",
+                deliver=["telegram", "discord"],
+            )
+        )
+        assert created["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["deliver"] == "telegram,discord"
+
+    def test_update_normalizes_list_form_deliver(self):
+        """update with deliver=['telegram'] stores the canonical string."""
+        from cron.jobs import get_job
+
+        created = json.loads(
+            cronjob(action="create", prompt="x", schedule="every 1h")
+        )
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                deliver=["telegram"],
+            )
+        )
+        assert updated["success"] is True
+        stored = get_job(created["job_id"])
+        assert stored["deliver"] == "telegram"

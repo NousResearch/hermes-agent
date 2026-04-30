@@ -45,9 +45,47 @@ import logging
 import os
 import re
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx
-from firecrawl import Firecrawl
+# NOTE: `from firecrawl import Firecrawl` is deliberately NOT at module top —
+# the SDK pulls ~200 ms of imports (httpcore, firecrawl.v1/v2 type trees) and
+# we only need it when the backend is actually "firecrawl". We expose
+# ``Firecrawl`` as a thin proxy that imports the SDK on first call/
+# isinstance check, so both (a) the in-module ``Firecrawl(...)`` construction
+# site in _get_firecrawl_client() works unchanged, and (b) tests using
+# ``patch("tools.web_tools.Firecrawl", ...)`` keep working.
+if TYPE_CHECKING:
+    from firecrawl import Firecrawl  # noqa: F401 — type hints only
+
+_FIRECRAWL_CLS_CACHE: Optional[type] = None
+
+
+def _load_firecrawl_cls() -> type:
+    """Import and cache ``firecrawl.Firecrawl``."""
+    global _FIRECRAWL_CLS_CACHE
+    if _FIRECRAWL_CLS_CACHE is None:
+        from firecrawl import Firecrawl as _cls
+        _FIRECRAWL_CLS_CACHE = _cls
+    return _FIRECRAWL_CLS_CACHE
+
+
+class _FirecrawlProxy:
+    """Module-level proxy that looks like ``firecrawl.Firecrawl`` but imports lazily."""
+
+    __slots__ = ()
+
+    def __call__(self, *args, **kwargs):
+        return _load_firecrawl_cls()(*args, **kwargs)
+
+    def __instancecheck__(self, obj):
+        return isinstance(obj, _load_firecrawl_cls())
+
+    def __repr__(self):
+        return "<lazy firecrawl.Firecrawl proxy>"
+
+
+Firecrawl = _FirecrawlProxy()
+
 from agent.auxiliary_client import (
     async_call_llm,
     extract_content_or_reasoning,
@@ -236,6 +274,7 @@ def _get_firecrawl_client():
     if _firecrawl_client is not None and _firecrawl_client_config == client_config:
         return _firecrawl_client
 
+    # Uses the module-level `Firecrawl` name (lazy proxy at module top).
     _firecrawl_client = Firecrawl(**kwargs)
     _firecrawl_client_config = client_config
     return _firecrawl_client
@@ -282,7 +321,7 @@ def _get_async_parallel_client():
 
 # ─── Tavily Client ───────────────────────────────────────────────────────────
 
-_TAVILY_BASE_URL = "https://api.tavily.com"
+_TAVILY_BASE_URL = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com")
 
 
 def _tavily_request(endpoint: str, payload: dict) -> dict:
@@ -1066,6 +1105,12 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Raises:
         Exception: If search fails or API key is not set
     """
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 5
+    limit = min(max(limit, 1), 100)
+
     debug_call_data = {
         "parameters": {
             "query": query,
@@ -2047,13 +2092,20 @@ from tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
-    "description": "Search the web for information on any topic. Returns up to 5 relevant results with titles, URLs, and descriptions.",
+    "description": "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "The search query to look up on the web"
+                "description": "The search query to look up on the web. You may include backend-supported operators such as site:example.com, filetype:pdf, intitle:word, -term, or \"exact phrase\"."
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return. Defaults to 5.",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 5
             }
         },
         "required": ["query"]
@@ -2081,7 +2133,7 @@ registry.register(
     name="web_search",
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
+    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",

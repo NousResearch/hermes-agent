@@ -578,6 +578,36 @@ def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
     assert result["final_response"] == "Recovered after refresh"
 
 
+def test_run_conversation_copilot_refreshes_after_401_and_retries(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    calls = {"api": 0, "refresh": 0}
+
+    class _UnauthorizedError(RuntimeError):
+        def __init__(self):
+            super().__init__("Error code: 401 - unauthorized")
+            self.status_code = 401
+
+    def _fake_api_call(api_kwargs):
+        calls["api"] += 1
+        if calls["api"] == 1:
+            raise _UnauthorizedError()
+        return _codex_message_response("Recovered after copilot refresh")
+
+    def _fake_refresh():
+        calls["refresh"] += 1
+        return True
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+    monkeypatch.setattr(agent, "_try_refresh_copilot_client_credentials", _fake_refresh)
+
+    result = agent.run_conversation("Say OK")
+
+    assert calls["api"] == 2
+    assert calls["refresh"] == 1
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after copilot refresh"
+
+
 def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
     agent = _build_agent(monkeypatch)
     closed = {"value": False}
@@ -611,6 +641,62 @@ def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
     assert rebuilt["kwargs"]["api_key"] == "new-codex-token"
     assert rebuilt["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert isinstance(agent.client, _RebuiltClient)
+
+
+def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    closed = {"value": False}
+    rebuilt = {"kwargs": None}
+
+    class _ExistingClient:
+        def close(self):
+            closed["value"] = True
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        rebuilt["kwargs"] = kwargs
+        return _RebuiltClient()
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_new_token", "GH_TOKEN"),
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    agent.client = _ExistingClient()
+    ok = agent._try_refresh_copilot_client_credentials()
+
+    assert ok is True
+    assert closed["value"] is True
+    assert rebuilt["kwargs"]["api_key"] == "gho_new_token"
+    assert rebuilt["kwargs"]["base_url"] == "https://api.githubcopilot.com"
+    assert rebuilt["kwargs"]["default_headers"]["Copilot-Integration-Id"] == "vscode-chat"
+    assert isinstance(agent.client, _RebuiltClient)
+
+
+def test_try_refresh_copilot_client_credentials_rebuilds_even_if_token_unchanged(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    rebuilt = {"count": 0}
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        rebuilt["count"] += 1
+        return _RebuiltClient()
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gh-token", "gh auth token"),
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    ok = agent._try_refresh_copilot_client_credentials()
+
+    assert ok is True
+    assert rebuilt["count"] == 1
 
 
 def test_run_conversation_codex_tool_round_trip(monkeypatch):
@@ -857,6 +943,140 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
     assert "inspect the repository" in (assistant_message.content or "")
 
 
+def test_normalize_codex_response_preserves_message_status_for_replay(monkeypatch):
+    """Incomplete Codex output messages must not be replayed as completed."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                id="msg_partial",
+                phase="commentary",
+                status="in_progress",
+                content=[SimpleNamespace(type="output_text", text="Still working...")],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="in_progress",
+        model="gpt-5-codex",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.codex_message_items[0]["id"] == "msg_partial"
+    assert assistant_message.codex_message_items[0]["status"] == "in_progress"
+
+
+def test_normalize_codex_response_detects_leaked_tool_call_text(monkeypatch):
+    """Harmony-style `to=functions.foo` leaked into assistant content with no
+    structured function_call items must be treated as incomplete so the
+    continuation path can re-elicit a proper tool call. This is the
+    Taiwan-embassy-email (Discord bug report) failure mode: child agent
+    produces a confident-looking summary, tool_trace is empty because no
+    tools actually ran, parent can't audit the claim.
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    leaked_content = (
+        "I'll check the official page directly.\n"
+        "to=functions.exec_command {\"cmd\": \"curl https://example.test\"}\n"
+        "assistant to=functions.exec_command {\"stdout\": \"mailto:foo@example.test\"}\n"
+        "Extracted: foo@example.test"
+    )
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=leaked_content)],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5.4",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    # Content is scrubbed so the parent never surfaces the leaked text as a
+    # summary. tool_calls stays empty because no structured function_call
+    # item existed.
+    assert (assistant_message.content or "") == ""
+    assert assistant_message.tool_calls == []
+
+
+def test_normalize_codex_response_ignores_tool_call_text_when_real_tool_call_present(monkeypatch):
+    """If the model emitted BOTH a structured function_call AND some text that
+    happens to contain `to=functions.*` (unlikely but possible), trust the
+    structured call — don't wipe content that came alongside a real tool use.
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text="Running the command via to=functions.exec_command now.",
+                )],
+            ),
+            SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments="{}",
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5.4",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert assistant_message.tool_calls  # real call preserved
+    assert "Running the command" in (assistant_message.content or "")
+
+
+def test_normalize_codex_response_no_leak_passes_through(monkeypatch):
+    """Sanity: normal assistant content that doesn't contain the leak pattern
+    is returned verbatim with finish_reason=stop."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text="Here is the answer with no leak.",
+                )],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5.4",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "Here is the answer with no leak."
+    assert assistant_message.tool_calls == []
+
+
 def test_interim_commentary_is_not_marked_already_streamed_without_callbacks(monkeypatch):
     agent = _build_agent(monkeypatch)
     observed = {}
@@ -893,6 +1113,141 @@ def test_interim_commentary_is_not_marked_already_streamed_when_stream_callback_
         "text": "short version: yes",
         "already_streamed": False,
     }
+
+
+def test_interim_commentary_preserves_assistant_content(monkeypatch):
+    """Interim commentary must not silently mutate assistant text containing
+    literal <memory-context> markers — that's legitimate model output (docs,
+    code).  Streaming-path leak prevention happens delta-by-delta upstream."""
+    agent = _build_agent(monkeypatch)
+    observed = {}
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
+        {"text": text, "already_streamed": already_streamed}
+    )
+
+    content = (
+        "<memory-context>\n"
+        "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+        "## Honcho Context\n"
+        "stale memory\n"
+        "</memory-context>\n\n"
+        "I'll inspect the repo structure first."
+    )
+
+    agent._emit_interim_assistant_message({"role": "assistant", "content": content})
+
+    assert "<memory-context>" in observed["text"]
+    assert "I'll inspect the repo structure first." in observed["text"]
+
+
+def test_stream_delta_strips_leaked_memory_context(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    observed = []
+    agent.stream_delta_callback = observed.append
+
+    leaked = (
+        "<memory-context>\n"
+        "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+        "## Honcho Context\n"
+        "stale memory\n"
+        "</memory-context>\n\n"
+        "Visible answer"
+    )
+
+    agent._fire_stream_delta(leaked)
+
+    assert observed == ["Visible answer"]
+
+
+def test_stream_delta_strips_leaked_memory_context_across_chunks(monkeypatch):
+    """Regression for #5719 — the real streaming case.
+
+    Providers typically emit 1-80 char chunks, so the memory-context open
+    tag, system-note line, payload, and close tag each arrive in separate
+    deltas.  The per-delta sanitize_context() regex cannot survive that
+    — only a stateful scrubber can.  None of the payload, system-note
+    text, or "## Honcho Context" header may reach the delta callback.
+    """
+    agent = _build_agent(monkeypatch)
+    observed = []
+    agent.stream_delta_callback = observed.append
+
+    deltas = [
+        "<memory-context>\n[System note: The following",
+        " is recalled memory context, NOT new user input. ",
+        "Treat as informational background data.]\n\n",
+        "## Honcho Context\n",
+        "stale memory about eri\n",
+        "</memory-context>\n\n",
+        "Visible answer",
+    ]
+    for d in deltas:
+        agent._fire_stream_delta(d)
+
+    combined = "".join(observed)
+    assert "Visible answer" in combined
+    # None of the leaked payload may surface.
+    assert "System note" not in combined
+    assert "Honcho Context" not in combined
+    assert "stale memory" not in combined
+    assert "<memory-context>" not in combined
+    assert "</memory-context>" not in combined
+
+
+def test_stream_delta_scrubber_resets_between_turns(monkeypatch):
+    """An unterminated span from a prior turn must not taint the next turn."""
+    agent = _build_agent(monkeypatch)
+
+    # Simulate a hung span carried over — directly populate the scrubber.
+    agent._stream_context_scrubber.feed("pre <memory-context>leaked")
+
+    # Normally run_conversation() resets the scrubber at turn start.
+    agent._stream_context_scrubber.reset()
+
+    observed = []
+    agent.stream_delta_callback = observed.append
+    agent._fire_stream_delta("clean new turn text")
+    assert "".join(observed) == "clean new turn text"
+
+
+def test_stream_delta_preserves_mid_stream_leading_newlines(monkeypatch):
+    """Mid-stream leading newlines must survive — they are legitimate
+    markdown (lists, code fences, paragraph breaks).  Stripping them
+    based on chunk boundaries silently breaks formatting.
+
+    Only the very first delta of a stream gets leading-newlines stripped
+    (so stale provider preamble doesn't leak); after that, deltas are
+    emitted verbatim.
+    """
+    agent = _build_agent(monkeypatch)
+    observed = []
+    agent.stream_delta_callback = observed.append
+
+    # First delta delivers text — strips its own leading "\n" once.
+    agent._fire_stream_delta("\nHere is a list:")
+    # Second delta starts with "\n- item" — must NOT be stripped.
+    agent._fire_stream_delta("\n- first")
+    agent._fire_stream_delta("\n- second")
+
+    combined = "".join(observed)
+    assert combined == "Here is a list:\n- first\n- second"
+
+
+def test_stream_delta_preserves_code_fence_newlines(monkeypatch):
+    """Code blocks span multiple deltas.  A "\\n```python\\n" boundary
+    is the canonical case where stripping leading newlines corrupts output."""
+    agent = _build_agent(monkeypatch)
+    observed = []
+    agent.stream_delta_callback = observed.append
+
+    agent._fire_stream_delta("Here is the code:")
+    agent._fire_stream_delta("\n```python\n")
+    agent._fire_stream_delta("print('hi')\n")
+    agent._fire_stream_delta("```\n")
+
+    combined = "".join(observed)
+    assert "```python\n" in combined
+    assert combined.startswith("Here is the code:\n```python\n")
 
 
 def test_run_conversation_codex_continues_after_commentary_phase_message(monkeypatch):
@@ -1210,6 +1565,44 @@ def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monk
     assert following.get("role") == "assistant"
 
 
+def test_codex_message_item_status_survives_conversion_and_preflight(monkeypatch):
+    """Stored Codex assistant message statuses must survive replay normalization."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import (
+        _chat_messages_to_responses_input,
+        _preflight_codex_input_items,
+    )
+
+    items = _chat_messages_to_responses_input([
+        {
+            "role": "assistant",
+            "content": "partial",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "incomplete",
+                    "id": "msg_incomplete",
+                    "phase": "commentary",
+                    "content": [{"type": "output_text", "text": "partial"}],
+                }
+            ],
+        }
+    ])
+    replay_item = next(item for item in items if item.get("type") == "message")
+    assert replay_item["status"] == "incomplete"
+
+    normalized = _preflight_codex_input_items([
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "in_progress",
+            "content": [{"type": "output_text", "text": "working"}],
+        }
+    ])
+    assert normalized[0]["status"] == "in_progress"
+
+
 def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch):
     """Two consecutive reasoning-only responses with different encrypted content
     must NOT be treated as duplicates."""
@@ -1258,6 +1651,58 @@ def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch
     ]
     assert "enc_first" in encrypted_contents
     assert "enc_second" in encrypted_contents
+
+
+def test_duplicate_detection_distinguishes_different_codex_message_items(monkeypatch):
+    """Incomplete turns with new message ids/phases/statuses must not be collapsed."""
+    agent = _build_agent(monkeypatch)
+    responses = [
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    id="msg_first",
+                    phase="commentary",
+                    status="in_progress",
+                    content=[SimpleNamespace(type="output_text", text="Still working...")],
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=50, output_tokens=10, total_tokens=60),
+            status="in_progress",
+            model="gpt-5-codex",
+        ),
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    id="msg_second",
+                    phase="commentary",
+                    status="in_progress",
+                    content=[SimpleNamespace(type="output_text", text="Still working...")],
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=50, output_tokens=10, total_tokens=60),
+            status="in_progress",
+            model="gpt-5-codex",
+        ),
+        _codex_message_response("Final answer after progress updates."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("keep going")
+
+    assert result["completed"] is True
+    interim_msgs = [
+        msg for msg in result["messages"]
+        if msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "incomplete"
+    ]
+    assert len(interim_msgs) == 2
+    assert [msg["codex_message_items"][0]["id"] for msg in interim_msgs] == [
+        "msg_first",
+        "msg_second",
+    ]
+    assert all(msg["codex_message_items"][0]["status"] == "in_progress" for msg in interim_msgs)
 
 
 def test_chat_messages_to_responses_input_deduplicates_reasoning_ids(monkeypatch):

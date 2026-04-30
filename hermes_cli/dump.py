@@ -33,12 +33,14 @@ def _get_git_commit(project_root: Path) -> str:
 
 
 def _redact(value: str) -> str:
-    """Redact all but first 4 and last 4 chars."""
-    if not value:
-        return ""
-    if len(value) < 12:
-        return "***"
-    return value[:4] + "..." + value[-4:]
+    """Redact all but first 4 and last 4 chars.
+
+    Thin wrapper over :func:`agent.redact.mask_secret`. Returns ``""`` for
+    an empty value (matches the historical behavior of this helper —
+    ``hermes dump`` formats empty values as blank, not as ``"(not set)"``).
+    """
+    from agent.redact import mask_secret
+    return mask_secret(value)
 
 
 def _gateway_status() -> str:
@@ -267,6 +269,8 @@ def run_dump(args):
         ("ANTHROPIC_API_KEY", "anthropic"),
         ("ANTHROPIC_TOKEN", "anthropic_token"),
         ("NOUS_API_KEY", "nous"),
+        ("GOOGLE_API_KEY", "google/gemini"),
+        ("GEMINI_API_KEY", "gemini"),
         ("GLM_API_KEY", "glm/zai"),
         ("ZAI_API_KEY", "zai"),
         ("KIMI_API_KEY", "kimi"),

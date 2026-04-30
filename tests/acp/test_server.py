@@ -904,9 +904,15 @@ class TestRegisterSessionMcpServers:
         ]
 
         with patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_search"]), \
-             patch("model_tools.get_tool_definitions", return_value=fake_tools):
+             patch("model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
             await agent._register_session_mcp_servers(state, [server])
 
+        mock_defs.assert_called_once_with(
+            enabled_toolsets=["hermes-acp", "mcp-srv"],
+            disabled_toolsets=None,
+            quiet_mode=True,
+        )
+        assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
         assert state.agent.tools == fake_tools
         assert state.agent.valid_tool_names == {"mcp_srv_search", "terminal"}
         # _invalidate_system_prompt should have been called

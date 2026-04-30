@@ -18,12 +18,12 @@ from agent.anthropic_adapter import (
     convert_messages_to_anthropic,
     convert_tools_to_anthropic,
     is_claude_code_token_valid,
-    normalize_anthropic_response,
     normalize_model_name,
     read_claude_code_credentials,
     resolve_anthropic_token,
     run_oauth_setup_token,
 )
+from agent.transports import get_transport
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,29 @@ class TestBuildAnthropicClient:
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
             assert "fine-grained-tool-streaming-2025-05-14" in betas
+            # Default: 1M-context beta stays IN for OAuth so 1M-capable
+            # subscriptions keep full context. The reactive recovery path
+            # in run_agent.py flips it off only after a subscription
+            # actually rejects the beta.
+            assert "context-1m-2025-08-07" in betas
             assert "api_key" not in kwargs
+
+    def test_oauth_drop_context_1m_beta_strips_only_1m(self):
+        """drop_context_1m_beta=True strips context-1m-2025-08-07 while
+        preserving every other OAuth-relevant beta."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "sk-ant-oat01-" + "x" * 60,
+                drop_context_1m_beta=True,
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" not in betas
+            # Everything else must still be there.
+            assert "oauth-2025-04-20" in betas
+            assert "claude-code-20250219" in betas
+            assert "interleaved-thinking-2025-05-14" in betas
+            assert "fine-grained-tool-streaming-2025-05-14" in betas
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -77,6 +99,7 @@ class TestBuildAnthropicClient:
             # API key auth should still get common betas
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "interleaved-thinking-2025-05-14" in betas
+            assert "context-1m-2025-08-07" in betas
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
@@ -86,7 +109,7 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14,context-1m-2025-08-07"
             }
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
@@ -517,6 +540,36 @@ class TestConvertTools:
         assert convert_tools_to_anthropic([]) == []
         assert convert_tools_to_anthropic(None) == []
 
+    def test_strips_nullable_union_from_input_schema(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "run",
+                    "description": "Run command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"},
+                            "timeout": {
+                                "anyOf": [{"type": "integer"}, {"type": "null"}],
+                                "default": None,
+                            },
+                        },
+                        "required": ["command"],
+                    },
+                },
+            }
+        ]
+
+        result = convert_tools_to_anthropic(tools)
+
+        assert result[0]["input_schema"]["properties"]["timeout"] == {
+            "type": "integer",
+            "default": None,
+        }
+        assert result[0]["input_schema"]["required"] == ["command"]
+
 
 # ---------------------------------------------------------------------------
 # Message conversion
@@ -933,6 +986,42 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs["model"] == "claude-sonnet-4-20250514"
 
+    def test_fast_mode_oauth_default_keeps_context_1m_beta(self):
+        """Default OAuth fast-mode requests still carry context-1m-2025-08-07."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            fast_mode=True,
+        )
+        betas = kwargs["extra_headers"]["anthropic-beta"]
+        assert "fast-mode-2026-02-01" in betas
+        assert "oauth-2025-04-20" in betas
+        assert "context-1m-2025-08-07" in betas
+
+    def test_fast_mode_oauth_drop_context_1m_beta_strips_only_1m(self):
+        """drop_context_1m_beta=True strips context-1m from fast-mode
+        extra_headers while preserving every other OAuth + fast-mode beta."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            fast_mode=True,
+            drop_context_1m_beta=True,
+        )
+        betas = kwargs["extra_headers"]["anthropic-beta"]
+        assert "context-1m-2025-08-07" not in betas
+        assert "fast-mode-2026-02-01" in betas
+        assert "oauth-2025-04-20" in betas
+        assert "claude-code-20250219" in betas
+        assert "interleaved-thinking-2025-05-14" in betas
+
     def test_reasoning_config_maps_to_manual_thinking_for_pre_4_6_models(self):
         kwargs = build_anthropic_kwargs(
             model="claude-sonnet-4-20250514",
@@ -1242,10 +1331,10 @@ class TestNormalizeResponse:
 
     def test_text_response(self):
         block = SimpleNamespace(type="text", text="Hello world")
-        msg, reason = normalize_anthropic_response(self._make_response([block]))
-        assert msg.content == "Hello world"
-        assert reason == "stop"
-        assert msg.tool_calls is None
+        nr = get_transport("anthropic_messages").normalize_response(self._make_response([block]))
+        assert nr.content == "Hello world"
+        assert nr.finish_reason == "stop"
+        assert nr.tool_calls is None
 
     def test_tool_use_response(self):
         blocks = [
@@ -1257,24 +1346,24 @@ class TestNormalizeResponse:
                 input={"query": "test"},
             ),
         ]
-        msg, reason = normalize_anthropic_response(
+        nr = get_transport("anthropic_messages").normalize_response(
             self._make_response(blocks, "tool_use")
         )
-        assert msg.content == "Searching..."
-        assert reason == "tool_calls"
-        assert len(msg.tool_calls) == 1
-        assert msg.tool_calls[0].function.name == "search"
-        assert json.loads(msg.tool_calls[0].function.arguments) == {"query": "test"}
+        assert nr.content == "Searching..."
+        assert nr.finish_reason == "tool_calls"
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].name == "search"
+        assert json.loads(nr.tool_calls[0].arguments) == {"query": "test"}
 
     def test_thinking_response(self):
         blocks = [
             SimpleNamespace(type="thinking", thinking="Let me reason about this..."),
             SimpleNamespace(type="text", text="The answer is 42."),
         ]
-        msg, reason = normalize_anthropic_response(self._make_response(blocks))
-        assert msg.content == "The answer is 42."
-        assert msg.reasoning == "Let me reason about this..."
-        assert msg.reasoning_details == [{"type": "thinking", "thinking": "Let me reason about this..."}]
+        nr = get_transport("anthropic_messages").normalize_response(self._make_response(blocks))
+        assert nr.content == "The answer is 42."
+        assert nr.reasoning == "Let me reason about this..."
+        assert nr.provider_data["reasoning_details"] == [{"type": "thinking", "thinking": "Let me reason about this..."}]
 
     def test_thinking_response_preserves_signature(self):
         blocks = [
@@ -1285,24 +1374,24 @@ class TestNormalizeResponse:
                 redacted=False,
             ),
         ]
-        msg, _ = normalize_anthropic_response(self._make_response(blocks))
-        assert msg.reasoning_details[0]["signature"] == "opaque_signature"
-        assert msg.reasoning_details[0]["thinking"] == "Let me reason about this..."
+        nr = get_transport("anthropic_messages").normalize_response(self._make_response(blocks))
+        assert nr.provider_data["reasoning_details"][0]["signature"] == "opaque_signature"
+        assert nr.provider_data["reasoning_details"][0]["thinking"] == "Let me reason about this..."
 
     def test_stop_reason_mapping(self):
         block = SimpleNamespace(type="text", text="x")
-        _, r1 = normalize_anthropic_response(
+        nr1 = get_transport("anthropic_messages").normalize_response(
             self._make_response([block], "end_turn")
         )
-        _, r2 = normalize_anthropic_response(
+        nr2 = get_transport("anthropic_messages").normalize_response(
             self._make_response([block], "tool_use")
         )
-        _, r3 = normalize_anthropic_response(
+        nr3 = get_transport("anthropic_messages").normalize_response(
             self._make_response([block], "max_tokens")
         )
-        assert r1 == "stop"
-        assert r2 == "tool_calls"
-        assert r3 == "length"
+        assert nr1.finish_reason == "stop"
+        assert nr2.finish_reason == "tool_calls"
+        assert nr3.finish_reason == "length"
 
     def test_stop_reason_refusal_and_context_exceeded(self):
         # Claude 4.5+ introduced two new stop_reason values the Messages API
@@ -1310,24 +1399,24 @@ class TestNormalizeResponse:
         # handlers already understand, instead of silently collapsing to
         # "stop" (old behavior).
         block = SimpleNamespace(type="text", text="")
-        _, refusal_reason = normalize_anthropic_response(
+        nr_refusal = get_transport("anthropic_messages").normalize_response(
             self._make_response([block], "refusal")
         )
-        _, overflow_reason = normalize_anthropic_response(
+        nr_overflow = get_transport("anthropic_messages").normalize_response(
             self._make_response([block], "model_context_window_exceeded")
         )
-        assert refusal_reason == "content_filter"
-        assert overflow_reason == "length"
+        assert nr_refusal.finish_reason == "content_filter"
+        assert nr_overflow.finish_reason == "length"
 
     def test_no_text_content(self):
         block = SimpleNamespace(
             type="tool_use", id="tc_1", name="search", input={"q": "hi"}
         )
-        msg, reason = normalize_anthropic_response(
+        nr = get_transport("anthropic_messages").normalize_response(
             self._make_response([block], "tool_use")
         )
-        assert msg.content is None
-        assert len(msg.tool_calls) == 1
+        assert nr.content is None
+        assert len(nr.tool_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1659,3 +1748,91 @@ class TestToolChoice:
             tool_choice="search",
         )
         assert kwargs["tool_choice"] == {"type": "tool", "name": "search"}
+
+
+
+# ---------------------------------------------------------------------------
+# max_tokens resolver — openclaw/openclaw#66664 port
+# ---------------------------------------------------------------------------
+
+from agent.anthropic_adapter import (
+    _resolve_positive_anthropic_max_tokens,
+    _resolve_anthropic_messages_max_tokens,
+)
+
+
+class TestResolvePositiveMaxTokens:
+    """Unit tests for the positive-int resolver helper."""
+
+    def test_positive_int_passes_through(self):
+        assert _resolve_positive_anthropic_max_tokens(8192) == 8192
+
+    def test_zero_returns_none(self):
+        assert _resolve_positive_anthropic_max_tokens(0) is None
+
+    def test_negative_int_returns_none(self):
+        assert _resolve_positive_anthropic_max_tokens(-1) is None
+        assert _resolve_positive_anthropic_max_tokens(-500) is None
+
+    def test_fractional_float_floored_and_kept_if_positive(self):
+        # 8192.7 -> 8192, still positive
+        assert _resolve_positive_anthropic_max_tokens(8192.7) == 8192
+
+    def test_small_positive_float_below_one_returns_none(self):
+        # 0.5 floors to 0, which is not positive
+        assert _resolve_positive_anthropic_max_tokens(0.5) is None
+
+    def test_negative_float_returns_none(self):
+        assert _resolve_positive_anthropic_max_tokens(-1.5) is None
+
+    def test_nan_returns_none(self):
+        assert _resolve_positive_anthropic_max_tokens(float("nan")) is None
+
+    def test_infinity_returns_none(self):
+        assert _resolve_positive_anthropic_max_tokens(float("inf")) is None
+        assert _resolve_positive_anthropic_max_tokens(float("-inf")) is None
+
+    def test_bool_true_returns_none(self):
+        # True is an int subclass but semantically never a real max_tokens value
+        assert _resolve_positive_anthropic_max_tokens(True) is None
+        assert _resolve_positive_anthropic_max_tokens(False) is None
+
+    def test_string_returns_none(self):
+        assert _resolve_positive_anthropic_max_tokens("8192") is None
+
+    def test_none_returns_none(self):
+        assert _resolve_positive_anthropic_max_tokens(None) is None
+
+
+class TestResolveMessagesMaxTokens:
+    """Integration tests for the full Messages resolver."""
+
+    def test_positive_requested_wins(self):
+        assert _resolve_anthropic_messages_max_tokens(
+            8192, "claude-opus-4-6"
+        ) == 8192
+
+    def test_zero_falls_back_to_model_default(self):
+        # Should use _get_anthropic_max_output(model), not crash
+        result = _resolve_anthropic_messages_max_tokens(0, "claude-opus-4-6")
+        assert result > 0
+
+    def test_none_falls_back_to_model_default(self):
+        result = _resolve_anthropic_messages_max_tokens(None, "claude-opus-4-6")
+        assert result > 0
+
+    def test_negative_falls_back_to_model_default(self):
+        # Previously leaked -1 to the API; now falls back safely
+        result = _resolve_anthropic_messages_max_tokens(-1, "claude-opus-4-6")
+        assert result > 0
+
+    def test_fractional_positive_floored(self):
+        assert _resolve_anthropic_messages_max_tokens(
+            8192.5, "claude-opus-4-6"
+        ) == 8192
+
+    def test_sub_one_float_falls_back(self):
+        # 0.5 floors to 0 -> not positive -> falls back to model ceiling
+        result = _resolve_anthropic_messages_max_tokens(0.5, "claude-opus-4-6")
+        assert result > 0
+        assert result != 0

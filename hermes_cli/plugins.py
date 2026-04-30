@@ -37,6 +37,7 @@ import importlib
 import importlib.metadata
 import importlib.util
 import logging
+import os
 import sys
 import types
 from dataclasses import dataclass, field
@@ -45,6 +46,20 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
+from hermes_cli.config import cfg_get
+
+
+def get_bundled_plugins_dir() -> Path:
+    """Locate the bundled ``plugins/`` directory.
+
+    Honours ``HERMES_BUNDLED_PLUGINS`` (set by the Nix wrapper / packaged
+    installs) so read-only store paths are consulted first.  Falls back to
+    the in-repo path used during development.
+    """
+    env_override = os.getenv("HERMES_BUNDLED_PLUGINS")
+    if env_override:
+        return Path(env_override)
+    return Path(__file__).resolve().parent.parent / "plugins"
 
 try:
     import yaml
@@ -71,6 +86,28 @@ VALID_HOOKS: Set[str] = {
     "on_session_finalize",
     "on_session_reset",
     "subagent_stop",
+    # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
+    # after the internal-event guard but BEFORE auth/pairing and agent
+    # dispatch. Plugins may return a dict to influence flow:
+    #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
+    #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
+    #   {"action": "allow"}  /  None             -> normal dispatch
+    # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
+    "pre_gateway_dispatch",
+    # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
+    # command needs user approval -- fires BOTH for CLI-interactive prompts
+    # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
+    # Observers only: return values are ignored. Plugins cannot veto or
+    # pre-answer an approval from these hooks (use pre_tool_call to block
+    # a tool before it reaches approval).
+    #
+    # Kwargs for pre_approval_request:
+    #   command: str, description: str, pattern_key: str, pattern_keys: list[str],
+    #   session_key: str, surface: "cli" | "gateway"
+    # Kwargs for post_approval_response: same as above plus
+    #   choice: "once" | "session" | "always" | "deny" | "timeout"
+    "pre_approval_request",
+    "post_approval_response",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -93,7 +130,7 @@ def _get_disabled_plugins() -> set:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        disabled = config.get("plugins", {}).get("disabled", [])
+        disabled = cfg_get(config, "plugins", "disabled", default=[])
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
         return set()
@@ -133,7 +170,7 @@ def _get_enabled_plugins() -> Optional[set]:
 # Data classes
 # ---------------------------------------------------------------------------
 
-_VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive"}
+_VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform"}
 
 
 @dataclass
@@ -159,6 +196,11 @@ class PluginManifest:
     #              Selection via ``<category>.provider`` config key; the
     #              category's own discovery system handles loading and the
     #              general scanner skips these.
+    # ``platform``: gateway messaging platform adapter (e.g. IRC). Bundled
+    #              platform plugins auto-load so every shipped platform is
+    #              available out of the box; user-installed platform plugins
+    #              in ~/.hermes/plugins/ still gated by ``plugins.enabled``
+    #              (untrusted code).
     kind: str = "standalone"
     # Registry key — path-derived, used by ``plugins.enabled``/``disabled``
     # lookups and by ``hermes plugins list``. For a flat plugin at
@@ -283,6 +325,7 @@ class PluginContext:
         name: str,
         handler: Callable,
         description: str = "",
+        args_hint: str = "",
     ) -> None:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -292,6 +335,13 @@ class PluginContext:
         Unlike ``register_cli_command()`` (which creates ``hermes <subcommand>``
         terminal commands), this registers in-session slash commands that users
         invoke during a conversation.
+
+        ``args_hint`` is an optional short string (e.g. ``"<file>"`` or
+        ``"dias:7 formato:json"``) used by gateway adapters to surface the
+        command with an argument field — for example Discord's native slash
+        command picker. Plugin commands without ``args_hint`` register as
+        parameterless in Discord and still accept trailing text when invoked
+        as free-form chat.
 
         Names conflicting with built-in commands are rejected with a warning.
         """
@@ -320,6 +370,7 @@ class PluginContext:
             "handler": handler,
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
+            "args_hint": (args_hint or "").strip(),
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 
@@ -413,6 +464,62 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- platform adapter registration ---------------------------------------
+
+    def register_platform(
+        self,
+        name: str,
+        label: str,
+        adapter_factory: Callable,
+        check_fn: Callable,
+        validate_config: Callable | None = None,
+        required_env: list | None = None,
+        install_hint: str = "",
+        **entry_kwargs: Any,
+    ) -> None:
+        """Register a gateway platform adapter.
+
+        The adapter_factory receives a ``PlatformConfig`` and returns a
+        ``BasePlatformAdapter`` subclass instance.  The gateway calls
+        ``check_fn()`` before instantiation to verify dependencies.
+
+        Extra keyword arguments are forwarded to ``PlatformEntry`` (e.g.
+        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``).
+        Unknown keys raise TypeError from the dataclass constructor.
+
+        Example::
+
+            ctx.register_platform(
+                name="irc",
+                label="IRC",
+                adapter_factory=lambda cfg: IRCAdapter(cfg),
+                check_fn=lambda: True,
+                emoji="💬",
+                setup_fn=irc_interactive_setup,
+            )
+        """
+        from gateway.platform_registry import platform_registry, PlatformEntry
+
+        entry_kwargs.setdefault("plugin_name", self.manifest.name)
+        entry = PlatformEntry(
+            name=name,
+            label=label,
+            adapter_factory=adapter_factory,
+            check_fn=check_fn,
+            validate_config=validate_config,
+            required_env=required_env or [],
+            install_hint=install_hint,
+            source="plugin",
+            **entry_kwargs,
+        )
+        platform_registry.register(entry)
+        self._manager._plugin_platform_names.add(name)
+        logger.debug(
+            "Plugin %s registered platform: %s",
+            self.manifest.name,
+            name,
+        )
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -491,6 +598,7 @@ class PluginManager:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
+        self._plugin_platform_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
@@ -503,10 +611,23 @@ class PluginManager:
     # Public
     # -----------------------------------------------------------------------
 
-    def discover_and_load(self) -> None:
-        """Scan all plugin sources and load each plugin found."""
-        if self._discovered:
+    def discover_and_load(self, force: bool = False) -> None:
+        """Scan all plugin sources and load each plugin found.
+
+        When ``force`` is true, clear cached discovery state first so config
+        changes or newly-added bundled backends become visible in long-lived
+        sessions without requiring a full agent restart.
+        """
+        if self._discovered and not force:
             return
+        if force:
+            self._plugins.clear()
+            self._hooks.clear()
+            self._plugin_tool_names.clear()
+            self._cli_commands.clear()
+            self._plugin_commands.clear()
+            self._plugin_skills.clear()
+            self._context_engine = None
         self._discovered = True
 
         manifests: List[PluginManifest] = []
@@ -520,15 +641,18 @@ class PluginManager:
         #   - category: ``plugins/image_gen/openai/plugin.yaml`` (backend)
         #
         # ``memory/`` and ``context_engine/`` are skipped at the top level —
-        # they have their own discovery systems. Porting those to the
-        # category-namespace ``kind: exclusive`` model is a future PR.
-        repo_plugins = Path(__file__).resolve().parent.parent / "plugins"
+        # they have their own discovery systems. ``platforms/`` is a category
+        # holding platform adapters (scanned one level deeper below).
+        repo_plugins = get_bundled_plugins_dir()
         manifests.extend(
             self._scan_directory(
                 repo_plugins,
                 source="bundled",
-                skip_names={"memory", "context_engine"},
+                skip_names={"memory", "context_engine", "platforms"},
             )
+        )
+        manifests.extend(
+            self._scan_directory(repo_plugins / "platforms", source="bundled")
         )
 
         # 2. User plugins (~/.hermes/plugins/)
@@ -586,7 +710,11 @@ class PluginManager:
             # just work. Selection among them (e.g. which image_gen backend
             # services calls) is driven by ``<category>.provider`` config,
             # enforced by the tool wrapper.
-            if manifest.kind == "backend" and manifest.source == "bundled":
+            #
+            # Bundled platform plugins (gateway adapters like IRC) auto-load
+            # for the same reason: every platform Hermes ships must be
+            # available out of the box without the user having to opt in.
+            if manifest.source == "bundled" and manifest.kind in ("backend", "platform"):
                 self._load_plugin(manifest)
                 continue
 
@@ -733,6 +861,30 @@ class PluginManager:
                     key, raw_kind, ", ".join(sorted(_VALID_PLUGIN_KINDS)),
                 )
                 kind = "standalone"
+
+            # Auto-coerce user-installed memory providers to kind="exclusive"
+            # so they're routed to plugins/memory discovery instead of being
+            # loaded by the general PluginManager (which has no
+            # register_memory_provider on PluginContext). Mirrors the
+            # heuristic in plugins/memory/__init__.py:_is_memory_provider_dir.
+            # Bundled memory providers are already skipped via skip_names.
+            if kind == "standalone" and "kind" not in data:
+                init_file = plugin_dir / "__init__.py"
+                if init_file.exists():
+                    try:
+                        source_text = init_file.read_text(errors="replace")[:8192]
+                        if (
+                            "register_memory_provider" in source_text
+                            or "MemoryProvider" in source_text
+                        ):
+                            kind = "exclusive"
+                            logger.debug(
+                                "Plugin %s: detected memory provider, "
+                                "treating as kind='exclusive'",
+                                key,
+                            )
+                    except Exception:
+                        pass
 
             return PluginManifest(
                 name=name,
@@ -996,9 +1148,13 @@ def get_plugin_manager() -> PluginManager:
     return _plugin_manager
 
 
-def discover_plugins() -> None:
-    """Discover and load all plugins (idempotent)."""
-    get_plugin_manager().discover_and_load()
+def discover_plugins(force: bool = False) -> None:
+    """Discover and load all plugins.
+
+    Default behavior is idempotent. Pass ``force=True`` to rescan plugin
+    manifests and reload state in the current process.
+    """
+    get_plugin_manager().discover_and_load(force=force)
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
@@ -1049,10 +1205,13 @@ def get_pre_tool_call_block_message(
     return None
 
 
-def _ensure_plugins_discovered() -> PluginManager:
-    """Return the global manager after running idempotent plugin discovery."""
+def _ensure_plugins_discovered(force: bool = False) -> PluginManager:
+    """Return the global manager after ensuring plugin discovery has run.
+
+    Pass ``force=True`` to rescan in the current process.
+    """
     manager = get_plugin_manager()
-    manager.discover_and_load()
+    manager.discover_and_load(force=force)
     return manager
 
 

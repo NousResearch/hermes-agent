@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
+import { cleanThinkingText } from '../lib/text.js'
 
 describe('splitReasoning', () => {
   it('extracts <think>…</think> and strips it from text', () => {
@@ -46,5 +47,15 @@ describe('splitReasoning', () => {
     expect(hasReasoningTag('pre <reasoning>x</reasoning>')).toBe(true)
     expect(hasReasoningTag('<REASONING_SCRATCHPAD>x</REASONING_SCRATCHPAD>')).toBe(true)
     expect(hasReasoningTag('no tags at all')).toBe(false)
+  })
+})
+
+describe('cleanThinkingText', () => {
+  it('removes face/status ticker fragments while preserving real reasoning', () => {
+    expect(
+      cleanThinkingText(
+        '(¬_¬) synthesizing...**Resolving comments on GitHub**\n( ͡° ͜ʖ ͡°) musing...\nActual step\n٩(๑❛ᴗ❛๑)۶ contemplating...next step'
+      )
+    ).toBe('**Resolving comments on GitHub**\nActual step\nnext step')
   })
 })

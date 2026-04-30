@@ -42,9 +42,11 @@ class FailoverReason(enum.Enum):
     # Context / payload
     context_overflow = "context_overflow"  # Context too large — compress, not failover
     payload_too_large = "payload_too_large"  # 413 — compress payload
+    image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
 
     # Model
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
+    provider_policy_blocked = "provider_policy_blocked"  # Aggregator (e.g. OpenRouter) blocked the only endpoint due to account data/privacy policy
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
@@ -52,6 +54,7 @@ class FailoverReason(enum.Enum):
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
+    oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -89,6 +92,7 @@ class ClassifiedError:
 _BILLING_PATTERNS = [
     "insufficient credits",
     "insufficient_quota",
+    "insufficient balance",
     "credit balance",
     "credits have been exhausted",
     "top up your credits",
@@ -146,6 +150,20 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
     "error code: 413",
 ]
 
+# Image-size patterns.  Matched against 400 bodies (not 413) because most
+# providers return a 400 with a specific image-too-big message before the
+# whole request hits the 413 size limit.  Anthropic's wording is the most
+# important here (hard 5 MB per image, returned as
+# "messages.N.content.K.image.source.base64: image exceeds 5 MB maximum").
+_IMAGE_TOO_LARGE_PATTERNS = [
+    "image exceeds",        # Anthropic: "image exceeds 5 MB maximum"
+    "image too large",      # generic
+    "image_too_large",      # error_code variant
+    "image size exceeds",   # variant
+    # "request_too_large" on a request known to contain an image → image is
+    # the likely culprit; we still try the shrink path before giving up.
+]
+
 # Context overflow patterns
 _CONTEXT_OVERFLOW_PATTERNS = [
     "context length",
@@ -194,6 +212,29 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "unsupported model",
 ]
 
+# OpenRouter aggregator policy-block patterns.
+#
+# When a user's OpenRouter account privacy setting (or a per-request
+# `provider.data_collection: deny` preference) excludes the only endpoint
+# serving a model, OpenRouter returns 404 with a *specific* message that is
+# distinct from "model not found":
+#
+#   "No endpoints available matching your guardrail restrictions and
+#    data policy. Configure: https://openrouter.ai/settings/privacy"
+#
+# We classify this as `provider_policy_blocked` rather than
+# `model_not_found` because:
+#   - The model *exists* — model_not_found is misleading in logs
+#   - Provider fallback won't help: the account-level setting applies to
+#     every call on the same OpenRouter account
+#   - The error body already contains the fix URL, so the user gets
+#     actionable guidance without us rewriting the message
+_PROVIDER_POLICY_BLOCKED_PATTERNS = [
+    "no endpoints available matching your guardrail",
+    "no endpoints available matching your data policy",
+    "no endpoints found matching your data policy",
+]
+
 # Auth patterns (non-status-code signals)
 _AUTH_PATTERNS = [
     "invalid api key",
@@ -220,12 +261,25 @@ _TRANSPORT_ERROR_TYPES = frozenset({
     "ConnectionAbortedError", "BrokenPipeError",
     "TimeoutError", "ReadError",
     "ServerDisconnectedError",
+    # SSL/TLS transport errors — transient mid-stream handshake/record
+    # failures that should retry rather than surface as a stalled session.
+    # ssl.SSLError subclasses OSError (caught by isinstance) but we list
+    # the type names here so provider-wrapped SSL errors (e.g. when the
+    # SDK re-raises without preserving the exception chain) still classify
+    # as transport rather than falling through to the unknown bucket.
+    "SSLError", "SSLZeroReturnError", "SSLWantReadError",
+    "SSLWantWriteError", "SSLEOFError", "SSLSyscallError",
     # OpenAI SDK errors (not subclasses of Python builtins)
     "APIConnectionError",
     "APITimeoutError",
 })
 
-# Server disconnect patterns (no status code, but transport-level)
+# Server disconnect patterns (no status code, but transport-level).
+# These are the "ambiguous" patterns — a plain connection close could be
+# transient transport hiccup OR server-side context overflow rejection
+# (common when the API gateway disconnects instead of returning an HTTP
+# error for oversized requests).  A large session + one of these patterns
+# triggers the context-overflow-with-compression recovery path.
 _SERVER_DISCONNECT_PATTERNS = [
     "server disconnected",
     "peer closed connection",
@@ -234,6 +288,40 @@ _SERVER_DISCONNECT_PATTERNS = [
     "network connection lost",
     "unexpected eof",
     "incomplete chunked read",
+]
+
+# SSL/TLS transient failure patterns — intentionally distinct from
+# _SERVER_DISCONNECT_PATTERNS above.
+#
+# An SSL alert mid-stream is almost always a transport-layer hiccup
+# (flaky network, mid-session TLS renegotiation failure, load balancer
+# dropping the connection) — NOT a server-side context overflow signal.
+# So we want the retry path but NOT the compression path; lumping these
+# into _SERVER_DISCONNECT_PATTERNS would trigger unnecessary (and
+# expensive) context compression on any large-session SSL hiccup.
+#
+# The OpenSSL library constructs error codes by prepending a format string
+# to the uppercased alert reason; OpenSSL 3.x changed the separator
+# (e.g. `SSLV3_ALERT_BAD_RECORD_MAC` → `SSL/TLS_ALERT_BAD_RECORD_MAC`),
+# which silently stopped matching anything explicit.  Matching on the
+# stable substrings (`bad record mac`, `ssl alert`, `tls alert`, etc.)
+# survives future OpenSSL format churn without code changes.
+_SSL_TRANSIENT_PATTERNS = [
+    # Space-separated (human-readable form, Python ssl module, most SDKs)
+    "bad record mac",
+    "ssl alert",
+    "tls alert",
+    "ssl handshake failure",
+    "tlsv1 alert",
+    "sslv3 alert",
+    # Underscore-separated (OpenSSL error code tokens, e.g.
+    # `ERR_SSL_SSL/TLS_ALERT_BAD_RECORD_MAC`, `SSLV3_ALERT_BAD_RECORD_MAC`)
+    "bad_record_mac",
+    "ssl_alert",
+    "tls_alert",
+    "tls_alert_internal_error",
+    # Python ssl module prefix, e.g. "[SSL: BAD_RECORD_MAC]"
+    "[ssl:",
 ]
 
 
@@ -255,9 +343,10 @@ def classify_api_error(
       2. HTTP status code + message-aware refinement
       3. Error code classification (from body)
       4. Message pattern matching (billing vs rate_limit vs context vs auth)
-      5. Transport error heuristics
+      5. SSL/TLS transient alert patterns → retry as timeout
       6. Server disconnect + large session → context overflow
-      7. Fallback: unknown (retryable with backoff)
+      7. Transport error heuristics
+      8. Fallback: unknown (retryable with backoff)
 
     Args:
         error: The exception from the API call.
@@ -271,6 +360,11 @@ def classify_api_error(
     """
     status_code = _extract_status_code(error)
     error_type = type(error).__name__
+    # Copilot/GitHub Models RateLimitError may not set .status_code; force 429
+    # so downstream rate-limit handling (classifier reason, pool rotation,
+    # fallback gating) fires correctly instead of misclassifying as generic.
+    if status_code is None and error_type == "RateLimitError":
+        status_code = 429
     body = _extract_error_body(error)
     error_code = _extract_error_code(body)
 
@@ -357,6 +451,25 @@ def classify_api_error(
             should_compress=True,
         )
 
+    # Anthropic OAuth subscription rejects the 1M-context beta header.
+    # Observed error body: "The long context beta is not yet available for
+    # this subscription." Returned as HTTP 400 from native Anthropic when
+    # the subscription doesn't include 1M context, even though the request
+    # carries ``anthropic-beta: context-1m-2025-08-07``. The recovery path
+    # in run_agent.py rebuilds the Anthropic client with the beta stripped
+    # and retries once. Pattern is narrow enough that it won't collide with
+    # the 429 tier-gate pattern above (different status, different phrase).
+    if (
+        status_code == 400
+        and "long context beta" in error_msg
+        and "not yet available" in error_msg
+    ):
+        return _result(
+            FailoverReason.oauth_long_context_beta_forbidden,
+            retryable=True,
+            should_compress=False,
+        )
+
     # ── 2. HTTP status code classification ──────────────────────────
 
     if status_code is not None:
@@ -388,7 +501,18 @@ def classify_api_error(
     if classified is not None:
         return classified
 
-    # ── 5. Server disconnect + large session → context overflow ─────
+    # ── 5. SSL/TLS transient errors → retry as timeout (not compression) ──
+    # SSL alerts mid-stream are transport hiccups, not server-side context
+    # overflow signals.  Classify before the disconnect check so a large
+    # session doesn't incorrectly trigger context compression when the real
+    # cause is a flaky TLS handshake.  Also matches when the error is
+    # wrapped in a generic exception whose message string carries the SSL
+    # alert text but the type isn't ssl.SSLError (happens with some SDKs
+    # that re-raise without chaining).
+    if any(p in error_msg for p in _SSL_TRANSIENT_PATTERNS):
+        return _result(FailoverReason.timeout, retryable=True)
+
+    # ── 6. Server disconnect + large session → context overflow ─────
     # Must come BEFORE generic transport error catch — a disconnect on
     # a large session is more likely context overflow than a transient
     # transport hiccup.  Without this ordering, RemoteProtocolError
@@ -405,12 +529,12 @@ def classify_api_error(
             )
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 6. Transport / timeout heuristics ───────────────────────────
+    # ── 7. Transport / timeout heuristics ───────────────────────────
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 7. Fallback: unknown ────────────────────────────────────────
+    # ── 8. Fallback: unknown ────────────────────────────────────────
 
     return _result(FailoverReason.unknown, retryable=True)
 
@@ -464,17 +588,33 @@ def _classify_by_status(
         return _classify_402(error_msg, result_fn)
 
     if status_code == 404:
+        # OpenRouter policy-block 404 — distinct from "model not found".
+        # The model exists; the user's account privacy setting excludes the
+        # only endpoint serving it. Falling back to another provider won't
+        # help (same account setting applies).  The error body already
+        # contains the fix URL, so just surface it.
+        if any(p in error_msg for p in _PROVIDER_POLICY_BLOCKED_PATTERNS):
+            return result_fn(
+                FailoverReason.provider_policy_blocked,
+                retryable=False,
+                should_fallback=False,
+            )
         if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
             return result_fn(
                 FailoverReason.model_not_found,
                 retryable=False,
                 should_fallback=True,
             )
-        # Generic 404 — could be model or endpoint
+        # Generic 404 with no "model not found" signal — could be a wrong
+        # endpoint path (common with local llama.cpp / Ollama / vLLM when
+        # the URL is slightly misconfigured), a proxy routing glitch, or
+        # a transient backend issue.  Classifying these as model_not_found
+        # silently falls back to a different provider and tells the model
+        # the model is missing, which is wrong and wastes a turn.  Treat
+        # as unknown so the retry loop surfaces the real error instead.
         return result_fn(
-            FailoverReason.model_not_found,
-            retryable=False,
-            should_fallback=True,
+            FailoverReason.unknown,
+            retryable=True,
         )
 
     if status_code == 413:
@@ -567,6 +707,15 @@ def _classify_400(
 ) -> ClassifiedError:
     """Classify 400 Bad Request — context overflow, format error, or generic."""
 
+    # Image-too-large from 400 (Anthropic's 5 MB per-image check fires this way).
+    # Must be checked BEFORE context_overflow because messages can trip both
+    # patterns ("exceeds" + "image") and image-shrink is a cheaper recovery.
+    if any(p in error_msg for p in _IMAGE_TOO_LARGE_PATTERNS):
+        return result_fn(
+            FailoverReason.image_too_large,
+            retryable=True,
+        )
+
     # Context overflow from 400
     if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
         return result_fn(
@@ -576,6 +725,12 @@ def _classify_400(
         )
 
     # Some providers return model-not-found as 400 instead of 404 (e.g. OpenRouter).
+    if any(p in error_msg for p in _PROVIDER_POLICY_BLOCKED_PATTERNS):
+        return result_fn(
+            FailoverReason.provider_policy_blocked,
+            retryable=False,
+            should_fallback=False,
+        )
     if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
         return result_fn(
             FailoverReason.model_not_found,
@@ -688,6 +843,13 @@ def _classify_by_message(
             should_compress=True,
         )
 
+    # Image-too-large patterns (from message text when no status_code)
+    if any(p in error_msg for p in _IMAGE_TOO_LARGE_PATTERNS):
+        return result_fn(
+            FailoverReason.image_too_large,
+            retryable=True,
+        )
+
     # Usage-limit patterns need the same disambiguation as 402: some providers
     # surface "usage limit" errors without an HTTP status code.  A transient
     # signal ("try again", "resets at", …) means it's a periodic quota, not
@@ -746,6 +908,15 @@ def _classify_by_message(
             retryable=False,
             should_rotate_credential=True,
             should_fallback=True,
+        )
+
+    # Provider policy-block (aggregator-side guardrail) — check before
+    # model_not_found so we don't mis-label as a missing model.
+    if any(p in error_msg for p in _PROVIDER_POLICY_BLOCKED_PATTERNS):
+        return result_fn(
+            FailoverReason.provider_policy_blocked,
+            retryable=False,
+            should_fallback=False,
         )
 
     # Model not found patterns

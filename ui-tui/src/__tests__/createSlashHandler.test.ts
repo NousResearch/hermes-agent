@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { getUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
@@ -15,6 +16,103 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/resume')).toBe(true)
     expect(getOverlayState().picker).toBe(true)
+  })
+
+  it('treats /provider as a local /model alias', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/provider')).toBe(true)
+    expect(getOverlayState().modelPicker).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('keeps typed /model switches session-scoped by default', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'x-model' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/model x-model')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'model',
+      session_id: 'sid-abc',
+      value: 'x-model'
+    })
+  })
+
+  it('honors TUI picker session scope without adding --global', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'anthropic/claude-sonnet-4.6' }))
+      }
+    })
+
+    expect(
+      createSlashHandler(ctx)(`/model anthropic/claude-sonnet-4.6 --provider openrouter ${TUI_SESSION_MODEL_FLAG}`)
+    ).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'model',
+      session_id: 'sid-abc',
+      value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
+    })
+  })
+
+  it('does not duplicate --global for explicit persistent model switches', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/model x-model --global')
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'model',
+      session_id: 'sid-abc',
+      value: 'x-model --global'
+    })
+  })
+
+  it('applies /reasoning hide to the thinking section immediately', async () => {
+    patchUiState({ sections: { thinking: 'expanded' }, showReasoning: true, sid: 'sid-abc' })
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'hide' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/reasoning hide')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(getUiState().showReasoning).toBe(false)
+      expect(getUiState().sections.thinking).toBe('hidden')
+    })
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      session_id: 'sid-abc',
+      value: 'hide'
+    })
+  })
+
+  it('applies /reasoning show to the thinking section immediately', async () => {
+    patchUiState({ sections: { thinking: 'hidden' }, showReasoning: false, sid: 'sid-abc' })
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'show' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/reasoning show')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(getUiState().showReasoning).toBe(true)
+      expect(getUiState().sections.thinking).toBe('expanded')
+    })
   })
 
   it('opens the skills hub locally for bare /skills', () => {
@@ -81,11 +179,51 @@ describe('createSlashHandler', () => {
     expect(getUiState().detailsMode).toBe('collapsed')
     expect(createSlashHandler(ctx)('/details toggle')).toBe(true)
     expect(getUiState().detailsMode).toBe('expanded')
+    expect(getUiState().detailsModeCommandOverride).toBe(true)
+    expect(getUiState().sections).toEqual({
+      thinking: 'expanded',
+      tools: 'expanded',
+      subagents: 'expanded',
+      activity: 'expanded'
+    })
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
       key: 'details_mode',
       value: 'expanded'
     })
     expect(ctx.transcript.sys).toHaveBeenCalledWith('details: expanded')
+  })
+
+  it('sets a per-section override and persists it under details_mode.<section>', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/details activity hidden')).toBe(true)
+    expect(getUiState().sections.activity).toBe('hidden')
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'details_mode.activity',
+      value: 'hidden'
+    })
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('details activity: hidden')
+  })
+
+  it('clears a per-section override on /details <section> reset', () => {
+    const ctx = buildCtx()
+    createSlashHandler(ctx)('/details tools expanded')
+    expect(getUiState().sections.tools).toBe('expanded')
+
+    createSlashHandler(ctx)('/details tools reset')
+    expect(getUiState().sections.tools).toBeUndefined()
+    expect(ctx.gateway.rpc).toHaveBeenLastCalledWith('config.set', {
+      key: 'details_mode.tools',
+      value: ''
+    })
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('details tools: reset')
+  })
+
+  it('rejects unknown section modes with a usage hint', () => {
+    const ctx = buildCtx()
+    createSlashHandler(ctx)('/details tools blink')
+    expect(getUiState().sections.tools).toBeUndefined()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /details <section> [hidden|collapsed|expanded|reset]')
   })
 
   it('shows tool enable usage when names are missing', () => {
@@ -95,6 +233,80 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenNthCalledWith(1, 'usage: /tools enable <name> [name ...]')
     expect(ctx.transcript.sys).toHaveBeenNthCalledWith(2, 'built-in toolset: /tools enable web')
     expect(ctx.transcript.sys).toHaveBeenNthCalledWith(3, 'MCP tool: /tools enable github:create_issue')
+  })
+
+  it.each([
+    ['/browser status', 'browser.manage', { action: 'status', session_id: null }],
+    ['/browser connect', 'browser.manage', { action: 'connect', session_id: null, url: 'http://127.0.0.1:9222' }],
+    ['/reload-mcp', 'reload.mcp', { session_id: null }],
+    ['/reload', 'reload.env', {}],
+    ['/stop', 'process.stop', {}],
+    ['/fast status', 'config.get', { key: 'fast', session_id: null }],
+    ['/busy status', 'config.get', { key: 'busy' }],
+    ['/indicator', 'config.get', { key: 'indicator' }]
+  ])('routes %s through native RPC (no slash worker)', (command, method, params) => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)(command)).toBe(true)
+    expect(rpc).toHaveBeenCalledWith(method, params)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('renders browser connect progress messages from the gateway', async () => {
+    const rpc = vi.fn(() =>
+      Promise.resolve({
+        connected: false,
+        messages: [
+          "Chrome isn't running with remote debugging — attempting to launch...",
+          'Browser not connected — start Chrome with remote debugging and retry /browser connect'
+        ],
+        url: 'http://127.0.0.1:9222'
+      })
+    )
+
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/browser connect')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('checking Chrome remote debugging at http://127.0.0.1:9222...')
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        "Chrome isn't running with remote debugging — attempting to launch..."
+      )
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        'Browser not connected — start Chrome with remote debugging and retry /browser connect'
+      )
+      expect(ctx.transcript.sys).not.toHaveBeenCalledWith('browser connect failed')
+    })
+  })
+
+  it('routes /rollback through native RPC when a session is active', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/rollback')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('rollback.list', { session_id: 'sid-abc' })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('hot-swaps the live indicator when /indicator <style> succeeds', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ value: 'emoji' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/indicator emoji')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('config.set', { key: 'indicator', value: 'emoji' })
+    await vi.waitFor(() => expect(getUiState().indicatorStyle).toBe('emoji'))
+  })
+
+  it('rejects unknown indicator styles before hitting the gateway', () => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/indicator sparkle')).toBe(true)
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /indicator [ascii|emoji|kaomoji|unicode]')
   })
 
   it('drops stale slash.exec output after a newer slash', async () => {
@@ -127,7 +339,7 @@ describe('createSlashHandler', () => {
 
     const h = createSlashHandler(ctx)
     expect(h('/slow')).toBe(true)
-    expect(h('/fast')).toBe(true)
+    expect(h('/later')).toBe(true)
     resolveLate!({ output: 'too late' })
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalled()
@@ -178,6 +390,45 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/h')).toBe(true)
     expect(ctx.transcript.panel).toHaveBeenCalledWith(expect.any(String), expect.any(Array))
+  })
+
+  it('lets exact catalog commands win over longer prefix matches', async () => {
+    const ctx = buildCtx({
+      local: {
+        catalog: {
+          canon: {
+            '/status': '/status',
+            '/statusbar': '/statusbar'
+          }
+        }
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/status')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+        command: 'status',
+        session_id: null
+      })
+    })
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('ambiguous command'))
+  })
+
+  it('keeps ambiguous prefix handling when there is no exact catalog match', () => {
+    const ctx = buildCtx({
+      local: {
+        catalog: {
+          canon: {
+            '/status': '/status',
+            '/statusbar': '/statusbar'
+          }
+        }
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/stat')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('ambiguous command: /status, /statusbar')
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
   it('falls through to command.dispatch for skill commands and sends the message', async () => {
@@ -247,33 +498,97 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('no conversation yet')
   })
 
-  it('handles send-type dispatch for /plan command', async () => {
-    const planMessage = 'Plan skill content loaded'
+  it('/save forwards to session.save RPC and reports the returned file', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const rpc = vi.fn(() => Promise.resolve({ file: '/tmp/hermes_conversation_test.json' }))
 
     const ctx = buildCtx({
-      gateway: {
-        gw: {
-          getLogTail: vi.fn(() => ''),
-          request: vi.fn((method: string) => {
-            if (method === 'slash.exec') {
-              return Promise.reject(new Error('pending-input command'))
-            }
-
-            if (method === 'command.dispatch') {
-              return Promise.resolve({ type: 'send', message: planMessage })
-            }
-
-            return Promise.resolve({})
-          })
-        },
-        rpc: vi.fn(() => Promise.resolve({}))
+      gateway: { ...buildGateway(), rpc },
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [
+          { role: 'system', text: 'intro' },
+          { role: 'user', text: 'hello' },
+          { role: 'assistant', text: 'hi there' }
+        ])
       }
     })
 
-    const h = createSlashHandler(ctx)
-    expect(h('/plan create a REST API')).toBe(true)
+    createSlashHandler(ctx)('/save')
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(rpc).toHaveBeenCalledWith('session.save', { session_id: 'sid-abc' })
+
     await vi.waitFor(() => {
-      expect(ctx.transcript.send).toHaveBeenCalledWith(planMessage)
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('conversation saved to: /tmp/hermes_conversation_test.json')
+    })
+  })
+
+  it('/save reports empty state without calling the RPC or slash worker', () => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    createSlashHandler(ctx)('/save')
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('no conversation yet')
+  })
+
+  it('/save without an active session tells the user instead of hitting the RPC', () => {
+    // sid stays null (default) but there IS visible conversation
+    const rpc = vi.fn(() => Promise.resolve({}))
+
+    const ctx = buildCtx({
+      gateway: { ...buildGateway(), rpc },
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [{ role: 'user', text: 'hello' }])
+      }
+    })
+
+    createSlashHandler(ctx)('/save')
+
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('no active session — nothing to save')
+  })
+
+  it('/rollback without an active session tells the user instead of hitting the RPC', () => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    createSlashHandler(ctx)('/rollback')
+
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('no active session — nothing to rollback')
+  })
+
+  it('/title <name> uses session.title RPC and bypasses slash.exec', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ pending: false, title: 'my title' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    createSlashHandler(ctx)('/title my title')
+
+    expect(rpc).toHaveBeenCalledWith('session.title', { session_id: 'sid-abc', title: 'my title' })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('session title set: my title')
+    })
+  })
+
+  it('/title with no args fetches and displays the current title', async () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({ title: 'demo title' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    createSlashHandler(ctx)('/title')
+
+    expect(rpc).toHaveBeenCalledWith('session.title', { session_id: 'sid-abc' })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('title: demo title')
     })
   })
 })
@@ -294,7 +609,7 @@ const buildComposer = () => ({
   hasSelection: false,
   paste: vi.fn(),
   queueRef: { current: [] as string[] },
-  selection: { copySelection: vi.fn(() => '') },
+  selection: { copySelection: vi.fn(async () => '') },
   setInput: vi.fn()
 })
 

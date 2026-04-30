@@ -6,6 +6,8 @@ Covers `_plugin_image_gen_providers`, `_visible_providers`, and
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from agent import image_gen_registry
@@ -172,3 +174,78 @@ class TestConfigWriting:
 
         assert config["image_gen"]["provider"] == "noenv"
         assert config["image_gen"]["model"] == "noenv-model-v1"
+
+    def test_reconfiguring_plugin_provider_writes_provider_and_model(self, monkeypatch, tmp_path):
+        """The reconfigure path should switch image_gen away from managed FAL
+        and onto the selected plugin provider."""
+        from hermes_cli import tools_config
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        image_gen_registry.register_provider(_FakeProvider("testopenai"))
+        monkeypatch.setattr(tools_config, "_prompt_choice", lambda *a, **kw: 0)
+        monkeypatch.setattr(tools_config, "_prompt", lambda *a, **kw: "")
+        monkeypatch.setattr(
+            tools_config,
+            "get_env_value",
+            lambda key: "sk-test" if key == "OPENAI_API_KEY" else "",
+        )
+
+        config = {"image_gen": {"use_gateway": True}}
+        provider_row = {
+            "name": "OpenAI",
+            "env_vars": [{"key": "OPENAI_API_KEY", "prompt": "OpenAI API key"}],
+            "image_gen_plugin_name": "testopenai",
+        }
+
+        tools_config._reconfigure_provider(provider_row, config)
+
+        assert config["image_gen"]["provider"] == "testopenai"
+        assert config["image_gen"]["model"] == "testopenai-model-v1"
+        assert config["image_gen"]["use_gateway"] is False
+
+    def test_plugin_provider_active_overrides_managed_nous_active_label(self, monkeypatch):
+        from hermes_cli import tools_config
+
+        monkeypatch.setattr(
+            tools_config,
+            "get_nous_subscription_features",
+            lambda config: SimpleNamespace(
+                features={"image_gen": SimpleNamespace(managed_by_nous=True)}
+            ),
+        )
+
+        config = {"image_gen": {"provider": "openai", "use_gateway": False}}
+        nous_row = {
+            "name": "Nous Subscription",
+            "managed_nous_feature": "image_gen",
+        }
+        openai_row = {
+            "name": "OpenAI",
+            "image_gen_plugin_name": "openai",
+        }
+
+        assert tools_config._is_provider_active(openai_row, config) is True
+        assert tools_config._is_provider_active(nous_row, config) is False
+
+    def test_reconfiguring_fal_clears_plugin_provider(self, monkeypatch):
+        from hermes_cli import tools_config
+
+        monkeypatch.setattr(tools_config, "_prompt_choice", lambda *a, **kw: 0)
+        monkeypatch.setattr(tools_config, "_prompt", lambda *a, **kw: "")
+        monkeypatch.setattr(
+            tools_config,
+            "get_env_value",
+            lambda key: "fal-key" if key == "FAL_KEY" else "",
+        )
+
+        config = {"image_gen": {"provider": "openai", "use_gateway": False}}
+        provider_row = {
+            "name": "FAL.ai",
+            "env_vars": [{"key": "FAL_KEY", "prompt": "FAL API key"}],
+            "imagegen_backend": "fal",
+        }
+
+        tools_config._reconfigure_provider(provider_row, config)
+
+        assert config["image_gen"]["provider"] == "fal"
+        assert config["image_gen"]["use_gateway"] is False

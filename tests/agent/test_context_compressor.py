@@ -242,6 +242,298 @@ class TestSummaryFailureCooldown:
         assert mock_call.call_count == 1
 
 
+class TestSummaryFallbackToMainModel:
+    """When ``summary_model`` differs from the main model and the summary LLM
+    call fails, the compressor should retry once on the main model before
+    giving up — losing N turns of context is almost always worse than one
+    extra summary attempt.  Covers both the fast-path (explicit
+    model-not-found errors) and the unknown-error best-effort retry."""
+
+    def _msgs(self):
+        return [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+    def test_model_not_found_404_falls_back_to_main_and_succeeds(self):
+        """Classic misconfiguration: ``auxiliary.compression.model`` points at
+        a model the main provider doesn't serve → 404 → retry on main."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        err_404 = Exception("404 model_not_found: no such model")
+        err_404.status_code = 404
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="broken-aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_404, mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        # First call used the misconfigured aux model
+        assert mock_call.call_args_list[0].kwargs.get("model") == "broken-aux-model"
+        # Second call used the main model (no model kwarg → call_llm uses main)
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model" in result
+        # Aux-model failure is recorded even though retry succeeded — this is
+        # how callers (gateway /compress, CLI warning) know to tell the user
+        # their auxiliary.compression.model setting is broken.
+        assert c._last_aux_model_failure_model == "broken-aux-model"
+        assert c._last_aux_model_failure_error is not None
+        assert "404" in c._last_aux_model_failure_error
+
+    def test_unknown_error_falls_back_to_main_and_succeeds(self):
+        """Errors that don't match the 404/503/model_not_found fast-path
+        (400s, provider-specific 'no route', aggregator rejections) should
+        ALSO trigger a best-effort retry on main before entering cooldown."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        # A 400 from OpenRouter / Nous portal with an opaque message — does
+        # NOT match _is_model_not_found, but still an unrecoverable misconfig.
+        err_400 = Exception("400 Bad Request: provider rejected model")
+        err_400.status_code = 400
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="broken-aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_400, mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "broken-aux-model"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model" in result
+        # Aux-model failure recorded despite successful recovery
+        assert c._last_aux_model_failure_model == "broken-aux-model"
+        assert c._last_aux_model_failure_error is not None
+        assert "400" in c._last_aux_model_failure_error
+
+    def test_no_fallback_when_summary_model_equals_main_model(self):
+        """If the aux model IS the main model, there's nowhere to fall back
+        to — go straight to cooldown, don't loop retrying the same call."""
+        err = Exception("500 internal error")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="main-model",  # same as main
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err,
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        # Only one attempt — retry gate blocks fallback when models match
+        assert mock_call.call_count == 1
+        assert result is None
+        # Not flagged as fallen back — the retry condition was never met
+        assert getattr(c, "_summary_model_fallen_back", False) is False
+
+    def test_fallback_only_happens_once_per_compressor(self):
+        """If the retry-on-main ALSO fails, don't loop forever — enter
+        cooldown like the normal failure path."""
+        err1 = Exception("400 aux model rejected")
+        err2 = Exception("500 main model also exploded")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="broken-aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err1, err2],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        # Exactly 2 calls: initial + one retry on main.  No further retries.
+        assert mock_call.call_count == 2
+        assert result is None
+        assert c._summary_model_fallen_back is True
+
+
+class TestAuxModelFallbackSurfacedToCallers:
+    """When summary_model fails but retry-on-main succeeds, compress() must
+    expose the aux-model failure via _last_aux_model_failure_{model,error}
+    so gateway /compress and CLI callers can warn the user about their
+    broken auxiliary.compression.model config — silent recovery would hide
+    a misconfiguration only the user can fix."""
+
+    def _make_msgs(self):
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+    def test_compress_exposes_aux_failure_fields_after_successful_fallback(self):
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main"
+        err_400 = Exception("400 provider rejected configured model")
+        err_400.status_code = 400
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="broken-aux-model",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_400, mock_ok],
+        ):
+            result = c.compress(self._make_msgs())
+
+        # Recovery succeeded → no fallback placeholder
+        assert c._last_summary_fallback_used is False
+        # But aux-model failure IS recorded for the gateway/CLI warning
+        assert c._last_aux_model_failure_model == "broken-aux-model"
+        assert c._last_aux_model_failure_error is not None
+        assert "400" in c._last_aux_model_failure_error
+        # Result is well-formed with a real summary, not a placeholder
+        assert any(
+            isinstance(m.get("content"), str) and "summary via main" in m["content"]
+            for m in result
+        )
+
+    def test_compress_clears_aux_failure_fields_at_start_of_next_call(self):
+        """A subsequent successful compression must clear the aux-failure
+        fields so the warning doesn't persist forever."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main"
+        err_400 = Exception("400 aux model busted")
+        err_400.status_code = 400
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="broken-aux-model",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+            )
+
+        # Call 1: aux fails, retry-on-main succeeds
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_400, mock_ok],
+        ):
+            c.compress(self._make_msgs())
+        assert c._last_aux_model_failure_model == "broken-aux-model"
+
+        # Call 2: clean run on main (summary_model was cleared to "" after
+        # first fallback).  Aux-failure fields MUST reset at compress() start
+        # so the old warning state doesn't leak into this call.
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value=mock_ok,
+        ):
+            c.compress(self._make_msgs())
+        assert c._last_aux_model_failure_model is None
+        assert c._last_aux_model_failure_error is None
+
+
+class TestSummaryFailureTrackingForGatewayWarning:
+    """When summary generation fails, the compressor must record dropped count
+    + fallback flag so gateway hygiene & /compress can surface a visible
+    warning instead of silently dropping context."""
+
+    def test_compress_records_fallback_and_dropped_count_on_summary_failure(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+        # Simulate summary LLM call failing — covers the 404 / model-not-found
+        # case from issue (auxiliary compression model misconfigured).
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("404 model not found")):
+            result = c.compress(msgs)
+
+        assert c._last_summary_fallback_used is True
+        assert c._last_summary_dropped_count > 0
+        assert c._last_summary_error is not None
+        # Result must still be well-formed (fallback summary present).
+        assert any(
+            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
+            for m in result
+        )
+
+    def test_compress_clears_fallback_flag_on_subsequent_success(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+        # First call fails, second succeeds — flag must reset on second compress.
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("boom")):
+            c.compress(msgs)
+        assert c._last_summary_fallback_used is True
+
+        # Reset cooldown to allow retry on second compress
+        c._summary_failure_cooldown_until = 0.0
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            c.compress(msgs)
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+
+
 class TestSummaryPrefixNormalization:
     def test_legacy_prefix_is_replaced(self):
         summary = ContextCompressor._with_summary_prefix("[CONTEXT SUMMARY]: did work")
@@ -253,6 +545,35 @@ class TestSummaryPrefixNormalization:
 
 
 class TestCompressWithClient:
+    def test_system_content_list_gets_compression_note_without_crashing(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": [{"type": "text", "text": "system prompt"}]},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        assert isinstance(result[0]["content"], list)
+        assert any(
+            isinstance(block, dict)
+            and "compacted into a handoff summary" in block.get("text", "")
+            for block in result[0]["content"]
+        )
+
     def test_summarization_path(self):
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -459,6 +780,41 @@ class TestCompressWithClient:
         first_tail = [m for m in result if "msg 6" in (m.get("content") or "")]
         assert len(first_tail) == 1
         assert "summary text" in first_tail[0]["content"]
+
+    def test_double_collision_merges_summary_into_list_tail_content(self):
+        """Structured tail content should accept a merged summary without TypeError."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
+
+        msgs = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "user", "content": [{"type": "text", "text": "msg 6"}]},
+            {"role": "assistant", "content": "msg 7"},
+            {"role": "user", "content": "msg 8"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        merged_tail = next(
+            m for m in result
+            if m.get("role") == "user" and isinstance(m.get("content"), list)
+        )
+        assert isinstance(merged_tail["content"], list)
+        assert "summary text" in merged_tail["content"][0]["text"]
+        assert any(
+            isinstance(block, dict) and block.get("text") == "msg 6"
+            for block in merged_tail["content"]
+        )
 
     def test_double_collision_user_head_assistant_tail(self):
         """Reverse double collision: head ends with 'user', tail starts with 'assistant'.
@@ -781,6 +1137,123 @@ class TestTokenBudgetTailProtection:
         # Tool at index 2 is outside the protected tail (last 3 = indices 2,3,4)
         # so it might or might not be pruned depending on boundary
         assert isinstance(pruned, int)
+
+    def test_multimodal_message_accumulates_text_chars_not_block_count(self, budget_compressor):
+        """_find_tail_cut_by_tokens must use text char count, not list length,
+        for multimodal content. Regression guard for #16087.
+
+        Setup: 6 messages, budget=80 (soft_ceiling=120).  The multimodal message
+        at index 1 has 500 chars of text → 135 tokens (correct) or 10 tokens (bug).
+
+        Fixed path: walk stops at the multimodal (44+135=179 > 120), cut stays at 2,
+        tail = messages[2:] = 4 messages.
+
+        Bug path: walk counts only 10 tokens for the multimodal, exhausts to head_end,
+        the head_end safeguard forces cut = n - min_tail = 3, tail = only 3 messages.
+        """
+        c = budget_compressor
+        # 500 chars → 500//4 + 10 = 135 tokens; len([text, image]) // 4 + 10 = 10 (bug)
+        big_text = "x" * 500
+        multimodal_content = [
+            {"type": "text", "text": big_text},
+            {"type": "image_url", "image_url": {"url": "https://example.com/img.jpg"}},
+        ]
+        messages = [
+            {"role": "user", "content": "head1"},               # 0
+            {"role": "user", "content": multimodal_content},    # 1: BIG (index under test)
+            {"role": "assistant", "content": "tail1"},           # 2
+            {"role": "user", "content": "tail2"},                # 3
+            {"role": "assistant", "content": "tail3"},           # 4
+            {"role": "user", "content": "tail4"},                # 5
+        ]
+        c.tail_token_budget = 80  # soft_ceiling = 120
+        head_end = 0
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        # With the fix: cut=2, tail has 4 messages (soft_ceiling not exceeded by tail1-4).
+        # With the bug: head_end safeguard fires → cut = n - min_tail = 3, only 3 in tail.
+        assert len(messages) - cut >= 4, (
+            f"Expected ≥4 messages in tail (got {len(messages) - cut}, cut={cut}). "
+            "The multimodal message was underestimated — len(list) used instead of text chars."
+        )
+
+    def test_plain_string_content_unchanged(self, budget_compressor):
+        """Plain string content must still be estimated correctly after the fix."""
+        c = budget_compressor
+        # Same layout as the multimodal test but with a plain 500-char string.
+        # Both buggy and fixed code count plain strings the same way (len(str)).
+        # With 135 tokens the plain string also exceeds soft_ceiling=120, so
+        # the walk stops at index 1 and tail has 4 messages — same as the fix path.
+        big_plain = "x" * 500
+        messages = [
+            {"role": "user", "content": "head1"},
+            {"role": "user", "content": big_plain},   # 1: 135 tokens, plain string
+            {"role": "assistant", "content": "tail1"},
+            {"role": "user", "content": "tail2"},
+            {"role": "assistant", "content": "tail3"},
+            {"role": "user", "content": "tail4"},
+        ]
+        c.tail_token_budget = 80
+        head_end = 0
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        assert len(messages) - cut >= 4, (
+            f"Plain string regression: expected ≥4 messages in tail, got {len(messages) - cut}"
+        )
+
+    def test_image_only_block_contributes_zero_text_chars(self, budget_compressor):
+        """Image-only content blocks (no 'text' key) contribute 0 chars + base overhead."""
+        c = budget_compressor
+        c.tail_token_budget = 500
+        image_only = [{"type": "image_url", "image_url": {"url": "https://example.com/x.jpg"}}]
+        messages = [
+            {"role": "user", "content": "a" * 4000},
+            {"role": "user", "content": image_only},   # 0 text chars → 10 tokens overhead
+            {"role": "assistant", "content": "ok"},
+        ]
+        head_end = 0
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        assert isinstance(cut, int)
+        assert 0 <= cut <= len(messages)
+
+    def test_mixed_list_with_bare_strings_does_not_crash(self, budget_compressor):
+        """Content list may contain bare strings (not dicts) — must not raise AttributeError."""
+        c = budget_compressor
+        c.tail_token_budget = 500
+        # Bare string item alongside a dict item — normalisation elsewhere allows this.
+        mixed_content = ["Hello, world!", {"type": "text", "text": "extra text"}]
+        messages = [
+            {"role": "user", "content": mixed_content},
+            {"role": "assistant", "content": "ok"},
+        ]
+        head_end = 0
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        assert isinstance(cut, int)
+        assert 0 <= cut <= len(messages)
+
+
+class TestUpdateModelBudgets:
+    """Regression: update_model() must recalculate token budgets."""
+
+    def test_tail_budget_recalculated(self):
+        """tail_token_budget must change after switching to a different context length."""
+        from unittest.mock import patch
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor("model-a", threshold_percent=0.50, quiet_mode=True)
+        old_tail = comp.tail_token_budget
+        old_max_summary = comp.max_summary_tokens
+
+        comp.update_model("model-b", context_length=32_000)
+        assert comp.tail_token_budget != old_tail, "tail_token_budget should change"
+        assert comp.tail_token_budget < old_tail, "smaller context → smaller budget"
+        assert comp.max_summary_tokens != old_max_summary, "max_summary_tokens should change"
+
+    def test_budgets_proportional(self):
+        """Budgets should be proportional to context_length after update."""
+        from unittest.mock import patch
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            comp = ContextCompressor("model-a", threshold_percent=0.50, quiet_mode=True)
+        comp.update_model("model-b", context_length=10_000)
+        assert comp.tail_token_budget == int(comp.threshold_tokens * comp.summary_target_ratio)
+        assert comp.max_summary_tokens == min(int(10_000 * 0.05), 4000)
 
 
 class TestTruncateToolCallArgsJson:

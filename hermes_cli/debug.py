@@ -7,16 +7,17 @@ Currently supports:
 
 import io
 import json
-import os
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_replace
 
 
 # ---------------------------------------------------------------------------
@@ -44,8 +45,13 @@ def _pending_file() -> Path:
     Each entry: ``{"url": "...", "expire_at": <unix_ts>}``.  Scheduled
     DELETEs used to be handled by spawning a detached Python process per
     paste that slept for 6 hours; those accumulated forever if the user
-    ran ``hermes debug share`` repeatedly.  We now persist the schedule
-    to disk and sweep expired entries on the next debug invocation.
+    ran ``hermes debug share`` repeatedly.
+
+    Deletion is now driven by the gateway's cron ticker
+    (``gateway/run.py::_start_cron_ticker``) which calls
+    ``_sweep_expired_pastes`` once per hour.  ``hermes debug share`` also
+    runs an opportunistic sweep on entry as a fallback for CLI-only users
+    who never start the gateway.
     """
     return get_hermes_home() / "pastes" / "pending.json"
 
@@ -73,7 +79,7 @@ def _save_pending(entries: list[dict]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(entries, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        atomic_replace(tmp, path)
     except OSError:
         # Non-fatal — worst case the user has to run ``hermes debug delete``
         # manually.
@@ -147,6 +153,14 @@ def _sweep_expired_pastes(now: Optional[float] = None) -> tuple[int, int]:
     return (deleted, len(remaining))
 
 
+def _best_effort_sweep_expired_pastes() -> None:
+    """Attempt pending-paste cleanup without letting /debug fail offline."""
+    try:
+        _sweep_expired_pastes()
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Privacy / delete helpers
 # ---------------------------------------------------------------------------
@@ -214,9 +228,10 @@ def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SEC
     interpreters that never exited until the sleep completed.
 
     The replacement is stateless: we append to ``~/.hermes/pastes/pending.json``
-    and rely on opportunistic sweeps (``_sweep_expired_pastes``) called from
-    every ``hermes debug`` invocation.  If the user never runs ``hermes debug``
-    again, paste.rs's own retention policy handles cleanup.
+    and the gateway's cron ticker sweeps expired entries once per hour.
+    ``hermes debug share`` also runs an opportunistic sweep as a fallback
+    for CLI-only users.  If neither runs again, paste.rs's own retention
+    policy handles cleanup.
     """
     _record_pending(urls, delay_seconds=delay_seconds)
 
@@ -314,72 +329,128 @@ def upload_to_pastebin(content: str, expiry_days: int = 7) -> str:
 # Log file reading
 # ---------------------------------------------------------------------------
 
-def _resolve_log_path(log_name: str) -> Optional[Path]:
-    """Find the log file for *log_name*, falling back to the .1 rotation.
 
-    Returns the path if found, or None.
-    """
+@dataclass
+class LogSnapshot:
+    """Single-read snapshot of a log file used by debug-share."""
+
+    path: Optional[Path]
+    tail_text: str
+    full_text: Optional[str]
+
+
+def _primary_log_path(log_name: str) -> Optional[Path]:
+    """Where *log_name* would live if present. Doesn't check existence."""
     from hermes_cli.logs import LOG_FILES
 
     filename = LOG_FILES.get(log_name)
-    if not filename:
+    return (get_hermes_home() / "logs" / filename) if filename else None
+
+
+def _resolve_log_path(log_name: str) -> Optional[Path]:
+    """Find the log file for *log_name*, falling back to the .1 rotation.
+
+    Returns the first non-empty candidate (primary, then .1), or None.
+    Callers distinguish 'empty primary' from 'truly missing' via
+    :func:`_primary_log_path`.
+    """
+    primary = _primary_log_path(log_name)
+    if primary is None:
         return None
 
-    log_dir = get_hermes_home() / "logs"
-    primary = log_dir / filename
     if primary.exists() and primary.stat().st_size > 0:
         return primary
 
-    # Fall back to the most recent rotated file (.1).
-    rotated = log_dir / f"{filename}.1"
+    rotated = primary.parent / f"{primary.name}.1"
     if rotated.exists() and rotated.stat().st_size > 0:
         return rotated
 
     return None
 
 
-def _read_log_tail(log_name: str, num_lines: int) -> str:
-    """Read the last *num_lines* from a log file, or return a placeholder."""
-    from hermes_cli.logs import _read_last_n_lines
+def _capture_log_snapshot(
+    log_name: str,
+    *,
+    tail_lines: int,
+    max_bytes: int = _MAX_LOG_BYTES,
+) -> LogSnapshot:
+    """Capture a log once and derive summary/full-log views from it.
 
-    log_path = _resolve_log_path(log_name)
-    if log_path is None:
-        return "(file not found)"
-
-    try:
-        lines = _read_last_n_lines(log_path, num_lines)
-        return "".join(lines).rstrip("\n")
-    except Exception as exc:
-        return f"(error reading: {exc})"
-
-
-def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[str]:
-    """Read a log file for standalone upload.
-
-    Returns the file content (last *max_bytes* if truncated), or None if the
-    file doesn't exist or is empty.
+    The report tail and standalone log upload must come from the same file
+    snapshot. Otherwise a rotation/truncate between reads can make the report
+    look newer than the uploaded ``agent.log`` paste.
     """
     log_path = _resolve_log_path(log_name)
     if log_path is None:
-        return None
+        primary = _primary_log_path(log_name)
+        tail = "(file empty)" if primary and primary.exists() else "(file not found)"
+        return LogSnapshot(path=None, tail_text=tail, full_text=None)
 
     try:
         size = log_path.stat().st_size
         if size == 0:
-            return None
+            # race: file was truncated between _resolve_log_path and stat
+            return LogSnapshot(path=log_path, tail_text="(file empty)", full_text=None)
 
-        if size <= max_bytes:
-            return log_path.read_text(encoding="utf-8", errors="replace")
-
-        # File is larger than max_bytes — read the tail.
         with open(log_path, "rb") as f:
-            f.seek(size - max_bytes)
-            # Skip partial line at the seek point.
-            f.readline()
-            content = f.read().decode("utf-8", errors="replace")
-        return f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{content}"
-    except Exception:
-        return None
+            if size <= max_bytes:
+                raw = f.read()
+                truncated = False
+            else:
+                # Read from the end until we have enough bytes for the
+                # standalone upload and enough newline context to render the
+                # summary tail from the same snapshot.
+                chunk_size = 8192
+                pos = size
+                chunks: list[bytes] = []
+                total = 0
+                newline_count = 0
+
+                while pos > 0 and (total < max_bytes or newline_count <= tail_lines + 1) and total < max_bytes * 2:
+                    read_size = min(chunk_size, pos)
+                    pos -= read_size
+                    f.seek(pos)
+                    chunk = f.read(read_size)
+                    chunks.insert(0, chunk)
+                    total += len(chunk)
+                    newline_count += chunk.count(b"\n")
+                    chunk_size = min(chunk_size * 2, 65536)
+
+                raw = b"".join(chunks)
+                truncated = pos > 0
+
+        full_raw = raw
+        if truncated and len(full_raw) > max_bytes:
+            cut = len(full_raw) - max_bytes
+            # Check whether the cut lands exactly on a line boundary.  If the
+            # byte just before the cut position is a newline the first retained
+            # byte starts a complete line and we should keep it.  Only drop a
+            # partial first line when we're genuinely mid-line.
+            on_boundary = cut > 0 and full_raw[cut - 1 : cut] == b"\n"
+            full_raw = full_raw[cut:]
+            if not on_boundary and b"\n" in full_raw:
+                full_raw = full_raw.split(b"\n", 1)[1]
+
+        all_text = raw.decode("utf-8", errors="replace")
+        tail_text = "".join(all_text.splitlines(keepends=True)[-tail_lines:]).rstrip("\n")
+
+        full_text = full_raw.decode("utf-8", errors="replace")
+        if truncated:
+            full_text = f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{full_text}"
+
+        return LogSnapshot(path=log_path, tail_text=tail_text, full_text=full_text)
+    except Exception as exc:
+        return LogSnapshot(path=log_path, tail_text=f"(error reading: {exc})", full_text=None)
+
+
+def _capture_default_log_snapshots(log_lines: int) -> dict[str, LogSnapshot]:
+    """Capture all logs used by debug-share exactly once."""
+    errors_lines = min(log_lines, 100)
+    return {
+        "agent": _capture_log_snapshot("agent", tail_lines=log_lines),
+        "errors": _capture_log_snapshot("errors", tail_lines=errors_lines),
+        "gateway": _capture_log_snapshot("gateway", tail_lines=errors_lines),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +476,12 @@ def _capture_dump() -> str:
     return capture.getvalue()
 
 
-def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
+def collect_debug_report(
+    *,
+    log_lines: int = 200,
+    dump_text: str = "",
+    log_snapshots: Optional[dict[str, LogSnapshot]] = None,
+) -> str:
     """Build the summary debug report: system dump + log tails.
 
     Parameters
@@ -424,19 +500,22 @@ def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
         dump_text = _capture_dump()
     buf.write(dump_text)
 
+    if log_snapshots is None:
+        log_snapshots = _capture_default_log_snapshots(log_lines)
+
     # ── Recent log tails (summary only) ──────────────────────────────────
     buf.write("\n\n")
     buf.write(f"--- agent.log (last {log_lines} lines) ---\n")
-    buf.write(_read_log_tail("agent", log_lines))
+    buf.write(log_snapshots["agent"].tail_text)
     buf.write("\n\n")
 
     errors_lines = min(log_lines, 100)
     buf.write(f"--- errors.log (last {errors_lines} lines) ---\n")
-    buf.write(_read_log_tail("errors", errors_lines))
+    buf.write(log_snapshots["errors"].tail_text)
     buf.write("\n\n")
 
     buf.write(f"--- gateway.log (last {errors_lines} lines) ---\n")
-    buf.write(_read_log_tail("gateway", errors_lines))
+    buf.write(log_snapshots["gateway"].tail_text)
     buf.write("\n")
 
     return buf.getvalue()
@@ -448,6 +527,8 @@ def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
 
 def run_debug_share(args):
     """Collect debug report + full logs, upload each, print URLs."""
+    _best_effort_sweep_expired_pastes()
+
     log_lines = getattr(args, "lines", 200)
     expiry = getattr(args, "expire", 7)
     local_only = getattr(args, "local", False)
@@ -459,10 +540,15 @@ def run_debug_share(args):
 
     # Capture dump once — prepended to every paste for context.
     dump_text = _capture_dump()
+    log_snapshots = _capture_default_log_snapshots(log_lines)
 
-    report = collect_debug_report(log_lines=log_lines, dump_text=dump_text)
-    agent_log = _read_full_log("agent")
-    gateway_log = _read_full_log("gateway")
+    report = collect_debug_report(
+        log_lines=log_lines,
+        dump_text=dump_text,
+        log_snapshots=log_snapshots,
+    )
+    agent_log = log_snapshots["agent"].full_text
+    gateway_log = log_snapshots["gateway"].full_text
 
     # Prepend dump header to each full log so every paste is self-contained.
     if agent_log:

@@ -82,7 +82,7 @@ class TestNormalizeCustomProviderEntry:
         """Unknown config keys should produce a warning."""
         entry = {
             "base_url": "https://api.example.com/v1",
-            "api_key": "sk-test-key",
+            "api_key": "***",
             "unknownField": "value",
             "anotherBad": 42,
         }
@@ -90,6 +90,19 @@ class TestNormalizeCustomProviderEntry:
             result = _normalize_custom_provider_entry(entry, provider_key="test")
         assert result is not None
         assert any("unknown config keys" in r.message.lower() for r in caplog.records)
+
+    def test_timeout_keys_not_flagged_unknown(self, caplog):
+        """request_timeout_seconds and stale_timeout_seconds should not produce warnings."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "api_key": "***",
+            "request_timeout_seconds": 300,
+            "stale_timeout_seconds": 900,
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
 
     def test_camel_case_warning_logged(self, caplog):
         """camelCase alias mapping should produce a warning."""
@@ -135,3 +148,48 @@ class TestNormalizeCustomProviderEntry:
         }
         result = _normalize_custom_provider_entry(entry, provider_key="")
         assert result is None
+
+    def test_models_list_converted_to_dict(self):
+        """List-format models should be preserved as an empty-value dict so
+        /model picks them up instead of showing the provider with (0) models."""
+        entry = {
+            "name": "tencent-coding-plan",
+            "base_url": "https://api.lkeap.cloud.tencent.com/coding/v3",
+            "models": ["glm-5", "kimi-k2.5", "minimax-m2.5"],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {"glm-5": {}, "kimi-k2.5": {}, "minimax-m2.5": {}}
+
+    def test_models_dict_preserved(self):
+        """Dict-format models should pass through unchanged."""
+        entry = {
+            "name": "acme",
+            "base_url": "https://api.example.com/v1",
+            "models": {"gpt-foo": {"context_length": 32000}},
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {"gpt-foo": {"context_length": 32000}}
+
+    def test_models_list_filters_empty_and_non_string(self):
+        """List entries that are empty strings or non-strings are skipped."""
+        entry = {
+            "name": "acme",
+            "base_url": "https://api.example.com/v1",
+            "models": ["valid", "", None, 42, "  ", "also-valid"],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert result["models"] == {"valid": {}, "also-valid": {}}
+
+    def test_models_empty_list_omitted(self):
+        """Empty list (falsy) should not produce a models key."""
+        entry = {
+            "name": "acme",
+            "base_url": "https://api.example.com/v1",
+            "models": [],
+        }
+        result = _normalize_custom_provider_entry(entry)
+        assert result is not None
+        assert "models" not in result

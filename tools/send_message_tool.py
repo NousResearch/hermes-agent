@@ -20,7 +20,15 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
+# Slack conversation IDs: C (public channel), G (private/group channel), D (DM).
+# Must be uppercase alphanumeric, 9+ chars. User IDs (U...) and workspace IDs
+# (W...) are NOT valid chat.postMessage channel values — posting to them fails
+# because the API requires a conversation ID. To DM a user you must first call
+# conversations.open to obtain a D... ID. Without this gate, Slack IDs fall
+# through to channel-name resolution, which only matches by name and fails.
+_SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
+_YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -32,8 +40,12 @@ _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
-_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
+_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 _VOICE_EXTS = {".ogg", ".opus"}
+# Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
+# formats either route through sendVoice (Opus/OGG) or fall back to
+# document delivery.
+_TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
 _URL_SECRET_QUERY_RE = re.compile(
     r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)",
     re.IGNORECASE,
@@ -120,11 +132,11 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send"
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
             }
         },
         "required": []
@@ -197,29 +209,12 @@ def _handle_send(args):
     except Exception as e:
         return json.dumps(_error(f"Failed to load gateway config: {e}"))
 
-    platform_map = {
-        "telegram": Platform.TELEGRAM,
-        "discord": Platform.DISCORD,
-        "slack": Platform.SLACK,
-        "whatsapp": Platform.WHATSAPP,
-        "signal": Platform.SIGNAL,
-        "bluebubbles": Platform.BLUEBUBBLES,
-        "qqbot": Platform.QQBOT,
-        "matrix": Platform.MATRIX,
-        "mattermost": Platform.MATTERMOST,
-        "homeassistant": Platform.HOMEASSISTANT,
-        "dingtalk": Platform.DINGTALK,
-        "feishu": Platform.FEISHU,
-        "wecom": Platform.WECOM,
-        "wecom_callback": Platform.WECOM_CALLBACK,
-        "weixin": Platform.WEIXIN,
-        "email": Platform.EMAIL,
-        "sms": Platform.SMS,
-    }
-    platform = platform_map.get(platform_name)
-    if not platform:
-        avail = ", ".join(platform_map.keys())
-        return tool_error(f"Unknown platform: {platform_name}. Available: {avail}")
+    # Accept any platform name — built-in names resolve to their enum
+    # member, plugin platform names create dynamic members via _missing_().
+    try:
+        platform = Platform(platform_name)
+    except (ValueError, KeyError):
+        return tool_error(f"Unknown platform: {platform_name}")
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
@@ -292,7 +287,15 @@ def _handle_send(args):
                 from gateway.mirror import mirror_to_session
                 from gateway.session_context import get_session_env
                 source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
-                if mirror_to_session(platform_name, chat_id, mirror_text, source_label=source_label, thread_id=thread_id):
+                user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+                if mirror_to_session(
+                    platform_name,
+                    chat_id,
+                    mirror_text,
+                    source_label=source_label,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                ):
                     result["mirrored"] = True
             except Exception:
                 pass
@@ -318,10 +321,21 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _NUMERIC_TOPIC_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+    if platform_name == "slack":
+        match = _SLACK_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     if platform_name == "weixin":
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "yuanbao":
+        match = _YUANBAO_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
+        if target_ref.strip().isdigit():
+            return f"group:{target_ref.strip()}", None, True
+        return None, None, False
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -401,6 +415,27 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
+async def _send_via_adapter(platform, pconfig, chat_id, chunk):
+    """Send a message via a live gateway adapter (for plugin platforms).
+
+    Falls back to error if no adapter is connected for this platform.
+    """
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+        if runner:
+            adapter = runner.adapters.get(platform)
+            if adapter:
+                from gateway.platforms.base import SendResult
+                result = await adapter.send(chat_id=chat_id, content=chunk)
+                if result.success:
+                    return {"success": True, "message_id": result.message_id}
+                return {"error": f"Adapter send failed: {result.error}"}
+    except Exception as e:
+        return {"error": f"Plugin platform send failed: {e}"}
+    return {"error": f"No live adapter for platform '{platform.value}'. Is the gateway running with this platform connected?"}
+
+
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
     """Route a message to the appropriate platform sender.
 
@@ -444,6 +479,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     }
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
+
+    # Check plugin registry for max_message_length
+    if platform not in _MAX_LENGTHS:
+        try:
+            from gateway.platform_registry import platform_registry
+            entry = platform_registry.get(platform.value)
+            if entry and entry.max_message_length > 0:
+                _MAX_LENGTHS[platform] = entry.max_message_length
+        except Exception:
+            pass
 
     # Smart-chunk the message to fit within platform limits.
     # For short messages or platforms without a known limit this is a no-op.
@@ -528,11 +573,26 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Yuanbao: native media attachment support via running gateway adapter ---
+    if platform == Platform.YUANBAO and media_files:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_yuanbao(
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else None,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, and signal; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -540,7 +600,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, and signal"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao"
         )
 
     last_result = None
@@ -571,8 +631,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
+        elif platform == Platform.YUANBAO:
+            result = await _send_yuanbao(chat_id, chunk)
         else:
-            result = {"error": f"Direct sending not yet implemented for {platform.value}"}
+            # Plugin platform — route through the gateway's live adapter
+            # if available, otherwise report the error.
+            result = await _send_via_adapter(platform, pconfig, chat_id, chunk)
 
         if isinstance(result, dict) and result.get("error"):
             return result
@@ -680,7 +744,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         last_msg = await bot.send_voice(
                             chat_id=int_chat_id, voice=f, **thread_kwargs
                         )
-                    elif ext in _AUDIO_EXTS:
+                    elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
                         last_msg = await bot.send_audio(
                             chat_id=int_chat_id, audio=f, **thread_kwargs
                         )
@@ -1047,6 +1111,7 @@ async def _send_email(extra, chat_id, message):
     """Send via SMTP (one-shot, no persistent connection needed)."""
     import smtplib
     from email.mime.text import MIMEText
+    from email.utils import formatdate
 
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
     password = os.getenv("EMAIL_PASSWORD", "")
@@ -1064,6 +1129,7 @@ async def _send_email(extra, chat_id, message):
         msg["From"] = address
         msg["To"] = chat_id
         msg["Subject"] = "Hermes Agent"
+        msg["Date"] = formatdate(localtime=True)
 
         server = smtplib.SMTP(smtp_host, smtp_port)
         server.starttls(context=ssl.create_default_context())
@@ -1508,6 +1574,35 @@ async def _send_qqbot(pconfig, chat_id, message):
                 return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
+
+
+async def _send_yuanbao(chat_id, message, media_files=None):
+    """Send via Yuanbao using the running gateway adapter's WebSocket connection.
+
+    Yuanbao uses a persistent WebSocket — unlike HTTP-based platforms, we
+    cannot create a throwaway client.  We obtain the running singleton from
+    the adapter module itself (``get_active_adapter``).
+
+    chat_id format:
+      - Group: "group:<group_code>"
+      - DM:    "direct:<account_id>" or just "<account_id>"
+    """
+    try:
+        from gateway.platforms.yuanbao import get_active_adapter, send_yuanbao_direct
+    except ImportError:
+        return _error("Yuanbao adapter module not available.")
+
+    adapter = get_active_adapter()
+    if adapter is None:
+        return _error(
+            "Yuanbao adapter is not running. "
+            "Start the gateway with yuanbao platform enabled first."
+        )
+
+    try:
+        return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
+    except Exception as e:
+        return _error(f"Yuanbao send failed: {e}")
 
 
 # --- Registry ---

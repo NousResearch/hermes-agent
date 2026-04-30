@@ -250,6 +250,73 @@ class TestPluginLoading:
 
         assert "hermes_plugins.ns_plugin" in sys.modules
 
+    def test_user_memory_plugin_auto_coerced_to_exclusive(self, tmp_path, monkeypatch):
+        """User-installed memory plugins must NOT be loaded by the general
+        PluginManager — they belong to plugins/memory discovery.
+
+        Regression test for the mempalace crash:
+            'PluginContext' object has no attribute 'register_memory_provider'
+
+        A plugin that calls ``ctx.register_memory_provider`` in its
+        ``__init__.py`` should be auto-detected and treated as
+        ``kind: exclusive`` so the general loader records the manifest but
+        does not import/register() it. The real activation happens through
+        ``plugins/memory/__init__.py`` via ``memory.provider`` config.
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "mempalace"
+        plugin_dir.mkdir(parents=True)
+        # No explicit `kind:` — the heuristic should kick in.
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "mempalace"}))
+        (plugin_dir / "__init__.py").write_text(
+            "class MemPalaceProvider:\n"
+            "    pass\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider('mempalace', MemPalaceProvider)\n"
+        )
+        # Even if the user explicitly enables it in config, the loader
+        # should still treat it as exclusive and skip general loading.
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["mempalace"]}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "mempalace" in mgr._plugins
+        entry = mgr._plugins["mempalace"]
+        assert entry.manifest.kind == "exclusive", (
+            f"Expected auto-coerced kind='exclusive', got {entry.manifest.kind}"
+        )
+        # Not loaded by general manager (no register() call, no AttributeError).
+        assert not entry.enabled
+        assert entry.module is None
+        assert "exclusive" in (entry.error or "").lower()
+
+    def test_explicit_standalone_kind_not_coerced(self, tmp_path, monkeypatch):
+        """If a plugin explicitly declares ``kind: standalone`` in its
+        manifest, the memory-provider heuristic must NOT override it —
+        even if the source happens to mention ``MemoryProvider``.
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "not_memory"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.dump({"name": "not_memory", "kind": "standalone"})
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "# This plugin inspects MemoryProvider docs but isn't one.\n"
+            "def register(ctx):\n    pass\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr._plugins["not_memory"].manifest.kind == "standalone"
+
 
 # ── TestPluginHooks ────────────────────────────────────────────────────────
 
@@ -262,6 +329,33 @@ class TestPluginHooks:
         assert "post_api_request" in VALID_HOOKS
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS
+
+    def test_valid_hooks_include_pre_gateway_dispatch(self):
+        assert "pre_gateway_dispatch" in VALID_HOOKS
+
+    def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
+        """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "predispatch_plugin",
+            register_body=(
+                'ctx.register_hook("pre_gateway_dispatch", '
+                'lambda **kw: {"action": "skip", "reason": "test"})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_gateway_dispatch",
+            event=object(),
+            gateway=object(),
+            session_store=object(),
+        )
+        assert len(results) == 1
+        assert results[0] == {"action": "skip", "reason": "test"}
 
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""
@@ -541,7 +635,7 @@ class TestPluginManagerList:
         assert mgr.list_plugins() == []
 
     def test_list_returns_sorted(self, tmp_path, monkeypatch):
-        """list_plugins() returns results sorted by name."""
+        """list_plugins() returns results sorted by key."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         _make_plugin_dir(plugins_dir, "zulu")
         _make_plugin_dir(plugins_dir, "alpha")
@@ -551,8 +645,10 @@ class TestPluginManagerList:
         mgr.discover_and_load()
 
         listing = mgr.list_plugins()
-        names = [p["name"] for p in listing]
-        assert names == sorted(names)
+        # list_plugins sorts by key (path-derived, e.g. ``image_gen/openai``),
+        # not by display name, so that category plugins group together.
+        keys = [p["key"] for p in listing]
+        assert keys == sorted(keys)
 
     def test_list_with_plugins(self, tmp_path, monkeypatch):
         """list_plugins() returns info dicts for each discovered plugin."""
@@ -720,6 +816,33 @@ class TestPluginCommands:
         assert entry["handler"] is handler
         assert entry["description"] == "My custom command"
         assert entry["plugin"] == "test-plugin"
+        # args_hint defaults to empty string when not passed.
+        assert entry["args_hint"] == ""
+
+    def test_register_command_with_args_hint(self):
+        """args_hint is stored and surfaced for gateway-native UI registration."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command(
+            "metricas",
+            lambda a: a,
+            description="Metrics dashboard",
+            args_hint="dias:7 formato:json",
+        )
+
+        entry = mgr._plugin_commands["metricas"]
+        assert entry["args_hint"] == "dias:7 formato:json"
+
+    def test_register_command_args_hint_whitespace_trimmed(self):
+        """args_hint leading/trailing whitespace is stripped."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command("foo", lambda a: a, args_hint="  <file>  ")
+        assert mgr._plugin_commands["foo"]["args_hint"] == "<file>"
 
     def test_register_command_normalizes_name(self):
         """Names are lowercased, stripped, and leading slashes removed."""

@@ -156,7 +156,7 @@
       for entry in "''${ENTRIES[@]}"; do
         IFS=":" read -r ATTR FOLDER NIX_FILE <<< "$entry"
         echo "==> .#$ATTR ($FOLDER -> $NIX_FILE)"
-        OUTPUT=$(nix build ".#$ATTR.npmDeps" --no-link --print-build-logs 2>&1)
+        OUTPUT=$(nix build ".#$ATTR.npmDeps" --no-link --rebuild --print-build-logs 2>&1)
         STATUS=$?
         if [ "$STATUS" -eq 0 ]; then
           echo "    ok"
@@ -165,6 +165,17 @@
 
         NEW_HASH=$(echo "$OUTPUT" | awk '/got:/ {print $2; exit}')
         if [ -z "$NEW_HASH" ]; then
+          # Magic-Nix-Cache occasionally returns HTTP 418 / cache-throttled
+          # mid-run; nix then prints "outputs … not valid, so checking is
+          # not possible" without a `got:` line.  That's an infrastructure
+          # blip, not a stale lockfile — warn + skip rather than failing
+          # the lint.  A real hash mismatch would still surface in the
+          # primary `.#$ATTR` build, which is a separate CI job.
+          if echo "$OUTPUT" | grep -qE "throttled|HTTP error 418|substituter .* is disabled|some outputs of .* are not valid"; then
+            echo "    skipped (transient cache failure — see primary nix build for real status)" >&2
+            echo "$OUTPUT" | tail -8 >&2
+            continue
+          fi
           echo "    build failed with no hash mismatch:" >&2
           echo "$OUTPUT" | tail -40 >&2
           exit 1
@@ -187,7 +198,10 @@
 
         if [ "$MODE" = "--apply" ]; then
           sed -i "s|hash = \"sha256-[^\"]*\";|hash = \"$NEW_HASH\";|" "$NIX_FILE"
-          nix build ".#$ATTR.npmDeps" --no-link --print-build-logs
+          if ! nix build ".#$ATTR.npmDeps" --no-link --print-build-logs; then
+            echo "    verification build failed after hash update" >&2
+            exit 1
+          fi
           FIXED=1
           echo "    fixed"
         fi

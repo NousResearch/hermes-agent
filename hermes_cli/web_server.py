@@ -23,7 +23,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -33,6 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import (
+    cfg_get,
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
     get_config_path,
@@ -49,7 +50,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
@@ -71,6 +72,11 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # Injected into the SPA HTML so only the legitimate web UI can use it.
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
+_SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+
+# In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
+# or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
+_DASHBOARD_EMBEDDED_CHAT_ENABLED = False
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
@@ -104,14 +110,29 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
 })
 
 
-def _require_token(request: Request) -> None:
-    """Validate the ephemeral session token.  Raises 401 on mismatch.
+def _has_valid_session_token(request: Request) -> bool:
+    """True if the request carries a valid dashboard session token.
 
-    Uses ``hmac.compare_digest`` to prevent timing side-channels.
+    The dedicated session header avoids collisions with reverse proxies that
+    already use ``Authorization`` (for example Caddy ``basic_auth``). We still
+    accept the legacy Bearer path for backward compatibility with older
+    dashboard bundles.
     """
+    session_header = request.headers.get(_SESSION_HEADER_NAME, "")
+    if session_header and hmac.compare_digest(
+        session_header.encode(),
+        _SESSION_TOKEN.encode(),
+    ):
+        return True
+
     auth = request.headers.get("authorization", "")
     expected = f"Bearer {_SESSION_TOKEN}"
-    if not hmac.compare_digest(auth.encode(), expected.encode()):
+    return hmac.compare_digest(auth.encode(), expected.encode())
+
+
+def _require_token(request: Request) -> None:
+    """Validate the ephemeral session token.  Raises 401 on mismatch."""
+    if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -205,9 +226,7 @@ async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS and not path.startswith("/api/plugins/"):
-        auth = request.headers.get("authorization", "")
-        expected = f"Bearer {_SESSION_TOKEN}"
-        if not hmac.compare_digest(auth.encode(), expected.encode()):
+        if not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
@@ -234,7 +253,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "singularity"],
+        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
+    },
+    "terminal.vercel_runtime": {
+        "type": "select",
+        "description": "Vercel Sandbox runtime",
+        "options": ["node24", "node22", "python3.13"],  # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     },
     "terminal.modal_mode": {
         "type": "select",
@@ -269,7 +293,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "display.busy_input_mode": {
         "type": "select",
         "description": "Input behavior while agent is running",
-        "options": ["queue", "interrupt", "block"],
+        "options": ["interrupt", "queue", "steer"],
     },
     "memory.provider": {
         "type": "select",
@@ -320,6 +344,11 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "human_delay": "display",
     "dashboard": "display",
     "code_execution": "agent",
+    "prompt_caching": "agent",
+    # Only `telegram.reactions` currently lives under telegram — fold it in
+    # with the other messaging-platform config (discord) so it isn't an
+    # orphan tab of one field.
+    "telegram": "discord",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -416,8 +445,29 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+class ModelAssignment(BaseModel):
+    """Payload for POST /api/model/set — assign a provider/model to a slot.
+
+    scope="main"        → writes model.provider + model.default
+    scope="auxiliary"   → writes auxiliary.<task>.provider + auxiliary.<task>.model
+    scope="auxiliary" with task=""  → applied to every auxiliary.* slot
+    scope="auxiliary" with task="__reset__"  → resets every slot to provider="auto"
+    """
+    scope: str
+    provider: str
+    model: str
+    task: str = ""
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
-_GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
+try:
+    _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
+except (ValueError, TypeError):
+    _log.warning(
+        "Invalid GATEWAY_HEALTH_TIMEOUT value %r — using default 3.0s",
+        os.getenv("GATEWAY_HEALTH_TIMEOUT"),
+    )
+    _GATEWAY_HEALTH_TIMEOUT = 3.0
 
 
 def _probe_gateway_health() -> tuple[bool, dict | None]:
@@ -711,7 +761,7 @@ async def get_sessions(limit: int = 20, offset: int = 0):
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
-    except Exception as e:
+    except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -885,6 +935,206 @@ def get_model_info():
         return dict(_EMPTY_MODEL_INFO)
 
 
+# ---------------------------------------------------------------------------
+# Model assignment — pick provider+model for main slot or auxiliary slots.
+# Mirrors the model.options JSON-RPC from tui_gateway but uses REST so the
+# Models page (which has no chat PTY open) can drive it.
+# ---------------------------------------------------------------------------
+
+# Canonical auxiliary task slots. Keep in sync with DEFAULT_CONFIG["auxiliary"]
+# in hermes_cli/config.py — listed here for deterministic ordering in the UI.
+_AUX_TASK_SLOTS: Tuple[str, ...] = (
+    "vision",
+    "web_extract",
+    "compression",
+    "session_search",
+    "skills_hub",
+    "approval",
+    "mcp",
+    "title_generation",
+)
+
+
+@app.get("/api/model/options")
+def get_model_options():
+    """Return authenticated providers + their curated model lists.
+
+    REST equivalent of the ``model.options`` JSON-RPC on tui_gateway, so the
+    dashboard Models page can render the picker without a live chat session.
+    The response shape matches ``model.options`` 1:1 so ``ModelPickerDialog``
+    can share the same types.
+    """
+    try:
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
+            current_provider = model_cfg.get("provider", "") or ""
+            current_base_url = model_cfg.get("base_url", "") or ""
+        else:
+            current_model = str(model_cfg) if model_cfg else ""
+            current_provider = ""
+            current_base_url = ""
+
+        user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        custom_providers = (
+            cfg.get("custom_providers")
+            if isinstance(cfg.get("custom_providers"), list)
+            else []
+        )
+
+        providers = list_authenticated_providers(
+            current_provider=current_provider,
+            current_base_url=current_base_url,
+            current_model=current_model,
+            user_providers=user_providers,
+            custom_providers=custom_providers,
+            max_models=50,
+        )
+        return {
+            "providers": providers,
+            "model": current_model,
+            "provider": current_provider,
+        }
+    except Exception:
+        _log.exception("GET /api/model/options failed")
+        raise HTTPException(status_code=500, detail="Failed to list model options")
+
+
+@app.get("/api/model/auxiliary")
+def get_auxiliary_models():
+    """Return current auxiliary task assignments.
+
+    Shape:
+      {
+        "tasks": [
+          {"task": "vision", "provider": "auto", "model": "", "base_url": ""},
+          ...
+        ],
+        "main": {"provider": "openrouter", "model": "anthropic/claude-opus-4.7"},
+      }
+    """
+    try:
+        cfg = load_config()
+        aux_cfg = cfg.get("auxiliary", {})
+        if not isinstance(aux_cfg, dict):
+            aux_cfg = {}
+
+        tasks = []
+        for slot in _AUX_TASK_SLOTS:
+            slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
+            tasks.append({
+                "task": slot,
+                "provider": str(slot_cfg.get("provider", "auto") or "auto"),
+                "model": str(slot_cfg.get("model", "") or ""),
+                "base_url": str(slot_cfg.get("base_url", "") or ""),
+            })
+
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            main = {
+                "provider": str(model_cfg.get("provider", "") or ""),
+                "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
+            }
+        else:
+            main = {"provider": "", "model": str(model_cfg) if model_cfg else ""}
+
+        return {"tasks": tasks, "main": main}
+    except Exception:
+        _log.exception("GET /api/model/auxiliary failed")
+        raise HTTPException(status_code=500, detail="Failed to read auxiliary config")
+
+
+@app.post("/api/model/set")
+async def set_model_assignment(body: ModelAssignment):
+    """Assign a model to the main slot or an auxiliary task slot.
+
+    Writes to ``~/.hermes/config.yaml`` — applies to **new** sessions only.
+    The currently running chat PTY (if any) is not affected; use the
+    ``/model`` slash command inside a chat to hot-swap that specific session.
+    """
+    scope = (body.scope or "").strip().lower()
+    provider = (body.provider or "").strip()
+    model = (body.model or "").strip()
+    task = (body.task or "").strip().lower()
+
+    if scope not in ("main", "auxiliary"):
+        raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
+
+    try:
+        cfg = load_config()
+
+        if scope == "main":
+            if not provider or not model:
+                raise HTTPException(status_code=400, detail="provider and model required for main")
+            model_cfg = cfg.get("model", {})
+            if not isinstance(model_cfg, dict):
+                model_cfg = {}
+            model_cfg["provider"] = provider
+            model_cfg["default"] = model
+            # Clear stale base_url so the resolver picks the provider's own default.
+            if "base_url" in model_cfg and model_cfg.get("base_url"):
+                model_cfg["base_url"] = ""
+            # Also clear hardcoded context_length override — new model may have
+            # a different context window.
+            if "context_length" in model_cfg:
+                model_cfg.pop("context_length", None)
+            cfg["model"] = model_cfg
+            save_config(cfg)
+            return {"ok": True, "scope": "main", "provider": provider, "model": model}
+
+        # scope == "auxiliary"
+        aux = cfg.get("auxiliary")
+        if not isinstance(aux, dict):
+            aux = {}
+
+        if task == "__reset__":
+            # Reset every slot to provider="auto", model="" — keeps other fields intact.
+            for slot in _AUX_TASK_SLOTS:
+                slot_cfg = aux.get(slot)
+                if not isinstance(slot_cfg, dict):
+                    slot_cfg = {}
+                slot_cfg["provider"] = "auto"
+                slot_cfg["model"] = ""
+                aux[slot] = slot_cfg
+            cfg["auxiliary"] = aux
+            save_config(cfg)
+            return {"ok": True, "scope": "auxiliary", "reset": True}
+
+        if not provider:
+            raise HTTPException(status_code=400, detail="provider required for auxiliary")
+
+        targets = [task] if task else list(_AUX_TASK_SLOTS)
+        for slot in targets:
+            if slot not in _AUX_TASK_SLOTS:
+                raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
+            slot_cfg = aux.get(slot)
+            if not isinstance(slot_cfg, dict):
+                slot_cfg = {}
+            slot_cfg["provider"] = provider
+            slot_cfg["model"] = model
+            aux[slot] = slot_cfg
+
+        cfg["auxiliary"] = aux
+        save_config(cfg)
+        return {
+            "ok": True,
+            "scope": "auxiliary",
+            "tasks": targets,
+            "provider": provider,
+            "model": model,
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/model/set failed")
+        raise HTTPException(status_code=500, detail="Failed to save model assignment")
+
+
+
+
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Reverse _normalize_config_for_web before saving.
 
@@ -943,7 +1193,7 @@ async def update_config(body: ConfigUpdate):
     try:
         save_config(_denormalize_config_from_web(body.config))
         return {"ok": True}
-    except Exception as e:
+    except Exception:
         _log.exception("PUT /api/config failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -972,7 +1222,7 @@ async def set_env_var(body: EnvVarUpdate):
     try:
         save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
-    except Exception as e:
+    except Exception:
         _log.exception("PUT /api/env failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -986,7 +1236,7 @@ async def remove_env_var(body: EnvVarDelete):
         return {"ok": True, "key": body.key}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
         _log.exception("DELETE /api/env failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -1189,6 +1439,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "docs_url": "https://github.com/QwenLM/qwen-code",
         "status_fn": None,  # dispatched via auth.get_qwen_auth_status
     },
+    {
+        "id": "minimax-oauth",
+        "name": "MiniMax (OAuth)",
+        "flow": "pkce",
+        "cli_command": "hermes auth add minimax-oauth",
+        "docs_url": "https://www.minimax.io",
+        "status_fn": None,  # dispatched via auth.get_minimax_oauth_auth_status
+    },
 )
 
 
@@ -1231,6 +1489,16 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "token_preview": _truncate_token(raw.get("access_token")),
                 "expires_at": raw.get("expires_at"),
                 "has_refresh_token": bool(raw.get("has_refresh_token")),
+            }
+        if provider_id == "minimax-oauth":
+            raw = hauth.get_minimax_oauth_auth_status()
+            return {
+                "logged_in": bool(raw.get("logged_in")),
+                "source": "minimax_oauth",
+                "source_label": f"MiniMax ({raw.get('region', 'global')})",
+                "token_preview": None,
+                "expires_at": raw.get("expires_at"),
+                "has_refresh_token": True,
             }
     except Exception as e:
         return {"logged_in": False, "error": str(e)}
@@ -1508,26 +1776,30 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
         with urllib.request.urlopen(req, timeout=20) as resp:
             result = json.loads(resp.read().decode())
     except Exception as e:
-        sess["status"] = "error"
-        sess["error_message"] = f"Token exchange failed: {e}"
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = f"Token exchange failed: {e}"
         return {"ok": False, "status": "error", "message": sess["error_message"]}
 
     access_token = result.get("access_token", "")
     refresh_token = result.get("refresh_token", "")
     expires_in = int(result.get("expires_in") or 3600)
     if not access_token:
-        sess["status"] = "error"
-        sess["error_message"] = "No access token returned"
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = "No access token returned"
         return {"ok": False, "status": "error", "message": sess["error_message"]}
 
     expires_at_ms = int(time.time() * 1000) + (expires_in * 1000)
     try:
         _save_anthropic_oauth_creds(access_token, refresh_token, expires_at_ms)
     except Exception as e:
-        sess["status"] = "error"
-        sess["error_message"] = f"Save failed: {e}"
+        with _oauth_sessions_lock:
+            sess["status"] = "error"
+            sess["error_message"] = f"Save failed: {e}"
         return {"ok": False, "status": "error", "message": sess["error_message"]}
-    sess["status"] = "approved"
+    with _oauth_sessions_lock:
+        sess["status"] = "approved"
     _log.info("oauth/pkce: anthropic login completed (session=%s)", session_id)
     return {"ok": True, "status": "approved"}
 
@@ -1539,7 +1811,6 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
     then spawns a background poller. Returns the user-facing display fields
     so the UI can render the verification page link + user code.
     """
-    from hermes_cli import auth as hauth
     if provider_id == "nous":
         from hermes_cli.auth import _request_device_code, PROVIDER_REGISTRY
         import httpx
@@ -2189,7 +2460,8 @@ async def get_usage_analytics(days: int = 30):
                    SUM(reasoning_tokens) as reasoning_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
-                   COUNT(*) as sessions
+                   COUNT(*) as sessions,
+                   SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ?
             GROUP BY day ORDER BY day
         """, (cutoff,))
@@ -2200,7 +2472,8 @@ async def get_usage_analytics(days: int = 30):
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COUNT(*) as sessions
+                   COUNT(*) as sessions,
+                   SUM(COALESCE(api_call_count, 0)) as api_calls
             FROM sessions WHERE started_at > ? AND model IS NOT NULL
             GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
         """, (cutoff,))
@@ -2213,7 +2486,8 @@ async def get_usage_analytics(days: int = 30):
                    SUM(reasoning_tokens) as total_reasoning,
                    COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
-                   COUNT(*) as total_sessions
+                   COUNT(*) as total_sessions,
+                   SUM(COALESCE(api_call_count, 0)) as total_api_calls
             FROM sessions WHERE started_at > ?
         """, (cutoff,))
         totals = dict(cur3.fetchone())
@@ -2239,6 +2513,420 @@ async def get_usage_analytics(days: int = 30):
         db.close()
 
 
+@app.get("/api/analytics/models")
+async def get_models_analytics(days: int = 30):
+    """Rich per-model analytics for the Models dashboard page.
+
+    Returns token/cost/session breakdown per model plus capability metadata
+    from models.dev (context window, vision, tools, reasoning, etc.).
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        cutoff = time.time() - (days * 86400)
+
+        cur = db._conn.execute("""
+            SELECT model,
+                   billing_provider,
+                   SUM(input_tokens) as input_tokens,
+                   SUM(output_tokens) as output_tokens,
+                   SUM(cache_read_tokens) as cache_read_tokens,
+                   SUM(reasoning_tokens) as reasoning_tokens,
+                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
+                   COUNT(*) as sessions,
+                   SUM(COALESCE(api_call_count, 0)) as api_calls,
+                   SUM(tool_call_count) as tool_calls,
+                   MAX(started_at) as last_used_at,
+                   AVG(input_tokens + output_tokens) as avg_tokens_per_session
+            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+            GROUP BY model, billing_provider
+            ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+        """, (cutoff,))
+        rows = [dict(r) for r in cur.fetchall()]
+
+        models = []
+        for row in rows:
+            provider = row.get("billing_provider") or ""
+            model_name = row["model"]
+            caps = {}
+            try:
+                from agent.models_dev import get_model_capabilities
+                mc = get_model_capabilities(provider=provider, model=model_name)
+                if mc is not None:
+                    caps = {
+                        "supports_tools": mc.supports_tools,
+                        "supports_vision": mc.supports_vision,
+                        "supports_reasoning": mc.supports_reasoning,
+                        "context_window": mc.context_window,
+                        "max_output_tokens": mc.max_output_tokens,
+                        "model_family": mc.model_family,
+                    }
+            except Exception:
+                pass
+
+            models.append({
+                "model": model_name,
+                "provider": provider,
+                "input_tokens": row["input_tokens"],
+                "output_tokens": row["output_tokens"],
+                "cache_read_tokens": row["cache_read_tokens"],
+                "reasoning_tokens": row["reasoning_tokens"],
+                "estimated_cost": row["estimated_cost"],
+                "actual_cost": row["actual_cost"],
+                "sessions": row["sessions"],
+                "api_calls": row["api_calls"],
+                "tool_calls": row["tool_calls"],
+                "last_used_at": row["last_used_at"],
+                "avg_tokens_per_session": row["avg_tokens_per_session"],
+                "capabilities": caps,
+            })
+
+        totals_cur = db._conn.execute("""
+            SELECT COUNT(DISTINCT model) as distinct_models,
+                   SUM(input_tokens) as total_input,
+                   SUM(output_tokens) as total_output,
+                   SUM(cache_read_tokens) as total_cache_read,
+                   SUM(reasoning_tokens) as total_reasoning,
+                   COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
+                   COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
+                   COUNT(*) as total_sessions,
+                   SUM(COALESCE(api_call_count, 0)) as total_api_calls
+            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+        """, (cutoff,))
+        totals = dict(totals_cur.fetchone())
+
+        return {
+            "models": models,
+            "totals": totals,
+            "period_days": days,
+        }
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# /api/pty — PTY-over-WebSocket bridge for the dashboard "Chat" tab.
+#
+# The endpoint spawns the same ``hermes --tui`` binary the CLI uses, behind
+# a POSIX pseudo-terminal, and forwards bytes + resize escapes across a
+# WebSocket.  The browser renders the ANSI through xterm.js (see
+# web/src/pages/ChatPage.tsx).
+#
+# Auth: ``?token=<session_token>`` query param (browsers can't set
+# Authorization on the WS upgrade).  Same ephemeral ``_SESSION_TOKEN`` as
+# REST.  Localhost-only — we defensively reject non-loopback clients even
+# though uvicorn binds to 127.0.0.1.
+# ---------------------------------------------------------------------------
+
+import re
+import asyncio
+
+from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
+
+_RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
+_PTY_READ_CHUNK_TIMEOUT = 0.2
+_VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+# Starlette's TestClient reports the peer as "testclient"; treat it as
+# loopback so tests don't need to rewrite request scope.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
+
+# Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
+# and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
+# the chat tab generates on mount; entries auto-evict when the last subscriber
+# drops AND the publisher has disconnected.
+_event_channels: dict[str, set] = {}
+_event_lock = asyncio.Lock()
+
+
+def _resolve_chat_argv(
+    resume: Optional[str] = None,
+    sidecar_url: Optional[str] = None,
+) -> tuple[list[str], Optional[str], Optional[dict]]:
+    """Resolve the argv + cwd + env for the chat PTY.
+
+    Default: whatever ``hermes --tui`` would run.  Tests monkeypatch this
+    function to inject a tiny fake command (``cat``, ``sh -c 'printf …'``)
+    so nothing has to build Node or the TUI bundle.
+
+    Session resume is propagated via the ``HERMES_TUI_RESUME`` env var —
+    matching what ``hermes_cli.main._launch_tui`` does for the CLI path.
+    Appending ``--resume <id>`` to argv doesn't work because ``ui-tui`` does
+    not parse its argv.
+
+    `sidecar_url` (when set) is forwarded as ``HERMES_TUI_SIDECAR_URL`` so
+    the spawned ``tui_gateway.entry`` can mirror dispatcher emits to the
+    dashboard's ``/api/pub`` endpoint (see :func:`pub_ws`).
+    """
+    from hermes_cli.main import PROJECT_ROOT, _make_tui_argv
+
+    argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
+    env = os.environ.copy()
+    env.setdefault("NODE_ENV", "production")
+
+    if resume:
+        env["HERMES_TUI_RESUME"] = resume
+
+    if sidecar_url:
+        env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
+
+    return list(argv), str(cwd) if cwd else None, env
+
+
+def _build_sidecar_url(channel: str) -> Optional[str]:
+    """ws:// URL the PTY child should publish events to, or None when unbound."""
+    host = getattr(app.state, "bound_host", None)
+    port = getattr(app.state, "bound_port", None)
+
+    if not host or not port:
+        return None
+
+    netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
+    qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
+
+    return f"ws://{netloc}/api/pub?{qs}"
+
+
+async def _broadcast_event(channel: str, payload: str) -> None:
+    """Fan out one publisher frame to every subscriber on `channel`."""
+    async with _event_lock:
+        subs = list(_event_channels.get(channel, ()))
+
+    for sub in subs:
+        try:
+            await sub.send_text(payload)
+        except Exception:
+            # Subscriber went away mid-send; the /api/events finally clause
+            # will remove it from the registry on its next iteration.
+            pass
+
+
+def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
+    """Return the channel id from the query string or None if invalid."""
+    channel = ws.query_params.get("channel", "")
+
+    return channel if _VALID_CHANNEL_RE.match(channel) else None
+
+
+@app.websocket("/api/pty")
+async def pty_ws(ws: WebSocket) -> None:
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        await ws.close(code=4403)
+        return
+
+    # --- auth + loopback check (before accept so we can close cleanly) ---
+    token = ws.query_params.get("token", "")
+    expected = _SESSION_TOKEN
+    if not hmac.compare_digest(token.encode(), expected.encode()):
+        await ws.close(code=4401)
+        return
+
+    client_host = ws.client.host if ws.client else ""
+    if client_host and client_host not in _LOOPBACK_HOSTS:
+        await ws.close(code=4403)
+        return
+
+    await ws.accept()
+
+    # --- spawn PTY ------------------------------------------------------
+    resume = ws.query_params.get("resume") or None
+    channel = _channel_or_close_code(ws)
+    sidecar_url = _build_sidecar_url(channel) if channel else None
+
+    try:
+        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
+    except SystemExit as exc:
+        # _make_tui_argv calls sys.exit(1) when node/npm is missing.
+        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+        await ws.close(code=1011)
+        return
+
+
+    try:
+        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
+    except PtyUnavailableError as exc:
+        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+        await ws.close(code=1011)
+        return
+    except (FileNotFoundError, OSError) as exc:
+        await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
+        await ws.close(code=1011)
+        return
+
+    loop = asyncio.get_running_loop()
+
+    # --- reader task: PTY master → WebSocket ----------------------------
+    async def pump_pty_to_ws() -> None:
+        while True:
+            chunk = await loop.run_in_executor(
+                None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
+            )
+            if chunk is None:  # EOF
+                return
+            if not chunk:  # no data this tick; yield control and retry
+                await asyncio.sleep(0)
+                continue
+            try:
+                await ws.send_bytes(chunk)
+            except Exception:
+                return
+
+    reader_task = asyncio.create_task(pump_pty_to_ws())
+
+    # --- writer loop: WebSocket → PTY master ----------------------------
+    try:
+        while True:
+            msg = await ws.receive()
+            msg_type = msg.get("type")
+            if msg_type == "websocket.disconnect":
+                break
+            raw = msg.get("bytes")
+            if raw is None:
+                text = msg.get("text")
+                raw = text.encode("utf-8") if isinstance(text, str) else b""
+            if not raw:
+                continue
+
+            # Resize escape is consumed locally, never written to the PTY.
+            match = _RESIZE_RE.match(raw)
+            if match and match.end() == len(raw):
+                cols = int(match.group(1))
+                rows = int(match.group(2))
+                bridge.resize(cols=cols, rows=rows)
+                continue
+
+            bridge.write(raw)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        reader_task.cancel()
+        try:
+            await reader_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        bridge.close()
+
+
+# ---------------------------------------------------------------------------
+# /api/ws — JSON-RPC WebSocket sidecar for the dashboard "Chat" tab.
+#
+# Drives the same `tui_gateway.dispatch` surface Ink uses over stdio, so the
+# dashboard can render structured metadata (model badge, tool-call sidebar,
+# slash launcher, session info) alongside the xterm.js terminal that PTY
+# already paints. Both transports bind to the same session id when one is
+# active, so a tool.start emitted by the agent fans out to both sinks.
+# ---------------------------------------------------------------------------
+
+
+@app.websocket("/api/ws")
+async def gateway_ws(ws: WebSocket) -> None:
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        await ws.close(code=4403)
+        return
+
+    token = ws.query_params.get("token", "")
+    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        await ws.close(code=4401)
+        return
+
+    client_host = ws.client.host if ws.client else ""
+    if client_host and client_host not in _LOOPBACK_HOSTS:
+        await ws.close(code=4403)
+        return
+
+    from tui_gateway.ws import handle_ws
+
+    await handle_ws(ws)
+
+
+# ---------------------------------------------------------------------------
+# /api/pub + /api/events — chat-tab event broadcast.
+#
+# The PTY-side ``tui_gateway.entry`` opens /api/pub at startup (driven by
+# HERMES_TUI_SIDECAR_URL set in /api/pty's PTY env) and writes every
+# dispatcher emit through it.  The dashboard fans those frames out to any
+# subscriber that opened /api/events on the same channel id.  This is what
+# gives the React sidebar its tool-call feed without breaking the PTY
+# child's stdio handshake with Ink.
+# ---------------------------------------------------------------------------
+
+
+@app.websocket("/api/pub")
+async def pub_ws(ws: WebSocket) -> None:
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        await ws.close(code=4403)
+        return
+
+    token = ws.query_params.get("token", "")
+    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        await ws.close(code=4401)
+        return
+
+    client_host = ws.client.host if ws.client else ""
+    if client_host and client_host not in _LOOPBACK_HOSTS:
+        await ws.close(code=4403)
+        return
+
+    channel = _channel_or_close_code(ws)
+    if not channel:
+        await ws.close(code=4400)
+        return
+
+    await ws.accept()
+
+    try:
+        while True:
+            await _broadcast_event(channel, await ws.receive_text())
+    except WebSocketDisconnect:
+        pass
+
+
+@app.websocket("/api/events")
+async def events_ws(ws: WebSocket) -> None:
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        await ws.close(code=4403)
+        return
+
+    token = ws.query_params.get("token", "")
+    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        await ws.close(code=4401)
+        return
+
+    client_host = ws.client.host if ws.client else ""
+    if client_host and client_host not in _LOOPBACK_HOSTS:
+        await ws.close(code=4403)
+        return
+
+    channel = _channel_or_close_code(ws)
+    if not channel:
+        await ws.close(code=4400)
+        return
+
+    await ws.accept()
+
+    async with _event_lock:
+        _event_channels.setdefault(channel, set()).add(ws)
+
+    try:
+        while True:
+            # Subscribers don't speak — the receive() just blocks until
+            # disconnect so the connection stays open as long as the
+            # browser holds it.
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        async with _event_lock:
+            subs = _event_channels.get(channel)
+
+            if subs is not None:
+                subs.discard(ws)
+
+                if not subs:
+                    _event_channels.pop(channel, None)
+
+
 def mount_spa(application: FastAPI):
     """Mount the built SPA. Falls back to index.html for client-side routing.
 
@@ -2260,8 +2948,10 @@ def mount_spa(application: FastAPI):
     def _serve_index():
         """Return index.html with the session token injected."""
         html = _index_path.read_text()
+        chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         token_script = (
-            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";</script>'
+            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+            f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};</script>"
         )
         html = html.replace("</head>", f"{token_script}</head>", 1)
         return HTMLResponse(
@@ -2301,8 +2991,227 @@ _BUILTIN_DASHBOARD_THEMES = [
 ]
 
 
+def _parse_theme_layer(value: Any, default_hex: str, default_alpha: float = 1.0) -> Optional[Dict[str, Any]]:
+    """Normalise a theme layer spec from YAML into `{hex, alpha}` form.
+
+    Accepts shorthand (a bare hex string) or full dict form.  Returns
+    ``None`` on garbage input so the caller can fall back to a built-in
+    default rather than blowing up.
+    """
+    if value is None:
+        return {"hex": default_hex, "alpha": default_alpha}
+    if isinstance(value, str):
+        return {"hex": value, "alpha": default_alpha}
+    if isinstance(value, dict):
+        hex_val = value.get("hex", default_hex)
+        alpha_val = value.get("alpha", default_alpha)
+        if not isinstance(hex_val, str):
+            return None
+        try:
+            alpha_f = float(alpha_val)
+        except (TypeError, ValueError):
+            alpha_f = default_alpha
+        return {"hex": hex_val, "alpha": max(0.0, min(1.0, alpha_f))}
+    return None
+
+
+_THEME_DEFAULT_TYPOGRAPHY: Dict[str, str] = {
+    "fontSans": 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+    "fontMono": 'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace',
+    "baseSize": "15px",
+    "lineHeight": "1.55",
+    "letterSpacing": "0",
+}
+
+_THEME_DEFAULT_LAYOUT: Dict[str, str] = {
+    "radius": "0.5rem",
+    "density": "comfortable",
+}
+
+_THEME_OVERRIDE_KEYS = {
+    "card", "cardForeground", "popover", "popoverForeground",
+    "primary", "primaryForeground", "secondary", "secondaryForeground",
+    "muted", "mutedForeground", "accent", "accentForeground",
+    "destructive", "destructiveForeground", "success", "warning",
+    "border", "input", "ring",
+}
+
+# Well-known named asset slots themes can populate.  Any other keys under
+# ``assets.custom`` are exposed as ``--theme-asset-custom-<key>`` CSS vars
+# for plugin/shell use.
+_THEME_NAMED_ASSET_KEYS = {"bg", "hero", "logo", "crest", "sidebar", "header"}
+
+# Component-style buckets themes can override.  The value under each bucket
+# is a mapping from camelCase property name to CSS string; each pair emits
+# ``--component-<bucket>-<kebab-property>`` on :root.  The frontend's shell
+# components (Card, App header, Backdrop, etc.) consume these vars so themes
+# can restyle chrome (clip-path, border-image, segmented progress, etc.)
+# without shipping their own CSS.
+_THEME_COMPONENT_BUCKETS = {
+    "card", "header", "footer", "sidebar", "tab",
+    "progress", "badge", "backdrop", "page",
+}
+
+_THEME_LAYOUT_VARIANTS = {"standard", "cockpit", "tiled"}
+
+# Cap on customCSS length so a malformed/oversized theme YAML can't blow up
+# the response payload or the <style> tag.  32 KiB is plenty for every
+# practical reskin (the Strike Freedom demo is ~2 KiB).
+_THEME_CUSTOM_CSS_MAX = 32 * 1024
+
+
+def _normalise_theme_definition(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Normalise a user theme YAML into the wire format `ThemeProvider`
+    expects.  Returns ``None`` if the theme is unusable.
+
+    Accepts both the full schema (palette/typography/layout) and a loose
+    form with bare hex strings, so hand-written YAMLs stay friendly.
+    """
+    if not isinstance(data, dict):
+        return None
+    name = data.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+
+    # Palette
+    palette_src = data.get("palette", {}) if isinstance(data.get("palette"), dict) else {}
+    # Allow top-level `colors.background` as a shorthand too.
+    colors_src = data.get("colors", {}) if isinstance(data.get("colors"), dict) else {}
+
+    def _layer(key: str, default_hex: str, default_alpha: float = 1.0) -> Dict[str, Any]:
+        spec = palette_src.get(key, colors_src.get(key))
+        parsed = _parse_theme_layer(spec, default_hex, default_alpha)
+        return parsed if parsed is not None else {"hex": default_hex, "alpha": default_alpha}
+
+    palette = {
+        "background": _layer("background", "#041c1c", 1.0),
+        "midground": _layer("midground", "#ffe6cb", 1.0),
+        "foreground": _layer("foreground", "#ffffff", 0.0),
+        "warmGlow": palette_src.get("warmGlow") or data.get("warmGlow") or "rgba(255, 189, 56, 0.35)",
+        "noiseOpacity": 1.0,
+    }
+    raw_noise = palette_src.get("noiseOpacity", data.get("noiseOpacity"))
+    try:
+        palette["noiseOpacity"] = float(raw_noise) if raw_noise is not None else 1.0
+    except (TypeError, ValueError):
+        palette["noiseOpacity"] = 1.0
+
+    # Typography
+    typo_src = data.get("typography", {}) if isinstance(data.get("typography"), dict) else {}
+    typography = dict(_THEME_DEFAULT_TYPOGRAPHY)
+    for key in ("fontSans", "fontMono", "fontDisplay", "fontUrl", "baseSize", "lineHeight", "letterSpacing"):
+        val = typo_src.get(key)
+        if isinstance(val, str) and val.strip():
+            typography[key] = val
+
+    # Layout
+    layout_src = data.get("layout", {}) if isinstance(data.get("layout"), dict) else {}
+    layout = dict(_THEME_DEFAULT_LAYOUT)
+    radius = layout_src.get("radius")
+    if isinstance(radius, str) and radius.strip():
+        layout["radius"] = radius
+    density = layout_src.get("density")
+    if isinstance(density, str) and density in ("compact", "comfortable", "spacious"):
+        layout["density"] = density
+
+    # Color overrides — keep only valid keys with string values.
+    overrides_src = data.get("colorOverrides", {})
+    color_overrides: Dict[str, str] = {}
+    if isinstance(overrides_src, dict):
+        for key, val in overrides_src.items():
+            if key in _THEME_OVERRIDE_KEYS and isinstance(val, str) and val.strip():
+                color_overrides[key] = val
+
+    # Assets — named slots + arbitrary user-defined keys.  Values must be
+    # strings (URLs or CSS ``url(...)``/``linear-gradient(...)`` expressions).
+    # We don't fetch remote assets here; the frontend just injects them as
+    # CSS vars.  Empty values are dropped so a theme can explicitly clear a
+    # slot by setting ``hero: ""``.
+    assets_out: Dict[str, Any] = {}
+    assets_src = data.get("assets", {}) if isinstance(data.get("assets"), dict) else {}
+    for key in _THEME_NAMED_ASSET_KEYS:
+        val = assets_src.get(key)
+        if isinstance(val, str) and val.strip():
+            assets_out[key] = val
+    custom_assets_src = assets_src.get("custom")
+    if isinstance(custom_assets_src, dict):
+        custom_assets: Dict[str, str] = {}
+        for key, val in custom_assets_src.items():
+            if (
+                isinstance(key, str)
+                and key.replace("-", "").replace("_", "").isalnum()
+                and isinstance(val, str)
+                and val.strip()
+            ):
+                custom_assets[key] = val
+        if custom_assets:
+            assets_out["custom"] = custom_assets
+
+    # Custom CSS — raw CSS text the frontend injects as a scoped <style>
+    # tag on theme apply.  Clipped to _THEME_CUSTOM_CSS_MAX to keep the
+    # payload bounded.  We intentionally do NOT parse/sanitise the CSS
+    # here — the dashboard is localhost-only and themes are user-authored
+    # YAML in ~/.hermes/, same trust level as the config file itself.
+    custom_css_val = data.get("customCSS")
+    custom_css: Optional[str] = None
+    if isinstance(custom_css_val, str) and custom_css_val.strip():
+        custom_css = custom_css_val[:_THEME_CUSTOM_CSS_MAX]
+
+    # Component style overrides — per-bucket dicts of camelCase CSS
+    # property -> CSS string.  The frontend converts these into CSS vars
+    # that shell components (Card, App header, Backdrop) consume.
+    component_styles_src = data.get("componentStyles", {})
+    component_styles: Dict[str, Dict[str, str]] = {}
+    if isinstance(component_styles_src, dict):
+        for bucket, props in component_styles_src.items():
+            if bucket not in _THEME_COMPONENT_BUCKETS or not isinstance(props, dict):
+                continue
+            clean: Dict[str, str] = {}
+            for prop, value in props.items():
+                if (
+                    isinstance(prop, str)
+                    and prop.replace("-", "").replace("_", "").isalnum()
+                    and isinstance(value, (str, int, float))
+                    and str(value).strip()
+                ):
+                    clean[prop] = str(value)
+            if clean:
+                component_styles[bucket] = clean
+
+    layout_variant_src = data.get("layoutVariant")
+    layout_variant = (
+        layout_variant_src
+        if isinstance(layout_variant_src, str) and layout_variant_src in _THEME_LAYOUT_VARIANTS
+        else "standard"
+    )
+
+    result: Dict[str, Any] = {
+        "name": name,
+        "label": data.get("label") or name,
+        "description": data.get("description", ""),
+        "palette": palette,
+        "typography": typography,
+        "layout": layout,
+        "layoutVariant": layout_variant,
+    }
+    if color_overrides:
+        result["colorOverrides"] = color_overrides
+    if assets_out:
+        result["assets"] = assets_out
+    if custom_css is not None:
+        result["customCSS"] = custom_css
+    if component_styles:
+        result["componentStyles"] = component_styles
+    return result
+
+
 def _discover_user_themes() -> list:
-    """Scan ~/.hermes/dashboard-themes/*.yaml for user-created themes."""
+    """Scan ~/.hermes/dashboard-themes/*.yaml for user-created themes.
+
+    Returns a list of fully-normalised theme definitions ready to ship
+    to the frontend, so the client can apply them without a secondary
+    round-trip or a built-in stub.
+    """
     themes_dir = get_hermes_home() / "dashboard-themes"
     if not themes_dir.is_dir():
         return []
@@ -2310,33 +3219,42 @@ def _discover_user_themes() -> list:
     for f in sorted(themes_dir.glob("*.yaml")):
         try:
             data = yaml.safe_load(f.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and data.get("name"):
-                result.append({
-                    "name": data["name"],
-                    "label": data.get("label", data["name"]),
-                    "description": data.get("description", ""),
-                })
         except Exception:
             continue
+        normalised = _normalise_theme_definition(data)
+        if normalised is not None:
+            result.append(normalised)
     return result
 
 
 @app.get("/api/dashboard/themes")
 async def get_dashboard_themes():
-    """Return available themes and the currently active one."""
+    """Return available themes and the currently active one.
+
+    Built-in entries ship name/label/description only (the frontend owns
+    their full definitions in `web/src/themes/presets.ts`).  User themes
+    from `~/.hermes/dashboard-themes/*.yaml` ship with their full
+    normalised definition under `definition`, so the client can apply
+    them without a stub.
+    """
     config = load_config()
-    active = config.get("dashboard", {}).get("theme", "default")
+    active = cfg_get(config, "dashboard", "theme", default="default")
     user_themes = _discover_user_themes()
-    # Merge built-in + user, user themes override built-in by name.
     seen = set()
     themes = []
     for t in _BUILTIN_DASHBOARD_THEMES:
         seen.add(t["name"])
         themes.append(t)
     for t in user_themes:
-        if t["name"] not in seen:
-            themes.append(t)
-            seen.add(t["name"])
+        if t["name"] in seen:
+            continue
+        themes.append({
+            "name": t["name"],
+            "label": t["label"],
+            "description": t["description"],
+            "definition": t,
+        })
+        seen.add(t["name"])
     return {"themes": themes, "active": active}
 
 
@@ -2370,10 +3288,12 @@ def _discover_dashboard_plugins() -> list:
     plugins = []
     seen_names: set = set()
 
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    bundled_root = get_bundled_plugins_dir()
     search_dirs = [
         (get_hermes_home() / "plugins", "user"),
-        (PROJECT_ROOT / "plugins" / "memory", "bundled"),
-        (PROJECT_ROOT / "plugins", "bundled"),
+        (bundled_root / "memory", "bundled"),
+        (bundled_root, "bundled"),
     ]
     if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS"):
         search_dirs.append((Path.cwd() / ".hermes" / "plugins", "project"))
@@ -2393,13 +3313,35 @@ def _discover_dashboard_plugins() -> list:
                 if name in seen_names:
                     continue
                 seen_names.add(name)
+                # Tab options: ``path`` + ``position`` for a new tab, optional
+                # ``override`` to replace a built-in route, and ``hidden`` to
+                # register the plugin component/slots without adding a tab
+                # (useful for slot-only plugins like a header-crest injector).
+                raw_tab = data.get("tab", {}) if isinstance(data.get("tab"), dict) else {}
+                tab_info = {
+                    "path": raw_tab.get("path", f"/{name}"),
+                    "position": raw_tab.get("position", "end"),
+                }
+                override_path = raw_tab.get("override")
+                if isinstance(override_path, str) and override_path.startswith("/"):
+                    tab_info["override"] = override_path
+                if bool(raw_tab.get("hidden")):
+                    tab_info["hidden"] = True
+                # Slots: list of named slot locations this plugin populates.
+                # The frontend exposes ``registerSlot(pluginName, slotName, Component)``
+                # on window; plugins with non-empty slots call it from their JS bundle.
+                slots_src = data.get("slots")
+                slots: List[str] = []
+                if isinstance(slots_src, list):
+                    slots = [s for s in slots_src if isinstance(s, str) and s]
                 plugins.append({
                     "name": name,
                     "label": data.get("label", name),
                     "description": data.get("description", ""),
                     "icon": data.get("icon", "Puzzle"),
                     "version": data.get("version", "0.0.0"),
-                    "tab": data.get("tab", {"path": f"/{name}", "position": "end"}),
+                    "tab": tab_info,
+                    "slots": slots,
                     "entry": data.get("entry", "dist/index.js"),
                     "css": data.get("css"),
                     "has_api": bool(data.get("api")),
@@ -2496,13 +3438,23 @@ def _mount_plugin_api_routes():
             _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
             continue
         try:
-            spec = importlib.util.spec_from_file_location(
-                f"hermes_dashboard_plugin_{plugin['name']}", api_path,
-            )
+            module_name = f"hermes_dashboard_plugin_{plugin['name']}"
+            spec = importlib.util.spec_from_file_location(module_name, api_path)
             if spec is None or spec.loader is None:
                 continue
             mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+            # Register in sys.modules BEFORE exec_module so pydantic/FastAPI
+            # can resolve forward references (e.g. models defined in a file
+            # that uses `from __future__ import annotations`). Without this,
+            # TypeAdapter lazy-build fails at first request with
+            # "is not fully defined" because the module namespace isn't
+            # reachable by name for string-annotation resolution.
+            sys.modules[module_name] = mod
+            try:
+                spec.loader.exec_module(mod)
+            except Exception:
+                sys.modules.pop(module_name, None)
+                raise
             router = getattr(mod, "router", None)
             if router is None:
                 _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
@@ -2524,9 +3476,14 @@ def start_server(
     port: int = 9119,
     open_browser: bool = True,
     allow_public: bool = False,
+    *,
+    embedded_chat: bool = False,
 ):
     """Start the web UI server."""
     import uvicorn
+
+    global _DASHBOARD_EMBEDDED_CHAT_ENABLED
+    _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
 
     _LOCALHOST = ("127.0.0.1", "localhost", "::1")
     if host not in _LOCALHOST and not allow_public:
@@ -2543,7 +3500,10 @@ def start_server(
 
     # Record the bound host so host_header_middleware can validate incoming
     # Host headers against it. Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
+    # bound_port is also stashed so /api/pty can build the back-WS URL the
+    # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
+    app.state.bound_port = port
 
     if open_browser:
         import webbrowser

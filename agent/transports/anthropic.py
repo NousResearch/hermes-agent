@@ -58,6 +58,7 @@ class AnthropicTransport(ProviderTransport):
             context_length: int | None
             base_url: str | None
             fast_mode: bool
+            drop_context_1m_beta: bool
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
@@ -73,28 +74,77 @@ class AnthropicTransport(ProviderTransport):
             context_length=params.get("context_length"),
             base_url=params.get("base_url"),
             fast_mode=params.get("fast_mode", False),
+            drop_context_1m_beta=params.get("drop_context_1m_beta", False),
         )
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize Anthropic response to NormalizedResponse.
 
-        kwargs:
-            strip_tool_prefix: bool — strip 'mcp_mcp_' prefixes from tool names.
+        Parses content blocks (text, thinking, tool_use), maps stop_reason
+        to OpenAI finish_reason, and collects reasoning_details in provider_data.
         """
-        from agent.anthropic_adapter import normalize_anthropic_response_v2
+        import json
+        from agent.anthropic_adapter import _to_plain_data
+        from agent.transports.types import ToolCall
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
-        return normalize_anthropic_response_v2(response, strip_tool_prefix=strip_tool_prefix)
+        _MCP_PREFIX = "mcp_"
+
+        text_parts = []
+        reasoning_parts = []
+        reasoning_details = []
+        tool_calls = []
+
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "thinking":
+                reasoning_parts.append(block.thinking)
+                block_dict = _to_plain_data(block)
+                if isinstance(block_dict, dict):
+                    reasoning_details.append(block_dict)
+            elif block.type == "tool_use":
+                name = block.name
+                if strip_tool_prefix and name.startswith(_MCP_PREFIX):
+                    name = name[len(_MCP_PREFIX):]
+                tool_calls.append(
+                    ToolCall(
+                        id=block.id,
+                        name=name,
+                        arguments=json.dumps(block.input),
+                    )
+                )
+
+        finish_reason = self._STOP_REASON_MAP.get(response.stop_reason, "stop")
+
+        provider_data = {}
+        if reasoning_details:
+            provider_data["reasoning_details"] = reasoning_details
+
+        return NormalizedResponse(
+            content="\n".join(text_parts) if text_parts else None,
+            tool_calls=tool_calls or None,
+            finish_reason=finish_reason,
+            reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,
+            usage=None,
+            provider_data=provider_data or None,
+        )
 
     def validate_response(self, response: Any) -> bool:
-        """Check Anthropic response structure is valid."""
+        """Check Anthropic response structure is valid.
+
+        An empty content list is legitimate when ``stop_reason == "end_turn"``
+        — the model's canonical way of signalling "nothing more to add" after
+        a tool turn that already delivered the user-facing text. Treating it
+        as invalid falsely retries a completed response.
+        """
         if response is None:
             return False
         content_blocks = getattr(response, "content", None)
         if not isinstance(content_blocks, list):
             return False
         if not content_blocks:
-            return False
+            return getattr(response, "stop_reason", None) == "end_turn"
         return True
 
     def extract_cache_stats(self, response: Any) -> Optional[Dict[str, int]]:

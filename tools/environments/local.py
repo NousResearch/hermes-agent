@@ -6,6 +6,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
@@ -100,6 +101,10 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "VERCEL_OIDC_TOKEN",
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
     })
     return frozenset(blocked)
 
@@ -247,10 +252,22 @@ def _resolve_shell_init_files() -> list[str]:
     if explicit:
         candidates.extend(explicit)
     elif auto_bashrc and not _IS_WINDOWS:
-        # Bash's login-shell invocation does NOT source ~/.bashrc by default,
-        # so tools like nvm / asdf / pyenv that self-install there stay
-        # invisible to the snapshot without this nudge.
-        candidates.append("~/.bashrc")
+        # Build a login-shell-ish source list so tools like n / nvm / asdf /
+        # pyenv that self-install into the user's shell rc land on PATH in
+        # the captured snapshot.
+        #
+        # ~/.profile and ~/.bash_profile run first because they have no
+        # interactivity guard — installers like ``n`` and ``nvm`` append
+        # their PATH export there on most distros, and a non-interactive
+        # ``. ~/.profile`` picks that up.
+        #
+        # ~/.bashrc runs last. On Debian/Ubuntu the default bashrc starts
+        # with ``case $- in *i*) ;; *) return;; esac`` and exits early
+        # when sourced non-interactively, which is why sourcing bashrc
+        # alone misses nvm/n PATH additions placed below that guard. We
+        # still include it so users who put PATH logic in bashrc (and
+        # stripped the guard, or never had one) keep working.
+        candidates.extend(["~/.profile", "~/.bash_profile", "~/.bashrc"])
 
     resolved: list[str] = []
     for raw in candidates:
@@ -293,6 +310,8 @@ class LocalEnvironment(BaseEnvironment):
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+        if cwd:
+            cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.init_session()
 
@@ -349,7 +368,13 @@ class LocalEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
+            cwd=self.cwd,
         )
+        if not _IS_WINDOWS:
+            try:
+                proc._hermes_pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                pass
 
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
@@ -362,12 +387,42 @@ class LocalEnvironment(BaseEnvironment):
             if _IS_WINDOWS:
                 proc.terminate()
             else:
-                pgid = os.getpgid(proc.pid)
+                try:
+                    pgid = os.getpgid(proc.pid)
+                except ProcessLookupError:
+                    pgid = getattr(proc, "_hermes_pgid", None)
+                    if pgid is None:
+                        raise
                 os.killpg(pgid, signal.SIGTERM)
+                deadline = time.monotonic() + 1.0
+                while time.monotonic() < deadline:
+                    if proc.poll() is not None:
+                        try:
+                            os.killpg(pgid, 0)
+                        except ProcessLookupError:
+                            return
+                    time.sleep(0.05)
+
+                # The shell can exit quickly while a child in the same process
+                # group is still shutting down. Escalate based on the process
+                # group, not just the shell wrapper, so interrupted commands do
+                # not leave orphaned grandchildren under load.
+                try:
+                    # _IS_WINDOWS is guarded by the enclosing else branch.
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    return
                 try:
                     proc.wait(timeout=1.0)
                 except subprocess.TimeoutExpired:
-                    os.killpg(pgid, signal.SIGKILL)
+                    pass
+                deadline = time.monotonic() + 1.0
+                while time.monotonic() < deadline:
+                    try:
+                        os.killpg(pgid, 0)
+                    except ProcessLookupError:
+                        return
+                    time.sleep(0.05)
         except (ProcessLookupError, PermissionError):
             try:
                 proc.kill()
@@ -377,7 +432,8 @@ class LocalEnvironment(BaseEnvironment):
     def _update_cwd(self, result: dict):
         """Read CWD from temp file (local-only, no round-trip needed)."""
         try:
-            cwd_path = open(self._cwd_file).read().strip()
+            with open(self._cwd_file) as f:
+                cwd_path = f.read().strip()
             if cwd_path:
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):

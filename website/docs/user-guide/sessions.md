@@ -124,7 +124,7 @@ display:
 ```
 
 :::tip
-Session IDs follow the format `YYYYMMDD_HHMMSS_<8-char-hex>`, e.g. `20250305_091523_a1b2c3d4`. You can resume by ID or by title — both work with `-c` and `-r`.
+Session IDs follow the format `YYYYMMDD_HHMMSS_<hex>` — CLI/TUI sessions use a 6-char hex suffix (e.g. `20250305_091523_a1b2c3`), gateway sessions use an 8-char suffix (e.g. `20250305_091523_a1b2c3d4`). You can resume by ID (full or unique prefix) or by title — both work with `-c` and `-r`.
 :::
 
 ## Session Naming
@@ -326,7 +326,7 @@ On messaging platforms, sessions are keyed by a deterministic session key built 
 |-----------|--------------------|----------|
 | Telegram DM | `agent:main:telegram:dm:<chat_id>` | One session per DM chat |
 | Discord DM | `agent:main:discord:dm:<chat_id>` | One session per DM chat |
-| WhatsApp DM | `agent:main:whatsapp:dm:<chat_id>` | One session per DM chat |
+| WhatsApp DM | `agent:main:whatsapp:dm:<canonical_identifier>` | One session per DM user (LID/phone aliases collapse to one identity when mapping exists) |
 | Group chat | `agent:main:<platform>:group:<chat_id>:<user_id>` | Per-user inside the group when the platform exposes a user ID |
 | Group thread/topic | `agent:main:<platform>:group:<chat_id>:<thread_id>` | Shared session for all thread participants (default). Per-user with `thread_sessions_per_user: true`. |
 | Channel | `agent:main:<platform>:channel:<chat_id>:<user_id>` | Per-user inside the channel when the platform exposes a user ID |
@@ -386,7 +386,21 @@ Key tables in `state.db`:
 
 - Gateway sessions auto-reset based on the configured reset policy
 - Before reset, the agent saves memories and skills from the expiring session
-- Ended sessions remain in the database until pruned
+- Opt-in auto-pruning: when `sessions.auto_prune` is `true`, ended sessions older than `sessions.retention_days` (default 90) are pruned at CLI/gateway startup
+- After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space (SQLite does not shrink the file on plain DELETE)
+- Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
+
+Default is **off** — session history is valuable for `session_search` recall, and silently deleting it could surprise users. Enable in `~/.hermes/config.yaml`:
+
+```yaml
+sessions:
+  auto_prune: true          # opt in — default is false
+  retention_days: 90        # keep ended sessions this many days
+  vacuum_after_prune: true  # reclaim disk space after a pruning sweep
+  min_interval_hours: 24    # don't re-run the sweep more often than this
+```
+
+Active sessions are never auto-pruned, regardless of age.
 
 ### Manual Cleanup
 
@@ -403,5 +417,5 @@ hermes sessions prune --older-than 30 --yes
 ```
 
 :::tip
-The database grows slowly (typical: 10-15 MB for hundreds of sessions). Pruning is mainly useful for removing old conversations you no longer need for search recall.
+The database grows slowly (typical: 10-15 MB for hundreds of sessions) and session history powers `session_search` recall across past conversations, so auto-prune ships disabled. Enable it if you're running a heavy gateway/cron workload where `state.db` is meaningfully affecting performance (observed failure mode: 384 MB state.db with ~1000 sessions slowing down FTS5 inserts and `/resume` listing). Use `hermes sessions prune` for one-off cleanup without turning on the automatic sweep.
 :::

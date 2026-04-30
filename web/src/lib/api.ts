@@ -63,6 +63,8 @@ export const api = {
   },
   getAnalytics: (days: number) =>
     fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
+  getModelsAnalytics: (days: number) =>
+    fetchJSON<ModelsAnalyticsResponse>(`/api/analytics/models?days=${days}`),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
@@ -368,6 +370,46 @@ export interface AnalyticsResponse {
     summary: AnalyticsSkillsSummary;
     top_skills: AnalyticsSkillEntry[];
   };
+}
+
+export interface ModelsAnalyticsModelEntry {
+  model: string;
+  provider: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  reasoning_tokens: number;
+  estimated_cost: number;
+  actual_cost: number;
+  sessions: number;
+  api_calls: number;
+  tool_calls: number;
+  last_used_at: number;
+  avg_tokens_per_session: number;
+  capabilities: {
+    supports_tools?: boolean;
+    supports_vision?: boolean;
+    supports_reasoning?: boolean;
+    context_window?: number;
+    max_output_tokens?: number;
+    model_family?: string;
+  };
+}
+
+export interface ModelsAnalyticsResponse {
+  models: ModelsAnalyticsModelEntry[];
+  totals: {
+    distinct_models: number;
+    total_input: number;
+    total_output: number;
+    total_cache_read: number;
+    total_reasoning: number;
+    total_estimated_cost: number;
+    total_actual_cost: number;
+    total_sessions: number;
+    total_api_calls: number;
+  };
+  period_days: number;
 }
 
 export interface CronJob {

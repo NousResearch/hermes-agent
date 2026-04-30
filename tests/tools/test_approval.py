@@ -123,6 +123,19 @@ class TestRmRootPathRegexPrecision:
         assert is_dangerous is True
         assert "recursive" in desc.lower() or "delete" in desc.lower()
 
+    def test_prior_legacy_allowlist_key_still_approves(self):
+        """Pre-#18089 command_allowlist entries used the legacy key derived
+        from the OLD regex (`rm\\s+(-[^\\s]*\\s+)*/`). After tightening the
+        regex the canonical key is still 'delete in root path' and the new
+        legacy key changed shape, so without an explicit historical alias
+        existing user approvals would be silently dropped and re-prompted.
+        """
+        _, current_key, _ = detect_dangerous_command("rm -rf /etc/passwd")
+        prior_legacy_key = r'rm\s+(-[^\s]*\s+)*/'
+        with mock_patch.object(approval_module, "_permanent_approved", set()):
+            load_permanent({prior_legacy_key})
+            assert is_approved("legacy-rootpath", current_key) is True
+
 
 class TestDetectDangerousSudo:
     def test_shell_via_c_flag(self):

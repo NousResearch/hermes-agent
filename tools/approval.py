@@ -212,6 +212,12 @@ def _hardline_block_result(description: str) -> dict:
 # =========================================================================
 
 DANGEROUS_PATTERNS = [
+    # System-root single-file rm. The dir list intentionally diverges from
+    # HARDLINE_PATTERNS' recursive-delete list (line ~147): single-file rm of
+    # `/dev/sda`, `/proc/sysrq-trigger`, `/sys/...`, `/lib64/...`, `/opt/...`,
+    # `/run/...`, `/srv/...` is dangerous, but `rm -rf /opt` and `rm -rf /home`
+    # belong in HARDLINE — and `/home` here would false-positive on every
+    # `rm /home/<user>/file`. Keep the lists separate by design.
     (r'\brm\s+(-[^\s]*\s+)*/(\s|\*|$|\.\*|(bin|boot|dev|etc|lib|lib64|opt|proc|root|run|sbin|srv|sys|usr|var)(/|\s|$))', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
@@ -298,6 +304,19 @@ for _pattern, _description in DANGEROUS_PATTERNS:
     _canonical_key = _description
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
+
+# Historical legacy keys for patterns whose regex has been tightened. Existing
+# user command_allowlist / session approvals stored under the *prior* legacy
+# key would otherwise be ignored after the regex update, forcing a re-prompt.
+# Each entry: (current canonical description, prior legacy key string).
+_HISTORICAL_LEGACY_KEYS: list[tuple[str, str]] = [
+    # "delete in root path" — regex tightened in #18089 to match only system-root
+    # targets (was: any absolute path).
+    ("delete in root path", r'rm\s+(-[^\s]*\s+)*/'),
+]
+for _canonical_key, _historical_key in _HISTORICAL_LEGACY_KEYS:
+    _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _historical_key})
+    _PATTERN_KEY_ALIASES.setdefault(_historical_key, set()).update({_historical_key, _canonical_key})
 
 
 def _approval_key_aliases(pattern_key: str) -> set[str]:

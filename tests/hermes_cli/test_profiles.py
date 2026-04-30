@@ -149,6 +149,23 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
+    def test_clone_config_copies_source_skills(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        skill_dir = default_home / "skills" / "custom" / "installed-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: installed-skill\n---\n")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (
+            profile_dir
+            / "skills"
+            / "custom"
+            / "installed-skill"
+            / "SKILL.md"
+        ).read_text() == "---\nname: installed-skill\n---\n"
+
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Palette, Check } from "lucide-react";
-import { Button, ListItem, Typography } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { Typography } from "@/components/NouiTypography";
 import { BUILTIN_THEMES, useTheme } from "@/themes";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";

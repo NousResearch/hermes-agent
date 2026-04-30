@@ -2345,6 +2345,254 @@ async def delete_cron_job(job_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
+# ---------------------------------------------------------------------------
+
+
+class ProfileCreate(BaseModel):
+    name: str
+    clone_from_default: bool = False
+
+
+class ProfileRename(BaseModel):
+    new_name: str
+
+
+class ProfileSoulUpdate(BaseModel):
+    content: str
+
+
+def _profile_attr(info, name: str, default: Any = None) -> Any:
+    try:
+        return getattr(info, name)
+    except Exception:
+        return default
+
+
+def _profile_to_dict(info) -> Dict[str, Any]:
+    return {
+        "name": _profile_attr(info, "name", ""),
+        "path": str(_profile_attr(info, "path", "")),
+        "is_default": bool(_profile_attr(info, "is_default", False)),
+        "model": _profile_attr(info, "model"),
+        "provider": _profile_attr(info, "provider"),
+        "has_env": bool(_profile_attr(info, "has_env", False)),
+        "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
+    }
+
+
+def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
+    def _safe(callable_, default):
+        try:
+            return callable_()
+        except Exception:
+            return default
+
+    profiles: List[Dict[str, Any]] = []
+    default_home = profiles_mod._get_default_hermes_home()
+    if default_home.is_dir():
+        model, provider = _safe(lambda: profiles_mod._read_config_model(default_home), (None, None))
+        profiles.append({
+            "name": "default",
+            "path": str(default_home),
+            "is_default": True,
+            "model": model,
+            "provider": provider,
+            "has_env": (default_home / ".env").exists(),
+            "skill_count": _safe(lambda: profiles_mod._count_skills(default_home), 0),
+        })
+
+    profiles_root = profiles_mod._get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
+                continue
+            model, provider = _safe(lambda entry=entry: profiles_mod._read_config_model(entry), (None, None))
+            profiles.append({
+                "name": entry.name,
+                "path": str(entry),
+                "is_default": False,
+                "model": model,
+                "provider": provider,
+                "has_env": (entry / ".env").exists(),
+                "skill_count": _safe(lambda entry=entry: profiles_mod._count_skills(entry), 0),
+            })
+
+    return profiles
+
+
+def _resolve_profile_dir(name: str) -> Path:
+    """Validate ``name`` and resolve to its directory or raise an HTTPException."""
+    from hermes_cli import profiles as profiles_mod
+    try:
+        profiles_mod.validate_profile_name(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not profiles_mod.profile_exists(name):
+        raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
+    return profiles_mod.get_profile_dir(name)
+
+
+def _profile_setup_command(name: str) -> str:
+    """Return the shell command used to configure a profile in the CLI."""
+    _resolve_profile_dir(name)
+    return "hermes setup" if name == "default" else f"{name} setup"
+
+
+@app.get("/api/profiles")
+async def list_profiles_endpoint():
+    from hermes_cli import profiles as profiles_mod
+    try:
+        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+    except Exception:
+        _log.exception("GET /api/profiles failed; falling back to profile directory scan")
+        return {"profiles": _fallback_profile_dicts(profiles_mod)}
+
+
+@app.post("/api/profiles")
+async def create_profile_endpoint(body: ProfileCreate):
+    from hermes_cli import profiles as profiles_mod
+    try:
+        path = profiles_mod.create_profile(
+            name=body.name,
+            clone_from="default" if body.clone_from_default else None,
+            clone_config=body.clone_from_default,
+        )
+        # Match the CLI's profile-create flow: fresh named profiles get the
+        # bundled skills installed. When cloning from default, create_profile()
+        # has already copied the source profile's skills, including any
+        # user-installed skills.
+        if not body.clone_from_default:
+            profiles_mod.seed_profile_skills(path, quiet=True)
+
+        # Match the CLI's profile-create flow: named profiles should get a
+        # wrapper in ~/.local/bin when the alias is safe to create.
+        collision = profiles_mod.check_alias_collision(body.name)
+        if not collision:
+            profiles_mod.create_wrapper_script(body.name)
+    except (ValueError, FileExistsError, FileNotFoundError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("POST /api/profiles failed")
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "name": body.name, "path": str(path)}
+
+
+@app.get("/api/profiles/{name}/setup-command")
+async def get_profile_setup_command(name: str):
+    return {"command": _profile_setup_command(name)}
+
+
+@app.post("/api/profiles/{name}/open-terminal")
+async def open_profile_terminal_endpoint(name: str):
+    try:
+        command = _profile_setup_command(name)
+
+        if sys.platform.startswith("win"):
+            subprocess.Popen(["cmd.exe", "/c", "start", "", command])
+        elif sys.platform == "darwin":
+            escaped = command.replace("\\", "\\\\").replace('"', '\\"')
+            applescript = (
+                'tell application "Terminal"\n'
+                "activate\n"
+                f'do script "{escaped}"\n'
+                "end tell"
+            )
+            subprocess.Popen(["osascript", "-e", applescript])
+        else:
+            terminal_commands = [
+                ("x-terminal-emulator", ["x-terminal-emulator", "-e", "sh", "-lc", command]),
+                ("gnome-terminal", ["gnome-terminal", "--", "sh", "-lc", command]),
+                ("konsole", ["konsole", "-e", "sh", "-lc", command]),
+                ("xfce4-terminal", ["xfce4-terminal", "-e", f"sh -lc '{command}'"]),
+                ("mate-terminal", ["mate-terminal", "-e", f"sh -lc '{command}'"]),
+                ("lxterminal", ["lxterminal", "-e", f"sh -lc '{command}'"]),
+                ("tilix", ["tilix", "-e", "sh", "-lc", command]),
+                ("alacritty", ["alacritty", "-e", "sh", "-lc", command]),
+                ("kitty", ["kitty", "sh", "-lc", command]),
+                ("xterm", ["xterm", "-e", "sh", "-lc", command]),
+            ]
+            for executable, popen_args in terminal_commands:
+                if subprocess.call(
+                    ["which", executable],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                ) == 0:
+                    subprocess.Popen(popen_args)
+                    break
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No supported terminal emulator found",
+                )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.exception("POST /api/profiles/%s/open-terminal failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "command": command}
+
+
+@app.patch("/api/profiles/{name}")
+async def rename_profile_endpoint(name: str, body: ProfileRename):
+    from hermes_cli import profiles as profiles_mod
+    try:
+        path = profiles_mod.rename_profile(name, body.new_name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (ValueError, FileExistsError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("PATCH /api/profiles/%s failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "name": body.new_name, "path": str(path)}
+
+
+@app.delete("/api/profiles/{name}")
+async def delete_profile_endpoint(name: str):
+    """Delete a profile. The dashboard collects the user's confirmation in
+    its own dialog before this request, so we always pass ``yes=True`` to
+    skip the CLI's interactive prompt."""
+    from hermes_cli import profiles as profiles_mod
+    try:
+        path = profiles_mod.delete_profile(name, yes=True)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _log.exception("DELETE /api/profiles/%s failed", name)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"ok": True, "path": str(path)}
+
+
+@app.get("/api/profiles/{name}/soul")
+async def get_profile_soul(name: str):
+    soul_path = _resolve_profile_dir(name) / "SOUL.md"
+    if soul_path.exists():
+        try:
+            return {"content": soul_path.read_text(encoding="utf-8"), "exists": True}
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
+    return {"content": "", "exists": False}
+
+
+@app.put("/api/profiles/{name}/soul")
+async def update_profile_soul(name: str, body: ProfileSoulUpdate):
+    soul_path = _resolve_profile_dir(name) / "SOUL.md"
+    try:
+        soul_path.write_text(body.content, encoding="utf-8")
+    except OSError as e:
+        _log.exception("PUT /api/profiles/%s/soul failed", name)
+        raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Skills & Tools endpoints
 # ---------------------------------------------------------------------------
 

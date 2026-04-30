@@ -2113,6 +2113,7 @@ def resolve_provider_client(
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
+                or (main_runtime.get("api_key", "").strip() if main_runtime else "")
                 or "no-key-required"  # local servers don't need auth
             )
             if not custom_base:

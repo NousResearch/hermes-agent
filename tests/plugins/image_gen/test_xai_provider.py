@@ -172,6 +172,27 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "api_error"
 
+    def test_api_error_preserves_real_response_status(self):
+        import requests as req_lib
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        response = req_lib.Response()
+        response.status_code = 401
+        response._content = json.dumps({"error": {"message": "Invalid API key"}}).encode()
+        response.headers["Content-Type"] = "application/json"
+
+        response.raise_for_status = MagicMock(
+            side_effect=req_lib.HTTPError(response=response)
+        )
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=response):
+            provider = XAIImageGenProvider()
+            result = provider.generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "xAI image generation failed (401): Invalid API key" in result["error"]
+
     def test_timeout(self):
         import requests as req_lib
 

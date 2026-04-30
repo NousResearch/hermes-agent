@@ -515,11 +515,39 @@ class TeamsAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        # Teams: embed image as markdown
-        text = f"![image]({image_url})"
-        if caption:
-            text = f"{caption}\n\n{text}"
-        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+        if not self._app:
+            return SendResult(success=False, error="Teams app not initialized")
+
+        try:
+            import base64
+            import mimetypes
+            from microsoft_teams.api import Attachment, MessageActivityInput
+
+            if image_url.startswith("http://") or image_url.startswith("https://"):
+                content_url = image_url
+                mime_type = "image/png"
+            else:
+                # Local path — encode as base64 data URI
+                path = image_url.removeprefix("file://")
+                mime_type = mimetypes.guess_type(path)[0] or "image/png"
+                with open(path, "rb") as f:
+                    content_url = f"data:{mime_type};base64,{base64.b64encode(f.read()).decode()}"
+
+            attachment = Attachment(content_type=mime_type, content_url=content_url)
+            activity = MessageActivityInput().add_attachments(attachment)
+            if caption:
+                activity = activity.add_text(caption)
+
+            conv_ref = self._conv_refs.get(chat_id)
+            if conv_ref:
+                result = await self._app.activity_sender.send(activity, conv_ref)
+            else:
+                result = await self._app.send(chat_id, activity)
+
+            return SendResult(success=True, message_id=getattr(result, "id", None))
+        except Exception as e:
+            logger.error("[teams] send_image failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e), retryable=True)
 
     async def get_chat_info(self, chat_id: str) -> dict:
         return {"name": chat_id, "type": "unknown", "chat_id": chat_id}

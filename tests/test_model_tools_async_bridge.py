@@ -280,6 +280,61 @@ class TestRunAsyncWithRunningLoop:
             shutdown_async_bridge_loop()
 
     @pytest.mark.asyncio
+    async def test_timeout_retires_stuck_bridge_loop_for_next_call(self, monkeypatch):
+        """After a stuck bridge call times out, later calls should use a fresh loop."""
+        import model_tools
+
+        from model_tools import _run_async, shutdown_async_bridge_loop
+
+        blocker = threading.Event()
+        started = threading.Event()
+        stuck_loop = None
+        stuck_thread = None
+
+        async def _blocks_bridge_loop():
+            nonlocal stuck_loop, stuck_thread
+            stuck_loop = asyncio.get_running_loop()
+            stuck_thread = threading.current_thread()
+            started.set()
+            blocker.wait()
+            return "unblocked"
+
+        async def _simple():
+            return "fresh-ok"
+
+        monkeypatch.setattr(model_tools, "_ASYNC_BRIDGE_TIMEOUT", 0.05)
+
+        try:
+            with pytest.raises(TimeoutError):
+                _run_async(_blocks_bridge_loop())
+
+            assert started.is_set()
+
+            assert _run_async(_simple()) == "fresh-ok"
+            assert model_tools._async_bridge_loop is not stuck_loop
+        finally:
+            blocker.set()
+            shutdown_async_bridge_loop()
+            if (
+                stuck_loop is not None
+                and stuck_loop is not model_tools._async_bridge_loop
+                and not stuck_loop.is_closed()
+            ):
+                try:
+                    stuck_loop.call_soon_threadsafe(stuck_loop.stop)
+                except RuntimeError:
+                    pass
+            if stuck_thread is not None:
+                stuck_thread.join(timeout=1)
+            if (
+                stuck_thread is not None
+                and not stuck_thread.is_alive()
+                and stuck_loop is not None
+                and not stuck_loop.is_closed()
+            ):
+                stuck_loop.close()
+
+    @pytest.mark.asyncio
     async def test_async_context_reuses_persistent_bridge_loop(self):
         """Direct calls from an already-running loop should reuse one bridge loop."""
         from model_tools import _run_async
@@ -295,6 +350,39 @@ class TestRunAsyncWithRunningLoop:
             "The async-context bridge loop was closed after returning — cached "
             "async clients become orphaned and leak descriptors in gateway mode"
         )
+
+    def test_nested_call_from_bridge_loop_uses_worker_loop(self, monkeypatch):
+        """Calling _run_async from the bridge loop itself must not deadlock."""
+        import concurrent.futures as _cf
+        import model_tools
+
+        from model_tools import _run_async, shutdown_async_bridge_loop
+
+        real_result = _cf.Future.result
+
+        def fast_bridge_thread_result(self, timeout=None):
+            if (
+                threading.current_thread().name == "model-tools-async-bridge"
+                and timeout == 300
+            ):
+                return real_result(self, timeout=0.05)
+            return real_result(self, timeout=timeout)
+
+        async def _inner():
+            return "nested-ok"
+
+        async def _outer():
+            return _run_async(_inner())
+
+        monkeypatch.setattr(_cf.Future, "result", fast_bridge_thread_result)
+
+        try:
+            bridge_loop = model_tools._get_async_bridge_loop()
+            future = asyncio.run_coroutine_threadsafe(_outer(), bridge_loop)
+
+            assert future.result(timeout=2) == "nested-ok"
+        finally:
+            shutdown_async_bridge_loop()
 
     def test_bridge_loop_startup_failure_closes_and_resets(self, monkeypatch):
         """A failed bridge-thread startup should not publish a dead loop."""

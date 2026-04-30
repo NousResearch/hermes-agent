@@ -49,6 +49,7 @@ _worker_thread_local = threading.local()  # per-worker-thread persistent loops
 _async_bridge_loop = None
 _async_bridge_thread = None
 _async_bridge_lock = threading.Lock()
+_ASYNC_BRIDGE_TIMEOUT = 300
 
 
 def _get_tool_loop():
@@ -88,11 +89,70 @@ def _get_worker_loop():
     return loop
 
 
+def _run_async_in_oneoff_thread(coro, timeout: float = _ASYNC_BRIDGE_TIMEOUT):
+    """Run a coroutine on a temporary worker thread and event loop."""
+    done = threading.Event()
+    result = {}
+
+    def _target():
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            result["value"] = loop.run_until_complete(coro)
+        except BaseException as exc:
+            result["error"] = exc
+        finally:
+            try:
+                loop.close()
+            finally:
+                asyncio.set_event_loop(None)
+                done.set()
+
+    thread = threading.Thread(
+        target=_target,
+        daemon=True,
+        name="model-tools-async-oneoff",
+    )
+    thread.start()
+    if not done.wait(timeout=timeout):
+        raise TimeoutError()
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
 def _run_bridge_loop(loop: asyncio.AbstractEventLoop, ready: threading.Event) -> None:
     """Run the async-context bridge loop forever on its dedicated thread."""
     asyncio.set_event_loop(loop)
     ready.set()
     loop.run_forever()
+
+
+def _retire_async_bridge_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Remove a timed-out bridge loop from future use without blocking on it."""
+    global _async_bridge_loop, _async_bridge_thread
+
+    with _async_bridge_lock:
+        if _async_bridge_loop is not loop:
+            return
+        thread = _async_bridge_thread
+        _async_bridge_loop = None
+        _async_bridge_thread = None
+
+    if loop.is_closed():
+        return
+
+    if thread is not None and thread.is_alive():
+        try:
+            loop.call_soon_threadsafe(loop.call_later, 0.1, loop.stop)
+        except RuntimeError as exc:
+            logger.debug("Async bridge retire stop scheduling failed: %s", exc)
+        return
+
+    try:
+        loop.close()
+    except RuntimeError as exc:
+        logger.debug("Async bridge retire close failed: %s", exc)
 
 
 async def _shutdown_bridge_loop_tasks() -> None:
@@ -228,12 +288,16 @@ def _run_async(coro):
         loop = None
 
     if loop and loop.is_running():
+        if loop is _async_bridge_loop:
+            return _run_async_in_oneoff_thread(coro, timeout=_ASYNC_BRIDGE_TIMEOUT)
+
         bridge_loop = _get_async_bridge_loop()
         future = asyncio.run_coroutine_threadsafe(coro, bridge_loop)
         try:
-            return future.result(timeout=300)
+            return future.result(timeout=_ASYNC_BRIDGE_TIMEOUT)
         except TimeoutError:
             future.cancel()
+            _retire_async_bridge_loop(bridge_loop)
             raise
 
     # If we're on a worker thread (e.g., parallel tool execution in

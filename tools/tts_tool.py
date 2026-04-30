@@ -2,14 +2,23 @@
 """
 Text-to-Speech Tool Module
 
-Supports seven TTS providers:
+Built-in TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
-- NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
+- xAI TTS: Grok voices, needs XAI_API_KEY
+- NeuTTS (local, free, no API key): On-device TTS via neutts
+- KittenTTS (local, free, no API key): On-device 25MB model
+
+Custom command providers:
+- Users can declare any number of named providers with ``type: command``
+  under ``tts.providers.<name>`` in ``~/.hermes/config.yaml``. Hermes
+  writes the input text to a temp file and runs the configured shell
+  command, which must produce the audio file at the expected path.
+  See the Local Command section of ``website/docs/user-guide/features/tts.md``.
 
 Output formats:
 - Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
@@ -32,7 +41,9 @@ import logging
 import os
 import queue
 import re
+import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -181,9 +192,13 @@ def _resolve_max_text_length(
 
     Resolution order:
       1. ``tts.<provider>.max_text_length`` (user override in config.yaml)
-      2. ElevenLabs model-aware table (keyed on configured ``model_id``)
-      3. ``PROVIDER_MAX_TEXT_LENGTH`` default
-      4. ``FALLBACK_MAX_TEXT_LENGTH`` (4000)
+      2. ``tts.providers.<provider>.max_text_length`` for user-declared
+         command providers
+      3. ElevenLabs model-aware table (keyed on configured ``model_id``)
+      4. ``PROVIDER_MAX_TEXT_LENGTH`` default
+      5. ``DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH`` when the provider is a
+         command-type user provider without an explicit cap
+      6. ``FALLBACK_MAX_TEXT_LENGTH`` (4000)
 
     Non-positive or non-integer overrides fall through to the default so a
     broken config can't accidentally disable truncation entirely.
@@ -192,11 +207,12 @@ def _resolve_max_text_length(
         return FALLBACK_MAX_TEXT_LENGTH
     key = provider.lower().strip()
     cfg = tts_config or {}
-    prov_cfg = cfg.get(key) if isinstance(cfg.get(key), dict) else {}
 
+    # Built-in-style override at tts.<provider>.max_text_length wins first,
+    # matching historical behavior.
+    prov_cfg = cfg.get(key) if isinstance(cfg.get(key), dict) else {}
     override = prov_cfg.get("max_text_length") if prov_cfg else None
     if isinstance(override, bool):
-        # bool is an int subclass; treat explicit booleans as "not set"
         override = None
     if isinstance(override, int) and override > 0:
         return override
@@ -207,7 +223,21 @@ def _resolve_max_text_length(
         if mapped:
             return mapped
 
-    return PROVIDER_MAX_TEXT_LENGTH.get(key, FALLBACK_MAX_TEXT_LENGTH)
+    if key in PROVIDER_MAX_TEXT_LENGTH:
+        return PROVIDER_MAX_TEXT_LENGTH[key]
+
+    # User-declared command provider (under tts.providers.<name>)
+    if key not in BUILTIN_TTS_PROVIDERS:
+        named = _get_named_provider_config(cfg, key)
+        if _is_command_provider_config(named):
+            named_override = named.get("max_text_length")
+            if isinstance(named_override, bool):
+                named_override = None
+            if isinstance(named_override, int) and named_override > 0:
+                return named_override
+            return DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH
+
+    return FALLBACK_MAX_TEXT_LENGTH
 
 
 # ===========================================================================
@@ -235,6 +265,408 @@ def _load_tts_config() -> Dict[str, Any]:
 def _get_provider(tts_config: Dict[str, Any]) -> str:
     """Get the configured TTS provider name."""
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+
+
+# ===========================================================================
+# Custom command providers (type: command under tts.providers.<name>)
+# ===========================================================================
+#
+# Users can declare any number of command-type providers alongside the
+# built-ins so they can plug any local CLI (Piper, VoxCPM, Kokoro CLIs,
+# custom voice-cloning scripts, etc.) into Hermes without any Python code
+# changes. The config shape is::
+#
+#     tts:
+#       provider: piper-en
+#       providers:
+#         piper-en:
+#           type: command
+#           command: "piper -m ~/model.onnx -f {output_path} < {input_path}"
+#           output_format: wav
+#
+# Hermes writes the input text to a temp UTF-8 file, runs the command with
+# placeholder substitution, and reads the audio file the command wrote to
+# ``{output_path}``. Supported placeholders: ``{input_path}``,
+# ``{text_path}`` (alias for input_path), ``{output_path}``, ``{format}``,
+# ``{voice}``, ``{model}``, ``{speed}``. Use ``{{`` / ``}}`` for literal braces.
+#
+# Built-in provider names always win over an entry with the same name under
+# ``tts.providers``, so user config can't silently shadow ``edge`` etc.
+#
+# Placeholder values are shell-quoted for their surrounding context
+# (bare / single / double quote), so paths with spaces work transparently.
+
+# Built-in provider names. Any ``tts.provider`` value NOT in this set is
+# interpreted as a reference to ``tts.providers.<name>``.
+BUILTIN_TTS_PROVIDERS = frozenset({
+    "edge",
+    "elevenlabs",
+    "openai",
+    "minimax",
+    "xai",
+    "mistral",
+    "gemini",
+    "neutts",
+    "kittentts",
+})
+
+DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
+DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
+COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac"})
+DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 5000
+
+
+def _get_provider_section(tts_config: Dict[str, Any], name: str) -> Dict[str, Any]:
+    """Return a provider config block if it's a dict, else an empty dict."""
+    if not isinstance(tts_config, dict):
+        return {}
+    section = tts_config.get(name)
+    return section if isinstance(section, dict) else {}
+
+
+def _get_named_provider_config(
+    tts_config: Dict[str, Any],
+    name: str,
+) -> Dict[str, Any]:
+    """Return the config dict for a user-declared provider.
+
+    Looks up ``tts.providers.<name>`` first (the canonical location), and
+    falls back to ``tts.<name>`` so users who followed the built-in layout
+    still work. Returns an empty dict when the provider is not declared.
+    """
+    providers = _get_provider_section(tts_config, "providers")
+    section = providers.get(name) if isinstance(providers, dict) else None
+    if isinstance(section, dict):
+        return section
+    # Back-compat: allow ``tts.<name>`` for user-declared providers too,
+    # but only when the name is not a built-in (so a user's ``tts.openai``
+    # block still means the OpenAI provider, not a custom command).
+    if name.lower() not in BUILTIN_TTS_PROVIDERS:
+        legacy = _get_provider_section(tts_config, name)
+        if legacy:
+            return legacy
+    return {}
+
+
+def _is_command_provider_config(config: Dict[str, Any]) -> bool:
+    """Return True when *config* declares a command-type provider."""
+    if not isinstance(config, dict):
+        return False
+    ptype = str(config.get("type") or "").strip().lower()
+    if ptype and ptype != "command":
+        return False
+    command = config.get("command")
+    return isinstance(command, str) and bool(command.strip())
+
+
+def _resolve_command_provider_config(
+    provider: str,
+    tts_config: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Return the provider config if *provider* resolves to a command type.
+
+    Built-in provider names are rejected (they have native handlers).
+    Returns None when the name is a built-in, unknown, or not a command
+    type.
+    """
+    if not provider:
+        return None
+    key = provider.lower().strip()
+    if key in BUILTIN_TTS_PROVIDERS:
+        return None
+    config = _get_named_provider_config(tts_config, key)
+    if _is_command_provider_config(config):
+        return config
+    return None
+
+
+def _iter_command_providers(tts_config: Dict[str, Any]):
+    """Yield (name, config) pairs for every declared command-type provider."""
+    if not isinstance(tts_config, dict):
+        return
+    providers = _get_provider_section(tts_config, "providers")
+    for name, cfg in (providers or {}).items():
+        if isinstance(name, str) and name.lower() not in BUILTIN_TTS_PROVIDERS:
+            if _is_command_provider_config(cfg):
+                yield name, cfg
+
+
+def _get_command_tts_timeout(config: Dict[str, Any]) -> float:
+    """Return timeout in seconds, falling back when invalid."""
+    raw = config.get("timeout", config.get("timeout_seconds", DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS)
+    if value <= 0:
+        return float(DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS)
+    return value
+
+
+def _get_command_tts_output_format(
+    config: Dict[str, Any],
+    output_path: Optional[str] = None,
+) -> str:
+    """Return the validated output format (mp3/wav/ogg/flac)."""
+    if output_path:
+        suffix = Path(output_path).suffix.lower().strip().lstrip(".")
+        if suffix in COMMAND_TTS_OUTPUT_FORMATS:
+            return suffix
+    raw = (
+        config.get("format")
+        or config.get("output_format")
+        or DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
+    )
+    fmt = str(raw).lower().strip().lstrip(".")
+    return fmt if fmt in COMMAND_TTS_OUTPUT_FORMATS else DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
+
+
+def _is_command_tts_voice_compatible(config: Dict[str, Any]) -> bool:
+    """Return True only when the user explicitly opted in to voice delivery."""
+    value = config.get("voice_compatible", False)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _shell_quote_context(command_template: str, position: int) -> Optional[str]:
+    """Return the shell quote character active right before *position*.
+
+    Returns ``"'"`` / ``'"'`` when inside a single- / double-quoted region
+    of the template, ``None`` for bare context.
+    """
+    quote: Optional[str] = None
+    escaped = False
+    i = 0
+    while i < position:
+        char = command_template[i]
+        if quote == "'":
+            if char == "'":
+                quote = None
+        elif quote == '"':
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quote = None
+        else:
+            if char == "'":
+                quote = "'"
+            elif char == '"':
+                quote = '"'
+            elif char == "\\":
+                i += 1
+        i += 1
+    return quote
+
+
+def _quote_command_tts_placeholder(value: str, quote_context: Optional[str]) -> str:
+    """Quote a placeholder value for its position in a shell command template."""
+    if quote_context == "'":
+        return value.replace("'", r"'\''")
+    if quote_context == '"':
+        return (
+            value
+            .replace("\\", "\\\\")
+            .replace('"', r'\"')
+            .replace("$", r"\$")
+            .replace("`", r"\`")
+        )
+    if os.name == "nt":
+        return subprocess.list2cmdline([value])
+    return shlex.quote(value)
+
+
+def _render_command_tts_template(
+    command_template: str,
+    placeholders: Dict[str, str],
+) -> str:
+    """Replace supported placeholders while preserving ``{{`` / ``}}``."""
+    names = "|".join(re.escape(name) for name in placeholders)
+    pattern = re.compile(
+        rf"(?<!\$)(?:\{{\{{(?P<double>{names})\}}\}}|\{{(?P<single>{names})\}})"
+    )
+    replacements: list[tuple[str, str]] = []
+
+    def replace_match(match: re.Match[str]) -> str:
+        name = match.group("double") or match.group("single")
+        token = f"__HERMES_TTS_PLACEHOLDER_{len(replacements)}__"
+        replacements.append((
+            token,
+            _quote_command_tts_placeholder(
+                placeholders[name],
+                _shell_quote_context(command_template, match.start()),
+            ),
+        ))
+        return token
+
+    rendered = pattern.sub(replace_match, command_template)
+    rendered = rendered.replace("{{", "{").replace("}}", "}")
+    for token, value in replacements:
+        rendered = rendered.replace(token, value)
+    return rendered
+
+
+def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
+    """Best-effort termination of a shell process and all of its children."""
+    if proc.poll() is not None:
+        return
+
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+        except Exception:
+            proc.kill()
+        return
+
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except Exception:
+        proc.terminate()
+
+    try:
+        proc.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except Exception:
+        proc.kill()
+
+
+def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProcess:
+    """Run a command-provider shell command with process-tree timeout cleanup."""
+    popen_kwargs: Dict[str, Any] = {
+        "shell": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(command, **popen_kwargs)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _terminate_command_tts_process_tree(proc)
+        try:
+            stdout, stderr = proc.communicate(timeout=1)
+        except Exception:
+            stdout = getattr(exc, "output", None)
+            stderr = getattr(exc, "stderr", None)
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout,
+            output=stdout,
+            stderr=stderr,
+        ) from exc
+
+    if proc.returncode:
+        raise subprocess.CalledProcessError(
+            proc.returncode,
+            command,
+            output=stdout,
+            stderr=stderr,
+        )
+    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+
+
+def _configured_command_tts_output_path(path: Path, config: Dict[str, Any]) -> Path:
+    """Return an output path whose extension matches the provider's output_format."""
+    fmt = _get_command_tts_output_format(config)
+    return path.with_suffix(f".{fmt}")
+
+
+def _generate_command_tts(
+    text: str,
+    output_path: str,
+    provider_name: str,
+    config: Dict[str, Any],
+    tts_config: Dict[str, Any],
+) -> str:
+    """Generate speech by running a user-configured shell command.
+
+    Returns the absolute path of the audio file the command wrote.
+    Raises ``ValueError`` when the provider config is invalid, and
+    ``RuntimeError`` for timeouts / non-zero exits / empty output.
+    """
+    command_template = str(config.get("command") or "").strip()
+    if not command_template:
+        raise ValueError(
+            f"tts.providers.{provider_name}.command is not configured"
+        )
+
+    output = Path(output_path).expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        output.unlink()
+
+    timeout = _get_command_tts_timeout(config)
+    output_format = _get_command_tts_output_format(config, str(output))
+    speed = config.get("speed", tts_config.get("speed", ""))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        text_path = Path(tmpdir) / "input.txt"
+        text_path.write_text(text, encoding="utf-8")
+
+        placeholders = {
+            "input_path": str(text_path),
+            "text_path": str(text_path),
+            "output_path": str(output),
+            "format": output_format,
+            "voice": str(config.get("voice", "")),
+            "model": str(config.get("model", "")),
+            "speed": str(speed),
+        }
+        command = _render_command_tts_template(command_template, placeholders)
+
+        try:
+            _run_command_tts(command, timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"TTS provider '{provider_name}' timed out after {timeout:g}s"
+            ) from exc
+        except subprocess.CalledProcessError as exc:
+            detail_parts = []
+            if exc.stderr:
+                detail_parts.append(f"stderr: {exc.stderr.strip()}")
+            if exc.stdout:
+                detail_parts.append(f"stdout: {exc.stdout.strip()}")
+            detail = "; ".join(detail_parts) or "no command output"
+            raise RuntimeError(
+                f"TTS provider '{provider_name}' exited with code "
+                f"{exc.returncode}: {detail}"
+            ) from exc
+
+    if not output.exists() or output.stat().st_size <= 0:
+        raise RuntimeError(
+            f"TTS provider '{provider_name}' produced no output at {output}"
+        )
+    return str(output)
+
+
+def _has_any_command_tts_provider(tts_config: Optional[Dict[str, Any]] = None) -> bool:
+    """Return True when any command-type TTS provider is configured."""
+    if tts_config is None:
+        tts_config = _load_tts_config()
+    for _name, _cfg in _iter_command_providers(tts_config):
+        return True
+    return False
 
 
 # ===========================================================================
@@ -954,6 +1386,12 @@ def text_to_speech_tool(
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
 
+    # User-declared command provider (type: command under tts.providers.<name>)
+    # resolves BEFORE the built-in dispatch. Built-in names short-circuit here
+    # so a user's ``tts.providers.openai.command`` can't override the real
+    # OpenAI handler.
+    command_provider_config = _resolve_command_provider_config(provider, tts_config)
+
     # Truncate very long text with a warning. The cap is per-provider
     # (OpenAI 4096, xAI 15k, MiniMax 10k, ElevenLabs model-aware, etc.).
     max_len = _resolve_max_text_length(provider, tts_config)
@@ -975,13 +1413,23 @@ def text_to_speech_tool(
     # Determine output path
     if output_path:
         file_path = Path(output_path).expanduser()
+        if command_provider_config is not None:
+            # Respect caller-supplied path but align the extension with the
+            # provider's configured output_format so the command writes to a
+            # path the caller actually expects.
+            file_path = _configured_command_tts_output_path(
+                file_path, command_provider_config
+            )
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
+        if command_provider_config is not None:
+            fmt = _get_command_tts_output_format(command_provider_config)
+            file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
+        elif want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -992,7 +1440,15 @@ def text_to_speech_tool(
 
     try:
         # Generate audio with the configured provider
-        if provider == "elevenlabs":
+        if command_provider_config is not None:
+            logger.info(
+                "Generating speech with command TTS provider '%s'...", provider,
+            )
+            file_str = _generate_command_tts(
+                text, file_str, provider, command_provider_config, tts_config,
+            )
+
+        elif provider == "elevenlabs":
             try:
                 _import_elevenlabs()
             except ImportError:
@@ -1100,7 +1556,17 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS/KittenTTS output WAV — all need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax", "xai", "kittentts") and not file_str.endswith(".ogg"):
+        if command_provider_config is not None:
+            # Command providers are documents by default. Voice-bubble
+            # delivery only kicks in when the user explicitly opts in
+            # via ``voice_compatible: true`` in their provider config.
+            if _is_command_tts_voice_compatible(command_provider_config):
+                if not file_str.endswith(".ogg"):
+                    opus_path = _convert_to_opus(file_str)
+                    if opus_path:
+                        file_str = opus_path
+                voice_compatible = file_str.endswith(".ogg")
+        elif provider in ("edge", "neutts", "minimax", "xai", "kittentts") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -1149,11 +1615,15 @@ def check_tts_requirements() -> bool:
     Check if at least one TTS provider is available.
 
     Edge TTS needs no API key and is the default, so if the package
-    is installed, TTS is available.
+    is installed, TTS is available. A user-declared command provider
+    also satisfies the requirement.
 
     Returns:
         bool: True if at least one provider can work.
     """
+    # Any configured command provider counts as available.
+    if _has_any_command_tts_provider():
+        return True
     try:
         _import_edge_tts()
         return True
@@ -1499,7 +1969,7 @@ from tools.registry import registry, tool_error
 
 TTS_SCHEMA = {
     "name": "text_to_speech",
-    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as a voice message. On Telegram it plays as a voice bubble, on Discord/WhatsApp as an audio attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured, not model-selected.",
+    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
     "parameters": {
         "type": "object",
         "properties": {

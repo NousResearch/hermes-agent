@@ -284,15 +284,25 @@ DANGEROUS_PATTERNS = [
     # `socat EXEC:/bin/bash` — without ever invoking bash on the command
     # line. Catch them by the flag/keyword regardless of host (the IP-based
     # variants in some adjacent proposals miss hostnames like `evil.example.com`).
-    (r'\b(nc|ncat)\s+(?:-[^\s]*\s+)*-e\s+/?(?:bin/)?(?:bash|sh|zsh|ksh|dash)\b',
+    # Flag-then-arg forms like `nc -p 1234 -e /bin/sh` need an optional
+    # non-flag argument after each leading flag; the `(?!-)` lookahead keeps
+    # the iteration from swallowing the `-e` token itself, and the engine
+    # backtracks if it tries to consume `-e` as a flag-arg pair.
+    (r'\b(nc|ncat)\s+(?:(?:-[^\s]+)(?:\s+(?!-)\S+)?\s+)*-e\s+(?:\S*/)?(?:bash|sh|zsh|ksh|dash)\b',
      "reverse shell via netcat -e"),
-    (r'\bsocat\b[^\n]*\bEXEC\s*:\s*["\']?/?(?:bin/)?(?:bash|sh|zsh|ksh|dash)\b',
+    # Use `.*` (DOTALL is on globally) instead of `[^\n]*` so shell line
+    # continuations (`socat \<newline>EXEC:/bin/bash`) cannot bypass detection.
+    # `(?:\S*/)?` accepts arbitrary path prefixes (e.g. `/usr/bin/bash`).
+    (r'\bsocat\b.*\bEXEC\s*:\s*["\']?(?:\S*/)?(?:bash|sh|zsh|ksh|dash)\b',
      "reverse shell via socat EXEC"),
     # Two-stage download-then-execute. `curl URL | bash` (pipe-to-shell) is
     # already caught above, but the trivial syntactic variant `curl -o file
     # && bash file` (or `; bash file`, `| chmod +x ... ; ./file`) is not.
     # Same threat model, no new bypass surface.
-    (r'\b(?:curl|wget)\b[^\n]*\s-[oO]\s+\S+[^\n]*[;&|]+\s*(?:(?:/?(?:bin/)?(?:bash|sh|zsh|ksh|dash))\b|chmod\s+\+x\b)',
+    # `\s*` after `-[oO]` allows the no-space form `-o/tmp/p.sh` / `-Ofoo.sh`.
+    # `.*` segments cross newlines under DOTALL so `\<newline>` continuations
+    # cannot bypass detection. `(?:\S*/)?` covers `/usr/bin/bash` etc.
+    (r'\b(?:curl|wget)\b.*\s-[oO]\s*\S+.*[;&|]+\s*(?:(?:(?:\S*/)?(?:bash|sh|zsh|ksh|dash))\b|chmod\s+\+x\b)',
      "download then execute"),
 ]
 

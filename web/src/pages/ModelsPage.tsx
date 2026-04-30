@@ -44,6 +44,7 @@ const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
   { key: "approval", label: "Approval", hint: "Smart auto-approve" },
   { key: "mcp", label: "MCP", hint: "MCP tool routing" },
   { key: "title_generation", label: "Title Gen", hint: "Session titles" },
+  { key: "curator", label: "Curator", hint: "Skill-usage review" },
 ] as const;
 
 function formatTokens(n: number): string {

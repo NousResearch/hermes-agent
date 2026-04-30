@@ -714,6 +714,49 @@ def run_curator_review(
     }
 
 
+def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
+    """Pick (provider, model) for the curator review fork.
+
+    Curator is a regular auxiliary task slot — ``auxiliary.curator.{provider,model}``
+    — so it participates in the canonical aux-model plumbing (``hermes model`` →
+    auxiliary picker, the dashboard Models tab, ``auxiliary.curator.{timeout,
+    base_url,api_key,extra_body}``). ``provider: "auto"`` with an empty model
+    means "use the main chat model" — same default as every other aux task.
+
+    Legacy fallback: users who configured ``curator.auxiliary.{provider,model}``
+    under the previous one-off schema still work. Precedence:
+      1. ``auxiliary.curator.{provider,model}`` when both are set non-auto
+      2. Legacy ``curator.auxiliary.{provider,model}`` when both are set
+      3. Main ``model.{provider,default/model}`` pair
+    """
+    _main = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
+    _main_provider = _main.get("provider") or "auto"
+    _main_model = _main.get("default") or _main.get("model") or ""
+
+    # 1. Canonical aux task slot
+    _aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+    _cur_task = _aux.get("curator", {}) if isinstance(_aux.get("curator"), dict) else {}
+    _task_provider = (_cur_task.get("provider") or "").strip() or None
+    _task_model = (_cur_task.get("model") or "").strip() or None
+    if _task_provider and _task_provider != "auto" and _task_model:
+        return _task_provider, _task_model
+
+    # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
+    _cur = cfg.get("curator", {}) if isinstance(cfg.get("curator"), dict) else {}
+    _legacy = _cur.get("auxiliary", {}) if isinstance(_cur.get("auxiliary"), dict) else {}
+    _legacy_provider = _legacy.get("provider") or None
+    _legacy_model = _legacy.get("model") or None
+    if _legacy_provider and _legacy_model:
+        logger.info(
+            "curator: using deprecated curator.auxiliary.{provider,model} "
+            "config — please migrate to auxiliary.curator.{provider,model}"
+        )
+        return _legacy_provider, _legacy_model
+
+    # 3. Fall through to the main chat model
+    return _main_provider, _main_model
+
+
 def _run_llm_review(prompt: str) -> Dict[str, Any]:
     """Spawn an AIAgent fork to run the curator review prompt.
 
@@ -749,6 +792,11 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     # "No models provided"). AIAgent() without explicit provider/model
     # arguments hits an auto-resolution path that fails for OAuth-only
     # providers and for pool-backed credentials.
+    #
+    # `_resolve_review_model()` honors `auxiliary.curator.{provider,model}`
+    # (canonical aux-task slot, wired through `hermes model` → auxiliary
+    # picker and the dashboard Models tab), with a legacy fallback to
+    # `curator.auxiliary.{provider,model}`. See docs/user-guide/features/curator.md.
     _api_key = None
     _base_url = None
     _api_mode = None
@@ -758,9 +806,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
         _cfg = load_config()
-        _m = _cfg.get("model", {}) if isinstance(_cfg.get("model"), dict) else {}
-        _provider = _m.get("provider") or "auto"
-        _model_name = _m.get("default") or _m.get("model") or ""
+        _provider, _model_name = _resolve_review_model(_cfg)
         _rp = resolve_runtime_provider(
             requested=_provider, target_model=_model_name
         )

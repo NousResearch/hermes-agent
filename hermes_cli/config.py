@@ -709,6 +709,19 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
         },
+        # Curator — skill-usage review fork. Timeout is generous because the
+        # review pass can take several minutes on reasoning models (umbrella
+        # building over hundreds of candidate skills). "auto" = use main chat
+        # model; override via `hermes model` → auxiliary → Curator to route
+        # to a cheaper aux model (e.g. openrouter google/gemini-3-flash-preview).
+        "curator": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 600,
+            "extra_body": {},
+        },
     },
     
     "display": {
@@ -949,12 +962,6 @@ DEFAULT_CONFIG = {
         # Archive a skill (move to skills/.archive/) after this many days
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
-        # Optional per-task override for the curator's aux model. Leave null
-        # to use Hermes' main auxiliary client resolution.
-        "auxiliary": {
-            "provider": None,
-            "model": None,
-        },
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.

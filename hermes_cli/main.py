@@ -1927,6 +1927,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("mcp",              "MCP",              "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
     ("skills_hub",       "Skills hub",       "skills search/install"),
+    ("curator",          "Curator",          "skill-usage review pass"),
 ]
 
 

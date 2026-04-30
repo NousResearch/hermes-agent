@@ -136,6 +136,8 @@ export const en: Translations = {
     sessionDeleted: "Session deleted",
     failedToDelete: "Failed to delete session",
     resumeInChat: "Resume in Chat",
+    newSession: "New Session",
+    startNewSession: "Start New Session",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {

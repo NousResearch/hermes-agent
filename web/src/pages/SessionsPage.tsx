@@ -786,9 +786,22 @@ export default function SessionsPage() {
             {search ? t.sessions.noMatch : t.sessions.noSessions}
           </p>
           {!search && (
-            <p className="text-xs mt-1 text-muted-foreground/60">
-              {t.sessions.startConversation}
-            </p>
+            <>
+              {resumeInChatEnabled ? (
+                <Button
+                  ghost
+                  className="mt-3 rounded border border-current/20 px-3 py-1.5 text-xs font-medium tracking-wide normal-case"
+                  onClick={() => navigate("/chat")}
+                >
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />
+                  {t.sessions.startNewSession}
+                </Button>
+              ) : (
+                <p className="text-xs mt-1 text-muted-foreground/60">
+                  {t.sessions.startConversation}
+                </p>
+              )}
+            </>
           )}
         </div>
       ) : (

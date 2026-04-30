@@ -137,6 +137,8 @@ export interface Translations {
     sessionDeleted: string;
     failedToDelete: string;
     resumeInChat: string;
+    newSession: string;
+    startNewSession: string;
     previousPage: string;
     nextPage: string;
     roles: {

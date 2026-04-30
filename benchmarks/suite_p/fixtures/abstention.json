@@ -1,0 +1,127 @@
+[
+  {
+    "id": "abs_001",
+    "difficulty": "easy",
+    "facts": [
+      "Project Orion deploys in us-east-1.",
+      "Project Lyra billing owner is Mina.",
+      "Project Kestrel uses Redis for queues."
+    ],
+    "query": "Who is the billing owner for Project Orion?",
+    "gold_answer": "NONE"
+  },
+  {
+    "id": "abs_002",
+    "difficulty": "easy",
+    "facts": [
+      "The Nimbus runbook lives in Notion.",
+      "The Atlas service owner is Team Cedar."
+    ],
+    "query": "What is the recovery code for Nimbus?",
+    "gold_answer": "NONE"
+  },
+  {
+    "id": "abs_003",
+    "difficulty": "easy",
+    "facts": [
+      "Mira prefers weekly roadmap summaries.",
+      "Kai prefers pull requests under 400 lines."
+    ],
+    "query": "What database does Mira prefer for analytics?",
+    "gold_answer": "NONE"
+  },
+  {
+    "id": "abs_004",
+    "difficulty": "easy",
+    "facts": [
+      "The staging domain is staging.moonshield.dev.",
+      "The production domain is moonshield.dev."
+    ],
+    "query": "What is the canary domain for Moonshield?",
+    "gold_answer": "NONE"
+  },
+  {
+    "id": "abs_005",
+    "difficulty": "medium",
+    "facts": [
+      "Project Orion analytics runs PostgreSQL 16.",
+      "Project Orion cache runs Valkey 8.",
+      "Project Lyra billing owner is Mina."
+    ],
+    "query": "Who is the billing owner for Project Orion?",
+    "gold_answer": "NONE"
+  },
+  {
+    "id": "abs_006",
+    "difficulty": "medium",
+    "facts": [
+      "The API token prefix for sandbox starts with sbx_ (non-secret format info).",
+      "The live API token prefix starts with live_ (non-secret format info)."
+    ],
+    "query": "What is the actual sandbox API token value?",
+    "gold_answer": "NONE"
+  },
+  {
+    "id": "abs_007",
+    "difficulty": "medium",
+    "facts": [
+      "Astra requested Llama 3 8B for maskskip experiments.",
+      "The current mask ratio is 0.3."
+    ],
+    "query": "What learning rate did Astra approve for the final run?",
+    "gold_answer": "NONE"
+  },
+  {
+    "id": "abs_008",
+    "difficulty": "medium",
+    "facts": [
+      "The incident commander for SEV-2 is Rowan.",
+      "The incident room is #ops-incident."
+    ],
+    "query": "What was the root cause of the SEV-2 incident?",
+    "gold_answer": "NONE"
+  },
+  {
+    "id": "abs_009",
+    "difficulty": "hard",
+    "facts": [
+      "Project Orion is owned by Team Cedar.",
+      "Team Cedar's on-call channel is #cedar-alerts.",
+      "Project Lyra's billing owner is Mina."
+    ],
+    "query": "What is Project Orion's billing owner?",
+    "gold_answer": "NONE"
+  },
+  {
+    "id": "abs_010",
+    "difficulty": "hard",
+    "facts": [
+      "The recovery drill for Vault A happened on March 12.",
+      "Vault B recovery code was rotated after the March 12 drill.",
+      "Vault A owner is Imani."
+    ],
+    "query": "What is Vault A's recovery code?",
+    "gold_answer": "NONE"
+  },
+  {
+    "id": "abs_011",
+    "difficulty": "hard",
+    "facts": [
+      "Moonshield free tier includes the full product.",
+      "Paid tier means 'we run it for you'.",
+      "Feature gates are not part of the Moonshield model."
+    ],
+    "query": "What enterprise-only Moonshield feature is gated behind payment?",
+    "gold_answer": "NONE"
+  },
+  {
+    "id": "abs_012",
+    "difficulty": "hard",
+    "facts": [
+      "The benchmark output directory is /tmp/memory-benchmark-suite-hardening-dryrun.",
+      "The handover document is in the Mnemoria repo."
+    ],
+    "query": "What exact API key was used for the benchmark provider?",
+    "gold_answer": "NONE"
+  }
+]

@@ -27,6 +27,7 @@ class BackendCapabilities:
     precompress_hook: bool = False
     session_end_hook: bool = False
     delegation_hook: bool = False
+    forgetting: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)

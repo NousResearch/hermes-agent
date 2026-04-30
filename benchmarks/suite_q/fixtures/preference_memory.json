@@ -1,0 +1,155 @@
+[
+  {
+    "id": "pref_001",
+    "sub_type": "stable_preference",
+    "difficulty": "easy",
+    "turns": [
+      "The user prefers narrative summaries for complex benchmark reports."
+    ],
+    "query": "How should complex benchmark reports be written for the user?",
+    "gold_answer": "narrative summaries"
+  },
+  {
+    "id": "pref_002",
+    "sub_type": "stable_preference",
+    "difficulty": "easy",
+    "turns": [
+      "The user likes implementation plans with acceptance criteria before large code changes."
+    ],
+    "query": "What does the user like before large code changes?",
+    "gold_answer": "implementation plans with acceptance criteria"
+  },
+  {
+    "id": "pref_003",
+    "sub_type": "stable_preference",
+    "difficulty": "medium",
+    "turns": [
+      "The user prefers privacy-preserving architectures over hosted-first architectures."
+    ],
+    "query": "Which architecture style does the user prefer?",
+    "gold_answer": "privacy-preserving architectures"
+  },
+  {
+    "id": "pref_004",
+    "sub_type": "corrected_preference",
+    "difficulty": "medium",
+    "turns": [
+      "The user prefers concise bullet lists for status reports.",
+      "Correction: the user prefers narrative summaries for complex benchmark reports."
+    ],
+    "query": "How should complex benchmark reports be written for the user?",
+    "gold_answer": "narrative summaries"
+  },
+  {
+    "id": "pref_005",
+    "sub_type": "corrected_preference",
+    "difficulty": "medium",
+    "turns": [
+      "Use Qwen for the MaskSkip experiment.",
+      "Correction: Astra wants Llama 3 8B, not Qwen, for the MaskSkip experiment."
+    ],
+    "query": "Which model should be used for the MaskSkip experiment?",
+    "gold_answer": "Llama 3 8B"
+  },
+  {
+    "id": "pref_006",
+    "sub_type": "corrected_preference",
+    "difficulty": "hard",
+    "turns": [
+      "Ship the benchmark results as soon as smoke tests pass.",
+      "Updated preference: harden the benchmark suite fully before running provider benchmarks."
+    ],
+    "query": "When should provider benchmarks start?",
+    "gold_answer": "after the benchmark suite is fully hardened"
+  },
+  {
+    "id": "pref_007",
+    "sub_type": "negative_preference",
+    "difficulty": "easy",
+    "turns": [
+      "The user does not want public pushes or comments on shared repos without review."
+    ],
+    "query": "What public repo action should be avoided without review?",
+    "gold_answer": "public pushes or comments"
+  },
+  {
+    "id": "pref_008",
+    "sub_type": "negative_preference",
+    "difficulty": "medium",
+    "turns": [
+      "The user does not want feature gates in Moonshield's paid plan."
+    ],
+    "query": "What paid-plan pattern should Moonshield avoid?",
+    "gold_answer": "feature gates"
+  },
+  {
+    "id": "pref_009",
+    "sub_type": "negative_preference",
+    "difficulty": "hard",
+    "turns": [
+      "Do not fabricate system state; verify with real commands and report literal state."
+    ],
+    "query": "What should be avoided when reporting system state?",
+    "gold_answer": "fabrication"
+  },
+  {
+    "id": "pref_010",
+    "sub_type": "project_convention",
+    "difficulty": "easy",
+    "turns": [
+      "Moonshield's domain is moonshield.dev."
+    ],
+    "query": "What domain does Moonshield use?",
+    "gold_answer": "moonshield.dev"
+  },
+  {
+    "id": "pref_011",
+    "sub_type": "project_convention",
+    "difficulty": "medium",
+    "turns": [
+      "Moonshield's free tier is the full product; paid means 'we run it for you'."
+    ],
+    "query": "What does paid mean for Moonshield?",
+    "gold_answer": "we run it for you"
+  },
+  {
+    "id": "pref_012",
+    "sub_type": "project_convention",
+    "difficulty": "hard",
+    "turns": [
+      "Benchmark comparisons must report core and shared-suite scores, not just raw means."
+    ],
+    "query": "Which benchmark scores must be reported alongside raw means?",
+    "gold_answer": "core and shared-suite scores"
+  },
+  {
+    "id": "pref_013",
+    "sub_type": "identity_fact",
+    "difficulty": "easy",
+    "turns": [
+      "The user's name is Evi."
+    ],
+    "query": "What is the user's name?",
+    "gold_answer": "Evi"
+  },
+  {
+    "id": "pref_014",
+    "sub_type": "identity_fact",
+    "difficulty": "medium",
+    "turns": [
+      "The user is Moonsong, also called Moon."
+    ],
+    "query": "What name is the user also called?",
+    "gold_answer": "Moon"
+  },
+  {
+    "id": "pref_015",
+    "sub_type": "identity_fact",
+    "difficulty": "hard",
+    "turns": [
+      "The user was Moondance on IronClaw."
+    ],
+    "query": "What was the user called on IronClaw?",
+    "gold_answer": "Moondance"
+  }
+]

@@ -87,7 +87,7 @@ class HolographicBenchmarkAdapter(BenchmarkableStore):
         self._tempdir = Path(tempfile.mkdtemp(prefix="holographic-bench-db-"))
         self._db_path = self._tempdir / "memory_store.db"
         self._default_trust = float(kwargs.get("default_trust", 0.5))
-        self._hrr_dim = int(kwargs.get("hrr_dim", 1024))
+        self._hrr_dim = int(kwargs.get("hrr_dim", 4096))
         self._store = None
         self._retriever = None
         self._init_store()

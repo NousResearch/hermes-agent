@@ -117,6 +117,17 @@ def compare_runs(
     b_mean = sum(baseline_scores) / len(baseline_scores)
     e_mean = sum(experiment_scores) / len(experiment_scores)
 
+    if len(baseline_scores) < 2:
+        return SignificanceResult(
+            test_name="not_enough_runs",
+            p_value=1.0,
+            effect_size=0.0,
+            significant=False,
+            baseline_mean=b_mean,
+            experiment_mean=e_mean,
+            improvement=(e_mean - b_mean) * 100,
+        )
+
     try:
         from scipy import stats as sp_stats
 

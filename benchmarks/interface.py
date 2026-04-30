@@ -93,6 +93,10 @@ class BenchmarkableStore(ABC):
         """
         return self.recall(query, top_k=top_k, scope=scope)
 
+    def forget(self, content_substring: str | None = None, scope: str | None = None) -> None:
+        """Forget matching memories. Optional; required for forgetting capability."""
+        raise NotImplementedError("Backend does not support forgetting")
+
 
 # --- Result dataclasses ---
 

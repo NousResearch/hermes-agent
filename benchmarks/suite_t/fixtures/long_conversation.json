@@ -1,0 +1,222 @@
+[
+  {
+    "id": "lc_001",
+    "sub_type": "project_decision_history",
+    "difficulty": "easy",
+    "turns": [
+      "Session 1: project_decision_history context item 1.",
+      "Session 2: project_decision_history context item 2.",
+      "Session 3: project_decision_history context item 3.",
+      "Session 4: project_decision_history context item 4.",
+      "Session 5: project_decision_history context item 5.",
+      "Session 6: Decision update: we chose GitHub Actions for CI, not Jenkins.",
+      "Session 6: project_decision_history context item 6.",
+      "Session 7: project_decision_history context item 7.",
+      "Session 8: project_decision_history context item 8.",
+      "Session 9: project_decision_history context item 9.",
+      "Session 10: project_decision_history context item 10.",
+      "Session 11: project_decision_history context item 11.",
+      "Session 12: project_decision_history context item 12."
+    ],
+    "query": "Which CI system was chosen?",
+    "gold_answer": "GitHub Actions"
+  },
+  {
+    "id": "lc_002",
+    "sub_type": "project_decision_history",
+    "difficulty": "easy",
+    "turns": [
+      "Session 1: project_decision_history context item 1.",
+      "Session 2: project_decision_history context item 2.",
+      "Session 3: project_decision_history context item 3.",
+      "Session 4: project_decision_history context item 4.",
+      "Session 5: project_decision_history context item 5.",
+      "Session 7: The benchmark suite must be hardened before provider runs.",
+      "Session 6: project_decision_history context item 6.",
+      "Session 7: project_decision_history context item 7.",
+      "Session 8: project_decision_history context item 8.",
+      "Session 9: project_decision_history context item 9.",
+      "Session 10: project_decision_history context item 10.",
+      "Session 11: project_decision_history context item 11.",
+      "Session 12: project_decision_history context item 12."
+    ],
+    "query": "What must happen before provider runs?",
+    "gold_answer": "benchmark suite must be hardened"
+  },
+  {
+    "id": "lc_003",
+    "sub_type": "preference_evolution",
+    "difficulty": "medium",
+    "turns": [
+      "Session 1: preference_evolution context item 1.",
+      "Session 2: preference_evolution context item 2.",
+      "Session 3: preference_evolution context item 3.",
+      "Session 4: preference_evolution context item 4.",
+      "Session 5: preference_evolution context item 5.",
+      "Session 8: Updated preference: use narrative summaries for complex reports instead of terse bullets.",
+      "Session 6: preference_evolution context item 6.",
+      "Session 7: preference_evolution context item 7.",
+      "Session 8: preference_evolution context item 8.",
+      "Session 9: preference_evolution context item 9.",
+      "Session 10: preference_evolution context item 10.",
+      "Session 11: preference_evolution context item 11.",
+      "Session 12: preference_evolution context item 12."
+    ],
+    "query": "How should complex reports be summarized?",
+    "gold_answer": "narrative summaries"
+  },
+  {
+    "id": "lc_004",
+    "sub_type": "preference_evolution",
+    "difficulty": "medium",
+    "turns": [
+      "Session 1: preference_evolution context item 1.",
+      "Session 2: preference_evolution context item 2.",
+      "Session 3: preference_evolution context item 3.",
+      "Session 4: preference_evolution context item 4.",
+      "Session 5: preference_evolution context item 5.",
+      "Session 9: Updated preference: local commits are okay, but the user pushes shared repos themselves.",
+      "Session 6: preference_evolution context item 6.",
+      "Session 7: preference_evolution context item 7.",
+      "Session 8: preference_evolution context item 8.",
+      "Session 9: preference_evolution context item 9.",
+      "Session 10: preference_evolution context item 10.",
+      "Session 11: preference_evolution context item 11.",
+      "Session 12: preference_evolution context item 12."
+    ],
+    "query": "Who should push shared repos?",
+    "gold_answer": "the user"
+  },
+  {
+    "id": "lc_005",
+    "sub_type": "correction_after_delay",
+    "difficulty": "medium",
+    "turns": [
+      "Session 1: correction_after_delay context item 1.",
+      "Session 2: correction_after_delay context item 2.",
+      "Session 3: correction_after_delay context item 3.",
+      "Session 4: correction_after_delay context item 4.",
+      "Session 5: correction_after_delay context item 5.",
+      "Session 10: Correction after delay: the model for MaskSkip is Llama 3 8B, not Qwen.",
+      "Session 6: correction_after_delay context item 6.",
+      "Session 7: correction_after_delay context item 7.",
+      "Session 8: correction_after_delay context item 8.",
+      "Session 9: correction_after_delay context item 9.",
+      "Session 10: correction_after_delay context item 10.",
+      "Session 11: correction_after_delay context item 11.",
+      "Session 12: correction_after_delay context item 12."
+    ],
+    "query": "Which model should MaskSkip use?",
+    "gold_answer": "Llama 3 8B"
+  },
+  {
+    "id": "lc_006",
+    "sub_type": "correction_after_delay",
+    "difficulty": "medium",
+    "turns": [
+      "Session 1: correction_after_delay context item 1.",
+      "Session 2: correction_after_delay context item 2.",
+      "Session 3: correction_after_delay context item 3.",
+      "Session 4: correction_after_delay context item 4.",
+      "Session 5: correction_after_delay context item 5.",
+      "Session 11: Correction after delay: the mask ratio is 0.3, not 0.5.",
+      "Session 6: correction_after_delay context item 6.",
+      "Session 7: correction_after_delay context item 7.",
+      "Session 8: correction_after_delay context item 8.",
+      "Session 9: correction_after_delay context item 9.",
+      "Session 10: correction_after_delay context item 10.",
+      "Session 11: correction_after_delay context item 11.",
+      "Session 12: correction_after_delay context item 12."
+    ],
+    "query": "What mask ratio should be used?",
+    "gold_answer": "0.3"
+  },
+  {
+    "id": "lc_007",
+    "sub_type": "multi_session_synthesis",
+    "difficulty": "hard",
+    "turns": [
+      "Session 1: multi_session_synthesis context item 1.",
+      "Session 2: multi_session_synthesis context item 2.",
+      "Session 3: multi_session_synthesis context item 3.",
+      "Session 4: multi_session_synthesis context item 4.",
+      "Session 5: multi_session_synthesis context item 5.",
+      "Session 12: Moonshield combines full free product access with paid managed hosting.",
+      "Session 6: multi_session_synthesis context item 6.",
+      "Session 7: multi_session_synthesis context item 7.",
+      "Session 8: multi_session_synthesis context item 8.",
+      "Session 9: multi_session_synthesis context item 9.",
+      "Session 10: multi_session_synthesis context item 10.",
+      "Session 11: multi_session_synthesis context item 11.",
+      "Session 12: multi_session_synthesis context item 12."
+    ],
+    "query": "What is Moonshield's paid offering?",
+    "gold_answer": "managed hosting"
+  },
+  {
+    "id": "lc_008",
+    "sub_type": "multi_session_synthesis",
+    "difficulty": "hard",
+    "turns": [
+      "Session 1: multi_session_synthesis context item 1.",
+      "Session 2: multi_session_synthesis context item 2.",
+      "Session 3: multi_session_synthesis context item 3.",
+      "Session 4: multi_session_synthesis context item 4.",
+      "Session 5: multi_session_synthesis context item 5.",
+      "Session 13: The fair benchmark report must include raw mean, core score, and shared-category score.",
+      "Session 6: multi_session_synthesis context item 6.",
+      "Session 7: multi_session_synthesis context item 7.",
+      "Session 8: multi_session_synthesis context item 8.",
+      "Session 9: multi_session_synthesis context item 9.",
+      "Session 10: multi_session_synthesis context item 10.",
+      "Session 11: multi_session_synthesis context item 11.",
+      "Session 12: multi_session_synthesis context item 12."
+    ],
+    "query": "Which scores belong in the fair benchmark report?",
+    "gold_answer": "raw mean, core score, and shared-category score"
+  },
+  {
+    "id": "lc_009",
+    "sub_type": "rejected_option_recall",
+    "difficulty": "hard",
+    "turns": [
+      "Session 1: rejected_option_recall context item 1.",
+      "Session 2: rejected_option_recall context item 2.",
+      "Session 3: rejected_option_recall context item 3.",
+      "Session 4: rejected_option_recall context item 4.",
+      "Session 5: rejected_option_recall context item 5.",
+      "Session 14: We rejected Jenkins and selected GitHub Actions.",
+      "Session 6: rejected_option_recall context item 6.",
+      "Session 7: rejected_option_recall context item 7.",
+      "Session 8: rejected_option_recall context item 8.",
+      "Session 9: rejected_option_recall context item 9.",
+      "Session 10: rejected_option_recall context item 10.",
+      "Session 11: rejected_option_recall context item 11.",
+      "Session 12: rejected_option_recall context item 12."
+    ],
+    "query": "Which CI option was rejected?",
+    "gold_answer": "Jenkins"
+  },
+  {
+    "id": "lc_010",
+    "sub_type": "rejected_option_recall",
+    "difficulty": "hard",
+    "turns": [
+      "Session 1: rejected_option_recall context item 1.",
+      "Session 2: rejected_option_recall context item 2.",
+      "Session 3: rejected_option_recall context item 3.",
+      "Session 4: rejected_option_recall context item 4.",
+      "Session 5: rejected_option_recall context item 5.",
+      "Session 15: We rejected feature gates for Moonshield paid plans.",
+      "Session 6: rejected_option_recall context item 6.",
+      "Session 7: rejected_option_recall context item 7.",
+      "Session 8: rejected_option_recall context item 8.",
+      "Session 9: rejected_option_recall context item 9.",
+      "Session 10: rejected_option_recall context item 10.",
+      "Session 11: rejected_option_recall context item 11.",
+      "Session 12: rejected_option_recall context item 12."
+    ],
+    "query": "What paid-plan pattern was rejected?",
+    "gold_answer": "feature gates"
+  }
+]

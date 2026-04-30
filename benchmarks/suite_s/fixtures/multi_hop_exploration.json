@@ -1,0 +1,146 @@
+[
+  {
+    "id": "mh_001",
+    "sub_type": "two_hop_bridge",
+    "difficulty": "easy",
+    "facts": [
+      "The Atlas service is owned by Team Cedar.",
+      "Team Cedar's on-call channel is #cedar-alerts.",
+      "Team Cobalt's on-call channel is #cobalt-alerts."
+    ],
+    "query": "What on-call channel should Atlas incidents use?",
+    "gold_answer": "#cedar-alerts"
+  },
+  {
+    "id": "mh_002",
+    "sub_type": "two_hop_bridge",
+    "difficulty": "easy",
+    "facts": [
+      "The Billing API is owned by Team Quartz.",
+      "Team Quartz deploys through pipeline quartz-main.",
+      "Team Amber deploys through pipeline amber-main."
+    ],
+    "query": "Which pipeline deploys the Billing API?",
+    "gold_answer": "quartz-main"
+  },
+  {
+    "id": "mh_003",
+    "sub_type": "two_hop_bridge",
+    "difficulty": "medium",
+    "facts": [
+      "Project Solstice depends on service Helios.",
+      "Service Helios is maintained by Team Dawn.",
+      "Team Night maintains service Umbra."
+    ],
+    "query": "Who maintains the service Project Solstice depends on?",
+    "gold_answer": "Team Dawn"
+  },
+  {
+    "id": "mh_004",
+    "sub_type": "two_hop_bridge",
+    "difficulty": "medium",
+    "facts": [
+      "The mobile app uses feature flag swift-login.",
+      "Feature flag swift-login is owned by Identity Pod.",
+      "Feature flag beta-checkout is owned by Commerce Pod."
+    ],
+    "query": "Who owns the mobile app login feature flag?",
+    "gold_answer": "Identity Pod"
+  },
+  {
+    "id": "mh_005",
+    "sub_type": "entity_disambiguation",
+    "difficulty": "medium",
+    "facts": [
+      "Atlas the service is owned by Team Cedar.",
+      "Atlas the documentation site is owned by Team Scribe.",
+      "Team Cedar's Slack channel is #cedar-alerts."
+    ],
+    "query": "What Slack channel is for Atlas service incidents?",
+    "gold_answer": "#cedar-alerts"
+  },
+  {
+    "id": "mh_006",
+    "sub_type": "entity_disambiguation",
+    "difficulty": "medium",
+    "facts": [
+      "Mercury the project uses Postgres.",
+      "Mercury the planet note is archived.",
+      "The Mercury project DBA is Noor."
+    ],
+    "query": "Who is the DBA for the Mercury project?",
+    "gold_answer": "Noor"
+  },
+  {
+    "id": "mh_007",
+    "sub_type": "entity_disambiguation",
+    "difficulty": "hard",
+    "facts": [
+      "Phoenix the customer uses EU hosting.",
+      "Phoenix the internal codename maps to the search rewrite.",
+      "The search rewrite owner is Team Iris."
+    ],
+    "query": "Who owns Phoenix the internal codename?",
+    "gold_answer": "Team Iris"
+  },
+  {
+    "id": "mh_008",
+    "sub_type": "entity_disambiguation",
+    "difficulty": "hard",
+    "facts": [
+      "Delta the metric tracks churn.",
+      "Delta the service sends alerts to #delta-service.",
+      "The churn metric owner is Analytics Guild."
+    ],
+    "query": "Where do Delta service alerts go?",
+    "gold_answer": "#delta-service"
+  },
+  {
+    "id": "mh_009",
+    "sub_type": "three_hop_chain",
+    "difficulty": "hard",
+    "facts": [
+      "Project Aurora uses service Borealis.",
+      "Service Borealis stores data in Cluster North.",
+      "Cluster North backups are owned by Team Glacier."
+    ],
+    "query": "Who owns backups for Project Aurora's data cluster?",
+    "gold_answer": "Team Glacier"
+  },
+  {
+    "id": "mh_010",
+    "sub_type": "three_hop_chain",
+    "difficulty": "hard",
+    "facts": [
+      "The checkout flow calls Risk API.",
+      "Risk API reads model Falcon.",
+      "Model Falcon's rollback owner is Priya."
+    ],
+    "query": "Who owns rollback for the checkout flow's risk model?",
+    "gold_answer": "Priya"
+  },
+  {
+    "id": "mh_011",
+    "sub_type": "three_hop_chain",
+    "difficulty": "hard",
+    "facts": [
+      "The mobile release depends on SDK Luna.",
+      "SDK Luna depends on library Tide.",
+      "Library Tide maintainer is Omar."
+    ],
+    "query": "Who maintains the library needed by the mobile release SDK?",
+    "gold_answer": "Omar"
+  },
+  {
+    "id": "mh_012",
+    "sub_type": "three_hop_chain",
+    "difficulty": "hard",
+    "facts": [
+      "Project Ember uses worker Spark.",
+      "Worker Spark queues jobs in Queue Red.",
+      "Queue Red pager is #queue-red-pager."
+    ],
+    "query": "What pager handles Project Ember's worker queue?",
+    "gold_answer": "#queue-red-pager"
+  }
+]

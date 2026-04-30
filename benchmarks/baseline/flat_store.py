@@ -132,6 +132,24 @@ class FlatMemoryStore(BenchmarkableStore):
             "clock": self._clock,
         }
 
+    def forget(self, content_substring: str | None = None,
+               scope: Optional[str] = None) -> None:
+        """Remove memories whose content contains a substring and/or scope matches."""
+        if content_substring is None and scope is None:
+            self._memories.clear()
+            self._rewards.clear()
+            return
+        needle = content_substring.lower() if content_substring else None
+        kept = []
+        for mem in self._memories:
+            content_matches = needle is None or needle in mem["content"].lower()
+            scope_matches = scope is None or mem["scope"] == scope
+            if content_matches and scope_matches:
+                continue
+            kept.append(mem)
+        self._memories = kept
+        self._rewards.clear()
+
     def reset(self) -> None:
         self._memories.clear()
         self._clock = 0.0
@@ -144,5 +162,6 @@ BACKEND_CAPABILITIES = BackendCapabilities(
     scopes=True,                   # recall() filters by scope parameter
     time_simulation=True,          # simulate_time() advances internal clock
     reward_learning=True,          # reward_memory() and recall_with_ids() available
+    forgetting=True,               # forget() removes matching in-memory entries
 )
 BACKEND_CLASS = FlatMemoryStore

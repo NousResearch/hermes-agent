@@ -130,6 +130,293 @@ def load_fixtures(suite: str) -> Dict[str, list]:
     return fixtures
 
 
+def discover_suites() -> list[str]:
+    """Discover suite letters that have fixture directories."""
+    return sorted(
+        d.name.split("_", 1)[1]
+        for d in SUITE_DIR.iterdir()
+        if d.is_dir() and d.name.startswith("suite_") and (d / "fixtures").exists()
+    )
+
+
+def requested_categories_for_suites(suites: list[str]) -> list[str]:
+    """Return fixture category names requested by a suite selection."""
+    if suites == ["all"] or suites == "all":
+        suites = discover_suites()
+    categories: list[str] = []
+    for suite in suites:
+        try:
+            fixtures = load_fixtures(suite)
+        except FileNotFoundError:
+            continue
+        categories.extend(fixtures.keys())
+    return sorted(dict.fromkeys(categories))
+
+
+def build_score_views(runs: list[RunResult], requested_categories: list[str]) -> dict:
+    """Build fair comparison surfaces: executed, core, and per-track scores."""
+    from benchmarks.tracks import get_category_spec
+
+    executed = sorted({cat for run in runs for cat in run.results_by_category})
+
+    def score_for(categories: list[str]) -> dict:
+        category_set = set(categories)
+        correct = 0
+        total = 0
+        used_categories: list[str] = []
+        for run in runs:
+            for cat, result in run.results_by_category.items():
+                if cat in category_set:
+                    correct += result.correct
+                    total += result.total
+                    if cat not in used_categories:
+                        used_categories.append(cat)
+        return {
+            "score": correct / total if total else 0.0,
+            "correct": correct,
+            "total": total,
+            "categories": sorted(used_categories),
+        }
+
+    executed_view = score_for(executed)
+    core_categories = [cat for cat in executed if get_category_spec(cat).in_core_score]
+    tracks: dict[str, list[str]] = {}
+    for cat in executed:
+        track = get_category_spec(cat).track
+        tracks.setdefault(track, []).append(cat)
+
+    return {
+        "executed": executed_view,
+        "core": score_for(core_categories),
+        "tracks": {track: score_for(cats) for track, cats in sorted(tracks.items())},
+    }
+
+
+PROVIDER_ENV_VARS = {
+    "mem0": ["MEM0_API_KEY"],
+    "retaindb": ["RETAINDB_API_KEY"],
+    "hindsight": ["HINDSIGHT_API_KEY", "HINDSIGHT_BASE_URL"],
+    "honcho": ["HONCHO_API_KEY", "HONCHO_BASE_URL"],
+    "openviking": ["OPENVIKING_ENDPOINT", "OPENVIKING_API_KEY"],
+    "byterover": ["BYTEROVER_API_KEY"],
+}
+
+
+def average_run_dicts(items: list[dict]) -> dict:
+    """Average numeric values across a list of metric dictionaries."""
+    if not items:
+        return {}
+    keys = sorted({key for item in items for key in item})
+    averaged = {}
+    for key in keys:
+        vals = [float(item[key]) for item in items if key in item]
+        averaged[key] = sum(vals) / len(vals) if vals else 0.0
+    return averaged
+
+
+def build_skipped_category_reasons(
+    requested_categories: list[str],
+    executed_categories: list[str],
+    capabilities: BackendCapabilities,
+) -> dict[str, str]:
+    """Return skipped categories mapped to human-readable reasons."""
+    from benchmarks.tracks import missing_capabilities
+
+    executed = set(executed_categories)
+    skipped: dict[str, str] = {}
+    for category in requested_categories:
+        if category in executed:
+            continue
+        missing = missing_capabilities(capabilities, category)
+        if missing:
+            skipped[category] = "missing capabilities: " + ", ".join(sorted(missing))
+        else:
+            skipped[category] = "not executed"
+    return skipped
+
+
+def serialize_run(run: RunResult) -> dict:
+    """Serialize a single benchmark run using the rich result schema."""
+    return {
+        "seed": run.seed,
+        "overall_score": run.overall_score,
+        "wall_time_seconds": run.wall_time_seconds,
+        "token_usage": run.token_usage,
+        "retrieval_metrics": getattr(run, "retrieval_metrics", {}),
+        "cost_metrics": getattr(run, "cost_metrics", {}),
+        "categories": {
+            cat: {
+                "score": cr.score,
+                "correct": cr.correct,
+                "total": cr.total,
+                "recall_tokens": cr.recall_tokens,
+                "recall_chars": cr.recall_chars,
+                "retrieval_metrics": cr.retrieval_metrics,
+                "sub_scores": cr.sub_scores,
+            }
+            for cat, cr in run.results_by_category.items()
+        },
+    }
+
+
+def credential_presence(backend_name: str) -> dict[str, str]:
+    """Report credential presence without exposing values."""
+    import os
+
+    return {
+        key: ("set" if os.environ.get(key) else "missing")
+        for key in PROVIDER_ENV_VARS.get(backend_name, [])
+    }
+
+
+def capture_git_metadata() -> dict:
+    """Capture benchmark worktree metadata for reproducibility."""
+    import subprocess
+
+    def run(args: list[str]) -> str | None:
+        try:
+            proc = subprocess.run(args, capture_output=True, text=True, timeout=10)
+            return proc.stdout.strip() if proc.returncode == 0 else None
+        except Exception:
+            return None
+
+    return {
+        "branch": run(["git", "branch", "--show-current"]),
+        "commit": run(["git", "rev-parse", "HEAD"]),
+        "dirty": bool(run(["git", "status", "--short"])),
+    }
+
+
+def capture_runtime_metadata(backend_name: str) -> dict:
+    """Capture versions and environment shape without leaking secrets."""
+    import importlib.metadata as md
+    import platform
+    import subprocess
+
+    package_names = [
+        "mnemoria",
+        "mem0ai",
+        "honcho-ai",
+        "hindsight-client",
+        "openviking",
+        "sentence-transformers",
+    ]
+    packages = {}
+    for name in package_names:
+        try:
+            packages[name] = md.version(name)
+        except md.PackageNotFoundError:
+            packages[name] = None
+
+    byterover_version = None
+    try:
+        proc = subprocess.run(["brv", "--version"], capture_output=True, text=True, timeout=10)
+        byterover_version = proc.stdout.strip() or proc.stderr.strip() or None
+    except Exception:
+        byterover_version = None
+
+    return {
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "backend": backend_name,
+        "packages": packages,
+        "byterover_cli": byterover_version,
+        "credentials": credential_presence(backend_name),
+        "git": capture_git_metadata(),
+    }
+
+
+def build_result_data(config: BenchmarkConfig, agg: AggregateResult, runs: list[RunResult]) -> dict:
+    """Build the rich benchmark result JSON schema used for all saved results."""
+    import datetime
+
+    requested_categories = requested_categories_for_suites(config.parameters.get("suites", ["a"]))
+    executed_categories = sorted(agg.per_category_mean.keys())
+    capabilities = BACKEND_CAPABILITIES.get(config.backend_name, BackendCapabilities())
+    skipped_categories = build_skipped_category_reasons(
+        requested_categories,
+        executed_categories,
+        capabilities,
+    )
+    score_views = build_score_views(runs, requested_categories)
+
+    return {
+        "schema_version": "2.0",
+        "backend": config.backend_name,
+        "profile": config.profile,
+        "embedding_model": config.embedding_model,
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "suites": config.parameters.get("suites", ["a"]),
+        "requested_categories": requested_categories,
+        "executed_categories": executed_categories,
+        "skipped_categories": skipped_categories,
+        "skipped_category_names": sorted(skipped_categories),
+        "score_views": score_views,
+        "mean_score": agg.mean_score,
+        "std": agg.std_score,
+        "ci_95": [agg.ci_95_lower, agg.ci_95_upper],
+        "per_category_mean": agg.per_category_mean,
+        "per_category_std": agg.per_category_std,
+        "num_runs": agg.num_runs,
+        "retrieval_metrics": average_run_dicts([r.retrieval_metrics for r in runs if r.retrieval_metrics]),
+        "cost_metrics": average_run_dicts([r.cost_metrics for r in runs if r.cost_metrics]),
+        "runtime": capture_runtime_metadata(config.backend_name),
+        "runs": [serialize_run(r) for r in runs],
+    }
+
+
+def shared_category_view(result_payloads: list[dict]) -> dict:
+    """Compute per-backend scores over categories every payload executed."""
+    if not result_payloads:
+        return {"categories": [], "backends": {}}
+
+    category_sets = [set(payload.get("executed_categories", [])) for payload in result_payloads]
+    shared = sorted(set.intersection(*category_sets)) if category_sets else []
+
+    backends = {}
+    for payload in result_payloads:
+        name = payload["backend"]
+        correct = 0
+        total = 0
+        for run in payload.get("runs", []):
+            categories = run.get("categories", {})
+            for cat in shared:
+                result = categories.get(cat)
+                if result:
+                    correct += result.get("correct", 0)
+                    total += result.get("total", 0)
+        backends[name] = {
+            "score": correct / total if total else 0.0,
+            "correct": correct,
+            "total": total,
+        }
+
+    return {"categories": shared, "backends": backends}
+
+
+def preflight_backend(config: BenchmarkConfig) -> dict:
+    """Run a cheap store/recall/reset smoke check for a backend."""
+    backend = get_backend(config.backend_name, config)
+    result = {"backend": config.backend_name, "ok": False, "steps": {}, "error": None}
+    try:
+        backend.reset()
+        result["steps"]["reset_before"] = "ok"
+        backend.store("The benchmark preflight code is moon-731.", category="factual")
+        result["steps"]["store"] = "ok"
+        recalled = backend.recall("What is the benchmark preflight code?", top_k=3)
+        result["steps"]["recall"] = "ok" if any("moon-731" in r for r in recalled) else "no_match"
+        backend.reset()
+        result["steps"]["reset_after"] = "ok"
+        result["ok"] = result["steps"]["recall"] == "ok"
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        close = getattr(backend, "close", None)
+        if callable(close):
+            close()
+    return result
+
+
 # --- Scenario Runners ---
 
 def run_semantic_recall(backend: BenchmarkableStore, scenarios: list,
@@ -2286,6 +2573,258 @@ def run_delegation_memory(backend: BenchmarkableStore, scenarios: list,
     )
 
 
+# --- Suite P-T: Additional Agent-Memory Categories ---
+
+def _mean_detail_metrics(details: list[dict]) -> dict:
+    all_metrics = [d.get("metrics", {}) for d in details if "metrics" in d]
+    if not all_metrics:
+        return {}
+    averaged = {}
+    for key in all_metrics[0]:
+        values = [m[key] for m in all_metrics if key in m]
+        averaged[key] = sum(values) / len(values) if values else 0.0
+    return averaged
+
+
+def _difficulty_sub_scores(details: list[dict]) -> dict:
+    sub_scores = {}
+    for diff in ["easy", "medium", "hard"]:
+        subset = [d for d in details if d.get("difficulty") == diff and not d.get("skipped")]
+        if subset:
+            sub_scores[diff] = sum(1 for d in subset if d.get("correct")) / len(subset)
+    return sub_scores
+
+
+def _basic_category_result(category: str, details: list[dict], recall_tokens: int, recall_chars: int) -> CategoryResult:
+    scored = [d for d in details if not d.get("skipped")]
+    correct = sum(1 for d in scored if d.get("correct"))
+    total = len(scored)
+    return CategoryResult(
+        category=category,
+        total=total,
+        correct=correct,
+        score=correct / total if total else 0,
+        sub_scores=_difficulty_sub_scores(details),
+        details=details,
+        recall_tokens=recall_tokens,
+        recall_chars=recall_chars,
+        retrieval_metrics=_mean_detail_metrics(details),
+    )
+
+
+def run_abstention(backend: BenchmarkableStore, scenarios: list,
+                   judge: MemoryJudge) -> CategoryResult:
+    """Run no-answer/false-positive abstention scenarios."""
+    details = []
+    total_recall_tokens = 0
+    total_recall_chars = 0
+    none_markers = ("NONE", "N/A", "UNKNOWN", "NO ANSWER")
+
+    for sc in scenarios:
+        backend.reset()
+        for fact in sc.get("facts", []):
+            backend.store(fact, category="factual")
+
+        results = backend.recall(sc["query"], top_k=5)
+        actual = " | ".join(results[:3]) if results else ""
+        rt, rc = count_recall_tokens(results)
+        total_recall_tokens += rt
+        total_recall_chars += rc
+
+        if not actual.strip() or actual.strip().upper() in none_markers:
+            scenario_correct = True
+        else:
+            jr = judge.judge_answer(sc["query"], sc.get("gold_answer", "NONE"), actual)
+            scenario_correct = not jr.correct
+
+        details.append({
+            "id": sc["id"],
+            "difficulty": sc.get("difficulty", "medium"),
+            "correct": scenario_correct,
+            "actual": actual,
+            "gold": sc.get("gold_answer", "NONE"),
+        })
+        details[-1]["metrics"] = compute_scenario_metrics(results, sc.get("gold_answer", "NONE"))
+
+    return _basic_category_result("abstention", details, total_recall_tokens, total_recall_chars)
+
+
+def run_preference_memory(backend: BenchmarkableStore, scenarios: list,
+                          judge: MemoryJudge) -> CategoryResult:
+    """Run stable/corrected preference and identity memory scenarios."""
+    details = []
+    total_recall_tokens = 0
+    total_recall_chars = 0
+
+    for sc in scenarios:
+        backend.reset()
+        for turn in sc.get("turns", []):
+            backend.store(turn, category="preference")
+        for fact in sc.get("distractors", []):
+            backend.store(fact, category="factual")
+
+        results = backend.recall(sc["query"], top_k=5)
+        actual = " | ".join(results[:3]) if results else ""
+        rt, rc = count_recall_tokens(results)
+        total_recall_tokens += rt
+        total_recall_chars += rc
+        jr = judge.judge_answer(sc["query"], sc["gold_answer"], actual)
+
+        details.append({
+            "id": sc["id"],
+            "difficulty": sc.get("difficulty", "medium"),
+            "sub_type": sc.get("sub_type", "unknown"),
+            "correct": jr.correct,
+            "actual": actual,
+            "gold": sc["gold_answer"],
+        })
+        details[-1]["metrics"] = compute_scenario_metrics(results, sc["gold_answer"])
+
+    result = _basic_category_result("preference_memory", details, total_recall_tokens, total_recall_chars)
+    for sub_type in sorted({d.get("sub_type") for d in details}):
+        subset = [d for d in details if d.get("sub_type") == sub_type]
+        if subset:
+            result.sub_scores[sub_type] = sum(1 for d in subset if d["correct"]) / len(subset)
+    return result
+
+
+def run_privacy_forgetting(backend: BenchmarkableStore, scenarios: list,
+                           judge: MemoryJudge) -> CategoryResult:
+    """Run deletion/forgetting scenarios for backends that support forget()."""
+    details = []
+    total_recall_tokens = 0
+    total_recall_chars = 0
+
+    if type(backend).forget is BenchmarkableStore.forget:
+        for sc in scenarios:
+            details.append({
+                "id": sc["id"],
+                "skipped": True,
+                "reason": "backend does not implement forget()",
+                "correct": False,
+            })
+        return _basic_category_result("privacy_forgetting", details, 0, 0)
+
+    for sc in scenarios:
+        backend.reset()
+        secret = sc.get("secret_fact")
+        retained = sc.get("retained_fact")
+        if secret:
+            backend.store(secret, category="private")
+        if retained:
+            backend.store(retained, category="factual")
+        for fact in sc.get("distractors", []):
+            backend.store(fact, category="factual")
+
+        backend.forget(sc.get("forget_query"), scope=sc.get("forget_scope"))
+        forgotten_results = backend.recall(sc.get("forget_query", ""), top_k=5)
+        retained_results = backend.recall(sc.get("retained_query", ""), top_k=5)
+        rt, rc = count_recall_tokens(forgotten_results + retained_results)
+        total_recall_tokens += rt
+        total_recall_chars += rc
+
+        forgotten_actual = " | ".join(forgotten_results[:3]) if forgotten_results else ""
+        retained_actual = " | ".join(retained_results[:3]) if retained_results else ""
+        forgotten_ok = not forgotten_actual or (secret and secret not in forgotten_actual)
+        retained_ok = judge.judge_answer(
+            sc.get("retained_query", ""),
+            sc.get("retained_answer", retained or ""),
+            retained_actual,
+        ).correct
+        scenario_correct = bool(forgotten_ok and retained_ok)
+
+        details.append({
+            "id": sc["id"],
+            "difficulty": sc.get("difficulty", "medium"),
+            "correct": scenario_correct,
+            "forgotten_actual": forgotten_actual,
+            "retained_actual": retained_actual,
+            "gold": sc.get("retained_answer", retained or ""),
+        })
+
+    return _basic_category_result("privacy_forgetting", details, total_recall_tokens, total_recall_chars)
+
+
+def run_multi_hop_exploration(backend: BenchmarkableStore, scenarios: list,
+                              judge: MemoryJudge) -> CategoryResult:
+    """Run linked multi-hop memory exploration scenarios."""
+    details = []
+    total_recall_tokens = 0
+    total_recall_chars = 0
+
+    for sc in scenarios:
+        backend.reset()
+        for fact in sc.get("facts", []):
+            backend.store(fact, category="factual")
+
+        results = backend.explore(sc["query"], top_k=5)
+        actual = " | ".join(results[:5]) if results else ""
+        rt, rc = count_recall_tokens(results)
+        total_recall_tokens += rt
+        total_recall_chars += rc
+        jr = judge.judge_answer(sc["query"], sc["gold_answer"], actual)
+
+        details.append({
+            "id": sc["id"],
+            "difficulty": sc.get("difficulty", "medium"),
+            "sub_type": sc.get("sub_type", "unknown"),
+            "correct": jr.correct,
+            "actual": actual,
+            "gold": sc["gold_answer"],
+        })
+        details[-1]["metrics"] = compute_scenario_metrics(results, sc["gold_answer"])
+
+    result = _basic_category_result("multi_hop_exploration", details, total_recall_tokens, total_recall_chars)
+    for sub_type in sorted({d.get("sub_type") for d in details}):
+        subset = [d for d in details if d.get("sub_type") == sub_type]
+        if subset:
+            result.sub_scores[sub_type] = sum(1 for d in subset if d["correct"]) / len(subset)
+    return result
+
+
+def run_long_conversation(backend: BenchmarkableStore, scenarios: list,
+                          judge: MemoryJudge) -> CategoryResult:
+    """Run long multi-turn/cross-session conversation memory scenarios."""
+    details = []
+    total_recall_tokens = 0
+    total_recall_chars = 0
+
+    for sc in scenarios:
+        backend.reset()
+        turns = sc.get("turns", [])
+        store_turns = sc.get("store_turns")
+        if store_turns is None:
+            selected_turns = turns
+        else:
+            selected_turns = [turns[i] for i in store_turns if 0 <= i < len(turns)]
+        for turn in selected_turns:
+            backend.store(turn, category="conversation")
+
+        results = backend.recall(sc["query"], top_k=5)
+        actual = " | ".join(results[:5]) if results else ""
+        rt, rc = count_recall_tokens(results)
+        total_recall_tokens += rt
+        total_recall_chars += rc
+        jr = judge.judge_answer(sc["query"], sc["gold_answer"], actual)
+
+        details.append({
+            "id": sc["id"],
+            "difficulty": sc.get("difficulty", "medium"),
+            "sub_type": sc.get("sub_type", "unknown"),
+            "correct": jr.correct,
+            "actual": actual,
+            "gold": sc["gold_answer"],
+        })
+        details[-1]["metrics"] = compute_scenario_metrics(results, sc["gold_answer"])
+
+    result = _basic_category_result("long_conversation", details, total_recall_tokens, total_recall_chars)
+    for sub_type in sorted({d.get("sub_type") for d in details}):
+        subset = [d for d in details if d.get("sub_type") == sub_type]
+        if subset:
+            result.sub_scores[sub_type] = sum(1 for d in subset if d["correct"]) / len(subset)
+    return result
+
+
 CATEGORY_RUNNERS = {
     "semantic_recall": run_semantic_recall,
     "contradictions": run_contradictions,
@@ -2327,6 +2866,12 @@ CATEGORY_RUNNERS = {
     "compression_survival": run_compression_survival,
     # Suite L — Delegation Memory
     "delegation_memory": run_delegation_memory,
+    # Suites P-T — Additional Agent-Memory Categories
+    "abstention": run_abstention,
+    "preference_memory": run_preference_memory,
+    "privacy_forgetting": run_privacy_forgetting,
+    "multi_hop_exploration": run_multi_hop_exploration,
+    "long_conversation": run_long_conversation,
 }
 
 
@@ -2357,12 +2902,7 @@ def run_single(config: BenchmarkConfig, seed: int) -> RunResult:
 
     suites_to_run = config.parameters.get("suites", ["a"])
     if suites_to_run == ["all"] or suites_to_run == "all":
-        # Auto-discover all available suites
-        suites_to_run = sorted(
-            d.name.split("_")[1]
-            for d in SUITE_DIR.iterdir()
-            if d.is_dir() and d.name.startswith("suite_") and (d / "fixtures").exists()
-        )
+        suites_to_run = discover_suites()
     for suite_letter in suites_to_run:
         try:
             fixtures = load_fixtures(suite_letter)
@@ -2477,6 +3017,24 @@ def print_results(agg: AggregateResult, config: BenchmarkConfig,
     print(f"  Runs: {agg.num_runs}")
     print(f"  Overall: {agg.mean_score:.3f} ± {agg.std_score:.3f}")
     print(f"  95% CI:  [{agg.ci_95_lower:.3f}, {agg.ci_95_upper:.3f}]")
+    if runs:
+        requested_categories = requested_categories_for_suites(config.parameters.get("suites", ["a"]))
+        score_views = build_score_views(runs, requested_categories)
+        executed_view = score_views["executed"]
+        core_view = score_views["core"]
+        print("  Fair comparison views:")
+        print(
+            f"    Executed score: {executed_view['score']:.3f} "
+            f"over {len(executed_view['categories'])} categories"
+        )
+        print(
+            f"    Core score:     {core_view['score']:.3f} "
+            f"over {len(core_view['categories'])} categories"
+        )
+        if score_views.get("tracks"):
+            print("    Tracks:")
+            for track, view in score_views["tracks"].items():
+                print(f"      {track:<12} {view['score']:.3f} over {len(view['categories'])} categories")
     print(f"{'─'*60}")
     print(f"  {'Category':<25} {'Mean':>8} {'Std':>8}")
     print(f"  {'─'*25} {'─'*8} {'─'*8}")
@@ -2557,12 +3115,14 @@ def main():
                         help="Compare against another backend (runs both)")
     parser.add_argument("--json", action="store_true",
                         help="Output results as JSON")
+    parser.add_argument("--preflight", action="store_true",
+                        help="Run backend setup/store/recall/reset smoke check and exit")
 
     args = parser.parse_args()
 
-    # Parse suite argument: 'a' -> ['a'], 'a,b,c' -> ['a','b','c'], 'all' -> all
+    # Parse suite argument: 'a' -> ['a'], 'a,b,c' -> ['a','b','c'], 'all' -> discovered suites
     if args.suite == "all":
-        suites = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o"]
+        suites = discover_suites()
     else:
         suites = [s.strip() for s in args.suite.split(",")]
 
@@ -2584,6 +3144,11 @@ def main():
     )
 
     print(f"\nRunning {config.backend_name} benchmark ({config.num_runs} runs)...")
+    if args.preflight:
+        result = preflight_backend(config)
+        print(json.dumps(result, indent=2))
+        sys.exit(0 if result["ok"] else 1)
+
     try:
         agg, runs = run_benchmark(config)
     except Exception as exc:
@@ -2593,31 +3158,7 @@ def main():
         sys.exit(1)
 
     if args.json:
-        # Compute avg retrieval metrics across runs for JSON output
-        all_run_rm = [r.retrieval_metrics for r in runs if hasattr(r, "retrieval_metrics") and r.retrieval_metrics]
-        avg_retrieval_metrics_json = {}
-        if all_run_rm:
-            for key in all_run_rm[0]:
-                vals = [m[key] for m in all_run_rm if key in m]
-                avg_retrieval_metrics_json[key] = sum(vals) / len(vals) if vals else 0.0
-        # Compute avg cost metrics across runs for JSON output
-        all_run_cm = [r.cost_metrics for r in runs if hasattr(r, "cost_metrics") and r.cost_metrics]
-        avg_cost_metrics_json = {}
-        if all_run_cm:
-            for key in all_run_cm[0]:
-                vals = [m[key] for m in all_run_cm if key in m]
-                avg_cost_metrics_json[key] = sum(vals) / len(vals) if vals else 0.0
-        results_dict = {
-            "backend": config.backend_name,
-            "mean_score": agg.mean_score,
-            "std": agg.std_score,
-            "ci_95": [agg.ci_95_lower, agg.ci_95_upper],
-            "per_category": agg.per_category_mean,
-            "num_runs": agg.num_runs,
-            "retrieval_metrics": avg_retrieval_metrics_json,
-            "cost_metrics": avg_cost_metrics_json,
-        }
-        print(json.dumps(results_dict, indent=2))
+        print(json.dumps(build_result_data(config, agg, runs), indent=2))
     else:
         print_results(agg, config, runs)
 
@@ -2625,79 +3166,13 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     result_file = output_dir / f"{config.backend_name}.json"
-    # Compute avg retrieval metrics for file output (may already be done above)
-    all_run_rm_file = [r.retrieval_metrics for r in runs if hasattr(r, "retrieval_metrics") and r.retrieval_metrics]
-    avg_rm_file = {}
-    if all_run_rm_file:
-        for key in all_run_rm_file[0]:
-            vals = [m[key] for m in all_run_rm_file if key in m]
-            avg_rm_file[key] = sum(vals) / len(vals) if vals else 0.0
-    # Compute avg cost metrics for file output
-    all_run_cm_file = [r.cost_metrics for r in runs if hasattr(r, "cost_metrics") and r.cost_metrics]
-    avg_cm_file = {}
-    if all_run_cm_file:
-        for key in all_run_cm_file[0]:
-            vals = [m[key] for m in all_run_cm_file if key in m]
-            avg_cm_file[key] = sum(vals) / len(vals) if vals else 0.0
-
-    # Build result data
-    import datetime
-    result_data = {
-        "backend": config.backend_name,
-        "profile": config.profile,
-        "embedding_model": config.embedding_model,
-        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-        "suites": config.parameters.get("suites", ["a"]),
-        "mean_score": agg.mean_score,
-        "std": agg.std_score,
-        "ci_95": [agg.ci_95_lower, agg.ci_95_upper],
-        "per_category_mean": agg.per_category_mean,
-        "per_category_std": agg.per_category_std,
-        "num_runs": agg.num_runs,
-        "retrieval_metrics": avg_rm_file,
-        "cost_metrics": avg_cm_file,
-        "runs": [
-                {
-                    "seed": r.seed,
-                    "overall_score": r.overall_score,
-                    "wall_time_seconds": r.wall_time_seconds,
-                    "token_usage": r.token_usage,
-                    "retrieval_metrics": getattr(r, "retrieval_metrics", {}),
-                    "cost_metrics": getattr(r, "cost_metrics", {}),
-                    "categories": {
-                        cat: {
-                            "score": cr.score, "correct": cr.correct, "total": cr.total,
-                            "recall_tokens": cr.recall_tokens, "recall_chars": cr.recall_chars,
-                            "retrieval_metrics": cr.retrieval_metrics,
-                        }
-                        for cat, cr in r.results_by_category.items()
-                    },
-                }
-                for r in runs
-            ],
-        }
-
-    # Merge with existing results (preserve categories from prior runs)
-    if result_file.exists():
-        try:
-            with open(result_file) as f:
-                existing = json.load(f)
-            # Merge per_category_mean: keep old categories, update/add new ones
-            old_cats = existing.get("per_category_mean", {})
-            new_cats = result_data.get("per_category_mean", {})
-            merged_cats = {**old_cats, **new_cats}
-            result_data["per_category_mean"] = merged_cats
-            # Same for per_category_std
-            old_std = existing.get("per_category_std", {})
-            new_std = result_data.get("per_category_std", {})
-            result_data["per_category_std"] = {**old_std, **new_std}
-        except (json.JSONDecodeError, KeyError):
-            pass  # Corrupted file, just overwrite
+    result_data = build_result_data(config, agg, runs)
 
     with open(result_file, "w") as f:
         json.dump(result_data, f, indent=2)
 
     # Also save timestamped copy for history tracking
+    import datetime
     ts = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     history_dir = output_dir / "history"
     history_dir.mkdir(parents=True, exist_ok=True)
@@ -2718,21 +3193,27 @@ def main():
             judge_model=args.judge_model,
             output_path=args.output_dir,
             seeds=args.seeds,
-            parameters={"profile": args.profile, "embedding_model": args.embedding},
+            parameters={
+                "profile": args.profile,
+                "embedding_model": args.embedding,
+                "suites": suites,
+                **({"contradiction_llm_model": args.contradiction_llm}
+                   if args.contradiction_llm else {}),
+            },
         )
         agg2, runs2 = run_benchmark(config2)
         print_results(agg2, config2, runs2)
 
-        # Save comparison results
+        # Save comparison results using the same rich schema as primary runs
         result_file2 = output_dir / f"{config2.backend_name}.json"
+        result_data2 = build_result_data(config2, agg2, runs2)
         with open(result_file2, "w") as f:
-            json.dump({
-                "backend": config2.backend_name,
-                "mean_score": agg2.mean_score,
-                "std": agg2.std_score,
-                "num_runs": agg2.num_runs,
-                "per_category_mean": agg2.per_category_mean,
-            }, f, indent=2)
+            json.dump(result_data2, f, indent=2)
+
+        ts2 = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        history_file2 = history_dir / f"{config2.backend_name}_{ts2}.json"
+        with open(history_file2, "w") as f:
+            json.dump(result_data2, f, indent=2)
 
         # Significance test
         sig = compare_runs(runs, runs2)

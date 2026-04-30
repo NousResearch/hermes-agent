@@ -37,6 +37,14 @@ CATEGORY_SPECS = {
     "compression_survival": CategorySpec("lifecycle", [], False, "Recall after simulated context compression"),
     "delegation_memory": CategorySpec("lifecycle", [], False, "Recall outcomes from delegated work"),
     "qlearning": CategorySpec("core", [], False, "Feedback-driven retrieval improvement"),
+    "format_sensitivity": CategorySpec("core", [], True, "Recall robustness across storage/output formats"),
+    "retrieval_ablation": CategorySpec("core", [], True, "Keyword, semantic, and hybrid retrieval signal coverage"),
+    "timestamp_integrity": CategorySpec("temporal", ["time_simulation"], False, "Preserving temporal ordering through memory operations"),
+    "abstention": CategorySpec("core", [], True, "Avoiding false-positive recall when no answer is stored"),
+    "preference_memory": CategorySpec("core", [], True, "Remembering stable and corrected user preferences"),
+    "privacy_forgetting": CategorySpec("privacy", ["forgetting"], False, "Deletion and no-recall guarantees after forgetting"),
+    "multi_hop_exploration": CategorySpec("exploration", [], False, "Recovering answers that require linked multi-hop facts"),
+    "long_conversation": CategorySpec("core", [], True, "Long multi-turn and cross-session conversational memory"),
 }
 
 

@@ -2832,10 +2832,23 @@ class BasePlatformAdapter(ABC):
                 # reset-like command that already swapped in its own
                 # command_guard (and cancelled us) can't be accidentally
                 # cleared by our unwind.  The command owns the session now.
+                #
+                # The owner-check also covers the in-band drain handoff
+                # above: when we spawned a drain_task and transferred
+                # ownership via ``_session_tasks[session_key] = drain_task``,
+                # ``_session_tasks.get(session_key) is current_task`` is
+                # False, so we leave _active_sessions populated.  Without
+                # this guard, the drain task picks up the same
+                # interrupt_event in its own _process_message_background
+                # entry, _release_session_guard's guard-match succeeds,
+                # and we'd delete the entry while the drain task is still
+                # running — letting a concurrent inbound message pass
+                # the Level-1 guard and spawn a second handler for the
+                # same session.
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     del self._session_tasks[session_key]
-                self._release_session_guard(session_key, guard=interrupt_event)
+                    self._release_session_guard(session_key, guard=interrupt_event)
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.

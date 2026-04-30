@@ -1011,7 +1011,13 @@ def _compress_session_history(
     from agent.model_metadata import estimate_messages_tokens_rough
 
     agent = session["agent"]
-    history = list(session.get("history", []))
+    # Snapshot history under the lock so the LLM-bound compression call
+    # below does NOT hold history_lock for the duration of the request —
+    # otherwise other handlers acquiring the lock (prompt.submit etc.)
+    # block on the dispatcher loop while compaction runs.
+    with session["history_lock"]:
+        history = list(session.get("history", []))
+        history_version = int(session.get("history_version", 0))
     if len(history) < 4:
         return 0, _get_usage(agent)
     if approx_tokens is None:
@@ -1022,8 +1028,13 @@ def _compress_session_history(
         approx_tokens=approx_tokens,
         focus_topic=focus_topic or None,
     )
-    session["history"] = compressed
-    session["history_version"] = int(session.get("history_version", 0)) + 1
+    with session["history_lock"]:
+        if int(session.get("history_version", 0)) != history_version:
+            # External mutation during compaction — drop the compressed
+            # result so we don't clobber concurrent edits.
+            return 0, _get_usage(agent)
+        session["history"] = compressed
+        session["history_version"] = history_version + 1
     return len(history) - len(compressed), _get_usage(agent)
 
 
@@ -2065,35 +2076,41 @@ def _(rid, params: dict) -> dict:
                 f"(~{before_tokens:,} tok){focus_suffix}…",
             )
 
-        with session["history_lock"]:
+        try:
             removed, usage = _compress_session_history(
                 session, focus_topic, approx_tokens=before_tokens
             )
-            messages = list(session.get("history", []))
-        after_count = len(messages)
-        after_tokens = (
-            estimate_messages_tokens_rough(messages) if after_count else 0
-        )
-        summary = summarize_manual_compression(
-            before_messages, messages, before_tokens, after_tokens
-        )
-        info = _session_info(session["agent"])
-        _emit("session.info", sid, info)
-        return _ok(
-            rid,
-            {
-                "status": "compressed",
-                "removed": removed,
-                "before_messages": before_count,
-                "after_messages": after_count,
-                "before_tokens": before_tokens,
-                "after_tokens": after_tokens,
-                "summary": summary,
-                "usage": usage,
-                "info": info,
-                "messages": messages,
-            },
-        )
+            with session["history_lock"]:
+                messages = list(session.get("history", []))
+            after_count = len(messages)
+            after_tokens = (
+                estimate_messages_tokens_rough(messages) if after_count else 0
+            )
+            summary = summarize_manual_compression(
+                before_messages, messages, before_tokens, after_tokens
+            )
+            info = _session_info(session["agent"])
+            _emit("session.info", sid, info)
+            return _ok(
+                rid,
+                {
+                    "status": "compressed",
+                    "removed": removed,
+                    "before_messages": before_count,
+                    "after_messages": after_count,
+                    "before_tokens": before_tokens,
+                    "after_tokens": after_tokens,
+                    "summary": summary,
+                    "usage": usage,
+                    "info": info,
+                    "messages": messages,
+                },
+            )
+        finally:
+            # Always clear the pinned compressing status so the bar
+            # reverts to neutral whether compaction succeeded, was a
+            # no-op, or raised.
+            _status_update(sid, "ready")
     except Exception as e:
         return _err(rid, 5005, str(e))
 

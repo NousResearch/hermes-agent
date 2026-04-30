@@ -1436,7 +1436,12 @@ def test_session_compress_uses_compress_helper(monkeypatch):
 
     assert resp["result"]["removed"] == 2
     assert resp["result"]["usage"]["total"] == 42
-    emit.assert_called_once_with("session.info", "sid", {"model": "x"})
+    emit.assert_any_call("session.info", "sid", {"model": "x"})
+    # Final status.update clears the pinned "compressing" indicator so the
+    # status bar can revert to the neutral state when compaction finishes.
+    emit.assert_any_call(
+        "status.update", "sid", {"kind": "status", "text": "ready"}
+    )
 
 
 def test_prompt_submit_sets_approval_session_key(monkeypatch):

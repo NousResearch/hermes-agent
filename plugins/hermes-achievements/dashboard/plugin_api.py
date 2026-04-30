@@ -549,7 +549,11 @@ def display_achievement(item: Dict[str, Any]) -> Dict[str, Any]:
     return clean
 
 
-def scan_sessions(limit: Optional[int] = None) -> Dict[str, Any]:
+def scan_sessions(
+    limit: Optional[int] = None,
+    progress_callback: Optional[Any] = None,
+    progress_every: int = 250,
+) -> Dict[str, Any]:
     """Scan Hermes sessions and build per-session achievement stats.
 
     ``limit=None`` (the default) scans the ENTIRE session history. Prior
@@ -564,6 +568,13 @@ def scan_sessions(limit: Optional[int] = None) -> Dict[str, Any]:
     of sessions) take tens of seconds to several minutes; ``evaluate_all``
     runs them on a background thread so the dashboard UI never blocks on
     the first request.
+
+    ``progress_callback(partial_sessions, scanned_so_far, total)`` — when
+    provided, fires every ``progress_every`` sessions with the sessions
+    analyzed so far and progress counters. Background scans use this to
+    publish intermediate snapshots so a long cold scan surfaces badges
+    incrementally on each dashboard refresh instead of going all-at-once
+    at the end.
     """
     try:
         from hermes_state import SessionDB
@@ -583,9 +594,10 @@ def scan_sessions(limit: Optional[int] = None) -> Dict[str, Any]:
     db = SessionDB()
     try:
         sessions_meta = db.list_sessions_rich(limit=db_limit, include_children=True, project_compression_tips=False)
-        sessions = []
+        total_sessions = len(sessions_meta)
+        sessions: List[Dict[str, Any]] = []
         checkpoint_sessions: Dict[str, Any] = {}
-        for meta in sessions_meta:
+        for idx, meta in enumerate(sessions_meta, start=1):
             sid = meta.get("id")
             if not sid:
                 continue
@@ -620,6 +632,14 @@ def scan_sessions(limit: Optional[int] = None) -> Dict[str, Any]:
             sessions.append(stats)
             checkpoint_sessions[sid] = {"fingerprint": fp, "stats": _json_safe(stats)}
 
+            if progress_callback is not None and progress_every > 0 and (idx % progress_every == 0) and idx < total_sessions:
+                try:
+                    progress_callback(list(sessions), idx, total_sessions)
+                except Exception:
+                    # Progress callbacks are advisory — a broken publisher
+                    # must never abort the scan itself.
+                    pass
+
         save_checkpoint({
             "schema_version": 1,
             "generated_at": int(time.time()),
@@ -637,6 +657,8 @@ def scan_sessions(limit: Optional[int] = None) -> Dict[str, Any]:
             "sessions_total": len(sessions),
             "sessions_rescanned": rescanned,
             "sessions_reused": reused,
+            "sessions_scanned_so_far": len(sessions),
+            "sessions_expected_total": total_sessions,
         },
     }
 
@@ -754,24 +776,31 @@ def evidence_for(definition: Dict[str, Any], sessions: List[Dict[str, Any]]) -> 
     return None
 
 
-def compute_all() -> Dict[str, Any]:
-    scan = scan_sessions()
+def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dict[str, Any]:
+    """Evaluate every achievement definition against a scan result.
+
+    Used by ``compute_all`` for finished scans AND by the background
+    progress callback for partial, in-flight snapshots. ``is_partial=True``
+    skips persisting ``state.json`` unlocks — we don't want to record an
+    "unlock time" based on half a scan that a later session might shift.
+    """
     aggregate = scan.get("aggregate", {})
-    state = load_state()
+    state = load_state() if not is_partial else {"unlocks": {}}
     unlocks = state.setdefault("unlocks", {})
     now = int(time.time())
     evaluated = []
     for definition in ACHIEVEMENTS:
         result = evaluate_definition(definition, aggregate)
         unlock_id = definition["id"]
-        if result["unlocked"] and unlock_id not in unlocks:
+        if not is_partial and result["unlocked"] and unlock_id not in unlocks:
             unlocks[unlock_id] = {"unlocked_at": now, "first_tier": result.get("tier"), "evidence": evidence_for(definition, scan.get("sessions", []))}
         item = {**definition, **result}
         if result["unlocked"]:
             item["unlocked_at"] = unlocks.get(unlock_id, {}).get("unlocked_at")
             item["evidence"] = unlocks.get(unlock_id, {}).get("evidence") or evidence_for(definition, scan.get("sessions", []))
         evaluated.append(display_achievement(item))
-    save_state(state)
+    if not is_partial:
+        save_state(state)
     unlocked = [a for a in evaluated if a["unlocked"]]
     discovered = [a for a in evaluated if a.get("state") == "discovered"]
     secret = [a for a in evaluated if a.get("state") == "secret"]
@@ -787,6 +816,11 @@ def compute_all() -> Dict[str, Any]:
         "total_count": len(evaluated),
         "generated_at": now,
     }
+
+
+def compute_all(progress_callback: Optional[Any] = None, progress_every: int = 250) -> Dict[str, Any]:
+    scan = scan_sessions(progress_callback=progress_callback, progress_every=progress_every)
+    return _compute_from_scan(scan, is_partial=False)
 
 
 _BACKGROUND_SCAN_THREAD: Optional[threading.Thread] = None
@@ -814,16 +848,54 @@ def _build_pending_snapshot(now: int) -> Dict[str, Any]:
     }
 
 
-def _run_scan_and_update_cache() -> None:
-    """Execute a scan + snapshot update. Called synchronously or from a thread."""
+def _run_scan_and_update_cache(publish_partial_snapshots: bool = True) -> None:
+    """Execute a scan + snapshot update. Called synchronously or from a thread.
+
+    When ``publish_partial_snapshots=True`` (the default for background
+    scans), the scanner periodically publishes an in-progress snapshot to
+    ``_SNAPSHOT_CACHE`` so each dashboard refresh during a long cold scan
+    shows more progress — badges unlock incrementally as sessions stream
+    in, instead of staying at zero for minutes and then jumping to the
+    final state. Synchronous /rescan callers pass ``False`` because they
+    block on the full result anyway.
+    """
     global _SNAPSHOT_CACHE, _SNAPSHOT_CACHE_AT
     with _SCAN_LOCK:
         started = int(time.time())
         _SCAN_STATUS["state"] = "running"
         _SCAN_STATUS["started_at"] = started
         _SCAN_STATUS["last_error"] = None
+
+        def _publish_partial(partial_sessions, scanned_so_far, total):
+            global _SNAPSHOT_CACHE, _SNAPSHOT_CACHE_AT
+            try:
+                partial_scan = {
+                    "sessions": partial_sessions,
+                    "aggregate": aggregate_stats(partial_sessions),
+                    "scan_meta": {
+                        "mode": "in_progress",
+                        "sessions_total": scanned_so_far,
+                        "sessions_rescanned": 0,
+                        "sessions_reused": 0,
+                        "sessions_scanned_so_far": scanned_so_far,
+                        "sessions_expected_total": total,
+                    },
+                }
+                partial = _compute_from_scan(partial_scan, is_partial=True)
+                # Keep the cache in the 'stale' TTL regime by NOT bumping
+                # _SNAPSHOT_CACHE_AT to "now". The UI treats partial
+                # results as stale so it keeps polling /scan-status and
+                # sees the final snapshot when the scan finishes. In-flight
+                # partials are visible but are never mistaken for finished.
+                _SNAPSHOT_CACHE = _json_safe(partial)
+                _SNAPSHOT_CACHE_AT = 0
+            except Exception:
+                # Intermediate publication is best-effort; don't kill the scan.
+                pass
+
+        callback = _publish_partial if publish_partial_snapshots else None
         try:
-            computed = compute_all()
+            computed = compute_all(progress_callback=callback)
             _SNAPSHOT_CACHE = _json_safe(computed)
             _SNAPSHOT_CACHE_AT = int(_SNAPSHOT_CACHE.get("generated_at") or int(time.time()))
             save_snapshot(_SNAPSHOT_CACHE)
@@ -842,7 +914,9 @@ def _start_background_scan() -> None:
 
     Idempotent: concurrent callers see the in-flight thread and return
     immediately. The thread updates ``_SNAPSHOT_CACHE`` on completion so
-    subsequent ``/achievements`` requests see fresh data.
+    subsequent ``/achievements`` requests see fresh data. While running,
+    it also publishes partial snapshots every ~250 sessions so the UI
+    reflects incremental progress on long cold scans.
     """
     global _BACKGROUND_SCAN_THREAD
     with _BACKGROUND_SCAN_LOCK:
@@ -851,6 +925,7 @@ def _start_background_scan() -> None:
             return
         thread = threading.Thread(
             target=_run_scan_and_update_cache,
+            kwargs={"publish_partial_snapshots": True},
             name="hermes-achievements-scan",
             daemon=True,
         )
@@ -893,7 +968,8 @@ def evaluate_all(force: bool = False) -> Dict[str, Any]:
 
     if force:
         # Manual /rescan — block the caller, synchronous scan path.
-        _run_scan_and_update_cache()
+        # No partial publishing: the caller is waiting for the final result.
+        _run_scan_and_update_cache(publish_partial_snapshots=False)
         if _SNAPSHOT_CACHE is not None:
             return _SNAPSHOT_CACHE
         # Scan failed with no prior cache — surface empty payload.

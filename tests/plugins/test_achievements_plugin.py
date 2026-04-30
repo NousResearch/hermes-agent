@@ -175,10 +175,10 @@ def test_evaluate_all_first_run_returns_pending_and_starts_background_scan(plugi
     allow_scan_finish = threading.Event()
     original_run = plugin_api._run_scan_and_update_cache
 
-    def gated_run():
+    def gated_run(*args, **kwargs):
         scan_started.set()
         allow_scan_finish.wait(timeout=5)
-        original_run()
+        original_run(*args, **kwargs)
 
     plugin_api._run_scan_and_update_cache = gated_run
 
@@ -271,9 +271,9 @@ def test_start_background_scan_is_idempotent_while_running(plugin_api):
     release = threading.Event()
     original_run = plugin_api._run_scan_and_update_cache
 
-    def gated_run():
+    def gated_run(*args, **kwargs):
         release.wait(timeout=5)
-        original_run()
+        original_run(*args, **kwargs)
 
     plugin_api._run_scan_and_update_cache = gated_run
 
@@ -288,3 +288,79 @@ def test_start_background_scan_is_idempotent_while_running(plugin_api):
 
     release.set()
     first_thread.join(timeout=5)
+
+
+def test_background_scan_publishes_partial_snapshots(plugin_api):
+    """The background scanner publishes intermediate snapshots to the cache
+    every ~N sessions. Each dashboard refresh during a long cold scan sees
+    more badges unlocked instead of staring at zeros for minutes and then
+    having everything pop at the end.
+    """
+    fake_db = _FakeSessionDB(session_count=750)
+    _install_fake_session_db(plugin_api, fake_db)
+
+    # Record every partial snapshot the scanner publishes.
+    partial_snapshots: List[Dict[str, Any]] = []
+    original_compute_from_scan = plugin_api._compute_from_scan
+
+    def recording_compute(scan, *, is_partial=False):
+        result = original_compute_from_scan(scan, is_partial=is_partial)
+        if is_partial:
+            partial_snapshots.append(result)
+        return result
+
+    plugin_api._compute_from_scan = recording_compute
+
+    # scan 750 sessions with progress_every=250 → expect 2 intermediate
+    # publications (at 250 and 500; the final 750 call goes through the
+    # finished, non-partial path).
+    plugin_api._run_scan_and_update_cache(publish_partial_snapshots=True)
+
+    assert len(partial_snapshots) >= 2, (
+        f"expected at least 2 partial publications on a 750-session scan with "
+        f"progress_every=250, got {len(partial_snapshots)}"
+    )
+    # Partial snapshots should report growing session counts.
+    counts = [p["scan_meta"].get("sessions_scanned_so_far") for p in partial_snapshots]
+    assert counts == sorted(counts), f"partial session counts not monotonic: {counts}"
+    assert counts[0] < 750 and counts[-1] < 750, (
+        f"partial counts should be less than the final total; got {counts}"
+    )
+    # Every partial reports the expected end-state total so the UI can
+    # show an accurate progress bar.
+    for p in partial_snapshots:
+        assert p["scan_meta"].get("sessions_expected_total") == 750
+
+    # Final snapshot in cache is the real (non-partial) one.
+    final = plugin_api._SNAPSHOT_CACHE
+    assert final is not None
+    assert final["scan_meta"].get("mode") != "in_progress"
+    assert final["scan_meta"].get("sessions_total") == 750
+
+
+def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
+    """Intermediate snapshots must not write to state.json — an unlock
+    that appears at 30% scan progress could disappear when a later session
+    rebalances the aggregate. Only the final snapshot records ``unlocked_at``.
+    """
+    fake_db = _FakeSessionDB(session_count=10)
+    _install_fake_session_db(plugin_api, fake_db)
+
+    # Seed empty state, then invoke partial compute directly.
+    plugin_api.save_state({"unlocks": {}})
+    partial_scan = {
+        "sessions": [{"session_id": "x", "tool_call_count": 99999, "tool_names": set()}],
+        "aggregate": {"max_tool_calls_in_session": 99999, "total_tool_calls": 99999},
+        "scan_meta": {"mode": "in_progress"},
+    }
+    result = plugin_api._compute_from_scan(partial_scan, is_partial=True)
+
+    # Some achievements should evaluate as unlocked in this aggregate...
+    assert any(a["unlocked"] for a in result["achievements"])
+
+    # ...but state.json on disk stays empty (no timestamps were recorded).
+    persisted = plugin_api.load_state()
+    assert persisted.get("unlocks", {}) == {}, (
+        "partial scans must not record unlock timestamps — a later session "
+        "could change whether the badge deserves to be unlocked yet"
+    )

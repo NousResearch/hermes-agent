@@ -1247,7 +1247,7 @@ def get_model_context_length(
     6. Nous suffix-match via OpenRouter cache
     7. models.dev registry lookup (provider-aware)
     8. Thin hardcoded defaults (broad family patterns)
-    9. Default fallback (128K)
+    9. Default fallback (256K)
     """
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
@@ -1427,7 +1427,7 @@ def get_model_context_length(
                 save_context_length(model, base_url, local_ctx)
             return local_ctx
 
-    # 10. Default fallback — 128K
+    # 10. Default fallback — 256K
     return DEFAULT_FALLBACK_CONTEXT
 
 

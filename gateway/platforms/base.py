@@ -2708,9 +2708,27 @@ class BasePlatformAdapter(ABC):
                 if _active is not None:
                     _active.clear()
                 await _stop_typing_task()
-                # Process pending message in new background task
-                await self._process_message_background(pending_event, session_key)
-                return  # Already cleaned up
+                # Spawn a fresh task for the pending message instead of
+                # recursing.  Issue #17758: `await
+                # self._process_message_background(...)` here grew the
+                # call stack one frame per chained follow-up, and under
+                # sustained pending-queue activity the C stack would
+                # exhaust at ~2000 frames and SIGSEGV the process.
+                # Mirror the late-arrival drain pattern below: hand off
+                # to a new task and return so this frame can unwind.
+                drain_task = asyncio.create_task(
+                    self._process_message_background(pending_event, session_key)
+                )
+                # Hand ownership of the session to the drain task so
+                # stale-lock detection keeps working while it runs.
+                self._session_tasks[session_key] = drain_task
+                try:
+                    self._background_tasks.add(drain_task)
+                    drain_task.add_done_callback(self._background_tasks.discard)
+                except TypeError:
+                    # Tests stub create_task() with non-hashable sentinels; tolerate.
+                    pass
+                return  # Drain task owns the session now.
                 
         except asyncio.CancelledError:
             current_task = asyncio.current_task()
@@ -2772,25 +2790,41 @@ class BasePlatformAdapter(ABC):
             # dropped (user never gets a reply).
             late_pending = self._pending_messages.pop(session_key, None)
             if late_pending is not None:
-                logger.debug(
-                    "[%s] Late-arrival pending message during cleanup — spawning drain task",
-                    self.name,
-                )
-                _active = self._active_sessions.get(session_key)
-                if _active is not None:
-                    _active.clear()
-                drain_task = asyncio.create_task(
-                    self._process_message_background(late_pending, session_key)
-                )
-                # Hand ownership of the session to the drain task so stale-lock
-                # detection keeps working while it runs.
-                self._session_tasks[session_key] = drain_task
-                try:
-                    self._background_tasks.add(drain_task)
-                    drain_task.add_done_callback(self._background_tasks.discard)
-                except TypeError:
-                    # Tests stub create_task() with non-hashable sentinels; tolerate.
-                    pass
+                current_task = asyncio.current_task()
+                existing_task = self._session_tasks.get(session_key)
+                if (
+                    existing_task is not None
+                    and existing_task is not current_task
+                ):
+                    # The in-band drain (or an earlier late-arrival drain)
+                    # already spawned a follow-up task that owns this
+                    # session.  Re-queue the late-arrival event so that
+                    # task picks it up — avoids spawning two concurrent
+                    # _process_message_background tasks for the same key
+                    # (#17758 follow-up: prevents the create_task path
+                    # from racing with itself across the in-band/finally
+                    # boundary).
+                    self._pending_messages[session_key] = late_pending
+                else:
+                    logger.debug(
+                        "[%s] Late-arrival pending message during cleanup — spawning drain task",
+                        self.name,
+                    )
+                    _active = self._active_sessions.get(session_key)
+                    if _active is not None:
+                        _active.clear()
+                    drain_task = asyncio.create_task(
+                        self._process_message_background(late_pending, session_key)
+                    )
+                    # Hand ownership of the session to the drain task so stale-lock
+                    # detection keeps working while it runs.
+                    self._session_tasks[session_key] = drain_task
+                    try:
+                        self._background_tasks.add(drain_task)
+                        drain_task.add_done_callback(self._background_tasks.discard)
+                    except TypeError:
+                        # Tests stub create_task() with non-hashable sentinels; tolerate.
+                        pass
                 # Leave _active_sessions[session_key] populated — the drain
                 # task's own lifecycle will clean it up.
             else:

@@ -55,6 +55,7 @@ def _default_state() -> Dict[str, Any]:
         "last_run_at": None,
         "last_run_duration_seconds": None,
         "last_run_summary": None,
+        "last_report_path": None,
         "paused": False,
         "run_count": 0,
     }

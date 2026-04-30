@@ -70,3 +70,24 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
+
+# Experimental / garbage directories
+accelerate/
+diffusers/
+golem/
+ollama_repo/
+safetensors/
+scrypted/
+sentence-transformers/
+vllm/
+vllm_repo/
+keyid_env/
+.agents/
+.bounty_hunter_state
+.hermes/
+hermes.db
+state.db
+cron_log.txt
+delivery_manifest.txt
+dispatch_manifest.log
+token_router.txt

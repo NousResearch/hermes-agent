@@ -116,6 +116,73 @@ Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, and KittenTTS audio are sent as r
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
 :::
 
+### Custom command providers
+
+If a TTS engine you want isn't natively supported (Piper, VoxCPM, MLX-Kokoro, XTTS CLI, a voice-cloning script, anything else that exposes a CLI), you can wire it in as a **command-type provider** without writing any Python. Hermes writes the input text to a temp UTF-8 file, runs your shell command, and reads the audio file the command produced.
+
+Declare one or more providers under `tts.providers.<name>` and switch between them with `tts.provider: <name>` — the same way you switch between built-ins like `edge` and `openai`.
+
+```yaml
+tts:
+  provider: piper-en               # pick any name under tts.providers
+  providers:
+    piper-en:
+      type: command
+      command: "piper -m ~/models/en_US-amy.onnx -f {output_path} < {input_path}"
+      output_format: wav
+
+    voxcpm:
+      type: command
+      command: "voxcpm --ref ~/voice.wav --text-file {input_path} --out {output_path}"
+      output_format: mp3
+      timeout: 180
+      voice_compatible: true       # try to deliver as a Telegram voice bubble
+
+    mlx-kokoro:
+      type: command
+      command: "python -m mlx_kokoro --in {input_path} --out {output_path} --voice {voice}"
+      voice: af_sky
+      output_format: wav
+```
+
+#### Placeholders
+
+Your command template can reference these placeholders. Hermes substitutes them at render time and shell-quotes each value for the surrounding context (bare / single-quoted / double-quoted), so paths with spaces and other shell-sensitive characters are safe.
+
+| Placeholder      | Meaning                                              |
+|------------------|------------------------------------------------------|
+| `{input_path}`   | Path to the temp UTF-8 text file Hermes wrote        |
+| `{text_path}`    | Alias for `{input_path}`                             |
+| `{output_path}`  | Path the command must write audio to                 |
+| `{format}`       | `mp3` / `wav` / `ogg` / `flac`                       |
+| `{voice}`        | `tts.providers.<name>.voice`, empty when unset       |
+| `{model}`        | `tts.providers.<name>.model`                         |
+| `{speed}`        | Resolved speed multiplier (provider or global)       |
+
+Use `{{` and `}}` for literal braces.
+
+#### Optional keys
+
+| Key                | Default | Meaning                                                                                                    |
+|--------------------|---------|------------------------------------------------------------------------------------------------------------|
+| `timeout`          | `120`   | Seconds; the process tree is killed on expiry (Unix `killpg`, Windows `taskkill /T`).                       |
+| `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path.      |
+| `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
+| `max_text_length`  | `5000`  | Input is truncated to this length before rendering the command.                                             |
+| `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
+
+#### Behavior notes
+
+- **Built-in names always win.** A `tts.providers.openai` entry never shadows the native OpenAI provider, so no user config can silently replace a built-in.
+- **Default delivery is a document.** Command providers deliver as regular audio attachments on every platform. Opt in to voice-bubble delivery per-provider with `voice_compatible: true`.
+- **Command failures surface to the agent.** Non-zero exit, empty output, or timeout all return an error with the command's stderr/stdout included so you can debug the provider from the conversation.
+- **`type: command` is the default when `command:` is set.** Writing `type: command` explicitly is good practice but not required; an entry with a non-empty `command` string is treated as a command provider.
+- **`{input_path}` / `{text_path}` are interchangeable.** Use whichever reads better in your command.
+
+#### Security
+
+Command-type providers run whatever shell command you configure, with your user's permissions. Hermes quotes placeholder values and enforces the configured timeout, but the command template itself is trusted local input — treat it the same way you would a shell script on your PATH.
+
 ## Voice Message Transcription (STT)
 
 Voice messages sent on Telegram, Discord, WhatsApp, Slack, or Signal are automatically transcribed and injected as text into the conversation. The agent sees the transcript as normal text.

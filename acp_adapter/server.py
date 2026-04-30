@@ -31,6 +31,7 @@ from acp.schema import (
     McpServerStdio,
     ModelInfo,
     NewSessionResponse,
+    PromptCapabilities,
     PromptResponse,
     ResumeSessionResponse,
     SetSessionConfigOptionResponse,
@@ -90,15 +91,67 @@ def _extract_text(
         | EmbeddedResourceContentBlock
     ],
 ) -> str:
-    """Extract plain text from ACP content blocks."""
+    """Extract plain text from ACP content blocks for display/commands."""
     parts: list[str] = []
     for block in prompt:
         if isinstance(block, TextContentBlock):
             parts.append(block.text)
         elif hasattr(block, "text"):
             parts.append(str(block.text))
-        # Non-text blocks are ignored for now.
     return "\n".join(parts)
+
+
+def _image_block_to_openai_part(block: ImageContentBlock) -> dict[str, Any] | None:
+    """Convert an ACP image content block to OpenAI-style multimodal content."""
+    data = str(getattr(block, "data", "") or "").strip()
+    uri = str(getattr(block, "uri", "") or "").strip()
+    mime_type = str(getattr(block, "mime_type", "") or "image/png").strip() or "image/png"
+
+    if data:
+        url = data if data.startswith("data:") else f"data:{mime_type};base64,{data}"
+    elif uri:
+        url = uri
+    else:
+        return None
+
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
+def _content_blocks_to_openai_user_content(
+    prompt: list[
+        TextContentBlock
+        | ImageContentBlock
+        | AudioContentBlock
+        | ResourceContentBlock
+        | EmbeddedResourceContentBlock
+    ],
+) -> str | list[dict[str, Any]]:
+    """Convert ACP prompt blocks into a Hermes/OpenAI-compatible user content payload."""
+    parts: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+
+    for block in prompt:
+        if isinstance(block, TextContentBlock):
+            if block.text:
+                parts.append({"type": "text", "text": block.text})
+                text_parts.append(block.text)
+            continue
+        if isinstance(block, ImageContentBlock):
+            image_part = _image_block_to_openai_part(block)
+            if image_part is not None:
+                parts.append(image_part)
+            continue
+
+    if not parts:
+        return _extract_text(prompt)
+
+    # Keep pure text prompts as strings so slash-command handling and text-only
+    # providers keep the exact legacy path. Switch to structured content only
+    # when an actual non-text block is present.
+    if all(part.get("type") == "text" for part in parts):
+        return "\n".join(text_parts)
+
+    return parts
 
 
 class HermesACPAgent(acp.Agent):
@@ -354,6 +407,7 @@ class HermesACPAgent(acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
+                prompt_capabilities=PromptCapabilities(image=True),
                 session_capabilities=SessionCapabilities(
                     fork=SessionForkCapabilities(),
                     list=SessionListCapabilities(),
@@ -593,11 +647,18 @@ class HermesACPAgent(acp.Agent):
             return PromptResponse(stop_reason="refusal")
 
         user_text = _extract_text(prompt).strip()
-        if not user_text:
+        user_content = _content_blocks_to_openai_user_content(prompt)
+        has_content = bool(user_text) or (
+            isinstance(user_content, list) and bool(user_content)
+        )
+        if not has_content:
             return PromptResponse(stop_reason="end_turn")
 
-        # Intercept slash commands — handle locally without calling the LLM
-        if user_text.startswith("/"):
+        # Intercept slash commands — handle locally without calling the LLM.
+        # Slash commands are text-only; if the client included images/resources,
+        # send the whole multimodal prompt to the agent instead of treating it as
+        # an ACP command.
+        if isinstance(user_content, str) and user_text.startswith("/"):
             response_text = self._handle_slash_command(user_text, state)
             if response_text is not None:
                 if self._conn:
@@ -680,9 +741,10 @@ class HermesACPAgent(acp.Agent):
             os.environ["HERMES_INTERACTIVE"] = "1"
             try:
                 result = agent.run_conversation(
-                    user_message=user_text,
+                    user_message=user_content,
                     conversation_history=state.history,
                     task_id=session_id,
+                    persist_user_message=user_text or "[Image attachment]",
                 )
                 return result
             except Exception as e:

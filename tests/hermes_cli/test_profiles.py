@@ -917,6 +917,18 @@ class TestInternalHelpers:
 
 
 # ===================================================================
+# Profile directory configuration
+# ===================================================================
+
+class TestProfileDirsConfig:
+    """Tests for _PROFILE_DIRS configuration."""
+
+    def test_profile_dirs_includes_wikis(self):
+        from hermes_cli.profiles import _PROFILE_DIRS
+        assert "wikis" in _PROFILE_DIRS
+
+
+# ===================================================================
 # Edge cases and additional coverage
 # ===================================================================
 

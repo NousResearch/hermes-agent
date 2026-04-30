@@ -47,6 +47,9 @@ _PROFILE_DIRS = [
     # this also ensures tool configs land inside the persistent volume.
     # See hermes_constants.get_subprocess_home() and issue #4426.
     "home",
+    # Per-profile wiki storage for llm-wiki skill (multi-wiki support).
+    # Each wiki is a subdirectory: wikis/default, wikis/research, etc.
+    "wikis",
 ]
 
 # Files copied during --clone (if they exist in the source)

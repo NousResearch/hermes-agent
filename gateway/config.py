@@ -714,11 +714,21 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
                 if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
                     os.environ["TELEGRAM_PROXY"] = str(telegram_cfg["proxy_url"]).strip()
-                if "group_allowed_chats" in telegram_cfg and not os.getenv("TELEGRAM_GROUP_ALLOWED_USERS"):
-                    gac = telegram_cfg["group_allowed_chats"]
-                    if isinstance(gac, list):
-                        gac = ",".join(str(v) for v in gac)
-                    os.environ["TELEGRAM_GROUP_ALLOWED_USERS"] = str(gac)
+                allowed_users = telegram_cfg.get("allow_from")
+                if allowed_users is not None and not os.getenv("TELEGRAM_ALLOWED_USERS"):
+                    if isinstance(allowed_users, list):
+                        allowed_users = ",".join(str(v) for v in allowed_users)
+                    os.environ["TELEGRAM_ALLOWED_USERS"] = str(allowed_users)
+                group_allowed_users = telegram_cfg.get("group_allow_from")
+                if group_allowed_users is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_USERS"):
+                    if isinstance(group_allowed_users, list):
+                        group_allowed_users = ",".join(str(v) for v in group_allowed_users)
+                    os.environ["TELEGRAM_GROUP_ALLOWED_USERS"] = str(group_allowed_users)
+                group_allowed_chats = telegram_cfg.get("group_allowed_chats")
+                if group_allowed_chats is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"):
+                    if isinstance(group_allowed_chats, list):
+                        group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
+                    os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
                 if "disable_link_previews" in telegram_cfg:
                     plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
                     if not isinstance(plat_data, dict):

@@ -168,3 +168,28 @@ class TestModelSupportsVision:
         agent = _make_agent()
         with patch("agent.models_dev.get_model_capabilities", side_effect=RuntimeError("boom")):
             assert agent._model_supports_vision() is False
+
+    def test_top_level_model_override_wins(self):
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.model = "my-llava"
+        with patch("hermes_cli.config.load_config", return_value={"model": {"supports_vision": True}}), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert agent._model_supports_vision() is True
+
+    def test_per_provider_per_model_override_wins(self):
+        agent = _make_agent()
+        agent.provider = "custom"
+        agent.model = "my-llava"
+        cfg = {"providers": {"custom": {"models": {"my-llava": {"supports_vision": True}}}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg), \
+             patch("agent.models_dev.get_model_capabilities", return_value=None):
+            assert agent._model_supports_vision() is True
+
+    def test_override_false_disables_vision_for_models_dev_models(self):
+        agent = _make_agent()
+        fake_caps = MagicMock()
+        fake_caps.supports_vision = True
+        with patch("hermes_cli.config.load_config", return_value={"model": {"supports_vision": False}}), \
+             patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
+            assert agent._model_supports_vision() is False

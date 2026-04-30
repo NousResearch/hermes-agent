@@ -593,6 +593,20 @@ test/description       # Tests
 refactor/description   # Code restructuring
 ```
 
+### Adding your Discord username
+
+We like to credit contributors in the [Nous Research Discord](https://discord.gg/NousResearch). If you're a member, add yourself to `CONTRIBUTORS.yml` in your first PR:
+
+```yaml
+# CONTRIBUTORS.yml — add yourself alphabetically by GitHub username
+- github: your-github-username
+  discord: your_discord_name
+```
+
+You can also fill in the **Discord Username** field in the PR template for a one-off mention. The `CONTRIBUTORS.yml` mapping persists across all your future PRs.
+
+The Discord field is optional — skip it if you prefer not to share it.
+
 ### Before submitting
 
 1. **Run tests**: `pytest tests/ -v`

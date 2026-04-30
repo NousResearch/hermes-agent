@@ -375,12 +375,24 @@ async def _api_post(
 ) -> Dict[str, Any]:
     body = _json_dumps({**payload, "base_info": _base_info()})
     url = f"{base_url.rstrip('/')}/{endpoint}"
-    timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
-    async with session.post(url, data=body, headers=_headers(token, body), timeout=timeout) as response:
-        raw = await response.text()
-        if not response.ok:
-            raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
-        return json.loads(raw)
+    # Use asyncio.wait_for() instead of aiohttp's timeout parameter.
+    # aiohttp's ClientTimeout relies on BaseTimerContext which calls
+    # asyncio.current_task() internally.  When this coroutine is submitted
+    # via asyncio.run_coroutine_threadsafe() (e.g. from cron delivery),
+    # a race condition can cause current_task() to return None, raising
+    # "Timeout context manager should be used inside a task".
+    # asyncio.wait_for() is a pure-asyncio timeout that does not depend
+    # on task context and is safe for cross-thread use.
+    timeout_sec = timeout_ms / 1000
+
+    async def _do_post() -> Dict[str, Any]:
+        async with session.post(url, data=body, headers=_headers(token, body)) as response:
+            raw = await response.text()
+            if not response.ok:
+                raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
+            return json.loads(raw)
+
+    return await asyncio.wait_for(_do_post(), timeout=timeout_sec)
 
 
 async def _api_get(
@@ -395,12 +407,16 @@ async def _api_get(
         "iLink-App-Id": ILINK_APP_ID,
         "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
     }
-    timeout = aiohttp.ClientTimeout(total=timeout_ms / 1000)
-    async with session.get(url, headers=headers, timeout=timeout) as response:
-        raw = await response.text()
-        if not response.ok:
-            raise RuntimeError(f"iLink GET {endpoint} HTTP {response.status}: {raw[:200]}")
-        return json.loads(raw)
+    timeout_sec = timeout_ms / 1000
+
+    async def _do_get() -> Dict[str, Any]:
+        async with session.get(url, headers=headers) as response:
+            raw = await response.text()
+            if not response.ok:
+                raise RuntimeError(f"iLink GET {endpoint} HTTP {response.status}: {raw[:200]}")
+            return json.loads(raw)
+
+    return await asyncio.wait_for(_do_get(), timeout=timeout_sec)
 
 
 async def _get_updates(

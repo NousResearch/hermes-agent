@@ -2544,9 +2544,11 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     # detection entirely and the test would race a non-event.
     build_started = threading.Event()
     release_build = threading.Event()
+    build_entered = threading.Event()
 
     def _slow_make_agent(sid, key, session_id=None):
         build_started.set()
+        build_entered.set()
         release_build.wait(timeout=3.0)
         return _FakeAgent()
 
@@ -2584,6 +2586,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert resp.get("result"), f"got error: {resp.get('error')}"
     sid = resp["result"]["session_id"]
+    assert build_entered.wait(timeout=1.0), "deferred build did not start"
 
     # Wait until the (deferred) build thread has actually entered
     # _make_agent — otherwise session.close pops _sessions[sid] before

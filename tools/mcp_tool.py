@@ -915,11 +915,12 @@ class MCPServerTask:
         except Exception:
             logger.exception("MCP server '%s': dynamic tool refresh failed", self.name)
 
-    def _schedule_tools_refresh(self) -> None:
+    def _schedule_tools_refresh(self) -> asyncio.Task:
         """Schedule a background tool refresh and keep it strongly referenced."""
         task = asyncio.create_task(self._refresh_tools_task())
         self._pending_refresh_tasks.add(task)
         task.add_done_callback(self._pending_refresh_tasks.discard)
+        return task
 
     def _make_message_handler(self):
         """Build a ``message_handler`` callback for ``ClientSession``.
@@ -950,6 +951,10 @@ class MCPServerTask:
                             # a separate task and let the handler return
                             # promptly.
                             self._schedule_tools_refresh()
+                            # Yield one loop tick so tests and short-lived
+                            # notification contexts can observe the scheduled
+                            # refresh without awaiting the full server RPC.
+                            await asyncio.sleep(0)
                         case PromptListChangedNotification():
                             logger.debug("MCP server '%s': prompts/list_changed (ignored)", self.name)
                         case ResourceListChangedNotification():
@@ -2005,8 +2010,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
-            async with server._rpc_lock:
+            rpc_lock = getattr(server, "_rpc_lock", None)
+            if rpc_lock is None:
                 result = await server.session.call_tool(tool_name, arguments=args)
+            else:
+                async with rpc_lock:
+                    result = await server.session.call_tool(tool_name, arguments=args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""

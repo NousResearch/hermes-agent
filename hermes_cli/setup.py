@@ -2277,6 +2277,82 @@ def _setup_qqbot():
     from hermes_cli.gateway import _setup_qqbot as _gateway_setup_qqbot
     _gateway_setup_qqbot()
 
+def _setup_trueconf():
+    """Configure TrueConf bot credentials and allowlist."""
+    print_header("TrueConf")
+    existing = get_env_value("TRUECONF_SERVER")
+    if existing:
+        print_info("TrueConf: already configured")
+        if not prompt_yes_no("Reconfigure TrueConf?", False):
+            if not get_env_value("TRUECONF_ALLOWED_USERS") and \
+               not get_env_value("TRUECONF_ALLOW_ALL_USERS"):
+                print_info("TrueConf has no user allowlist - anyone can message the bot!")
+                if prompt_yes_no("Restrict to allowed users now?", True):
+                    allow_all = prompt_yes_no("Allow all users?", False)
+                    if not allow_all:
+                        allowed_users = prompt("Allowed user emails (comma-separated)")
+                        if allowed_users:
+                            save_env_value("TRUECONF_ALLOWED_USERS", allowed_users.replace(" ", ""))
+                            print_success("TrueConf allowlist configured")
+                    else:
+                        save_env_value("TRUECONF_ALLOW_ALL_USERS", "true")
+                        print_success("TrueConf allowlist set to allow all users")
+            return
+
+    print_info("You need a TrueConf server with a bot user account.")
+    print_info("The bot connects via the TrueConf WebSocket API.")
+    print()
+
+    server = prompt("TrueConf server address (e.g. demo.trueconf.com or 192.168.1.100)")
+    if not server:
+        return
+    server = server.strip()
+    save_env_value("TRUECONF_SERVER", server)
+    print_success(f"TrueConf server: {server}")
+
+    username = prompt("Bot username (email or user ID on the server)")
+    if not username:
+        return
+    username = username.strip()
+    save_env_value("TRUECONF_USERNAME", username)
+    print_success(f"Username: {username}")
+
+    password = prompt("Bot password", password=True)
+    if not password:
+        return
+    save_env_value("TRUECONF_PASSWORD", password)
+    print_success("Password saved")
+
+    print()
+    print_info("Secure your bot by restricting who can use it.")
+    print_info("Leave empty to allow all users (not recommended for production).")
+    print()
+
+    allow_all = prompt_yes_no("Allow all users on this server?", False)
+    if allow_all:
+        save_env_value("TRUECONF_ALLOW_ALL_USERS", "true")
+        print_success("TrueConf allowlist set to allow all users")
+    else:
+        existing_allow_all = get_env_value("TRUECONF_ALLOW_ALL_USERS")
+        if existing_allow_all:
+            save_env_value("TRUECONF_ALLOW_ALL_USERS", "")
+        allowed_users = prompt("Allowed user emails (comma-separated)")
+        if allowed_users:
+            save_env_value("TRUECONF_ALLOWED_USERS", allowed_users.replace(" ", ""))
+            print_success("TrueConf allowlist configured")
+        else:
+            print_info("No allowlist set - anyone who can reach the server can use the bot!")
+
+    print()
+    print_info("Home Channel: where Hermes delivers cron results and notifications.")
+    print_info("For TrueConf DMs, this is your user email on the server.")
+    home_channel = prompt("Home channel (user email or leave empty to set later via /set-home in TrueConf)")
+    if home_channel:
+        save_env_value("TRUECONF_HOME_CHANNEL", home_channel.strip())
+        print_success(f"TrueConf home channel set to {home_channel.strip()}")
+    else:
+        print_info("You can set this later by typing /set-home in your TrueConf chat.")
+
 
 def _setup_webhooks():
     """Configure webhook integration."""

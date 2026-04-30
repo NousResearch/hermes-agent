@@ -3473,6 +3473,13 @@ class GatewayRunner:
                 logger.warning("Yuanbao: websockets not installed. Run: pip install websockets")
                 return None
             return YuanbaoAdapter(config)
+        
+        elif platform == Platform.TRUECONF:
+            from gateway.platforms.trueconf import TrueConfAdapter, check_trueconf_requirements
+            if not check_trueconf_requirements():
+                logger.warning("TrueConf: python-trueconf-bot not installed or credentials not set")
+                return None
+            return TrueConfAdapter(config)
 
         return None
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -3516,6 +3523,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
+            Platform.TRUECONF: "TRUECONF_ALLOWED_USERS",
         }
         platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
@@ -3542,6 +3550,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+            Platform.TRUECONF: "TRUECONF_ALLOW_ALL_USERS",
         }
 
         # Plugin platforms: check the registry for auth env var names
@@ -3727,6 +3736,7 @@ class GatewayRunner:
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
+                Platform.TRUECONF: "TRUECONF_ALLOWED_USERS",
             }
             platform_group_env_map = {
                 Platform.TELEGRAM: (

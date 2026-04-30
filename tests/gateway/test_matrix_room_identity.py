@@ -141,6 +141,19 @@ async def test_dm_cache_negative_result_is_not_refreshed_every_message():
 
 
 @pytest.mark.asyncio
+async def test_dm_cache_ignores_non_string_m_direct_room_ids():
+    fake_client = FakeClient(direct_rooms=[None], room_name=None)
+    adapter = make_adapter(fake_client)
+    adapter._joined_rooms = {ROOM_ID, "None"}
+
+    await adapter._refresh_dm_cache()
+
+    assert adapter._dm_cache_loaded is True
+    assert adapter._dm_rooms[ROOM_ID] is False
+    assert adapter._dm_rooms["None"] is False
+
+
+@pytest.mark.asyncio
 async def test_empty_room_name_falls_back_to_alias_or_room_id():
     adapter = make_adapter(FakeClient(direct_rooms=[], room_name="   ", alias=None))
 

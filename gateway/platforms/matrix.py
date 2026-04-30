@@ -2444,7 +2444,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if isinstance(dm_data, dict):
             for user_id, rooms in dm_data.items():
                 if isinstance(rooms, list):
-                    dm_room_ids.update(str(r) for r in rooms)
+                    dm_room_ids.update(r for r in rooms if isinstance(r, str))
 
         self._dm_rooms = {rid: (rid in dm_room_ids) for rid in self._joined_rooms}
         self._dm_cache_loaded = True

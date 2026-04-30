@@ -323,6 +323,55 @@ class TestExtractMedia:
         assert "Here" in cleaned
         assert "After" in cleaned
 
+    def test_media_tag_supports_unquoted_flac_paths_with_spaces(self):
+        content = "MEDIA:/tmp/Jane Doe/speech.flac"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/Jane Doe/speech.flac", False)]
+        assert cleaned == ""
+
+
+# ---------------------------------------------------------------------------
+# should_send_media_as_audio
+# ---------------------------------------------------------------------------
+
+class TestShouldSendMediaAsAudio:
+    """Audio-routing policy shared by gateway + scheduler + send_message."""
+
+    def test_unknown_extension_returns_false(self):
+        from gateway.platforms.base import should_send_media_as_audio
+        assert should_send_media_as_audio(None, ".png") is False
+        assert should_send_media_as_audio("telegram", ".pdf") is False
+
+    def test_non_telegram_platforms_route_all_audio(self):
+        from gateway.platforms.base import should_send_media_as_audio
+        for ext in (".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opus"):
+            assert should_send_media_as_audio("discord", ext) is True
+            assert should_send_media_as_audio("slack", ext) is True
+
+    def test_telegram_mp3_and_m4a_route_to_audio(self):
+        from gateway.platforms.base import should_send_media_as_audio
+        assert should_send_media_as_audio("telegram", ".mp3") is True
+        assert should_send_media_as_audio("telegram", ".m4a") is True
+
+    def test_telegram_wav_and_flac_fall_through_to_document(self):
+        from gateway.platforms.base import should_send_media_as_audio
+        assert should_send_media_as_audio("telegram", ".wav") is False
+        assert should_send_media_as_audio("telegram", ".flac") is False
+
+    def test_telegram_ogg_opus_only_when_voice_flagged(self):
+        from gateway.platforms.base import should_send_media_as_audio
+        assert should_send_media_as_audio("telegram", ".ogg", is_voice=True) is True
+        assert should_send_media_as_audio("telegram", ".opus", is_voice=True) is True
+        assert should_send_media_as_audio("telegram", ".ogg") is False
+        assert should_send_media_as_audio("telegram", ".opus") is False
+
+    def test_accepts_platform_enum(self):
+        from gateway.config import Platform
+        from gateway.platforms.base import should_send_media_as_audio
+        assert should_send_media_as_audio(Platform.TELEGRAM, ".mp3") is True
+        assert should_send_media_as_audio(Platform.TELEGRAM, ".flac") is False
+        assert should_send_media_as_audio(Platform.DISCORD, ".flac") is True
+
 
 # ---------------------------------------------------------------------------
 # truncate_message

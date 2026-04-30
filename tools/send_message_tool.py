@@ -40,8 +40,12 @@ _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
-_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
+_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 _VOICE_EXTS = {".ogg", ".opus"}
+# Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
+# formats either route through sendVoice (Opus/OGG) or fall back to
+# document delivery.
+_TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
 _URL_SECRET_QUERY_RE = re.compile(
     r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)",
     re.IGNORECASE,
@@ -740,7 +744,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         last_msg = await bot.send_voice(
                             chat_id=int_chat_id, voice=f, **thread_kwargs
                         )
-                    elif ext in _AUDIO_EXTS:
+                    elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
                         last_msg = await bot.send_audio(
                             chat_id=int_chat_id, audio=f, **thread_kwargs
                         )

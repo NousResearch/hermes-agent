@@ -551,14 +551,14 @@ class TestDeliverResultWrapping:
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
             _deliver_result(
                 job,
-                "MEDIA:/tmp/voice.ogg",
+                "[[audio_as_voice]]\nMEDIA:/tmp/voice.ogg",
                 adapters={Platform.TELEGRAM: adapter},
                 loop=loop,
             )
 
         # Text send should NOT be called (no text after stripping MEDIA tag)
         adapter.send.assert_not_called()
-        # Audio should still be delivered
+        # Audio should still be delivered as a voice bubble
         adapter.send_voice.assert_called_once()
 
     def test_live_adapter_sends_cleaned_text_not_raw(self):

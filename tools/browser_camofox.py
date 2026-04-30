@@ -32,7 +32,22 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from hermes_cli.config import cfg_get, load_config
+try:
+    from hermes_cli.config import cfg_get
+except ImportError:
+    def cfg_get(cfg, *keys, default=None):
+        """Fallback nested-get for backward compatibility with older hermes_cli."""
+        if cfg is None:
+            return default
+        node = cfg
+        for key in keys:
+            if not isinstance(node, dict):
+                return default
+            if key not in node:
+                return default
+            node = node[key]
+        return node
+from hermes_cli.config import load_config
 from tools.browser_camofox_state import get_camofox_identity
 from tools.registry import tool_error
 

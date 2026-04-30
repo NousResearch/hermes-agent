@@ -26,7 +26,21 @@ from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 from .store import MemoryStore
 from .retrieval import FactRetriever
-from hermes_cli.config import cfg_get
+try:
+    from hermes_cli.config import cfg_get
+except ImportError:
+    def cfg_get(cfg, *keys, default=None):
+        """Fallback nested-get for backward compatibility with older hermes_cli."""
+        if cfg is None:
+            return default
+        node = cfg
+        for key in keys:
+            if not isinstance(node, dict):
+                return default
+            if key not in node:
+                return default
+            node = node[key]
+        return node
 
 logger = logging.getLogger(__name__)
 

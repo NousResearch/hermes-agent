@@ -841,6 +841,11 @@ _NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert"})
 def _tui_need_npm_install(root: Path) -> bool:
     """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
+    Prebuilt bundle mode: when ``dist/entry.js`` exists and there is no
+    ``package-lock.json`` (nix install layout only ships ``dist/`` +
+    ``package.json``), skip reinstall entirely — the bundle is self-contained
+    and there is nothing to install.
+
     Compares ``package-lock.json`` against ``node_modules/.package-lock.json``
     (npm's hidden lockfile) by **content**, not mtime: git checkouts and npm
     rewrites can bump the root lockfile's timestamp even when installed deps
@@ -858,10 +863,16 @@ def _tui_need_npm_install(root: Path) -> bool:
     we'd rather not force a reinstall for them. Falls back to mtime
     comparison if either lockfile is unparseable.
     """
+    lock = root / "package-lock.json"
+    entry = root / "dist" / "entry.js"
+    # Prebuilt self-contained bundle (nix / packaged release): no lockfile
+    # shipped, dist/entry.js is the single runtime artefact.
+    if entry.is_file() and not lock.is_file():
+        return False
+
     ink = root / "node_modules" / "@hermes" / "ink" / "package.json"
     if not ink.is_file():
         return True
-    lock = root / "package-lock.json"
     if not lock.is_file():
         return False
     marker = root / "node_modules" / ".package-lock.json"

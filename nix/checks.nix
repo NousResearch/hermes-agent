@@ -154,8 +154,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           test -f ${hermes-agent}/ui-tui/dist/entry.js || (echo "FAIL: compiled entry.js missing"; exit 1)
           echo "PASS: compiled entry.js present"
 
-          test -d ${hermes-agent}/ui-tui/node_modules || (echo "FAIL: node_modules missing"; exit 1)
-          echo "PASS: node_modules present"
+          # self-contained bundle; no runtime node_modules expected
 
           grep -q "HERMES_TUI_DIR" ${hermes-agent}/bin/hermes || \
             (echo "FAIL: HERMES_TUI_DIR not in wrapper"; exit 1)

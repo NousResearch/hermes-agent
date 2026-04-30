@@ -1860,18 +1860,6 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
     return text or "What do you see in this image?"
 
 
-def _messages_as_conversation(db, session_id: str, *, include_ancestors: bool = False):
-    if include_ancestors:
-        try:
-            return db.get_messages_as_conversation(
-                session_id, include_ancestors=True
-            )
-        except TypeError as exc:
-            if "include_ancestors" not in str(exc):
-                raise
-    return db.get_messages_as_conversation(session_id)
-
-
 def _history_to_messages(history: list[dict]) -> list[dict]:
     messages = []
     tool_call_args = {}
@@ -2080,9 +2068,9 @@ def _(rid, params: dict) -> dict:
     _enable_gateway_prompts()
     try:
         db.reopen_session(target)
-        history = _messages_as_conversation(db, target)
-        display_history = _messages_as_conversation(
-            db, target, include_ancestors=True
+        history = db.get_messages_as_conversation(target)
+        display_history = db.get_messages_as_conversation(
+            target, include_ancestors=True
         )
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
@@ -2227,8 +2215,8 @@ def _(rid, params: dict) -> dict:
     db = _get_db()
     if db is not None and session.get("session_key"):
         try:
-            history = _messages_as_conversation(
-                db, session["session_key"], include_ancestors=True
+            history = db.get_messages_as_conversation(
+                session["session_key"], include_ancestors=True
             )
         except Exception:
             pass

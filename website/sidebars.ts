@@ -23,6 +23,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/cli',
         'user-guide/tui',
         'user-guide/configuration',
+        'user-guide/configuring-models',
         'user-guide/sessions',
         'user-guide/profiles',
         'user-guide/git-worktrees',

@@ -1,15 +1,23 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import {
   Brain,
+  ChevronDown,
   Cpu,
   DollarSign,
   Eye,
   RefreshCw,
+  Settings2,
+  Star,
   Wrench,
   Zap,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { ModelsAnalyticsModelEntry, ModelsAnalyticsResponse } from "@/lib/api";
+import type {
+  AuxiliaryModelsResponse,
+  AuxiliaryTaskAssignment,
+  ModelsAnalyticsModelEntry,
+  ModelsAnalyticsResponse,
+} from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import { formatTokenCount } from "@/lib/format";
 import { Button, Spinner, Stats } from "@nous-research/ui";
@@ -18,11 +26,24 @@ import { Badge } from "@nous-research/ui";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
+import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 
 const PERIODS = [
   { label: "7d", days: 7 },
   { label: "30d", days: 30 },
   { label: "90d", days: 90 },
+] as const;
+
+// Must match _AUX_TASK_SLOTS in hermes_cli/web_server.py.
+const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
+  { key: "vision", label: "Vision", hint: "Image analysis" },
+  { key: "web_extract", label: "Web Extract", hint: "Page summarization" },
+  { key: "compression", label: "Compression", hint: "Context compaction" },
+  { key: "session_search", label: "Session Search", hint: "Recall queries" },
+  { key: "skills_hub", label: "Skills Hub", hint: "Skill search" },
+  { key: "approval", label: "Approval", hint: "Smart auto-approve" },
+  { key: "mcp", label: "MCP", hint: "MCP tool routing" },
+  { key: "title_generation", label: "Title Gen", hint: "Session titles" },
 ] as const;
 
 function formatTokens(n: number): string {
@@ -134,20 +155,168 @@ function CapabilityBadges({
   );
 }
 
+/* ──────────────────────────────────────────────────────────────────── */
+/*  Per-card "Use as" menu                                              */
+/* ──────────────────────────────────────────────────────────────────── */
+
+function UseAsMenu({
+  provider,
+  model,
+  isMain,
+  mainAuxTask,
+  onAssigned,
+}: {
+  provider: string;
+  model: string;
+  /** True when this card's model+provider match config.yaml's main slot. */
+  isMain: boolean;
+  /** If this model is assigned to a specific aux task, that task's key. */
+  mainAuxTask: string | null;
+  onAssigned(): void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const assign = async (
+    scope: "main" | "auxiliary",
+    task: string,
+  ) => {
+    if (!provider || !model) {
+      setError("Missing provider/model");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setModelAssignment({ scope, provider, model, task });
+      onAssigned();
+      setOpen(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Close on outside click.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && !target.closest?.("[data-use-as-menu]")) setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  return (
+    <div className="relative" data-use-as-menu>
+      <Button
+        size="sm"
+        outlined
+        onClick={() => setOpen((v) => !v)}
+        disabled={busy}
+        className="text-[10px] h-6 px-2"
+        prefix={busy ? <Spinner /> : null}
+      >
+        Use as <ChevronDown className="h-3 w-3" />
+      </Button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
+          <button
+            type="button"
+            onClick={() => assign("main", "")}
+            disabled={busy}
+            className="flex w-full items-center justify-between px-3 py-2 text-xs hover:bg-muted/50 disabled:opacity-40"
+          >
+            <span className="flex items-center gap-2">
+              <Star className="h-3 w-3" />
+              Main model
+            </span>
+            {isMain && (
+              <span className="text-[9px] uppercase tracking-wider text-primary/80">
+                current
+              </span>
+            )}
+          </button>
+
+          <div className="border-t border-border/50 px-3 py-1.5 text-[9px] uppercase tracking-wider text-muted-foreground">
+            Auxiliary task
+          </div>
+
+          <button
+            type="button"
+            onClick={() => assign("auxiliary", "")}
+            disabled={busy}
+            className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
+          >
+            <span>All auxiliary tasks</span>
+          </button>
+
+          {AUX_TASKS.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => assign("auxiliary", t.key)}
+              disabled={busy}
+              className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
+            >
+              <span>{t.label}</span>
+              {mainAuxTask === t.key && (
+                <span className="text-[9px] uppercase tracking-wider text-primary/80">
+                  current
+                </span>
+              )}
+            </button>
+          ))}
+
+          {error && (
+            <div className="px-3 py-2 text-[10px] text-destructive border-t border-border/50">
+              {error}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────── */
+/*  ModelCard                                                           */
+/* ──────────────────────────────────────────────────────────────────── */
+
 function ModelCard({
   entry,
   rank,
+  main,
+  aux,
+  onAssigned,
 }: {
   entry: ModelsAnalyticsModelEntry;
   rank: number;
+  main: { provider: string; model: string } | null;
+  aux: AuxiliaryTaskAssignment[];
+  onAssigned(): void;
 }) {
   const { t } = useI18n();
   const provider = entry.provider || modelVendor(entry.model);
   const totalTokens = entry.input_tokens + entry.output_tokens;
   const caps = entry.capabilities;
 
+  const isMain =
+    !!main &&
+    main.provider === provider &&
+    main.model === entry.model;
+
+  // First aux task currently using this model (if any).
+  const mainAuxTask =
+    aux.find(
+      (a) => a.provider === provider && a.model === entry.model,
+    )?.task ?? null;
+
   return (
-    <Card>
+    <Card className={isMain ? "ring-1 ring-primary/40" : undefined}>
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
@@ -158,6 +327,16 @@ function ModelCard({
               <CardTitle className="text-sm font-mono-ui truncate">
                 {shortModelName(entry.model)}
               </CardTitle>
+              {isMain && (
+                <span className="inline-flex items-center gap-0.5 bg-primary/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-primary">
+                  <Star className="h-2.5 w-2.5" /> main
+                </span>
+              )}
+              {mainAuxTask && (
+                <span className="inline-flex items-center bg-purple-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-purple-600 dark:text-purple-400">
+                  aux · {mainAuxTask}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-2 mt-1">
               {provider && (
@@ -177,13 +356,22 @@ function ModelCard({
               )}
             </div>
           </div>
-          <div className="text-right shrink-0">
-            <div className="text-xs font-mono font-semibold">
-              {formatTokens(totalTokens)}
+          <div className="flex flex-col items-end gap-1 shrink-0">
+            <div className="text-right">
+              <div className="text-xs font-mono font-semibold">
+                {formatTokens(totalTokens)}
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                {t.models.tokens}
+              </div>
             </div>
-            <div className="text-[10px] text-muted-foreground">
-              {t.models.tokens}
-            </div>
+            <UseAsMenu
+              provider={provider}
+              model={entry.model}
+              isMain={isMain}
+              mainAuxTask={mainAuxTask}
+              onAssigned={onAssigned}
+            />
           </div>
         </div>
       </CardHeader>
@@ -246,23 +434,241 @@ function ModelCard({
   );
 }
 
+/* ──────────────────────────────────────────────────────────────────── */
+/*  Model Settings panel (top of page)                                  */
+/* ──────────────────────────────────────────────────────────────────── */
+
+type PickerTarget =
+  | { kind: "main" }
+  | { kind: "aux"; task: string };
+
+function ModelSettingsPanel({
+  aux,
+  refreshKey,
+  onSaved,
+}: {
+  aux: AuxiliaryModelsResponse | null;
+  refreshKey: number;
+  onSaved(): void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [picker, setPicker] = useState<PickerTarget | null>(null);
+  const [resetBusy, setResetBusy] = useState(false);
+
+  const mainProv = aux?.main.provider ?? "";
+  const mainModel = aux?.main.model ?? "";
+
+  const applyAssignment = async ({
+    scope,
+    task,
+    provider,
+    model,
+  }: {
+    scope: "main" | "auxiliary";
+    task: string;
+    provider: string;
+    model: string;
+  }) => {
+    await api.setModelAssignment({ scope, task, provider, model });
+    onSaved();
+  };
+
+  const resetAllAux = async () => {
+    if (!window.confirm("Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set.")) {
+      return;
+    }
+    setResetBusy(true);
+    try {
+      await api.setModelAssignment({
+        scope: "auxiliary",
+        task: "__reset__",
+        provider: "",
+        model: "",
+      });
+      onSaved();
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Settings2 className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm">Model Settings</CardTitle>
+            <span className="text-[10px] text-muted-foreground">
+              applies to new sessions
+            </span>
+          </div>
+          <Button
+            size="sm"
+            outlined
+            onClick={() => setExpanded((v) => !v)}
+            className="text-xs"
+          >
+            {expanded ? "Hide auxiliary" : "Show auxiliary"}
+            <ChevronDown
+              className={`h-3 w-3 transition-transform ${expanded ? "rotate-180" : ""}`}
+            />
+          </Button>
+        </div>
+      </CardHeader>
+
+      <CardContent className="space-y-3 pt-0">
+        {/* Main row */}
+        <div className="flex items-center justify-between gap-3 bg-muted/20 border border-border/50 px-3 py-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-0.5">
+              <Star className="h-3 w-3 text-primary" />
+              <span className="text-xs font-medium uppercase tracking-wider">
+                Main model
+              </span>
+            </div>
+            <div className="text-xs font-mono text-muted-foreground truncate">
+              {mainProv || "(unset)"}
+              {mainProv && mainModel && " · "}
+              {mainModel || "(unset)"}
+            </div>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => setPicker({ kind: "main" })}
+            className="text-xs"
+          >
+            Change
+          </Button>
+        </div>
+
+        {/* Auxiliary rows */}
+        {expanded && (
+          <div className="space-y-1 border-t border-border/50 pt-3">
+            <div className="flex items-center justify-between pb-1">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                Auxiliary tasks
+              </div>
+              <Button
+                size="sm"
+                outlined
+                onClick={resetAllAux}
+                disabled={resetBusy}
+                className="text-[10px] h-6"
+                prefix={resetBusy ? <Spinner /> : null}
+              >
+                Reset all to auto
+              </Button>
+            </div>
+
+            <p className="text-[10px] text-muted-foreground/80 pb-2">
+              Auxiliary tasks handle side-jobs like vision, session search, and
+              compression. <span className="font-mono">auto</span> means
+              &quot;use the main model&quot;. Override per-task when you want a
+              cheap/fast model for a specific job.
+            </p>
+
+            {AUX_TASKS.map((t) => {
+              const cur = aux?.tasks.find((a) => a.task === t.key);
+              const isAuto =
+                !cur || cur.provider === "auto" || !cur.provider;
+              return (
+                <div
+                  key={t.key}
+                  className="flex items-center justify-between gap-3 px-3 py-1.5 border border-border/30 bg-card/50 hover:bg-muted/20 transition-colors"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-xs font-medium">{t.label}</span>
+                      <span className="text-[10px] text-muted-foreground/60">
+                        {t.hint}
+                      </span>
+                    </div>
+                    <div className="text-[10px] font-mono text-muted-foreground truncate">
+                      {isAuto
+                        ? "auto (use main model)"
+                        : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    outlined
+                    onClick={() => setPicker({ kind: "aux", task: t.key })}
+                    className="text-[10px] h-6"
+                  >
+                    Change
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {picker && (
+          <ModelPickerDialog
+            key={`picker-${refreshKey}`}
+            loader={api.getModelOptions}
+            alwaysGlobal
+            title={
+              picker.kind === "main"
+                ? "Set Main Model"
+                : `Set Auxiliary: ${
+                    AUX_TASKS.find((t) => t.key === picker.task)?.label ??
+                    picker.task
+                  }`
+            }
+            onApply={async ({ provider, model }) => {
+              await applyAssignment({
+                scope: picker.kind === "main" ? "main" : "auxiliary",
+                task: picker.kind === "main" ? "" : picker.task,
+                provider,
+                model,
+              });
+            }}
+            onClose={() => setPicker(null)}
+          />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────── */
+/*  Page                                                                */
+/* ──────────────────────────────────────────────────────────────────── */
+
 export default function ModelsPage() {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<ModelsAnalyticsResponse | null>(null);
+  const [aux, setAux] = useState<AuxiliaryModelsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [saveKey, setSaveKey] = useState(0);
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    api
-      .getModelsAnalytics(days)
-      .then(setData)
+    Promise.all([
+      api.getModelsAnalytics(days),
+      api.getAuxiliaryModels().catch(() => null),
+    ])
+      .then(([models, auxData]) => {
+        setData(models);
+        setAux(auxData);
+      })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
   }, [days]);
+
+  const onAssigned = useCallback(() => {
+    // Reload aux state after any assignment change.
+    api
+      .getAuxiliaryModels()
+      .then(setAux)
+      .catch(() => {});
+    setSaveKey((k) => k + 1);
+  }, []);
 
   useLayoutEffect(() => {
     const periodLabel =
@@ -315,6 +721,13 @@ export default function ModelsPage() {
   return (
     <div className="flex flex-col gap-6">
       <PluginSlot name="models:top" />
+
+      <ModelSettingsPanel
+        aux={aux}
+        refreshKey={saveKey}
+        onSaved={onAssigned}
+      />
+
       {loading && !data && (
         <div className="flex items-center justify-center py-24">
           <Spinner className="text-2xl text-primary" />
@@ -369,7 +782,14 @@ export default function ModelsPage() {
           {data.models.length > 0 ? (
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {data.models.map((m, i) => (
-                <ModelCard key={`${m.model}:${m.provider}`} entry={m} rank={i + 1} />
+                <ModelCard
+                  key={`${m.model}:${m.provider}`}
+                  entry={m}
+                  rank={i + 1}
+                  main={aux?.main ?? null}
+                  aux={aux?.tasks ?? []}
+                  onAssigned={onAssigned}
+                />
               ))}
             </div>
           ) : (

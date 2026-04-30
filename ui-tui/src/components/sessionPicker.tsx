@@ -32,7 +32,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
   // When non-null, the user pressed `d` on this index and we're waiting for
-  // `y`/`Y` to confirm deletion.  Any other key cancels the prompt.
+  // a second `d`/`D` to confirm deletion.  Any other key cancels the prompt.
   const [confirmDelete, setConfirmDelete] = useState<null | number>(null)
   const [deleting, setDeleting] = useState(false)
 
@@ -103,7 +103,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
     }
 
     if (confirmDelete !== null) {
-      if (ch === 'y' || ch === 'Y') {
+      if (ch?.toLowerCase() === 'd') {
         const idx = confirmDelete
         setConfirmDelete(null)
         performDelete(idx)
@@ -128,7 +128,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
       return
     }
 
-    if ((ch === 'd' || ch === 'D') && items[sel]) {
+    if (ch?.toLowerCase() === 'd' && items[sel]) {
       setConfirmDelete(sel)
 
       return
@@ -202,7 +202,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
               inverse={selected}
               wrap="truncate-end"
             >
-              {pendingDelete ? 'delete? y/n' : s.title || s.preview || '(untitled)'}
+              {pendingDelete ? 'press d again to delete' : s.title || s.preview || '(untitled)'}
             </Text>
           </Box>
         )

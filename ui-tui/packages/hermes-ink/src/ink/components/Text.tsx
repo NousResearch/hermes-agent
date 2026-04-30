@@ -6,6 +6,7 @@ import type { Color, Styles } from '../styles.js'
 
 const ENV_ON_RE = /^(?:1|true|yes|on)$/i
 const ENV_OFF_RE = /^(?:0|false|no|off)$/i
+const LEGACY_APPLE_DIM_COLOR: Color = '#6B7280'
 type BaseProps = {
   /**
    * Change text color. Accepts a raw color value (rgb, hex, ansi).
@@ -76,7 +77,21 @@ export function shouldUseAnsiDim(env: NodeJS.ProcessEnv = process.env): boolean 
     return false
   }
 
+  if ((env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal') {
+    return false
+  }
+
   return !env.VTE_VERSION
+}
+
+export function dimColorFallback(env: NodeJS.ProcessEnv = process.env): Color | undefined {
+  const override = (env.HERMES_TUI_DIM ?? '').trim()
+
+  if (ENV_ON_RE.test(override) || ENV_OFF_RE.test(override)) {
+    return undefined
+  }
+
+  return (env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal' ? LEGACY_APPLE_DIM_COLOR : undefined
 }
 
 const memoizedStylesForWrap: Record<NonNullable<Styles['textWrap']>, Styles> = {
@@ -161,6 +176,7 @@ export default function Text(t0: Props) {
   const inverse = t4 === undefined ? false : t4
   const wrap = t5 === undefined ? 'wrap' : t5
   const effectiveDim = dim && shouldUseAnsiDim()
+  const effectiveColor = dim && !effectiveDim ? (color ?? dimColorFallback()) : color
 
   if (children === undefined || children === null) {
     return null
@@ -168,11 +184,11 @@ export default function Text(t0: Props) {
 
   let t6
 
-  if ($[0] !== color) {
-    t6 = color && {
-      color
+  if ($[0] !== effectiveColor) {
+    t6 = effectiveColor && {
+      color: effectiveColor
     }
-    $[0] = color
+    $[0] = effectiveColor
     $[1] = t6
   } else {
     t6 = $[1]

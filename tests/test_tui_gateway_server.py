@@ -2835,6 +2835,32 @@ def test_session_delete_refuses_active_session(monkeypatch):
     assert called == [], "delete_session must not be called for active sessions"
 
 
+def test_session_delete_fails_closed_when_active_snapshot_raises(monkeypatch):
+    """Concurrent ``_sessions`` mutation from another RPC thread can raise
+    ``RuntimeError: dictionary changed size during iteration``.  When the
+    handler can't enumerate active sessions safely it must refuse the
+    delete (fail closed) rather than fall through and allow it."""
+
+    class _DB:
+        def delete_session(self, *a, **kw):
+            raise AssertionError("delete must not run when active snapshot fails")
+
+    class _ExplodingDict:
+        def values(self):
+            raise RuntimeError("dictionary changed size during iteration")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_sessions", _ExplodingDict())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.delete", "params": {"session_id": "x"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 5036
+    assert "enumerate active sessions" in resp["error"]["message"]
+
+
 def test_session_delete_returns_4007_when_missing(monkeypatch):
     class _DB:
         def delete_session(self, sid, sessions_dir=None):

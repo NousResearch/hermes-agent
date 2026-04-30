@@ -320,6 +320,7 @@ export interface ModelOptionsResponse {
 
 export interface ReloadMcpResponse {
   status?: string
+  message?: string
 }
 
 export interface ReloadEnvResponse {

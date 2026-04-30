@@ -1018,6 +1018,14 @@ DEFAULT_CONFIG = {
         "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
+        # When true, /reload-mcp asks the user to confirm before rebuilding
+        # the MCP tool set for the active session.  Reloading invalidates
+        # the provider prompt cache (tool schemas are baked into the system
+        # prompt), so the next message re-sends full input tokens — this can
+        # be expensive on long-context or high-reasoning models.  Users click
+        # "Always Approve" to silence the prompt permanently; that flips
+        # this key to false.
+        "mcp_reload_confirm": True,
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)

@@ -6286,8 +6286,10 @@ class HermesCLI:
             count = reload_env()
             print(f"  Reloaded .env ({count} var(s) updated)")
         elif canonical == "reload-mcp":
-            with self._busy_command(self._slow_command_status(cmd_original)):
-                self._reload_mcp()
+            # Interactive reload: confirm first (unless the user has opted out).
+            # The auto-reload path (file watcher) calls _reload_mcp directly
+            # without this confirmation.
+            self._confirm_and_reload_mcp(cmd_original)
         elif canonical == "reload-skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._reload_skills()
@@ -7416,6 +7418,77 @@ class HermesCLI:
         _reload_thread.join(timeout=30)
         if _reload_thread.is_alive():
             print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
+
+    def _confirm_and_reload_mcp(self, cmd_original: str = "") -> None:
+        """Interactive /reload-mcp — confirm with the user, then reload.
+
+        Reloading MCP tools invalidates the provider prompt cache for the
+        active session (tool schemas are baked into the system prompt).
+        The next message re-sends full input tokens — can be expensive on
+        long-context or high-reasoning models.
+
+        Three options: Approve Once, Always Approve (persists
+        ``approvals.mcp_reload_confirm: false`` so future reloads run
+        without this prompt), Cancel.  Gated by
+        ``approvals.mcp_reload_confirm`` — default on.
+        """
+        # Gate check — respects prior "Always Approve" clicks.
+        try:
+            cfg = load_cli_config()
+            approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
+            confirm_required = True
+            if isinstance(approvals, dict):
+                confirm_required = bool(approvals.get("mcp_reload_confirm", True))
+        except Exception:
+            confirm_required = True
+
+        if not confirm_required:
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._reload_mcp()
+            return
+
+        # Render warning + prompt.  Use a single-line prompt so the user
+        # sees the warning as output and types a response into the composer.
+        print()
+        print("⚠️  /reload-mcp — Prompt cache invalidation warning")
+        print()
+        print("  Reloading MCP servers rebuilds the tool set for this session and")
+        print("  invalidates the provider prompt cache.  The next message will")
+        print("  re-send full input tokens (can be expensive on long-context or")
+        print("  high-reasoning models).")
+        print()
+        print("  [1] Approve Once   — reload now")
+        print("  [2] Always Approve — reload now and silence this prompt permanently")
+        print("  [3] Cancel         — leave MCP tools unchanged")
+        print()
+        raw = self._prompt_text_input("Choice [1/2/3]: ")
+        if raw is None:
+            print("🟡 /reload-mcp cancelled (no input).")
+            return
+        choice_raw = raw.strip().lower()
+        if choice_raw in ("1", "once", "approve", "yes", "y", "ok"):
+            choice = "once"
+        elif choice_raw in ("2", "always", "remember"):
+            choice = "always"
+        elif choice_raw in ("3", "cancel", "nevermind", "no", "n", ""):
+            choice = "cancel"
+        else:
+            print(f"🟡 Unrecognized choice '{raw}'. /reload-mcp cancelled.")
+            return
+
+        if choice == "cancel":
+            print("🟡 /reload-mcp cancelled. MCP tools unchanged.")
+            return
+
+        if choice == "always":
+            if save_config_value("approvals.mcp_reload_confirm", False):
+                print("🔒 Future /reload-mcp calls will run without confirmation.")
+                print("   Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml.")
+            else:
+                print("⚠️  Couldn't persist opt-out — reloading once.")
+
+        with self._busy_command(self._slow_command_status(cmd_original)):
+            self._reload_mcp()
 
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.

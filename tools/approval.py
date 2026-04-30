@@ -15,6 +15,7 @@ import re
 import sys
 import threading
 import time
+import hashlib
 import unicodedata
 from typing import Optional
 from hermes_cli.config import cfg_get
@@ -429,7 +430,23 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
+_pending_approvals: dict[tuple[str, str], dict] = {}
+_pending_justifications: dict[tuple[str, str], str] = {}
+_MAX_JUSTIFICATION_RETRIES = 3
 
+def _get_pending_justification(session_key: str, cmd_hash: str) -> tuple:
+    """Retrieve pending justification for a session and command hash.
+
+    Returns:
+        tuple: (_, effective_justification, _, _) where effective_justification is the
+        stored justification string or None if not found.
+    """
+    with _lock:
+        key = (session_key, cmd_hash)
+        stored = _pending_justifications.get(key)
+        # Return as (ignored, effective_justification, ignored, ignored) to match unpacking
+        return (None, stored, None, None)
+#
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
 # =========================================================================

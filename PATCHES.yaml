@@ -11,6 +11,7 @@ patches:
     files:
       - path: tools/approval.py
         markers:
+          - "import hashlib"
           - "justification: str = None"
           - "Phase 2.8"
           - "justification_required"

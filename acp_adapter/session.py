@@ -148,6 +148,8 @@ class SessionState:
     is_running: bool = False
     queued_prompts: List[str] = field(default_factory=list)
     runtime_lock: Any = field(default_factory=Lock)
+    current_prompt_text: str = ""
+    interrupted_prompt_text: str = ""
 
 
 class SessionManager:

@@ -831,6 +831,8 @@ class GatewayRunner:
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
+        self._concurrent_tasks: Dict[str, list] = {}  # session_key -> [asyncio.Task, ...]
+        self._concurrent_counter: int = 0  # monotonic counter for task IDs
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
@@ -1687,6 +1689,8 @@ class GatewayRunner:
             return "queue"
         if mode == "steer":
             return "steer"
+        if mode == "concurrent":
+            return "concurrent"
         return "interrupt"
 
     @staticmethod
@@ -1827,6 +1831,42 @@ class GatewayRunner:
 
         running_agent = self._running_agents.get(session_key)
 
+        # Concurrent mode: spawn an independent agent for this message
+        # instead of interrupting or queueing.
+        if self._busy_input_mode == "concurrent":
+            self._concurrent_counter += 1
+            task_id = f"concurrent-{self._concurrent_counter}"
+            logger.info(
+                "[%s] Concurrent mode: spawning %s for session %s",
+                adapter.name, task_id, session_key,
+            )
+            task = asyncio.create_task(
+                self._run_concurrent_agent(event, session_key, task_id)
+            )
+            self._concurrent_tasks.setdefault(session_key, []).append(task)
+            task.add_done_callback(
+                lambda t, sk=session_key: self._on_concurrent_done(t, sk)
+            )
+
+            # Debounced acknowledgment
+            _CONCURRENT_ACK_COOLDOWN = 15
+            now = time.time()
+            last_ack = self._busy_ack_ts.get(session_key, 0)
+            if now - last_ack >= _CONCURRENT_ACK_COOLDOWN:
+                self._busy_ack_ts[session_key] = now
+                thread_meta = (
+                    {"thread_id": event.source.thread_id}
+                    if event.source.thread_id else None
+                )
+                ack = f"🔀 任务已启动 [{task_id}]，完成后通知你"
+                await adapter._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=ack,
+                    reply_to=event.message_id,
+                    metadata=thread_meta,
+                )
+            return True
+
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
@@ -1956,6 +1996,124 @@ class GatewayRunner:
             logger.debug("Failed to send busy-ack: %s", e)
 
         return True
+
+    async def _run_concurrent_agent(
+        self, event: MessageEvent, session_key: str, task_id: str
+    ) -> None:
+        """Run an independent agent for a concurrent task."""
+        import uuid as _uuid
+        from run_agent import AIAgent
+
+        adapter = self.adapters.get(event.source.platform)
+        if not adapter:
+            return
+
+        chat_id = event.source.chat_id
+        thread_meta = (
+            {"thread_id": event.source.thread_id}
+            if event.source.thread_id else None
+        )
+
+        try:
+            # Resolve agent runtime from the parent session
+            source = event.source
+            model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source, session_key=session_key,
+            )
+            turn_route = self._resolve_turn_agent_config(
+                event.text or "", model, runtime_kwargs,
+            )
+
+            # Create an independent agent with a unique session
+            concurrent_session_id = f"concurrent-{_uuid.uuid4().hex[:8]}"
+            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+
+            from hermes_cli.tools_config import _get_platform_tools
+            platform_key = _platform_config_key(source.platform)
+            user_config = _load_gateway_config()
+            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+
+            agent = AIAgent(
+                model=turn_route["model"],
+                **turn_route["runtime"],
+                max_iterations=max_iterations,
+                platform=source.platform.value if source.platform else "concurrent",
+                session_id=concurrent_session_id,
+                enabled_toolsets=enabled_toolsets,
+                skip_memory=True,
+                quiet_mode=True,
+            )
+
+            # Run in executor (AIAgent.run_conversation is sync)
+            loop = asyncio.get_running_loop()
+            logger.info("[%s] %s: starting agent for %r", adapter.name, task_id, (event.text or "")[:60])
+
+            result = await loop.run_in_executor(
+                None,
+                lambda: agent.run_conversation(
+                    user_message=event.text or "",
+                ),
+            )
+
+            response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+
+            if response:
+                # Extract media/images like normal processing
+                media_files, response = adapter.extract_media(response)
+                images, text_content = adapter.extract_images(response)
+                text_content = text_content.replace("[[audio_as_voice]]", "").strip()
+                text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
+
+                if images:
+                    for img_path in images:
+                        try:
+                            await adapter._send_media(chat_id, img_path, metadata=thread_meta)
+                        except Exception:
+                            pass
+
+                for mf in (media_files or []):
+                    try:
+                        await adapter._send_media(chat_id, mf, metadata=thread_meta)
+                    except Exception:
+                        pass
+
+                if text_content:
+                    header = f"✅ [{task_id}] 完成\n\n"
+                    await adapter._send_with_retry(
+                        chat_id=chat_id,
+                        content=header + text_content,
+                        metadata=thread_meta,
+                    )
+            else:
+                await adapter._send_with_retry(
+                    chat_id=chat_id,
+                    content=f"⚠️ [{task_id}] 执行完成但无输出",
+                    metadata=thread_meta,
+                )
+
+        except Exception as e:
+            logger.error("[%s] %s failed: %s", adapter.name, task_id, e, exc_info=True)
+            try:
+                await adapter._send_with_retry(
+                    chat_id=chat_id,
+                    content=f"❌ [{task_id}] 执行失败: {str(e)[:200]}",
+                    metadata=thread_meta,
+                )
+            except Exception:
+                pass
+
+    def _on_concurrent_done(self, task: asyncio.Task, session_key: str) -> None:
+        """Cleanup callback when a concurrent task finishes."""
+        tasks = self._concurrent_tasks.get(session_key, [])
+        if task in tasks:
+            tasks.remove(task)
+        if not tasks:
+            self._concurrent_tasks.pop(session_key, None)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logger.warning("Concurrent task for %s raised: %s", session_key, exc)
 
     async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()

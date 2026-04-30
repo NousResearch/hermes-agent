@@ -497,6 +497,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
+        self.gateway_runner = None  # Set by gateway/run.py for cross-platform delivery
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
@@ -1933,6 +1934,149 @@ class DiscordAdapter(BasePlatformAdapter):
                             return True
         return False
 
+    # ── Slash command authorization ─────────────────────────────────────
+    # Slash commands (``_run_simple_slash`` and ``_handle_thread_create_slash``)
+    # are a separate Discord interaction surface from regular messages and
+    # historically ran with NO authorization check — bypassing every gate
+    # ``on_message`` enforces (DISCORD_ALLOWED_USERS, DISCORD_ALLOWED_ROLES,
+    # DISCORD_ALLOWED_CHANNELS, DISCORD_IGNORED_CHANNELS). Any guild member
+    # could invoke ``/background``, ``/restart``, ``/sethome``, etc. as the
+    # operator. ``_check_slash_authorization`` mirrors the on_message gates
+    # one-for-one so the slash surface honors the same trust boundary.
+    #
+    # By design, this is a no-op for deployments with no allowlist env vars
+    # set — ``_is_allowed_user`` returns True and the channel checks early-out
+    # — preserving the existing "single-tenant, all guild members trusted"
+    # default. Deployments that DO set any DISCORD_ALLOWED_* var get slash
+    # parity with on_message.
+
+    async def _check_slash_authorization(
+        self, interaction: "discord.Interaction", command_text: str,
+    ) -> bool:
+        """Mirror on_message's user/role/channel gates onto a slash invocation.
+
+        Returns True to proceed. Returns False *after* sending an ephemeral
+        rejection, logging a warning, and scheduling a cross-platform admin
+        alert — the caller must stop on False (the interaction has already
+        been responded to).
+        """
+        chan_obj = getattr(interaction, "channel", None)
+        in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
+
+        # ── Channel scope (mirrors on_message lines 3374-3388) ──
+        # DMs aren't channel-gated — DMs follow on_message's DM lockdown
+        # path which has its own user-allowlist enforcement.
+        if not in_dm:
+            chan_id_raw = getattr(interaction, "channel_id", None) or getattr(
+                chan_obj, "id", None,
+            )
+            if chan_id_raw is not None:
+                channel_ids = {str(chan_id_raw)}
+                # Mirror on_message: also test the parent channel for threads
+                # so per-channel allow/deny lists work consistently.
+                if isinstance(chan_obj, discord.Thread):
+                    parent_id = self._get_parent_channel_id(chan_obj)
+                    if parent_id:
+                        channel_ids.add(str(parent_id))
+
+                allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+                if allowed_raw:
+                    allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
+                    if "*" not in allowed and not (channel_ids & allowed):
+                        return await self._reject_slash(
+                            interaction, command_text,
+                            reason="channel not in DISCORD_ALLOWED_CHANNELS",
+                        )
+
+                ignored_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
+                if ignored_raw:
+                    ignored = {c.strip() for c in ignored_raw.split(",") if c.strip()}
+                    if "*" in ignored or (channel_ids & ignored):
+                        return await self._reject_slash(
+                            interaction, command_text,
+                            reason="channel in DISCORD_IGNORED_CHANNELS",
+                        )
+
+        # ── User / role allowlist (mirrors on_message line 681) ──
+        user_id = str(interaction.user.id)
+        if not self._is_allowed_user(user_id, author=interaction.user):
+            return await self._reject_slash(
+                interaction, command_text,
+                reason="user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES",
+            )
+
+        return True
+
+    async def _reject_slash(
+        self, interaction: "discord.Interaction", command_text: str, *, reason: str,
+    ) -> bool:
+        """Send ephemeral reject + log warning + schedule admin alert. Returns False."""
+        user_id = str(interaction.user.id)
+        user_name = getattr(interaction.user, "name", "?")
+        chan_id = getattr(interaction, "channel_id", None) or getattr(
+            getattr(interaction, "channel", None), "id", None,
+        )
+        guild_id = getattr(interaction, "guild_id", None)
+
+        logger.warning(
+            "[Discord] Unauthorized slash attempt: user=%s id=%s channel=%s "
+            "guild=%s cmd=%r reason=%r",
+            user_name, user_id, chan_id, guild_id, command_text, reason,
+        )
+
+        try:
+            await interaction.response.send_message(
+                "You're not authorized to use this command.",
+                ephemeral=True,
+            )
+        except Exception as e:
+            # Interaction may already be responded to (e.g. caller deferred
+            # before the auth check, or Discord retried). Best-effort only.
+            logger.debug("[Discord] Could not send unauthorized ephemeral: %s", e)
+
+        # Fire-and-forget: don't block the interaction handler on Telegram I/O.
+        try:
+            asyncio.create_task(self._notify_unauthorized_slash(
+                user_name, user_id, chan_id, guild_id, command_text, reason,
+            ))
+        except Exception as e:
+            logger.debug("[Discord] Could not schedule admin notify task: %s", e)
+
+        return False
+
+    async def _notify_unauthorized_slash(
+        self, user_name: str, user_id: str, chan_id, guild_id,
+        command_text: str, reason: str,
+    ) -> None:
+        """Best-effort cross-platform alert to the gateway operator.
+
+        Tries TELEGRAM first (most operators set TELEGRAM_HOME_CHANNEL),
+        then SLACK. Silently no-ops if no other platform is configured
+        with a home channel.
+        """
+        runner = getattr(self, "gateway_runner", None)
+        if not runner:
+            return
+        for target in (Platform.TELEGRAM, Platform.SLACK):
+            try:
+                adapter = runner.adapters.get(target)
+                if not adapter:
+                    continue
+                home = runner.config.get_home_channel(target)
+                if not home or not getattr(home, "chat_id", None):
+                    continue
+                msg = (
+                    "⚠️ Unauthorized Discord slash attempt\n"
+                    f"User: {user_name} ({user_id})\n"
+                    f"Channel: {chan_id} (guild {guild_id})\n"
+                    f"Command: {command_text}\n"
+                    f"Reason: {reason}"
+                )
+                await adapter.send(str(home.chat_id), msg)
+                return
+            except Exception as e:
+                logger.debug("[Discord] Admin notify via %s failed: %s", target, e)
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -2320,6 +2464,11 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception:
             pass  # logging must never block command dispatch
 
+        # Auth gate — must run before defer() so an ephemeral rejection can
+        # be delivered on the still-unresponded interaction.
+        if not await self._check_slash_authorization(interaction, command_text):
+            return
+
         await interaction.response.defer(ephemeral=True)
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
@@ -2464,7 +2613,8 @@ class DiscordAdapter(BasePlatformAdapter):
             message: str = "",
             auto_archive_duration: int = 1440,
         ):
-            await interaction.response.defer(ephemeral=True)
+            # defer() is performed inside the handler *after* the auth gate
+            # so a rejected invoker can receive an ephemeral rejection.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
         @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
@@ -2584,6 +2734,54 @@ class DiscordAdapter(BasePlatformAdapter):
         # subcommand groups.  This uses 1 top-level slot instead of N,
         # supporting up to 25 categories × 25 skills = 625 skills.
         self._register_skill_group(tree)
+
+        # Optional defense-in-depth: hide every slash command from non-admin
+        # guild members in Discord's slash picker. Server-side authorization
+        # (``_check_slash_authorization``) is the actual gate; this is purely
+        # UX so users don't see commands they can't invoke. Off by default
+        # to preserve the slash UX for deployments that intentionally allow
+        # everyone in the guild.
+        if os.getenv("DISCORD_HIDE_SLASH_COMMANDS", "false").strip().lower() in (
+            "true", "1", "yes", "on",
+        ):
+            self._apply_owner_only_visibility(tree)
+
+    def _apply_owner_only_visibility(self, tree) -> None:
+        """Set default_member_permissions=0 on every registered slash command.
+
+        Discord interprets ``Permissions(0)`` as "requires no permissions",
+        which paradoxically means the command is hidden from every guild
+        member except those with the Administrator permission. Server admins
+        can re-grant per user/role via Server Settings → Integrations →
+        <bot> → Permissions.
+
+        Authoritative gate is ``_check_slash_authorization`` on every
+        invocation, which catches stale clients, role grants made by
+        mistake, and direct API calls bypassing Discord's UI hide.
+        """
+        try:
+            no_perms = discord.Permissions(0)
+        except Exception as e:
+            logger.warning(
+                "[Discord] _apply_owner_only_visibility: cannot build Permissions(0): %s",
+                e,
+            )
+            return
+        applied = 0
+        for cmd in tree.get_commands():
+            try:
+                cmd.default_permissions = no_perms
+                applied += 1
+            except Exception as e:
+                logger.debug(
+                    "[Discord] Could not set default_permissions on %r: %s",
+                    getattr(cmd, "name", "?"), e,
+                )
+        logger.info(
+            "[Discord] Hid %d slash command(s) from non-admin guild members "
+            "(opt-in defense in depth via DISCORD_HIDE_SLASH_COMMANDS).",
+            applied,
+        )
 
     def _register_skill_group(self, tree) -> None:
         """Register a single ``/skill`` command with autocomplete on the name.
@@ -2762,6 +2960,9 @@ class DiscordAdapter(BasePlatformAdapter):
         auto_archive_duration: int = 1440,
     ) -> None:
         """Create a Discord thread from a slash command and start a session in it."""
+        if not await self._check_slash_authorization(interaction, "/thread"):
+            return
+        await interaction.response.defer(ephemeral=True)
         result = await self._create_thread(
             interaction,
             name=name,

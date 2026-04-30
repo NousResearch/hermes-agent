@@ -8,6 +8,8 @@ import ipaddress
 import logging
 import os
 import re
+import socket
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -263,6 +265,34 @@ _CONTAINER_LOCAL_SUFFIXES = (
     ".containers.internal",
     ".lima.internal",
 )
+# DNS namespaces reserved for private / internal-only use. RFC 8375 reserves
+# .home.arpa for residential home networks; RFC 6762 reserves .local for
+# multicast DNS; .internal is IANA-reserved (and used by Google Cloud DNS);
+# .lan / .home / .intranet / .private are widespread de-facto conventions
+# for internal-only zones. Hosts under these suffixes never escape the LAN,
+# so they get the same treatment as RFC-1918 IPs (timeout bumps, no
+# network-egress probes, etc.).
+_PRIVATE_DNS_SUFFIXES = (
+    ".home.arpa",
+    ".local",
+    ".internal",
+    ".intranet",
+    ".lan",
+    ".home",
+    ".localdomain",
+    ".private",
+)
+
+# DNS-resolution cache for `is_local_endpoint`. Maps hostname to
+# `(is_local, resolved_at_epoch)`. Cached so repeated calls (one per stream
+# request) don't re-issue the lookup, and so a slow resolver only hurts
+# once per TTL window.
+_dns_resolution_cache: Dict[str, tuple[bool, float]] = {}
+_DNS_CACHE_TTL = 300  # 5 minutes
+# Hard cap so a broken resolver can't stall request paths. The lookup runs
+# in a daemon thread; if it doesn't finish within this budget we treat the
+# host as non-local and cache the negative.
+_DNS_LOOKUP_TIMEOUT = 0.5
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -341,15 +371,87 @@ def _is_known_provider_base_url(base_url: str) -> bool:
     return _infer_provider_from_url(base_url) is not None
 
 
+def _ip_is_local(addr: ipaddress._BaseAddress) -> bool:
+    """Return True for any IP address Hermes treats as local/trusted."""
+    if addr.is_private or addr.is_loopback or addr.is_link_local:
+        return True
+    if isinstance(addr, ipaddress.IPv4Address) and addr in _TAILSCALE_CGNAT:
+        return True
+    return False
+
+
+def _hostname_resolves_to_local_ip(host: str) -> bool:
+    """Return True if `host` resolves to a private/loopback/link-local/CGNAT IP.
+
+    The lookup runs in a daemon thread with a hard `_DNS_LOOKUP_TIMEOUT`
+    deadline so a slow or broken resolver can't stall request paths. Both
+    positive and negative results are cached for `_DNS_CACHE_TTL` seconds —
+    negatives included so public DNS names don't pay the lookup cost on
+    every call. Resolution failures (NXDOMAIN, timeout, etc.) are treated
+    as non-local, which matches the safe default: if we can't prove it's
+    on the LAN, don't apply local-endpoint shortcuts.
+    """
+    now = time.time()
+    cached = _dns_resolution_cache.get(host)
+    if cached is not None and (now - cached[1]) < _DNS_CACHE_TTL:
+        return cached[0]
+
+    result_box: list = []
+
+    def _resolve() -> None:
+        try:
+            result_box.append(socket.getaddrinfo(host, None))
+        except Exception:
+            result_box.append([])
+
+    thread = threading.Thread(target=_resolve, daemon=True)
+    thread.start()
+    thread.join(timeout=_DNS_LOOKUP_TIMEOUT)
+
+    if not result_box:
+        # Resolver still running past the deadline — give up, cache the
+        # negative briefly. The daemon thread will be reaped at exit.
+        _dns_resolution_cache[host] = (False, now)
+        return False
+
+    is_local = False
+    for info in result_box[0]:
+        # getaddrinfo entry: (family, type, proto, canonname, sockaddr)
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip_str = sockaddr[0]
+        # Strip IPv6 zone id (e.g. "fe80::1%eth0")
+        if "%" in ip_str:
+            ip_str = ip_str.split("%", 1)[0]
+        try:
+            addr = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if _ip_is_local(addr):
+            is_local = True
+            break
+
+    _dns_resolution_cache[host] = (is_local, now)
+    return is_local
+
+
 def is_local_endpoint(base_url: str) -> bool:
     """Return True if base_url points to a local machine.
 
     Recognises loopback (``localhost``, ``127.0.0.0/8``, ``::1``),
     container-internal DNS names (``host.docker.internal`` et al.),
-    RFC-1918 private ranges (``10/8``, ``172.16/12``, ``192.168/16``),
-    link-local, and Tailscale CGNAT (``100.64.0.0/10``). Tailscale CGNAT
-    is included so remote-but-trusted Ollama boxes reached over a
-    Tailscale mesh get the same timeout auto-bumps as localhost Ollama.
+    reserved private DNS namespaces (``.home.arpa``, ``.local``,
+    ``.internal``, etc.), RFC-1918 private ranges (``10/8``,
+    ``172.16/12``, ``192.168/16``), link-local, and Tailscale CGNAT
+    (``100.64.0.0/10``). Tailscale CGNAT is included so remote-but-trusted
+    Ollama boxes reached over a Tailscale mesh get the same timeout
+    auto-bumps as localhost Ollama.
+
+    For hostnames that don't match any of the literal rules above, falls
+    back to a short DNS lookup (capped at ``_DNS_LOOKUP_TIMEOUT``): if the
+    name resolves to a private/loopback/CGNAT IP, treat as local. Public
+    names and resolution failures are classified as non-local.
     """
     normalized = _normalize_base_url(base_url)
     if not normalized:
@@ -360,22 +462,28 @@ def is_local_endpoint(base_url: str) -> bool:
         host = parsed.hostname or ""
     except Exception:
         return False
+    if not host:
+        return False
     if host in _LOCAL_HOSTS:
         return True
     # Docker / Podman / Lima internal DNS names (e.g. host.docker.internal)
     if any(host.endswith(suffix) for suffix in _CONTAINER_LOCAL_SUFFIXES):
         return True
+    # Reserved private DNS namespaces (.home.arpa, .local, .internal, ...)
+    if any(host.endswith(suffix) for suffix in _PRIVATE_DNS_SUFFIXES):
+        return True
     # RFC-1918 private ranges, link-local, and Tailscale CGNAT
+    is_ip_literal = False
     try:
         addr = ipaddress.ip_address(host)
-        if addr.is_private or addr.is_loopback or addr.is_link_local:
-            return True
-        if isinstance(addr, ipaddress.IPv4Address) and addr in _TAILSCALE_CGNAT:
+        is_ip_literal = True
+        if _ip_is_local(addr):
             return True
     except ValueError:
         pass
     # Bare IP that looks like a private range (e.g. 172.26.x.x for WSL)
-    # or Tailscale CGNAT (100.64.x.x–100.127.x.x).
+    # or Tailscale CGNAT (100.64.x.x–100.127.x.x). Catches edge cases the
+    # ipaddress module might reject (e.g. leading zeros).
     parts = host.split(".")
     if len(parts) == 4:
         try:
@@ -390,7 +498,16 @@ def is_local_endpoint(base_url: str) -> bool:
                 return True
         except ValueError:
             pass
-    return False
+    # If the host parsed as a public IP literal, skip the DNS lookup —
+    # there's nothing to resolve and an IP literal can't gain local
+    # status by being resolved again.
+    if is_ip_literal:
+        return False
+    # Hostname that didn't match any literal rule: ask DNS (with a short
+    # hard timeout). If it resolves to a private IP, treat as local —
+    # this catches arbitrary internal DNS names (e.g. `myserver`,
+    # `ollama-box`, /etc/hosts entries) without baking a suffix list.
+    return _hostname_resolves_to_local_ip(host)
 
 
 def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:

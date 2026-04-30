@@ -557,8 +557,12 @@ class TestBuildMessageEvent:
         # First message in this thread → main-flow → no thread_id on source.
         assert event.source.thread_id is None
         assert event.source.user_id_alt == "u@example.com"
-        # But the thread IS cached so outbound replies stay connected.
-        assert adapter._last_inbound_thread["spaces/S"] == "spaces/S/threads/T1"
+        # Cache MUST be empty for main-flow so outbound bot reply lands
+        # at top-level (Chat creates a separate thread for it). If we
+        # cached the user's auto-thread name and replied with thread.name
+        # set, Chat would show the pair as an expandable thread under
+        # the user's message instead of two adjacent top-level cards.
+        assert "spaces/S" not in adapter._last_inbound_thread
         # Counter populated for next-time decision.
         assert adapter._thread_msg_counts["spaces/S"]["spaces/S/threads/T1"] == 1
 
@@ -583,6 +587,47 @@ class TestBuildMessageEvent:
         event2 = await adapter._build_message_event(msg2, env2)
         # Second time same thread = user re-engaged → isolated session.
         assert event2.source.thread_id == "spaces/S/threads/T1"
+
+    @pytest.mark.asyncio
+    async def test_dm_side_thread_caches_thread_for_outbound(self, adapter):
+        """When a thread is identified as side-thread, the cache MUST
+        be populated so the bot's reply lands inside it. Without this
+        the bot would respond at top-level and the user's threaded
+        question would look unanswered."""
+        # First message → main flow (cache stays clear).
+        env1 = _make_chat_envelope(text="primera", thread_name="spaces/S/threads/SIDE")
+        await adapter._build_message_event(
+            env1["chat"]["messagePayload"]["message"], env1
+        )
+        assert "spaces/S" not in adapter._last_inbound_thread
+
+        # Second message in same thread → side thread → cache populated.
+        env2 = _make_chat_envelope(text="segunda", thread_name="spaces/S/threads/SIDE")
+        await adapter._build_message_event(
+            env2["chat"]["messagePayload"]["message"], env2
+        )
+        assert adapter._last_inbound_thread["spaces/S"] == "spaces/S/threads/SIDE"
+
+    @pytest.mark.asyncio
+    async def test_dm_main_flow_after_side_thread_clears_cache(self, adapter):
+        """User was in a side thread, then returns to top-level (input
+        box). Main-flow cache must be CLEARED so the bot reply doesn't
+        accidentally land in the abandoned side thread."""
+        # Two messages in T_side → side thread, cache populated.
+        for _ in range(2):
+            env = _make_chat_envelope(text="x", thread_name="spaces/S/threads/T_side")
+            await adapter._build_message_event(
+                env["chat"]["messagePayload"]["message"], env
+            )
+        assert adapter._last_inbound_thread["spaces/S"] == "spaces/S/threads/T_side"
+
+        # User types in input box: NEW thread T_new (count goes 0→1, main flow).
+        env_main = _make_chat_envelope(text="back to top", thread_name="spaces/S/threads/T_new")
+        await adapter._build_message_event(
+            env_main["chat"]["messagePayload"]["message"], env_main
+        )
+        # Cache cleared so outbound reply lands top-level.
+        assert "spaces/S" not in adapter._last_inbound_thread
 
     @pytest.mark.asyncio
     async def test_dm_different_top_level_threads_share_session(self, adapter):

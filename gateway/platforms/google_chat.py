@@ -1090,13 +1090,6 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if is_slash:
             message_type = MessageType.COMMAND
 
-        # Cache the inbound thread for outbound reply placement (see
-        # _last_inbound_thread docstring). This runs BEFORE the source
-        # builds so DMs can drop thread_id without losing the reply
-        # destination.
-        if thread_name and space_name:
-            self._last_inbound_thread[space_name] = thread_name
-
         # Increment the inbound count for this thread. The PRE-increment
         # value (==0 for the very first message in a thread) is what
         # tells us "main flow" vs "side thread".
@@ -1106,23 +1099,38 @@ class GoogleChatAdapter(BasePlatformAdapter):
             prev_thread_count = chat_counts.get(thread_name, 0)
             chat_counts[thread_name] = prev_thread_count + 1
 
-        # Session-thread routing for DMs:
+        # Session-thread + outbound-thread routing for DMs:
         # - prev_count == 0  → first message in this thread. Google Chat
         #   creates a fresh thread per top-level message in the DM input
         #   box; treat as "main flow" so all top-level messages share
-        #   one DM session and the user keeps continuity.
+        #   one DM session and the user keeps continuity. The bot's
+        #   reply ALSO must NOT thread with the user message — if we
+        #   pass thread.name on outbound, Chat displays the pair as an
+        #   expandable thread under the user's message instead of two
+        #   adjacent top-level cards.
         # - prev_count >= 1  → user explicitly engaged a thread that
         #   already had messages (clicked "Reply in thread" on a prior
-        #   message). Isolate this thread to its own session so it
-        #   doesn't leak context with the main flow.
+        #   message). Isolate session by chat_id+thread_id, AND keep
+        #   the bot's reply inside that thread.
         #
         # For groups, threads ARE meaningful conversational containers
-        # (Telegram forum / Discord thread parity); always isolate.
+        # (Telegram forum / Discord thread parity); always isolate AND
+        # always reply in-thread.
         if chat_type == "dm":
             is_side_thread = prev_thread_count > 0
             session_thread_id = thread_name if is_side_thread else None
+            # Outbound thread cache: populated only when side-thread, so
+            # _resolve_thread_id falls through to "no thread" on main
+            # flow and the bot reply lands as a top-level sibling.
+            if thread_name and space_name and is_side_thread:
+                self._last_inbound_thread[space_name] = thread_name
+            elif space_name:
+                self._last_inbound_thread.pop(space_name, None)
         else:
             session_thread_id = thread_name
+            # Groups always reply in-thread.
+            if thread_name and space_name:
+                self._last_inbound_thread[space_name] = thread_name
 
         source = self.build_source(
             chat_id=space_name,

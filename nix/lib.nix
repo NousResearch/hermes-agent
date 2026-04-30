@@ -163,7 +163,7 @@
       for entry in "''${ENTRIES[@]}"; do
         IFS=":" read -r ATTR FOLDER NIX_FILE <<< "$entry"
         echo "==> .#$ATTR ($FOLDER -> $NIX_FILE)"
-        OUTPUT=$(nix build ".#$ATTR.npmDeps" --no-link --rebuild --print-build-logs 2>&1)
+        OUTPUT=$(nix build ".#$ATTR.npmDeps" --no-link --print-build-logs 2>&1)
         STATUS=$?
         if [ "$STATUS" -eq 0 ]; then
           echo "    ok"

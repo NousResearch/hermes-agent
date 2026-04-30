@@ -880,3 +880,128 @@ class TestNousRecommendedModels:
             patch("hermes_cli.models.check_nous_free_tier", side_effect=RuntimeError("boom")),
         ):
             assert get_nous_recommended_aux_model(vision=False) == "paid-model"
+
+
+class TestFetchOpenRouterFreeModels:
+    """Tests for fetch_openrouter_free_models — see hermes-agent#17923."""
+
+    @staticmethod
+    def _mock_response(payload_bytes: bytes):
+        class _Resp:
+            def __enter__(self):
+                return self
+            def __exit__(self, exc_type, exc, tb):
+                return False
+            def read(self):
+                return payload_bytes
+        return _Resp()
+
+    def test_returns_only_free_models_with_tool_support(self):
+        from hermes_cli.models import fetch_openrouter_free_models
+        payload = (
+            b'{"data":['
+            b'{"id":"anthropic/claude-opus-4.6",'
+            b'"pricing":{"prompt":"0.000015","completion":"0.000075"},'
+            b'"supported_parameters":["tools"]},'
+            b'{"id":"nvidia/nemotron-3-nano-30b-a3b:free",'
+            b'"pricing":{"prompt":"0","completion":"0"},'
+            b'"supported_parameters":["tools"]},'
+            b'{"id":"nvidia/nemotron-nano-9b-v2:free",'
+            b'"pricing":{"prompt":"0","completion":"0"},'
+            b'"supported_parameters":["tools"]}'
+            b']}'
+        )
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            return_value=self._mock_response(payload),
+        ):
+            models = fetch_openrouter_free_models()
+
+        assert models == [
+            ("nvidia/nemotron-3-nano-30b-a3b:free", "free"),
+            ("nvidia/nemotron-nano-9b-v2:free", "free"),
+        ]
+
+    def test_filters_out_free_models_without_tool_support(self):
+        """Free models that don't advertise tool-calling must not appear:
+        Hermes Agent is tool-calling-first."""
+        from hermes_cli.models import fetch_openrouter_free_models
+        payload = (
+            b'{"data":['
+            b'{"id":"vendor/free-no-tools:free",'
+            b'"pricing":{"prompt":"0","completion":"0"},'
+            b'"supported_parameters":["temperature"]},'
+            b'{"id":"vendor/free-with-tools:free",'
+            b'"pricing":{"prompt":"0","completion":"0"},'
+            b'"supported_parameters":["tools","temperature"]}'
+            b']}'
+        )
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            return_value=self._mock_response(payload),
+        ):
+            models = fetch_openrouter_free_models()
+
+        assert models == [("vendor/free-with-tools:free", "free")]
+
+    def test_keeps_free_models_with_missing_supported_parameters(self):
+        """Permissive: when supported_parameters is absent, surface the model
+        (matches the policy in fetch_openrouter_models for offline mirrors)."""
+        from hermes_cli.models import fetch_openrouter_free_models
+        payload = (
+            b'{"data":['
+            b'{"id":"vendor/free-no-params:free",'
+            b'"pricing":{"prompt":"0","completion":"0"}}'
+            b']}'
+        )
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            return_value=self._mock_response(payload),
+        ):
+            models = fetch_openrouter_free_models()
+
+        assert models == [("vendor/free-no-params:free", "free")]
+
+    def test_falls_back_to_static_free_entries_on_fetch_failure(self):
+        """Network failure → return the ``:free`` entries already in
+        OPENROUTER_MODELS so the user still sees something."""
+        from hermes_cli.models import fetch_openrouter_free_models
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            side_effect=OSError("no network"),
+        ):
+            models = fetch_openrouter_free_models()
+
+        expected = [(mid, "free") for mid, _ in OPENROUTER_MODELS if mid.endswith(":free")]
+        assert models == expected
+
+    def test_falls_back_when_api_returns_malformed_payload(self):
+        from hermes_cli.models import fetch_openrouter_free_models
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            return_value=self._mock_response(b'{"data": "not a list"}'),
+        ):
+            models = fetch_openrouter_free_models()
+
+        expected = [(mid, "free") for mid, _ in OPENROUTER_MODELS if mid.endswith(":free")]
+        assert models == expected
+
+    def test_dedupes_repeated_ids_in_payload(self):
+        from hermes_cli.models import fetch_openrouter_free_models
+        payload = (
+            b'{"data":['
+            b'{"id":"vendor/dup:free",'
+            b'"pricing":{"prompt":"0","completion":"0"},'
+            b'"supported_parameters":["tools"]},'
+            b'{"id":"vendor/dup:free",'
+            b'"pricing":{"prompt":"0","completion":"0"},'
+            b'"supported_parameters":["tools"]}'
+            b']}'
+        )
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            return_value=self._mock_response(payload),
+        ):
+            models = fetch_openrouter_free_models()
+
+        assert models == [("vendor/dup:free", "free")]

@@ -7860,6 +7860,30 @@ class HermesCLI:
             self._console_print(f"    {header:40s}  {bar}  {pct_str}")
         self._console_print()
 
+    def _handle_free_models_command(self) -> None:
+        """List all free OpenRouter models with tool-calling support.
+
+        Surfaces every ``:free`` variant on OpenRouter (not just curated ones)
+        so users evaluating Hermes Agent can quickly discover zero-cost models.
+        See ``hermes-agent#17923``.
+        """
+        from hermes_cli.models import fetch_openrouter_free_models
+        with self._busy_command("Fetching free OpenRouter models..."):
+            models = fetch_openrouter_free_models()
+
+        if not models:
+            self._console_print("  [yellow]No free OpenRouter models reachable right now.[/]")
+            return
+
+        self._console_print()
+        self._console_print(f"  [bold]Free OpenRouter models[/] ({len(models)} available)")
+        self._console_print()
+        for mid, _ in models:
+            self._console_print(f"    {mid}")
+        self._console_print()
+        self._console_print("  [dim]Switch with:[/] /model <id> --provider openrouter")
+        self._console_print()
+
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         parts = cmd.split(maxsplit=1)
@@ -8457,6 +8481,8 @@ class HermesCLI:
             self._handle_codex_runtime(cmd_original)
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
+        elif canonical == "free-models":
+            self._handle_free_models_command()
 
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)

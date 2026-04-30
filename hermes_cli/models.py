@@ -1196,6 +1196,59 @@ def fetch_openrouter_models(
     return list(curated)
 
 
+def fetch_openrouter_free_models(timeout: float = 8.0) -> list[tuple[str, str]]:
+    """Return all live OpenRouter models with free pricing and tool support.
+
+    Unlike :func:`fetch_openrouter_models`, this bypasses the curated picker list
+    and surfaces every model on OpenRouter where ``pricing.prompt`` and
+    ``pricing.completion`` are both zero AND ``supported_parameters`` advertises
+    tool-calling. This addresses the gap where free ``:free`` variants appear on
+    OpenRouter (e.g. ``nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free``)
+    but never make it into the curated catalog.
+
+    Returns ``[(id, "free"), ...]``. On any network/parse failure, falls back
+    to the ``:free``-suffixed entries already in :data:`OPENROUTER_MODELS`
+    so the CLI keeps working offline.
+
+    See ``hermes-agent#17923``.
+    """
+    try:
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return [(mid, "free") for mid, _ in OPENROUTER_MODELS if mid.endswith(":free")]
+
+    live_items = payload.get("data", [])
+    if not isinstance(live_items, list):
+        return [(mid, "free") for mid, _ in OPENROUTER_MODELS if mid.endswith(":free")]
+
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in live_items:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "").strip()
+        if not mid or mid in seen:
+            continue
+        if not _openrouter_model_is_free(item.get("pricing")):
+            continue
+        # Hermes-agent is tool-calling-first; surfacing models that don't
+        # advertise tools leads to immediate runtime failures when selected.
+        if not _openrouter_model_supports_tools(item):
+            continue
+        seen.add(mid)
+        out.append((mid, "free"))
+
+    if not out:
+        return [(mid, "free") for mid, _ in OPENROUTER_MODELS if mid.endswith(":free")]
+
+    return out
+
+
 def model_ids(*, force_refresh: bool = False) -> list[str]:
     """Return just the OpenRouter model-id strings."""
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]

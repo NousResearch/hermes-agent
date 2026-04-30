@@ -51,6 +51,22 @@ hermes plugins disable disk-cleanup
 
 ## Currently shipped
 
+The repo ships these bundled plugins under `plugins/`. All are opt-in — enable them via `hermes plugins enable <name>`.
+
+| Plugin | Kind | Purpose |
+|---|---|---|
+| `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
+| `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
+| `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
+| `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
+| `image_gen/openai` | image backend | OpenAI `gpt-image-2` image generation backend (alternative to FAL) |
+| `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
+| `image_gen/xai` | image backend | xAI `grok-2-image` backend |
+| `example-dashboard` | dashboard example | Reference dashboard plugin for [Extending the Dashboard](./extending-the-dashboard.md) |
+| `strike-freedom-cockpit` | dashboard skin | Sample custom dashboard skin |
+
+Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engine/*`) are listed separately on [Memory Providers](./memory-providers.md) — they're managed through `hermes memory` and `hermes plugins` respectively. The full per-plugin detail for the two long-running hooks-based plugins follows.
+
 ### disk-cleanup
 
 Auto-tracks and removes ephemeral files created during sessions — test scripts, temp outputs, cron logs, stale chrome profiles — without requiring the agent to remember to call a tool.
@@ -161,6 +177,36 @@ Hermes-prefixed and standard SDK env vars (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECR
 **Performance:** the Langfuse client is cached after the first hook call. If credentials or SDK are missing, that decision is also cached — subsequent hooks fast-return without re-checking env vars or reloading config.
 
 **Disabling:** `hermes plugins disable observability/langfuse`. The plugin module is still discovered, but no module code runs until you re-enable.
+
+### google_meet
+
+Lets the agent **join, transcribe, and participate in Google Meet calls** — take notes on a meeting, summarize the back-and-forth after, follow up on specific points, and (optionally) speak replies back into the call via TTS.
+
+**What it adds:**
+
+- A headless virtual participant that joins a Meet URL using browser automation
+- Live transcription of the meeting audio via the configured STT provider
+- A `meet_summarize` / `meet_speak` / `meet_followup` toolset the agent invokes to act on what it heard
+- Post-meeting artifacts (transcript, speaker-attributed notes, action items) saved under `~/.hermes/cache/google_meet/<meeting_id>/`
+
+**Setup:**
+
+```bash
+hermes plugins enable google_meet
+# Prompts you to sign in via the plugin's OAuth flow on first use —
+# needs a Google account with Meet access. Host approval may be required
+# if the meeting enforces "only invited participants can join".
+```
+
+Usage from chat:
+
+> "Join meet.google.com/abc-defg-hij and take notes. After the call, send me a summary with action items."
+
+The agent kicks off the meeting join, streams the transcription back into its context as the call proceeds, and produces a structured summary when the meeting ends (or when you tell it to stop).
+
+**When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
+
+**Disabling:** `hermes plugins disable google_meet`. Any cached transcripts and recordings stay in `~/.hermes/cache/google_meet/` until you remove them.
 
 ## Adding a bundled plugin
 

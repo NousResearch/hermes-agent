@@ -3107,6 +3107,8 @@ class HermesCLI:
             return "Processing skills command..."
         if cmd_lower == "/reload-mcp":
             return "Reloading MCP servers..."
+        if cmd_lower == "/reload-skills" or cmd_lower == "/reload_skills":
+            return "Reloading skills..."
         if cmd_lower.startswith("/browser"):
             return "Configuring browser..."
         return "Processing command..."
@@ -6284,8 +6286,13 @@ class HermesCLI:
             count = reload_env()
             print(f"  Reloaded .env ({count} var(s) updated)")
         elif canonical == "reload-mcp":
+            # Interactive reload: confirm first (unless the user has opted out).
+            # The auto-reload path (file watcher) calls _reload_mcp directly
+            # without this confirmation.
+            self._confirm_and_reload_mcp(cmd_original)
+        elif canonical == "reload-skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
-                self._reload_mcp()
+                self._reload_skills()
         elif canonical == "browser":
             self._handle_browser_command(cmd_original)
         elif canonical == "plugins":
@@ -7412,6 +7419,77 @@ class HermesCLI:
         if _reload_thread.is_alive():
             print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
 
+    def _confirm_and_reload_mcp(self, cmd_original: str = "") -> None:
+        """Interactive /reload-mcp — confirm with the user, then reload.
+
+        Reloading MCP tools invalidates the provider prompt cache for the
+        active session (tool schemas are baked into the system prompt).
+        The next message re-sends full input tokens — can be expensive on
+        long-context or high-reasoning models.
+
+        Three options: Approve Once, Always Approve (persists
+        ``approvals.mcp_reload_confirm: false`` so future reloads run
+        without this prompt), Cancel.  Gated by
+        ``approvals.mcp_reload_confirm`` — default on.
+        """
+        # Gate check — respects prior "Always Approve" clicks.
+        try:
+            cfg = load_cli_config()
+            approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
+            confirm_required = True
+            if isinstance(approvals, dict):
+                confirm_required = bool(approvals.get("mcp_reload_confirm", True))
+        except Exception:
+            confirm_required = True
+
+        if not confirm_required:
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._reload_mcp()
+            return
+
+        # Render warning + prompt.  Use a single-line prompt so the user
+        # sees the warning as output and types a response into the composer.
+        print()
+        print("⚠️  /reload-mcp — Prompt cache invalidation warning")
+        print()
+        print("  Reloading MCP servers rebuilds the tool set for this session and")
+        print("  invalidates the provider prompt cache.  The next message will")
+        print("  re-send full input tokens (can be expensive on long-context or")
+        print("  high-reasoning models).")
+        print()
+        print("  [1] Approve Once   — reload now")
+        print("  [2] Always Approve — reload now and silence this prompt permanently")
+        print("  [3] Cancel         — leave MCP tools unchanged")
+        print()
+        raw = self._prompt_text_input("Choice [1/2/3]: ")
+        if raw is None:
+            print("🟡 /reload-mcp cancelled (no input).")
+            return
+        choice_raw = raw.strip().lower()
+        if choice_raw in ("1", "once", "approve", "yes", "y", "ok"):
+            choice = "once"
+        elif choice_raw in ("2", "always", "remember"):
+            choice = "always"
+        elif choice_raw in ("3", "cancel", "nevermind", "no", "n", ""):
+            choice = "cancel"
+        else:
+            print(f"🟡 Unrecognized choice '{raw}'. /reload-mcp cancelled.")
+            return
+
+        if choice == "cancel":
+            print("🟡 /reload-mcp cancelled. MCP tools unchanged.")
+            return
+
+        if choice == "always":
+            if save_config_value("approvals.mcp_reload_confirm", False):
+                print("🔒 Future /reload-mcp calls will run without confirmation.")
+                print("   Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml.")
+            else:
+                print("⚠️  Couldn't persist opt-out — reloading once.")
+
+        with self._busy_command(self._slow_command_status(cmd_original)):
+            self._reload_mcp()
+
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.
 
@@ -7496,6 +7574,78 @@ class HermesCLI:
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
+
+    def _reload_skills(self) -> None:
+        """Reload skills: rescan ~/.hermes/skills/ and queue a note for the
+        next user turn.
+
+        Skills don't need to live in the system prompt for the model to use
+        them (they're invoked via ``/skill-name``, ``skills_list``, or
+        ``skill_view`` at runtime), so this does NOT clear the prompt cache.
+        It rescans the slash-command map, prints the diff for the user, and
+        — if any skills were added or removed — queues a one-shot note that
+        gets prepended to the next user message. This preserves message
+        alternation (no phantom user turn injected out of band) and keeps
+        prompt caching intact.
+        """
+        try:
+            from agent.skill_commands import reload_skills
+
+            if not self._command_running:
+                print("🔄 Reloading skills...")
+
+            result = reload_skills()
+            added = result.get("added", [])      # [{"name", "description"}, ...]
+            removed = result.get("removed", [])  # [{"name", "description"}, ...]
+            total = result.get("total", 0)
+
+            if not added and not removed:
+                print("  No new skills detected.")
+                print(f"  📚 {total} skill(s) available")
+                return
+
+            def _fmt_line(item: dict) -> str:
+                nm = item.get("name", "")
+                desc = item.get("description", "")
+                return f"    - {nm}: {desc}" if desc else f"    - {nm}"
+
+            if added:
+                print("  ➕ Added Skills:")
+                for item in added:
+                    print(f"  {_fmt_line(item)}")
+            if removed:
+                print("  ➖ Removed Skills:")
+                for item in removed:
+                    print(f"  {_fmt_line(item)}")
+            print(f"  📚 {total} skill(s) available")
+
+            # Queue a one-shot note for the NEXT user turn. The CLI's agent
+            # loop prepends ``_pending_skills_reload_note`` (if set) to the
+            # API-call-local message at ~L8770, then clears it — same
+            # pattern as ``_pending_model_switch_note``. Nothing is written
+            # to conversation_history here, so message alternation stays
+            # intact and no out-of-band user turn is persisted.
+            #
+            # Format matches how the system prompt renders pre-existing
+            # skills (``    - name: description``) so the model reads the
+            # diff in the same shape as its original skill catalog.
+            sections = ["[USER INITIATED SKILLS RELOAD:"]
+            if added:
+                sections.append("")
+                sections.append("Added Skills:")
+                for item in added:
+                    sections.append(_fmt_line(item))
+            if removed:
+                sections.append("")
+                sections.append("Removed Skills:")
+                for item in removed:
+                    sections.append(_fmt_line(item))
+            sections.append("")
+            sections.append("Use skills_list to see the updated catalog.]")
+            self._pending_skills_reload_note = "\n".join(sections)
+
+        except Exception as e:
+            print(f"  ❌ Skills reload failed: {e}")
 
     # ====================================================================
     # Tool-call generation indicator (shown during streaming)
@@ -8705,6 +8855,13 @@ class HermesCLI:
                 if _msn:
                     agent_message = _msn + "\n\n" + agent_message
                     self._pending_model_switch_note = None
+                # Prepend pending /reload-skills note so the model sees which
+                # skills were added/removed before handling this turn. Same
+                # one-shot queue pattern as the model-switch note above.
+                _srn = getattr(self, '_pending_skills_reload_note', None)
+                if _srn:
+                    agent_message = _srn + "\n\n" + agent_message
+                    self._pending_skills_reload_note = None
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,

@@ -65,8 +65,30 @@ The `/yolo` command is a **toggle** — each use flips the mode on or off:
 YOLO mode is available in both CLI and gateway sessions. Internally, it sets the `HERMES_YOLO_MODE` environment variable which is checked before every command execution.
 
 :::danger
-YOLO mode disables **all** dangerous command safety checks for the session. Use only when you fully trust the commands being generated (e.g., well-tested automation scripts in disposable environments).
+YOLO mode disables **all** dangerous command safety checks for the session — **except** the hardline blocklist (see below). Use only when you fully trust the commands being generated (e.g., well-tested automation scripts in disposable environments).
 :::
+
+### Hardline Blocklist (Always-On Floor)
+
+Some commands are so catastrophic — irreversible filesystem wipes, fork bombs, direct block-device writes — that Hermes refuses to run them **regardless** of:
+
+- `--yolo` / `/yolo` toggled on
+- `approvals.mode: off`
+- Cron jobs running in headless `approve` mode
+- User explicitly clicking "allow always"
+
+The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
+
+| Pattern | Why it's hardline |
+|---|---|
+| `rm -rf /` and obvious variants | Wipes the filesystem root |
+| `rm -rf --no-preserve-root /` | The explicit "yes I mean root" variant |
+| `:(){ :\|:& };:` (bash fork bomb) | Pegs the host until reboot |
+| `mkfs.*` on a mounted root device | Formats the live system |
+| `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
+| Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |
+
+If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
 
 ### Approval Timeout
 
@@ -97,7 +119,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `DELETE FROM` (without WHERE) | SQL DELETE without WHERE |
 | `TRUNCATE TABLE` | SQL TRUNCATE |
 | `> /etc/` | Overwrite system config |
-| `systemctl stop/disable/mask` | Stop/disable system services |
+| `systemctl stop/restart/disable/mask` | Stop/restart/disable system services |
 | `kill -9 -1` | Kill all processes |
 | `pkill -9` | Force kill processes |
 | Fork bomb patterns | Fork bombs |
@@ -479,7 +501,20 @@ All URL-capable tools (web search, web extract, vision, browser) validate URLs b
 - **Cloud metadata hostnames**: `metadata.google.internal`, `metadata.goog`
 - **Reserved, multicast, and unspecified addresses**
 
-SSRF protection is always active and cannot be disabled. DNS failures are treated as blocked (fail-closed). Redirect chains are re-validated at each hop to prevent redirect-based bypasses.
+SSRF protection is always active for internet-facing use and DNS failures are treated as blocked (fail-closed). Redirect chains are re-validated at each hop to prevent redirect-based bypasses.
+
+#### Intentionally allowing private URLs
+
+Some setups legitimately need private/internal URL access — home networks that resolve `home.arpa` to RFC 1918 space, LAN-only Ollama/llama.cpp endpoints, internal wikis, cloud metadata debugging, and the like. For those cases there's a global opt-out:
+
+```yaml
+security:
+  allow_private_urls: true   # default: false
+```
+
+When on, web tools, the browser, vision URL fetches, and gateway media downloads no longer reject RFC 1918 / loopback / link-local / CGNAT / cloud-metadata destinations. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
+
+The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
 
 ### Tirith Pre-Exec Security Scanning
 

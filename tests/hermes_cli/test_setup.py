@@ -209,11 +209,12 @@ def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch,
         "WEBHOOK_ENABLED": "",
     }
 
+    import hermes_cli.gateway as gateway_mod
+
     monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("platform.system", lambda: "Linux")
-
-    import hermes_cli.gateway as gateway_mod
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
@@ -247,11 +248,12 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
         "WEBHOOK_ENABLED": "",
     }
 
+    import hermes_cli.gateway as gateway_mod
+
     monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(gateway_mod, "get_env_value", lambda key: env.get(key, ""))
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("platform.system", lambda: "Linux")
-
-    import hermes_cli.gateway as gateway_mod
 
     monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
@@ -559,6 +561,13 @@ def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
 
 def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Sibling test (test_vercel_setup_configures_access_token_auth) calls
+    # save_env_value which mutates os.environ directly and never restores
+    # it. When xdist schedules both tests in the same worker, VERCEL_*
+    # from the earlier run masks the .vercel/project.json defaults that
+    # this test exercises. Clear them before load.
+    for _leaked in ("VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID", "VERCEL_OIDC_TOKEN"):
+        monkeypatch.delenv(_leaked, raising=False)
     project_root = tmp_path / "project"
     nested = project_root / "app" / "src"
     nested.mkdir(parents=True)
@@ -604,28 +613,12 @@ def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeyp
     assert defaults["    Vercel team ID"] == "linked-team"
 
 
-def test_resolve_hermes_chat_argv_prefers_which(monkeypatch):
+def test_offer_launch_chat_relaunches_via_bin(monkeypatch):
     from hermes_cli import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod.shutil, "which", lambda name: "/usr/local/bin/hermes" if name == "hermes" else None)
-
-    assert setup_mod._resolve_hermes_chat_argv() == ["/usr/local/bin/hermes", "chat"]
-
-
-def test_resolve_hermes_chat_argv_falls_back_to_module(monkeypatch):
-    from hermes_cli import setup as setup_mod
-
-    monkeypatch.setattr(setup_mod.shutil, "which", lambda _name: None)
-    monkeypatch.setattr(setup_mod.importlib.util, "find_spec", lambda name: object() if name == "hermes_cli" else None)
-
-    assert setup_mod._resolve_hermes_chat_argv() == [sys.executable, "-m", "hermes_cli.main", "chat"]
-
-
-def test_offer_launch_chat_execs_fresh_process(monkeypatch):
-    from hermes_cli import setup as setup_mod
+    from hermes_cli import relaunch as relaunch_mod
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: ["/usr/local/bin/hermes", "chat"])
+    monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: "/usr/local/bin/hermes")
 
     exec_calls = []
 
@@ -633,7 +626,7 @@ def test_offer_launch_chat_execs_fresh_process(monkeypatch):
         exec_calls.append((path, argv))
         raise SystemExit(0)
 
-    monkeypatch.setattr(setup_mod.os, "execvp", fake_execvp)
+    monkeypatch.setattr(relaunch_mod.os, "execvp", fake_execvp)
 
     with pytest.raises(SystemExit):
         setup_mod._offer_launch_chat()
@@ -641,13 +634,22 @@ def test_offer_launch_chat_execs_fresh_process(monkeypatch):
     assert exec_calls == [("/usr/local/bin/hermes", ["/usr/local/bin/hermes", "chat"])]
 
 
-def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys):
+def test_offer_launch_chat_falls_back_to_module(monkeypatch):
     from hermes_cli import setup as setup_mod
+    from hermes_cli import relaunch as relaunch_mod
 
     monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: None)
+    monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: None)
 
-    setup_mod._offer_launch_chat()
+    exec_calls = []
 
-    captured = capsys.readouterr()
-    assert "Run 'hermes chat' manually" in captured.out
+    def fake_execvp(path, argv):
+        exec_calls.append((path, argv))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(relaunch_mod.os, "execvp", fake_execvp)
+
+    with pytest.raises(SystemExit):
+        setup_mod._offer_launch_chat()
+
+    assert exec_calls == [(sys.executable, [sys.executable, "-m", "hermes_cli.main", "chat"])]

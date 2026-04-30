@@ -134,7 +134,7 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
 # to minutes (slash.exec, cli.exec, shell.exec, session.resume,
-# session.branch, skills.manage).  While they're running, inbound RPCs —
+# session.branch, session.compress, skills.manage).  While they're running, inbound RPCs —
 # notably approval.respond and session.interrupt — sit unread in the
 # stdin pipe.  We route only those slow handlers onto a small thread pool;
 # everything else stays on the main thread so ordering stays sane for the
@@ -145,6 +145,7 @@ _LONG_HANDLERS = frozenset(
         "browser.manage",
         "cli.exec",
         "session.branch",
+        "session.compress",
         "session.resume",
         "shell.exec",
         "skills.manage",
@@ -1101,24 +1102,111 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
 
 
 def _compress_session_history(
-    session: dict, focus_topic: str | None = None
+    session: dict,
+    focus_topic: str | None = None,
+    approx_tokens: int | None = None,
+    before_messages: list | None = None,
+    history_version: int | None = None,
 ) -> tuple[int, dict]:
     from agent.model_metadata import estimate_messages_tokens_rough
 
     agent = session["agent"]
-    history = list(session.get("history", []))
+    # Snapshot history under the lock so the LLM-bound compression call
+    # below does NOT hold history_lock for the duration of the request —
+    # otherwise other handlers acquiring the lock (prompt.submit etc.)
+    # block on the dispatcher loop while compaction runs.
+    if before_messages is None or history_version is None:
+        with session["history_lock"]:
+            before_messages = list(session.get("history", []))
+            history_version = int(session.get("history_version", 0))
+    history = before_messages
     if len(history) < 4:
-        return 0, _get_usage(agent)
-    approx_tokens = estimate_messages_tokens_rough(history)
+        usage = _get_usage(agent)
+        return 0, usage
+    if approx_tokens is None:
+        approx_tokens = estimate_messages_tokens_rough(history)
+    # Pass system_message=None so AIAgent._compress_context rebuilds the
+    # system prompt cleanly via _build_system_prompt(None). Passing the
+    # cached prompt (which already contains the agent identity block)
+    # makes the rebuild append the identity a second time. Mirrors the
+    # CLI's _manual_compress fix for issue #15281.
     compressed, _ = agent._compress_context(
         history,
-        getattr(agent, "_cached_system_prompt", "") or "",
+        None,
         approx_tokens=approx_tokens,
         focus_topic=focus_topic or None,
     )
-    session["history"] = compressed
-    session["history_version"] = int(session.get("history_version", 0)) + 1
-    return len(history) - len(compressed), _get_usage(agent)
+    with session["history_lock"]:
+        if int(session.get("history_version", 0)) != history_version:
+            # External mutation during compaction — drop the compressed
+            # result so we don't clobber concurrent edits.
+            usage = _get_usage(agent)
+            return 0, usage
+        session["history"] = compressed
+        session["history_version"] = history_version + 1
+    usage = _get_usage(agent)
+    return len(history) - len(compressed), usage
+
+
+def _sync_session_key_after_compress(sid: str, session: dict) -> None:
+    """Re-anchor session_key when AIAgent._compress_context rotates session_id.
+
+    AIAgent._compress_context ends the current SessionDB session and creates
+    a new continuation session, rotating ``agent.session_id``.  The TUI
+    gateway keeps the gateway-side ``session_key`` separate (used for
+    approval routing, slash worker init, DB title/history lookups, yolo
+    state).  Without this sync, those operations would target the ended
+    parent session while the agent writes to the new continuation session.
+    Mirrors HermesCLI._manual_compress's session_id sync.
+    """
+    agent = session.get("agent")
+    new_session_id = getattr(agent, "session_id", None) or ""
+    old_key = session.get("session_key", "") or ""
+    if not new_session_id or new_session_id == old_key:
+        return
+
+    try:
+        from tools.approval import (
+            disable_session_yolo,
+            enable_session_yolo,
+            is_session_yolo_enabled,
+            register_gateway_notify,
+            unregister_gateway_notify,
+        )
+
+        try:
+            unregister_gateway_notify(old_key)
+        except Exception:
+            pass
+        session["session_key"] = new_session_id
+        try:
+            yolo_was_on = is_session_yolo_enabled(old_key)
+        except Exception:
+            yolo_was_on = False
+        if yolo_was_on:
+            try:
+                enable_session_yolo(new_session_id)
+                disable_session_yolo(old_key)
+            except Exception:
+                pass
+        try:
+            register_gateway_notify(
+                new_session_id,
+                lambda data: _emit("approval.request", sid, data),
+            )
+        except Exception:
+            pass
+    except Exception:
+        # Even if the approval module fails to import, still anchor the
+        # session_key on the new continuation id so downstream lookups
+        # don't keep targeting the ended row.
+        session["session_key"] = new_session_id
+
+    session["pending_title"] = None
+    try:
+        _restart_slash_worker(session)
+    except Exception:
+        pass
 
 
 def _get_usage(agent) -> dict:
@@ -2005,6 +2093,47 @@ def _(rid, params: dict) -> dict:
     )
 
 
+@method("session.delete")
+def _(rid, params: dict) -> dict:
+    """Delete a stored session and its on-disk transcript files.
+
+    Used by the TUI resume picker (``d`` key) so users can prune old
+    sessions without dropping to the CLI.  Refuses to delete a session
+    that is currently active in this gateway process — those rows are
+    still being written to and removing them out from under the live
+    agent corrupts message ordering and trips FK constraints when the
+    next message append flushes.
+    """
+    target = params.get("session_id", "")
+    if not target:
+        return _err(rid, 4006, "session_id required")
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5036)
+    # Block deletion of any session currently bound to a live TUI session
+    # in this process.  The picker hides the active session anyway, but a
+    # racing caller could still target it.  Snapshot via ``list(...)``
+    # because ``_sessions`` is mutated by concurrent RPCs on the thread
+    # pool — iterating the dict directly can raise ``RuntimeError:
+    # dictionary changed size during iteration``.  If even the snapshot
+    # raises, fail closed (refuse the delete) rather than fail open.
+    try:
+        snapshot = list(_sessions.values())
+    except Exception as e:
+        return _err(rid, 5036, f"could not enumerate active sessions: {e}")
+    active = {s.get("session_key") for s in snapshot if s.get("session_key")}
+    if target in active:
+        return _err(rid, 4023, "cannot delete an active session")
+    sessions_dir = get_hermes_home() / "sessions"
+    try:
+        deleted = db.delete_session(target, sessions_dir=sessions_dir)
+    except Exception as e:
+        return _err(rid, 5036, f"delete failed: {e}")
+    if not deleted:
+        return _err(rid, 4007, "session not found")
+    return _ok(rid, {"deleted": target})
+
+
 @method("session.title")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
@@ -2137,24 +2266,70 @@ def _(rid, params: dict) -> dict:
         return _err(
             rid, 4009, "session busy — /interrupt the current turn before /compress"
         )
+    sid = params.get("session_id", "")
+    focus_topic = str(params.get("focus_topic", "") or "").strip()
     try:
+        from agent.manual_compression_feedback import summarize_manual_compression
+        from agent.model_metadata import estimate_messages_tokens_rough
+
         with session["history_lock"]:
-            removed, usage = _compress_session_history(
-                session, str(params.get("focus_topic", "") or "").strip()
-            )
-            messages = list(session.get("history", []))
-        info = _session_info(session["agent"])
-        _emit("session.info", params.get("session_id", ""), info)
-        return _ok(
-            rid,
-            {
-                "status": "compressed",
-                "removed": removed,
-                "usage": usage,
-                "info": info,
-                "messages": messages,
-            },
+            before_messages = list(session.get("history", []))
+            history_version = int(session.get("history_version", 0))
+        before_count = len(before_messages)
+        before_tokens = (
+            estimate_messages_tokens_rough(before_messages) if before_count else 0
         )
+
+        if before_count >= 4:
+            focus_suffix = f', focus: "{focus_topic}"' if focus_topic else ""
+            _status_update(
+                sid,
+                "compressing",
+                f"⠋ compressing {before_count} messages "
+                f"(~{before_tokens:,} tok){focus_suffix}…",
+            )
+
+        try:
+            removed, usage = _compress_session_history(
+                session,
+                focus_topic,
+                approx_tokens=before_tokens,
+                before_messages=before_messages,
+                history_version=history_version,
+            )
+            with session["history_lock"]:
+                messages = list(session.get("history", []))
+            after_count = len(messages)
+            after_tokens = (
+                estimate_messages_tokens_rough(messages) if after_count else 0
+            )
+            agent = session["agent"]
+            _sync_session_key_after_compress(sid, session)
+            summary = summarize_manual_compression(
+                before_messages, messages, before_tokens, after_tokens
+            )
+            info = _session_info(agent)
+            _emit("session.info", sid, info)
+            return _ok(
+                rid,
+                {
+                    "status": "compressed",
+                    "removed": removed,
+                    "before_messages": before_count,
+                    "after_messages": after_count,
+                    "before_tokens": before_tokens,
+                    "after_tokens": after_tokens,
+                    "summary": summary,
+                    "usage": usage,
+                    "info": info,
+                    "messages": messages,
+                },
+            )
+        finally:
+            # Always clear the pinned compressing status so the bar
+            # reverts to neutral whether compaction succeeded, was a
+            # no-op, or raised.
+            _status_update(sid, "ready")
     except Exception as e:
         return _err(rid, 5005, str(e))
 
@@ -3569,6 +3744,40 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
     try:
+        # Gate: /reload-mcp invalidates the prompt cache for this session.
+        # Respect the ``approvals.mcp_reload_confirm`` config toggle — if
+        # set (default true) AND the caller did not pass ``confirm=true``
+        # in params, surface a warning to the transcript instead of just
+        # reloading silently.  Users pass confirm=true either by
+        # re-invoking after reading the warning, or by setting the
+        # config key to false permanently.
+        user_confirm = bool(params.get("confirm", False))
+        if not user_confirm:
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config()
+                _approvals = _cfg.get("approvals") if isinstance(_cfg, dict) else None
+                _confirm_required = True
+                if isinstance(_approvals, dict):
+                    _confirm_required = bool(_approvals.get("mcp_reload_confirm", True))
+            except Exception:
+                _confirm_required = True
+            if _confirm_required:
+                # Return a structured response the Ink client can surface
+                # as a warning/confirmation without actually reloading yet.
+                # Ink's ops.ts reads ``status`` and prints ``message`` to
+                # the transcript; a follow-up invocation with confirm=true
+                # (or an `always` choice that flips the config) proceeds.
+                return _ok(rid, {
+                    "status": "confirm_required",
+                    "message": (
+                        "⚠️  /reload-mcp invalidates the prompt cache (next "
+                        "message re-sends full input tokens). Reply `/reload-mcp "
+                        "now` to proceed, or `/reload-mcp always` to proceed and "
+                        "silence this prompt permanently."
+                    ),
+                })
+
         from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
 
         shutdown_mcp_servers()
@@ -3578,6 +3787,15 @@ def _(rid, params: dict) -> dict:
             if hasattr(agent, "refresh_tools"):
                 agent.refresh_tools()
             _emit("session.info", params.get("session_id", ""), _session_info(agent))
+
+        # Honor `always=true` by persisting the opt-out to config.
+        if bool(params.get("always", False)):
+            try:
+                from cli import save_config_value as _save_cfg
+                _save_cfg("approvals.mcp_reload_confirm", False)
+            except Exception as _exc:
+                logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
+
         return _ok(rid, {"status": "reloaded"})
     except Exception as e:
         return _err(rid, 5015, str(e))
@@ -4508,8 +4726,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             agent.ephemeral_system_prompt = new_prompt or None
             agent._cached_system_prompt = None
         elif name == "compress" and agent:
-            with session["history_lock"]:
-                _compress_session_history(session, arg)
+            _compress_session_history(session, arg)
+            _sync_session_key_after_compress(sid, session)
             _emit("session.info", sid, _session_info(agent))
         elif name == "fast" and agent:
             mode = arg.lower()

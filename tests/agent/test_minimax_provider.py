@@ -310,8 +310,13 @@ class TestMinimaxPreserveDots:
 
     def test_normalize_converts_without_preserve(self):
         from agent.anthropic_adapter import normalize_model_name
-        # Without preserve_dots, dots become hyphens (broken for MiniMax)
-        assert normalize_model_name("MiniMax-M2.7", preserve_dots=False) == "MiniMax-M2-7"
+        # Post-#17171, dots are only converted to hyphens for claude-*/anthropic-*
+        # model names. Non-Anthropic models (including MiniMax) keep their dots
+        # even when preserve_dots=False — that's the fix this test was written
+        # against the inverse of, so just assert the new invariant directly.
+        assert normalize_model_name("MiniMax-M2.7", preserve_dots=False) == "MiniMax-M2.7"
+        # Claude models still get dotted→hyphenated when preserve_dots=False.
+        assert normalize_model_name("claude-opus-4.6", preserve_dots=False) == "claude-opus-4-6"
 
 
 class TestMinimaxSwitchModelCredentialGuard:

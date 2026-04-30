@@ -73,6 +73,8 @@ _EXTRA_ENV_KEYS = frozenset({
     "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",  # legacy aliases (pre-rename, still read for back-compat)
     "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
     "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
+    "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
+    "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
@@ -1027,6 +1029,14 @@ DEFAULT_CONFIG = {
         "mode": "manual",
         "timeout": 60,
         "cron_mode": "deny",
+        # When true, /reload-mcp asks the user to confirm before rebuilding
+        # the MCP tool set for the active session.  Reloading invalidates
+        # the provider prompt cache (tool schemas are baked into the system
+        # prompt), so the next message re-sends full input tokens — this can
+        # be expensive on long-context or high-reasoning models.  Users click
+        # "Always Approve" to silence the prompt permanently; that flips
+        # this key to false.
+        "mcp_reload_confirm": True,
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
@@ -2084,6 +2094,43 @@ OPTIONAL_ENV_VARS = {
         "description": "Enable QQ sandbox mode for development testing (true/false)",
         "prompt": "QQ Sandbox Mode",
         "category": "messaging",
+    },
+    "IRC_SERVER": {
+        "description": "IRC server hostname (e.g. irc.libera.chat)",
+        "prompt": "IRC server",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "IRC_CHANNEL": {
+        "description": "IRC channel to join (e.g. #hermes)",
+        "prompt": "IRC channel",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "IRC_NICKNAME": {
+        "description": "Bot nickname on IRC (default: hermes-bot)",
+        "prompt": "IRC nickname",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "IRC_SERVER_PASSWORD": {
+        "description": "IRC server password (if required)",
+        "prompt": "IRC server password",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "IRC_NICKSERV_PASSWORD": {
+        "description": "NickServ password for nick identification",
+        "prompt": "NickServ password",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
     },
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",

@@ -351,27 +351,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
-    platform_map = {
-        "telegram": Platform.TELEGRAM,
-        "discord": Platform.DISCORD,
-        "slack": Platform.SLACK,
-        "whatsapp": Platform.WHATSAPP,
-        "signal": Platform.SIGNAL,
-        "matrix": Platform.MATRIX,
-        "mattermost": Platform.MATTERMOST,
-        "homeassistant": Platform.HOMEASSISTANT,
-        "dingtalk": Platform.DINGTALK,
-        "feishu": Platform.FEISHU,
-        "wecom": Platform.WECOM,
-        "wecom_callback": Platform.WECOM_CALLBACK,
-        "weixin": Platform.WEIXIN,
-        "email": Platform.EMAIL,
-        "sms": Platform.SMS,
-        "bluebubbles": Platform.BLUEBUBBLES,
-        "qqbot": Platform.QQBOT,
-        "yuanbao": Platform.YUANBAO,
-    }
-
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
@@ -428,9 +407,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 job["id"], platform_name, chat_id, thread_id,
             )
 
-        platform = platform_map.get(platform_name.lower())
-        if not platform:
+        # Built-in names resolve to their enum member; plugin platform names
+        # create dynamic members via Platform._missing_().
+        try:
+            platform = Platform(platform_name.lower())
+        except (ValueError, KeyError):
             msg = f"unknown platform '{platform_name}'"
+            logger.warning("Job '%s': %s", job["id"], msg)
+            delivery_errors.append(msg)
+            continue
+
+        pconfig = config.platforms.get(platform)
+        if not pconfig or not pconfig.enabled:
+            msg = f"platform '{platform_name}' not configured/enabled"
             logger.warning("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)
             continue
@@ -485,13 +474,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
 
         if not delivered:
-            pconfig = config.platforms.get(platform)
-            if not pconfig or not pconfig.enabled:
-                msg = f"platform '{platform_name}' not configured/enabled"
-                logger.warning("Job '%s': %s", job["id"], msg)
-                delivery_errors.append(msg)
-                continue
-
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
             coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
             try:
@@ -878,6 +860,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         chat_id=str(origin["chat_id"]) if origin else "",
         chat_name=origin.get("chat_name", "") if origin else "",
     )
+    _cron_delivery_vars = (
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+        "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+        "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+    )
+    for _var_name in _cron_delivery_vars:
+        _VAR_MAP[_var_name].set("")
 
     # Per-job working directory.  When set (and validated at create/update
     # time), we point TERMINAL_CWD at it so:
@@ -916,8 +905,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         if delivery_target:
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
-            if delivery_target.get("thread_id") is not None:
-                _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(str(delivery_target["thread_id"]))
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(
+                ""
+                if delivery_target.get("thread_id") is None
+                else str(delivery_target["thread_id"])
+            )
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
@@ -1216,6 +1208,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
+        for _var_name in _cron_delivery_vars:
+            _VAR_MAP[_var_name].set("")
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")

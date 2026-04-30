@@ -323,6 +323,12 @@ _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
+# Guard so the OpenRouter metadata pre-warm thread is only spawned once per
+# process, not once per AIAgent instantiation.  Without this, long-running
+# gateway processes leak one OS thread per incoming message and eventually
+# exhaust the system thread limit (RuntimeError: can't start new thread).
+_openrouter_prewarm_done = threading.Event()
+
 # Patterns that indicate a terminal command may modify/delete files.
 _DESTRUCTIVE_PATTERNS = re.compile(
     r"""(?:^|\s|&&|\|\||;|`)(?:
@@ -1107,10 +1113,17 @@ class AIAgent:
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
         # HTTP request on the first API response when pricing is estimated.
-        if self.provider == "openrouter" or self._is_openrouter_url():
+        # Use a process-level Event so this thread is only spawned once — a new
+        # AIAgent is created for every gateway request, so without the guard
+        # each message leaks one OS thread and the process eventually exhausts
+        # the system thread limit (RuntimeError: can't start new thread).
+        if (self.provider == "openrouter" or self._is_openrouter_url()) and \
+                not _openrouter_prewarm_done.is_set():
+            _openrouter_prewarm_done.set()
             threading.Thread(
-                target=lambda: fetch_model_metadata(),
+                target=fetch_model_metadata,
                 daemon=True,
+                name="openrouter-prewarm",
             ).start()
 
         self.tool_progress_callback = tool_progress_callback
@@ -1898,6 +1911,7 @@ class AIAgent:
         self._ensure_lmstudio_runtime_loaded(_config_context_length)
 
 
+
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting
         # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
@@ -2138,7 +2152,7 @@ class AIAgent:
         # Context engine reset (works for both built-in compressor and plugins)
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
-    
+
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
         Preload the LM Studio model with at least Hermes' minimum context.
@@ -2922,7 +2936,7 @@ class AIAgent:
 
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())
-    
+
     def _strip_think_blocks(self, content: str) -> str:
         """Remove reasoning/thinking blocks from content, returning only visible text.
 
@@ -3140,8 +3154,8 @@ class AIAgent:
             marker in assistant_text for marker in workspace_markers
         )
         return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
-    
-    
+
+
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """
         Extract reasoning/thinking content from an assistant message.
@@ -3714,7 +3728,7 @@ class AIAgent:
         
         # Return everything up to (not including) the last assistant message
         return messages[:last_assistant_idx]
-    
+
     def _format_tools_for_system_message(self) -> str:
         """
         Format tool definitions for the system message in the trajectory format.
@@ -3738,7 +3752,7 @@ class AIAgent:
             formatted_tools.append(formatted_tool)
         
         return json.dumps(formatted_tools, ensure_ascii=False)
-    
+
     def _convert_to_trajectory_format(self, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
         """
         Convert internal message format to trajectory format for saving.
@@ -3903,7 +3917,7 @@ class AIAgent:
             i += 1
         
         return trajectory
-    
+
     def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool):
         """
         Save conversation trajectory to JSONL file.
@@ -3918,7 +3932,7 @@ class AIAgent:
         
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
         _save_trajectory_to_file(trajectory, self.model, completed)
-    
+
     @staticmethod
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
@@ -4230,7 +4244,7 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
-    
+
     def interrupt(self, message: str = None) -> None:
         """
         Request the agent to interrupt its current tool-calling loop.
@@ -4298,7 +4312,7 @@ class AIAgent:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
-    
+
     def clear_interrupt(self) -> None:
         """Clear any pending interrupt request and the per-thread tool interrupt signal."""
         self._interrupt_requested = False
@@ -4519,7 +4533,7 @@ class AIAgent:
                 )
             except Exception:
                 pass
-    
+
     def commit_memory_session(self, messages: list = None) -> None:
         """Trigger end-of-session extraction without tearing providers down.
         Called when session_id rotates (e.g. /new, context compression);
@@ -4715,7 +4729,7 @@ class AIAgent:
             if not self.quiet_mode:
                 self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
         _set_interrupt(False)
-    
+
     @property
     def is_interrupted(self) -> bool:
         """Check if an interrupt has been requested."""
@@ -4899,6 +4913,15 @@ class AIAgent:
         platform_key = (self.platform or "").lower().strip()
         if platform_key in PLATFORM_HINTS:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
+        elif platform_key:
+            # Check plugin registry for platform-specific LLM guidance
+            try:
+                from gateway.platform_registry import platform_registry
+                _entry = platform_registry.get(platform_key)
+                if _entry and _entry.platform_hint:
+                    prompt_parts.append(_entry.platform_hint)
+            except Exception:
+                pass
 
         return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
 
@@ -6187,7 +6210,12 @@ class AIAgent:
         correctly — rebuilding with the Bedrock SDK when provider is bedrock,
         rather than always falling back to build_anthropic_client() which
         requires a direct Anthropic API key.
+
+        Honors ``self._oauth_1m_beta_disabled`` (set by the reactive recovery
+        path when an OAuth subscription rejects the 1M-context beta) so the
+        rebuilt client carries the reduced beta set.
         """
+        _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
         if getattr(self, "provider", None) == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
@@ -6198,6 +6226,7 @@ class AIAgent:
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=_drop_1m,
             )
 
     def _interruptible_api_call(self, api_kwargs: dict):
@@ -8144,6 +8173,7 @@ class AIAgent:
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
+                drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
             )
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -10729,6 +10759,7 @@ class AIAgent:
             copilot_auth_retry_attempted=False
             thinking_sig_retry_attempted = False
             image_shrink_retry_attempted = False
+            oauth_1m_beta_retry_attempted = False
             has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
@@ -11684,6 +11715,36 @@ class AIAgent:
                                 "image-shrink recovery: no data-URL image parts found "
                                 "or shrink didn't reduce size; surfacing original error."
                             )
+
+                    # Anthropic OAuth subscription rejected the 1M-context beta
+                    # header ("long context beta is not yet available for this
+                    # subscription"). Disable the beta for the rest of this
+                    # session, rebuild the client, and retry once.  1M-capable
+                    # subscriptions never hit this branch — they accept the
+                    # beta and keep full 1M context.  See PR #17680 for the
+                    # original report (we chose reactive recovery over the
+                    # proposed unconditional omit so capable subscriptions
+                    # don't silently lose the capability).
+                    if (
+                        classified.reason == FailoverReason.oauth_long_context_beta_forbidden
+                        and self.api_mode == "anthropic_messages"
+                        and self._is_anthropic_oauth
+                        and not oauth_1m_beta_retry_attempted
+                    ):
+                        oauth_1m_beta_retry_attempted = True
+                        if not getattr(self, "_oauth_1m_beta_disabled", False):
+                            self._oauth_1m_beta_disabled = True
+                            try:
+                                self._anthropic_client.close()
+                            except Exception:
+                                pass
+                            self._rebuild_anthropic_client()
+                            self._vprint(
+                                f"{self.log_prefix}🔕 OAuth subscription doesn't support "
+                                f"the 1M-context beta — disabled for this session and retrying...",
+                                force=True,
+                            )
+                            continue
 
                     if (
                         self.api_mode == "codex_responses"

@@ -345,6 +345,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "dashboard": "display",
     "code_execution": "agent",
     "prompt_caching": "agent",
+    # Only `telegram.reactions` currently lives under telegram — fold it in
+    # with the other messaging-platform config (discord) so it isn't an
+    # orphan tab of one field.
+    "telegram": "discord",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -2295,6 +2299,99 @@ async def get_usage_analytics(days: int = 30):
         db.close()
 
 
+@app.get("/api/analytics/models")
+async def get_models_analytics(days: int = 30):
+    """Rich per-model analytics for the Models dashboard page.
+
+    Returns token/cost/session breakdown per model plus capability metadata
+    from models.dev (context window, vision, tools, reasoning, etc.).
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    try:
+        cutoff = time.time() - (days * 86400)
+
+        cur = db._conn.execute("""
+            SELECT model,
+                   billing_provider,
+                   SUM(input_tokens) as input_tokens,
+                   SUM(output_tokens) as output_tokens,
+                   SUM(cache_read_tokens) as cache_read_tokens,
+                   SUM(reasoning_tokens) as reasoning_tokens,
+                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
+                   COUNT(*) as sessions,
+                   SUM(COALESCE(api_call_count, 0)) as api_calls,
+                   SUM(tool_call_count) as tool_calls,
+                   MAX(started_at) as last_used_at,
+                   AVG(input_tokens + output_tokens) as avg_tokens_per_session
+            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+            GROUP BY model, billing_provider
+            ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+        """, (cutoff,))
+        rows = [dict(r) for r in cur.fetchall()]
+
+        models = []
+        for row in rows:
+            provider = row.get("billing_provider") or ""
+            model_name = row["model"]
+            caps = {}
+            try:
+                from agent.models_dev import get_model_capabilities
+                mc = get_model_capabilities(provider=provider, model=model_name)
+                if mc is not None:
+                    caps = {
+                        "supports_tools": mc.supports_tools,
+                        "supports_vision": mc.supports_vision,
+                        "supports_reasoning": mc.supports_reasoning,
+                        "context_window": mc.context_window,
+                        "max_output_tokens": mc.max_output_tokens,
+                        "model_family": mc.model_family,
+                    }
+            except Exception:
+                pass
+
+            models.append({
+                "model": model_name,
+                "provider": provider,
+                "input_tokens": row["input_tokens"],
+                "output_tokens": row["output_tokens"],
+                "cache_read_tokens": row["cache_read_tokens"],
+                "reasoning_tokens": row["reasoning_tokens"],
+                "estimated_cost": row["estimated_cost"],
+                "actual_cost": row["actual_cost"],
+                "sessions": row["sessions"],
+                "api_calls": row["api_calls"],
+                "tool_calls": row["tool_calls"],
+                "last_used_at": row["last_used_at"],
+                "avg_tokens_per_session": row["avg_tokens_per_session"],
+                "capabilities": caps,
+            })
+
+        totals_cur = db._conn.execute("""
+            SELECT COUNT(DISTINCT model) as distinct_models,
+                   SUM(input_tokens) as total_input,
+                   SUM(output_tokens) as total_output,
+                   SUM(cache_read_tokens) as total_cache_read,
+                   SUM(reasoning_tokens) as total_reasoning,
+                   COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
+                   COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
+                   COUNT(*) as total_sessions,
+                   SUM(COALESCE(api_call_count, 0)) as total_api_calls
+            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+        """, (cutoff,))
+        totals = dict(totals_cur.fetchone())
+
+        return {
+            "models": models,
+            "totals": totals,
+            "period_days": days,
+        }
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # /api/pty — PTY-over-WebSocket bridge for the dashboard "Chat" tab.
 #
@@ -2977,10 +3074,12 @@ def _discover_dashboard_plugins() -> list:
     plugins = []
     seen_names: set = set()
 
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    bundled_root = get_bundled_plugins_dir()
     search_dirs = [
         (get_hermes_home() / "plugins", "user"),
-        (PROJECT_ROOT / "plugins" / "memory", "bundled"),
-        (PROJECT_ROOT / "plugins", "bundled"),
+        (bundled_root / "memory", "bundled"),
+        (bundled_root, "bundled"),
     ]
     if os.environ.get("HERMES_ENABLE_PROJECT_PLUGINS"):
         search_dirs.append((Path.cwd() / ".hermes" / "plugins", "project"))

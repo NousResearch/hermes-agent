@@ -189,7 +189,7 @@ class TestKillStaleDashboardPosix:
         assert not any(sig == _signal.SIGKILL for _, sig in killed_signals)
 
         out = capsys.readouterr().out
-        assert "Stopping 2 stale dashboard" in out
+        assert "Stopping 2 dashboard" in out
         assert "✓ stopped PID 12345" in out
         assert "✓ stopped PID 12346" in out
         assert "Restart the dashboard" in out

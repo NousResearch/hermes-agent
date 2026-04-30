@@ -5423,14 +5423,18 @@ def _find_stale_dashboard_pids() -> list[int]:
     return dashboard_pids
 
 
-def _kill_stale_dashboard_processes() -> None:
-    """Kill ``hermes dashboard`` processes left over from the previous version.
+def _kill_stale_dashboard_processes(
+    reason: str = "the running backend no longer matches the updated frontend",
+) -> None:
+    """Kill running ``hermes dashboard`` processes.
 
-    Called at the end of ``hermes update``.  The dashboard has no service
-    manager, so after an update the running process is guaranteed to be
-    serving stale Python against a freshly-updated JS bundle.  Leaving it
-    alive produces silent frontend/backend mismatches (new auth headers the
-    old backend doesn't recognise → every API call 401s).
+    Called at the end of ``hermes update`` (default ``reason``) and also
+    from ``hermes dashboard --stop`` (which overrides ``reason``).  The
+    dashboard has no service manager, so after a code update the running
+    process is guaranteed to be serving stale Python against a
+    freshly-updated JS bundle.  Leaving it alive produces silent
+    frontend/backend mismatches (new auth headers the old backend doesn't
+    recognise → every API call 401s).
 
     POSIX: SIGTERM, wait up to ~3s for graceful exit, SIGKILL any survivors.
     Windows: ``taskkill /PID <pid> /F`` since there's no clean SIGTERM
@@ -5438,16 +5442,14 @@ def _kill_stale_dashboard_processes() -> None:
 
     The dashboard isn't auto-restarted because we don't know the original
     launch args (--host, --port, --insecure, --tui, --no-open).  The user
-    restarts it manually; we print a hint with the previous port(s) where
-    possible.
+    restarts it manually; a hint is printed.
     """
     pids = _find_stale_dashboard_pids()
     if not pids:
         return
 
     print()
-    print(f"⟲ Stopping {len(pids)} stale dashboard process(es) "
-          f"(the running backend no longer matches the updated frontend)")
+    print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
 
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
@@ -7871,8 +7873,59 @@ def cmd_profile(args):
             sys.exit(1)
 
 
+def _report_dashboard_status() -> int:
+    """Print ``hermes dashboard`` PIDs and return the count.
+
+    Uses the same detection logic as ``_find_stale_dashboard_pids`` (the
+    current process is excluded, but since ``hermes dashboard --status``
+    runs in a short-lived CLI process that never matches the pattern,
+    the exclusion is irrelevant here).
+    """
+    pids = _find_stale_dashboard_pids()
+    if not pids:
+        print("No hermes dashboard processes running.")
+        return 0
+
+    print(f"{len(pids)} hermes dashboard process(es) running:")
+    for pid in pids:
+        # Best-effort: show the full cmdline so users can tell profiles apart.
+        cmdline = ""
+        try:
+            if sys.platform != "win32":
+                cmdline_path = f"/proc/{pid}/cmdline"
+                if os.path.exists(cmdline_path):
+                    with open(cmdline_path, "rb") as f:
+                        cmdline = f.read().replace(b"\x00", b" ").decode(
+                            "utf-8", errors="replace").strip()
+        except (OSError, ValueError):
+            pass
+        if cmdline:
+            print(f"    PID {pid}: {cmdline}")
+        else:
+            print(f"    PID {pid}")
+    return len(pids)
+
+
 def cmd_dashboard(args):
-    """Start the web UI server."""
+    """Start the web UI server, or (with --stop/--status) manage running ones."""
+    # --status: report running dashboards and exit, no deps needed.
+    if getattr(args, "status", False):
+        count = _report_dashboard_status()
+        sys.exit(0 if count == 0 else 0)  # status is informational, always 0
+
+    # --stop: kill any running dashboards and exit, no deps needed.
+    if getattr(args, "stop", False):
+        pids = _find_stale_dashboard_pids()
+        if not pids:
+            print("No hermes dashboard processes running.")
+            sys.exit(0)
+        # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`.
+        _kill_stale_dashboard_processes(reason="requested via --stop")
+        # _kill_stale_dashboard_processes prints outcomes itself.  Exit 0 if
+        # we killed at least one, 1 if they were all unkillable.
+        remaining = _find_stale_dashboard_pids()
+        sys.exit(1 if remaining else 0)
+
     try:
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
@@ -9969,6 +10022,22 @@ Examples:
             "Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). "
             "Alternatively set HERMES_DASHBOARD_TUI=1."
         ),
+    )
+    # Lifecycle flags — mutually exclusive with each other and with the
+    # start-a-server flags above (if both are passed, --stop / --status win
+    # because they exit before the server is started).  The dashboard has
+    # no service manager and no PID file, so these scan the process table
+    # for `hermes dashboard` cmdlines and SIGTERM them directly — the same
+    # path `hermes update` uses to clean up stale dashboards.
+    dashboard_parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="Stop all running hermes dashboard processes and exit",
+    )
+    dashboard_parser.add_argument(
+        "--status",
+        action="store_true",
+        help="List running hermes dashboard processes and exit",
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 

@@ -535,6 +535,13 @@ class TestSummaryFailureTrackingForGatewayWarning:
 
 
 class TestSummaryPrefixNormalization:
+    def test_summary_prefix_does_not_globally_resume_prior_work(self):
+        assert "REFERENCE ONLY" in SUMMARY_PREFIX
+        assert "not as an active instruction source" in SUMMARY_PREFIX
+        assert "continue them only if" in SUMMARY_PREFIX
+        assert "explicit post-summary resume instruction" in SUMMARY_PREFIX
+        assert "are still active" not in SUMMARY_PREFIX
+
     def test_legacy_prefix_is_replaced(self):
         summary = ContextCompressor._with_summary_prefix("[CONTEXT SUMMARY]: did work")
         assert summary == f"{SUMMARY_PREFIX}\ndid work"

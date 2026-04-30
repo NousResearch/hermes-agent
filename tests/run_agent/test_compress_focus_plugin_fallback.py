@@ -73,3 +73,57 @@ def test_compress_context_falls_back_when_engine_rejects_focus_topic():
     assert captured_kwargs == [{"current_tokens": 100}]
     # Silence unused-var warning on agent.
     assert agent.context_compressor is engine
+
+
+def test_compress_context_injects_explicit_resume_when_mid_task():
+    """Compression after a tool result should tell the model to continue."""
+
+    class _Engine:
+        compression_count = 1
+        last_prompt_tokens = 0
+        last_completion_tokens = 0
+        _last_summary_error = None
+
+        def compress(self, messages, current_tokens=None, focus_topic=None):
+            return [{"role": "user", "content": "Summary of conversation so far."}]
+
+    agent = _make_agent_with_engine(_Engine())
+
+    compressed, _ = agent._compress_context(
+        [
+            {"role": "user", "content": "fix the code"},
+            {"role": "assistant", "content": "running tests"},
+            {"role": "tool", "content": "pytest output"},
+        ],
+        "system prompt",
+    )
+
+    contents = [m.get("content", "") for m in compressed]
+    assert any("explicit post-summary resume instruction" in c for c in contents)
+    assert any("CONTINUE the task" in c for c in contents)
+
+
+def test_compress_context_does_not_resume_when_not_mid_task():
+    """Summary-only work should remain reference-only after normal compression."""
+
+    class _Engine:
+        compression_count = 1
+        last_prompt_tokens = 0
+        last_completion_tokens = 0
+        _last_summary_error = None
+
+        def compress(self, messages, current_tokens=None, focus_topic=None):
+            return [{"role": "user", "content": "Summary of conversation so far."}]
+
+    agent = _make_agent_with_engine(_Engine())
+
+    compressed, _ = agent._compress_context(
+        [
+            {"role": "user", "content": "fix the code"},
+            {"role": "assistant", "content": "done"},
+        ],
+        "system prompt",
+    )
+
+    contents = [m.get("content", "") for m in compressed]
+    assert not any("explicit post-summary resume instruction" in c for c in contents)

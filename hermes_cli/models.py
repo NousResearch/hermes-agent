@@ -1179,7 +1179,12 @@ def format_model_pricing_table(
             inp, out, cache = "", "", ""
         rows.append((mid, inp, out, cache, is_cur))
 
-    name_col = max(len(r[0]) for r in rows) + 2
+    import unicodedata
+
+    def _w(s: str) -> int:
+        return sum(2 if unicodedata.east_asian_width(c) in ("F", "W") else 1 for c in s)
+
+    name_col = max(_w(r[0]) for r in rows) + 2
     # Compute price column widths from the actual data so decimals align
     price_col = max(
         max((len(r[1]) for r in rows if r[1]), default=4),

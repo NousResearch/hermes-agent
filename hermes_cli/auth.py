@@ -3748,7 +3748,11 @@ def _prompt_model_selection(
 
     # Column-aligned labels when pricing is available
     has_pricing = bool(pricing and any(pricing.get(m) for m in all_models))
-    name_col = max((len(m) for m in all_models), default=0) + 2 if has_pricing else 0
+    if has_pricing:
+        import unicodedata
+        name_col = max((sum(2 if unicodedata.east_asian_width(c) in ("F", "W") else 1 for c in m) for m in all_models), default=0) + 2
+    else:
+        name_col = 0
 
     # Pre-compute formatted prices and dynamic column widths
     _price_cache: dict[str, tuple[str, str, str]] = {}

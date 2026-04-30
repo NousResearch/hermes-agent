@@ -150,6 +150,27 @@ def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash:
     return text or None
 
 
+def _normalize_deliver_param(value: Any) -> Optional[str]:
+    """Normalize a user-supplied ``deliver`` value to the canonical string form.
+
+    The cron schema documents ``deliver`` as a string (``"local"``, ``"origin"``,
+    ``"telegram"``, ``"telegram:chat_id[:thread_id]"``, or comma-separated combos).
+    Some callers — MCP clients passing arrays, scripts building the payload as a
+    list — supply ``["telegram"]``.  ``create_job``/``update_job`` store it as-is,
+    and the scheduler's ``str(deliver).split(",")`` then serializes the list to
+    the literal ``"['telegram']"`` which is not a known platform.  Flatten lists
+    / tuples at the API boundary so storage is always a string.  Returns ``None``
+    for ``None``/empty so callers can treat it as "not supplied".
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        parts = [str(p).strip() for p in value if str(p).strip()]
+        return ",".join(parts) if parts else None
+    text = str(value).strip()
+    return text or None
+
+
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
@@ -283,7 +304,7 @@ def cronjob(
                 schedule=schedule,
                 name=name,
                 repeat=repeat,
-                deliver=deliver,
+                deliver=_normalize_deliver_param(deliver),
                 origin=_origin_from_env(),
                 skills=canonical_skills,
                 model=_normalize_optional_job_value(model),
@@ -364,7 +385,7 @@ def cronjob(
             if name is not None:
                 updates["name"] = name
             if deliver is not None:
-                updates["deliver"] = deliver
+                updates["deliver"] = _normalize_deliver_param(deliver)
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills

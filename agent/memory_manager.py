@@ -402,6 +402,41 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Notify all providers that the agent's session_id has rotated.
+
+        Fires on ``/resume``, ``/branch``, ``/reset``, ``/new``, and
+        context compression — any path that reassigns
+        ``AIAgent.session_id`` without tearing the provider down.
+
+        Providers keep running; they only need to refresh cached
+        per-session state so subsequent writes land in the correct
+        session's record. See ``MemoryProvider.on_session_switch`` for
+        the full contract.
+        """
+        if not new_session_id:
+            return
+        for provider in self._providers:
+            try:
+                provider.on_session_switch(
+                    new_session_id,
+                    parent_session_id=parent_session_id,
+                    reset=reset,
+                    **kwargs,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' on_session_switch failed: %s",
+                    provider.name, e,
+                )
+
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Notify all providers before context compression.
 

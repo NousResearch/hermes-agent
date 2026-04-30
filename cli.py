@@ -497,12 +497,13 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (docker, singularity, modal, daytona -- ignored for local/ssh)
+        # Container resource config (docker, singularity, modal, daytona, vercel_sandbox -- ignored for local/ssh)
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
         "container_disk": "TERMINAL_CONTAINER_DISK",
@@ -4809,6 +4810,22 @@ class HermesCLI:
                     )
                 except Exception:
                     pass
+            # Notify memory providers that session_id rotated to a fresh
+            # conversation. reset=True signals providers to flush accumulated
+            # per-session state (_session_turns, _turn_counter, _document_id).
+            # Fires BEFORE the plugin on_session_reset hook (shell hooks only
+            # see the new id; Python providers see the transition). See #6672.
+            try:
+                _mm = getattr(self.agent, "_memory_manager", None)
+                if _mm is not None:
+                    _mm.on_session_switch(
+                        self.session_id,
+                        parent_session_id=old_session_id or "",
+                        reset=True,
+                        reason="new_session",
+                    )
+            except Exception:
+                pass
             self._notify_session_boundary("on_session_reset")
 
         if not silent:
@@ -4861,6 +4878,7 @@ class HermesCLI:
             _cprint("  Already on that session.")
             return
 
+        old_session_id = self.session_id
         # End current session
         try:
             self._session_db.end_session(self.session_id, "resumed_other")
@@ -4897,6 +4915,22 @@ class HermesCLI:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
+
+            # Notify memory providers that session_id rotated to a resumed
+            # session. reset=False — the provider's accumulated state is
+            # still valid; it just needs to target the new session_id for
+            # subsequent writes. See #6672.
+            try:
+                _mm = getattr(self.agent, "_memory_manager", None)
+                if _mm is not None:
+                    _mm.on_session_switch(
+                        target_id,
+                        parent_session_id=old_session_id or "",
+                        reset=False,
+                        reason="resume",
+                    )
+            except Exception:
+                pass
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
@@ -5017,6 +5051,22 @@ class HermesCLI:
                     pass
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
+
+            # Notify memory providers that session_id forked to a new branch.
+            # reset=False — the branched session carries the transcript
+            # forward, so provider state tracks the lineage. parent_session_id
+            # links the branch back to the original. See #6672.
+            try:
+                _mm = getattr(self.agent, "_memory_manager", None)
+                if _mm is not None:
+                    _mm.on_session_switch(
+                        new_session_id,
+                        parent_session_id=parent_session_id or "",
+                        reset=False,
+                        reason="branch",
+                    )
+            except Exception:
+                pass
 
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
         _cprint(

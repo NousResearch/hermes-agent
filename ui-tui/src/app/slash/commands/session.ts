@@ -332,7 +332,29 @@ export const sessionCommands: SlashCommand[] = [
 
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg })
-        .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`reasoning: ${r.value}`)))
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (!r.value) {
+              return
+            }
+
+            if (r.value === 'hide') {
+              patchUiState(state => ({
+                ...state,
+                sections: { ...state.sections, thinking: 'hidden' },
+                showReasoning: false
+              }))
+            } else if (r.value === 'show') {
+              patchUiState(state => ({
+                ...state,
+                sections: { ...state.sections, thinking: 'expanded' },
+                showReasoning: true
+              }))
+            }
+
+            ctx.transcript.sys(`reasoning: ${r.value}`)
+          })
+        )
     }
   },
 

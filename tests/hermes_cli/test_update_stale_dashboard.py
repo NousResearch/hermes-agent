@@ -175,3 +175,55 @@ class TestWarnStaleDashboardProcesses:
         output = capsys.readouterr().out
         assert "PID 99999" not in output
         assert "PID 12345" in output
+
+
+class TestWindowsWmicEncoding:
+    """Regression tests for #17049 — the Windows wmic branch must not crash
+    `hermes update` on non-UTF-8 system locales (e.g. cp936 on zh-CN).
+    """
+
+    def test_wmic_invoked_with_utf8_ignore_errors(self, monkeypatch):
+        """The wmic subprocess.run call must pass encoding='utf-8' and
+        errors='ignore' so the subprocess reader thread cannot raise
+        UnicodeDecodeError on non-UTF-8 wmic output."""
+        monkeypatch.setattr(sys, "platform", "win32")
+        with patch("subprocess.run") as mock_run:
+            # Provide a minimal valid wmic /FORMAT:LIST response.
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=(
+                    "CommandLine=python -m hermes_cli.main dashboard\n"
+                    "ProcessId=12345\n"
+                ),
+                stderr="",
+            )
+            _warn_stale_dashboard_processes()
+
+        assert mock_run.called, "subprocess.run was not invoked"
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs.get("encoding") == "utf-8", (
+            "encoding kwarg must be 'utf-8' so wmic output is decoded "
+            "deterministically rather than via the implicit reader-thread "
+            "default that crashes on non-UTF-8 locales (#17049)."
+        )
+        assert kwargs.get("errors") == "ignore", (
+            "errors kwarg must be 'ignore' so undecodable bytes don't take "
+            "down the reader thread (#17049)."
+        )
+
+    def test_wmic_returns_none_stdout_does_not_crash(self, monkeypatch, capsys):
+        """If subprocess.run returns successfully but stdout is None — which
+        is what Python 3.11 leaves behind when the reader thread silently
+        crashed on UnicodeDecodeError before this fix landed — the warning
+        must short-circuit instead of raising AttributeError on
+        ``None.split('\\n')`` and aborting `hermes update` (#17049)."""
+        monkeypatch.setattr(sys, "platform", "win32")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout=None, stderr=""
+            )
+            # Must not raise.
+            _warn_stale_dashboard_processes()
+
+        output = capsys.readouterr().out
+        assert "dashboard process" not in output

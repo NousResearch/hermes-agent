@@ -59,6 +59,147 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_load_enabled_toolsets_prefers_tui_env(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, terminal, ,memory")
+
+    assert server._load_enabled_toolsets() == ["web", "terminal", "memory"]
+
+
+def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web, nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    assert server._load_enabled_toolsets() == ["web"]
+    assert "nope" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "plugin_demo")
+
+    import toolsets
+
+    discovered = {"ready": False}
+    original_validate = toolsets.validate_toolset
+
+    def fake_validate(name):
+        return name == "plugin_demo" and discovered["ready"] or original_validate(name)
+
+    monkeypatch.setattr(toolsets, "validate_toolset", fake_validate)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: discovered.update({"ready": True})),
+    )
+
+    assert server._load_enabled_toolsets() == ["plugin_demo"]
+
+
+def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}})
+
+    assert server._load_enabled_toolsets() == ["memory"]
+    err = capsys.readouterr().err
+    assert "ignoring disabled MCP servers" in err
+    assert "mcp-off" in err
+    assert "using configured CLI toolsets" in err
+
+
+def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}})
+
+    assert server._load_enabled_toolsets() == ["memory"]
+    assert "using configured CLI toolsets" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_warns_when_config_fallback_fails(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    assert server._load_enabled_toolsets() is None
+    assert "could not be loaded" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_honors_builtin_env_if_config_fails(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web")
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    assert server._load_enabled_toolsets() == ["web"]
+
+
+def test_load_enabled_toolsets_all_env_means_all(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "all")
+
+    assert server._load_enabled_toolsets() is None
+
+
+def test_load_enabled_toolsets_all_env_warns_about_ignored_extra_entries(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "all,nope")
+
+    assert server._load_enabled_toolsets() is None
+    assert "ignoring additional entries: nope" in capsys.readouterr().err
+
+
+def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_TUI_TOOLSETS", "web,mcp-off,nope")
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(discover_plugins=lambda: None),
+    )
+
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "read_raw_config",
+        lambda: {"mcp_servers": {"mcp-off": {"enabled": False}}},
+    )
+
+    assert server._load_enabled_toolsets() == ["web"]
+    err = capsys.readouterr().err
+    assert "ignoring unknown HERMES_TUI_TOOLSETS entries: nope" in err
+    assert "ignoring disabled MCP servers" in err
+    assert "mcp-off" in err
+
+
 def test_history_to_messages_preserves_tool_calls_for_resume_display():
     history = [
         {"role": "user", "content": "first prompt"},
@@ -879,6 +1020,36 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
     assert saved["display"]["tui_statusbar"] == "bottom"
 
 
+def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        yaml.safe_dump(
+            {"display": {"sections": {"tools": "expanded", "activity": "hidden"}}}
+        )
+    )
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "details_mode", "value": "collapsed"},
+        }
+    )
+
+    assert resp["result"] == {"key": "details_mode", "value": "collapsed"}
+    saved = yaml.safe_load(cfg_path.read_text())
+    assert saved["display"]["details_mode"] == "collapsed"
+    assert saved["display"]["sections"] == {
+        "thinking": "collapsed",
+        "tools": "collapsed",
+        "subagents": "collapsed",
+        "activity": "collapsed",
+    }
+
+
 def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
     import yaml
 
@@ -1066,6 +1237,18 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     )
     assert resp_show["result"]["value"] == "show"
     assert server._sessions["sid"]["show_reasoning"] is True
+    assert server._load_cfg()["display"]["sections"]["thinking"] == "expanded"
+
+    resp_hide = server.handle_request(
+        {
+            "id": "3",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "hide"},
+        }
+    )
+    assert resp_hide["result"]["value"] == "hide"
+    assert server._sessions["sid"]["show_reasoning"] is False
+    assert server._load_cfg()["display"]["sections"]["thinking"] == "hidden"
 
 
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):

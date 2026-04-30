@@ -289,6 +289,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.1",
         "MiniMax-M2",
     ],
+    "minimax-oauth": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
+    ],
     "minimax-cn": [
         "MiniMax-M2.7",
         "MiniMax-M2.5",
@@ -790,6 +794,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Moonshot CN direct API)"),
     ProviderEntry("stepfun",        "StepFun Step Plan",       "StepFun Step Plan (agent/coding models via Step Plan API)"),
     ProviderEntry("minimax",        "MiniMax",                  "MiniMax (global direct API)"),
+    ProviderEntry("minimax-oauth",  "MiniMax (OAuth)",          "MiniMax via OAuth browser login (Coding Plan, minimax.io)"),
     ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (domestic direct API)"),
     ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
@@ -836,6 +841,9 @@ _PROVIDER_ALIASES = {
     "gmicloud": "gmi",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
+    "minimax-portal": "minimax-oauth",
+    "minimax-global": "minimax-oauth",
+    "minimax_oauth": "minimax-oauth",
     "claude": "anthropic",
     "claude-code": "anthropic",
     "deep-seek": "deepseek",

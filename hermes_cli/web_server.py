@@ -253,7 +253,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "singularity"],
+        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
+    },
+    "terminal.vercel_runtime": {
+        "type": "select",
+        "description": "Vercel Sandbox runtime",
+        "options": ["node24", "node22", "python3.13"],  # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     },
     "terminal.modal_mode": {
         "type": "select",
@@ -339,6 +344,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "human_delay": "display",
     "dashboard": "display",
     "code_execution": "agent",
+    "prompt_caching": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -1215,6 +1221,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "docs_url": "https://github.com/QwenLM/qwen-code",
         "status_fn": None,  # dispatched via auth.get_qwen_auth_status
     },
+    {
+        "id": "minimax-oauth",
+        "name": "MiniMax (OAuth)",
+        "flow": "pkce",
+        "cli_command": "hermes auth add minimax-oauth",
+        "docs_url": "https://www.minimax.io",
+        "status_fn": None,  # dispatched via auth.get_minimax_oauth_auth_status
+    },
 )
 
 
@@ -1257,6 +1271,16 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "token_preview": _truncate_token(raw.get("access_token")),
                 "expires_at": raw.get("expires_at"),
                 "has_refresh_token": bool(raw.get("has_refresh_token")),
+            }
+        if provider_id == "minimax-oauth":
+            raw = hauth.get_minimax_oauth_auth_status()
+            return {
+                "logged_in": bool(raw.get("logged_in")),
+                "source": "minimax_oauth",
+                "source_label": f"MiniMax ({raw.get('region', 'global')})",
+                "token_preview": None,
+                "expires_at": raw.get("expires_at"),
+                "has_refresh_token": True,
             }
     except Exception as e:
         return {"logged_in": False, "error": str(e)}

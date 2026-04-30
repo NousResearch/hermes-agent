@@ -209,6 +209,12 @@ class TestIsWsl:
         import hermes_constants
         hermes_constants._wsl_detected = None
 
+    def teardown_method(self):
+        # Reset again after the test so we don't leak a cached value
+        # (True/False) into whichever test the xdist worker runs next.
+        import hermes_constants
+        hermes_constants._wsl_detected = None
+
     def test_wsl2_detected(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
         with patch("builtins.open", mock_open(read_data=content)):
@@ -220,18 +226,25 @@ class TestIsWsl:
             assert _is_wsl() is True
 
     def test_regular_linux(self):
+        # GHA hosted runners are Azure VMs whose real /proc/version often
+        # contains "microsoft". Patching builtins.open with mock_open is
+        # supposed to intercept hermes_constants.is_wsl's `open` call,
+        # but if another test on the same xdist worker already cached
+        # _wsl_detected=True, the mock never runs because the function
+        # short-circuits on the cache. setup_method resets, so we just
+        # need to be sure the patched `open` is actually reached.
         content = "Linux version 6.14.0-37-generic (buildd@lcy02-amd64-049)"
-        with patch("builtins.open", mock_open(read_data=content)):
+        with patch("hermes_constants.open", mock_open(read_data=content), create=True):
             assert _is_wsl() is False
 
     def test_proc_version_missing(self):
-        with patch("builtins.open", side_effect=FileNotFoundError):
+        with patch("hermes_constants.open", side_effect=FileNotFoundError, create=True):
             assert _is_wsl() is False
 
     def test_result_is_cached(self):
         import hermes_constants
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with patch("builtins.open", mock_open(read_data=content)) as m:
+        with patch("hermes_constants.open", mock_open(read_data=content), create=True) as m:
             assert _is_wsl() is True
             assert _is_wsl() is True
             m.assert_called_once()  # only read once

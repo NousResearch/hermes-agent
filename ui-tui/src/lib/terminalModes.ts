@@ -8,6 +8,8 @@ export const TERMINAL_MODE_RESET =
   '\x1b[?1004l' + // focus events
   '\x1b[?2004l' + // bracketed paste
   '\x1b[?1049l' + // alternate screen
+  '\x1b[<u' + // kitty keyboard
+  '\x1b[>4m' + // modifyOtherKeys
   '\x1b[0m' + // attributes
   '\x1b[?25h' // cursor visible
 

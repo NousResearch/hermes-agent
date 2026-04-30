@@ -1556,6 +1556,8 @@ _TERMINAL_INPUT_MODE_RESET_SEQ = (
     "\x1b[?1004l"  # disable focus events
     "\x1b[?2004l"  # disable bracketed paste
     "\x1b[?1049l"  # leave alt screen (if stuck there)
+    "\x1b[<u"      # pop kitty keyboard mode
+    "\x1b[>4m"     # reset modifyOtherKeys
     "\x1b[0m"      # reset text attributes
     "\x1b[?25h"    # ensure cursor visible
 )

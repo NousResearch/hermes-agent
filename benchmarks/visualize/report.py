@@ -61,6 +61,99 @@ def _retrieval_table_md(metrics: dict) -> str:
     return "\n".join(lines)
 
 
+def _score_view_table_md(score_views: dict) -> str:
+    """Render fair comparison score views from schema v2 results."""
+    if not score_views:
+        return "_No score-view data available._"
+
+    lines = ["| View | Score | Correct/Total | Categories |", "| --- | ---: | ---: | ---: |"]
+
+    def add_row(label: str, view: dict) -> None:
+        cats = view.get("categories", []) or []
+        correct = view.get("correct")
+        total = view.get("total")
+        frac = f"{correct}/{total}" if correct is not None and total is not None else "N/A"
+        lines.append(f"| {label} | {_fmt(view.get('score'))} | {frac} | {len(cats)} |")
+
+    if isinstance(score_views.get("executed"), dict):
+        add_row("Executed", score_views["executed"])
+    if isinstance(score_views.get("core"), dict):
+        add_row("Core", score_views["core"])
+    for track, view in sorted((score_views.get("tracks") or {}).items()):
+        if isinstance(view, dict):
+            add_row(f"Track: {track}", view)
+    return "\n".join(lines)
+
+
+def _skipped_categories_md(skipped: dict | list) -> str:
+    """Render skipped categories, preserving v2 reasons where available."""
+    if not skipped:
+        return "_No skipped categories._"
+    if isinstance(skipped, dict):
+        lines = ["| Category | Reason |", "| --- | --- |"]
+        for category, reason in sorted(skipped.items()):
+            lines.append(f"| {category} | {reason} |")
+        return "\n".join(lines)
+    return "\n".join(f"- {category}" for category in sorted(skipped))
+
+
+def _runtime_table_md(runtime: dict) -> str:
+    """Render reproducibility metadata without credential values."""
+    if not runtime:
+        return "_No runtime metadata available._"
+    lines = ["| Field | Value |", "| --- | --- |"]
+    for key in ["python", "platform", "backend"]:
+        if runtime.get(key):
+            lines.append(f"| {key} | `{runtime[key]}` |")
+    git = runtime.get("git") or {}
+    if git:
+        branch = git.get("branch", "unknown")
+        commit = git.get("commit", "unknown")
+        dirty = git.get("dirty", "unknown")
+        lines.append(f"| git | branch `{branch}`, commit `{commit}`, dirty `{dirty}` |")
+    packages = runtime.get("packages") or {}
+    if packages:
+        package_bits = [f"{name}={version}" for name, version in sorted(packages.items())]
+        lines.append(f"| packages | `{', '.join(package_bits)}` |")
+    credentials = runtime.get("credentials") or {}
+    if credentials:
+        # Avoid NAME=value formatting for credential variables: log scrubbers treat
+        # API_KEY=<anything> as a secret and mask even the safe states (set/missing).
+        # Render presence states with a colon so reports remain useful without ever
+        # exposing credential values.
+        credential_bits = [f"{name}: {state}" for name, state in sorted(credentials.items())]
+        lines.append(f"| credentials | {', '.join(credential_bits)} |")
+    return "\n".join(lines)
+
+
+def _shared_category_view(result_payloads: list[dict]) -> dict:
+    """Compute fair comparison over categories executed by every payload."""
+    if not result_payloads:
+        return {"categories": [], "backends": {}}
+    category_sets = [set(p.get("executed_categories") or p.get("per_category_mean", {}).keys()) for p in result_payloads]
+    shared = sorted(set.intersection(*category_sets)) if category_sets else []
+    backends = {}
+    for payload in result_payloads:
+        correct = total = 0
+        for run in payload.get("runs", []):
+            for category in shared:
+                result = (run.get("categories") or {}).get(category) or {}
+                correct += int(result.get("correct", 0))
+                total += int(result.get("total", 0))
+        if not total:
+            per_cat = payload.get("per_category_mean", {})
+            scores = [float(per_cat[c]) for c in shared if c in per_cat]
+            score = sum(scores) / len(scores) if scores else 0.0
+        else:
+            score = correct / total
+        backends[payload.get("backend", "unknown")] = {
+            "score": score,
+            "correct": correct,
+            "total": total,
+        }
+    return {"categories": shared, "backends": backends}
+
+
 def _category_table_md(per_cat_mean: dict, per_cat_std: dict = None,
                         runs_cats: dict = None) -> str:
     """Render a markdown table of per-category scores, sorted desc."""
@@ -131,6 +224,13 @@ def generate_report(result_json: dict, output_path: str = None) -> str:
     backend   = result_json.get("backend", "unknown")
     profile   = result_json.get("profile", "")
     emb_model = result_json.get("embedding_model", "")
+    schema    = result_json.get("schema_version")
+    suites    = result_json.get("suites")
+    requested = result_json.get("requested_categories", [])
+    executed  = result_json.get("executed_categories", [])
+    skipped   = result_json.get("skipped_categories", {})
+    score_views = result_json.get("score_views", {})
+    runtime   = result_json.get("runtime", {})
     overall   = result_json.get("mean_score", 0.0)
     std       = result_json.get("std", 0.0)
     ci        = result_json.get("ci_95", [overall, overall])
@@ -163,13 +263,21 @@ def generate_report(result_json: dict, output_path: str = None) -> str:
     lines.append("| Parameter | Value |")
     lines.append("| --- | --- |")
     lines.append(f"| Backend | `{backend}` |")
+    if schema:
+        lines.append(f"| Schema Version | `{schema}` |")
+    if suites:
+        suite_text = ", ".join(str(s) for s in suites) if isinstance(suites, list) else str(suites)
+        lines.append(f"| Suites | `{suite_text}` |")
     if profile:
         lines.append(f"| Profile | `{profile}` |")
     if emb_model:
         lines.append(f"| Embedding Model | `{emb_model}` |")
     lines.append(f"| Num Runs | {num_runs} |")
     lines.append(f"| Total Scenarios | {total_scenarios if total_scenarios is not None else 'N/A (partial run details)'} |")
-    lines.append(f"| Categories | {len(per_cat)} |")
+    lines.append(f"| Requested Categories | {len(requested) if requested else 'N/A'} |")
+    lines.append(f"| Executed Categories | {len(executed) if executed else len(per_cat)} |")
+    lines.append(f"| Skipped Categories | {len(skipped) if skipped else 0} |")
+    lines.append(f"| Categories With Scores | {len(per_cat)} |")
     if wall_time is not None:
         lines.append(f"| Wall Time | {wall_time:.3f}s |")
     if token_use:
@@ -189,6 +297,24 @@ def generate_report(result_json: dict, output_path: str = None) -> str:
     std_str = f" ± {_fmt(std)}" if std > 0 else ""
     lines.append(f"**{_fmt(overall)} ({_pct(overall)})**{std_str}{ci_str}")
     lines.append("")
+
+    if score_views:
+        lines.append("## Fair Comparison Views")
+        lines.append("")
+        lines.append(_score_view_table_md(score_views))
+        lines.append("")
+
+    if skipped:
+        lines.append("## Skipped Categories")
+        lines.append("")
+        lines.append(_skipped_categories_md(skipped))
+        lines.append("")
+
+    if runtime:
+        lines.append("## Runtime and Reproducibility Metadata")
+        lines.append("")
+        lines.append(_runtime_table_md(runtime))
+        lines.append("")
 
     # ── Per-category scores ──────────────────────────────────
     lines.append("## Per-Category Scores")
@@ -316,7 +442,48 @@ def generate_comparison_report(before_json: dict, after_json: dict) -> str:
         f"| {_fmt(a_score)} ({_pct(a_score)}) "
         f"| {sign}{_fmt(delta)} ({sign}{delta_pct:.1f}pp){arrow} |"
     )
+
+    b_core = (before_json.get("score_views") or {}).get("core", {})
+    a_core = (after_json.get("score_views") or {}).get("core", {})
+    if b_core or a_core:
+        bcv = b_core.get("score")
+        acv = a_core.get("score")
+        if bcv is not None and acv is not None:
+            d = float(acv) - float(bcv)
+            ds = "+" if d >= 0 else ""
+            lines.append(
+                f"| **Core Score** | {_fmt(bcv)} ({_pct(bcv)}) "
+                f"| {_fmt(acv)} ({_pct(acv)}) "
+                f"| {ds}{_fmt(d)} ({ds}{d * 100:.1f}pp) |"
+            )
+
+    shared = _shared_category_view([before_json, after_json])
+    if shared["categories"]:
+        b_shared = shared["backends"].get(b_backend, {})
+        a_shared = shared["backends"].get(a_backend, {})
+        bsv = b_shared.get("score")
+        asv = a_shared.get("score")
+        d = float(asv) - float(bsv)
+        ds = "+" if d >= 0 else ""
+        lines.append(
+            f"| **Shared-Category Score** ({len(shared['categories'])} cats) "
+            f"| {_fmt(bsv)} ({b_shared.get('correct', 0)}/{b_shared.get('total', 0)}) "
+            f"| {_fmt(asv)} ({a_shared.get('correct', 0)}/{a_shared.get('total', 0)}) "
+            f"| {ds}{_fmt(d)} ({ds}{d * 100:.1f}pp) |"
+        )
     lines.append("")
+
+    if before_json.get("skipped_categories") or after_json.get("skipped_categories"):
+        lines.append("## Capability / Skip Summary")
+        lines.append("")
+        lines.append(f"### {b_backend}")
+        lines.append("")
+        lines.append(_skipped_categories_md(before_json.get("skipped_categories", {})))
+        lines.append("")
+        lines.append(f"### {a_backend}")
+        lines.append("")
+        lines.append(_skipped_categories_md(after_json.get("skipped_categories", {})))
+        lines.append("")
 
     # ── Per-category comparison ──────────────────────────────
     lines.append("## Per-Category Comparison")

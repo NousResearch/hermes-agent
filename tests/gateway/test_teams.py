@@ -10,12 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform, PlatformConfig, HomeChannel
-
-# Ensure the plugin directory is on sys.path for direct import (mirrors IRC pattern)
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_TEAMS_PLUGIN_DIR = _REPO_ROOT / "plugins" / "platforms" / "teams"
-if str(_TEAMS_PLUGIN_DIR) not in sys.path:
-    sys.path.insert(0, str(_TEAMS_PLUGIN_DIR))
+from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 
 # ---------------------------------------------------------------------------
@@ -160,13 +155,18 @@ def _ensure_teams_mock():
 
 _ensure_teams_mock()
 
-# Now safe to import the adapter
-import adapter as _teams_mod
+# Load plugins/platforms/teams/adapter.py under a unique module name
+# (plugin_adapter_teams) so it cannot collide with sibling plugin adapters.
+_teams_mod = load_plugin_adapter("teams")
 
 _teams_mod.TEAMS_SDK_AVAILABLE = True
 _teams_mod.AIOHTTP_AVAILABLE = True
 
-from adapter import TeamsAdapter, check_requirements, check_teams_requirements, validate_config
+TeamsAdapter = _teams_mod.TeamsAdapter
+check_requirements = _teams_mod.check_requirements
+check_teams_requirements = _teams_mod.check_teams_requirements
+validate_config = _teams_mod.validate_config
+register = _teams_mod.register
 
 
 # ---------------------------------------------------------------------------
@@ -276,20 +276,17 @@ class TestTeamsAdapterInit:
 class TestTeamsPluginRegistration:
 
     def test_register_calls_ctx(self):
-        from adapter import register
         ctx = MagicMock()
         register(ctx)
         ctx.register_platform.assert_called_once()
 
     def test_register_name(self):
-        from adapter import register
         ctx = MagicMock()
         register(ctx)
         kwargs = ctx.register_platform.call_args[1]
         assert kwargs["name"] == "teams"
 
     def test_register_auth_env_vars(self):
-        from adapter import register
         ctx = MagicMock()
         register(ctx)
         kwargs = ctx.register_platform.call_args[1]
@@ -297,21 +294,18 @@ class TestTeamsPluginRegistration:
         assert kwargs["allow_all_env"] == "TEAMS_ALLOW_ALL_USERS"
 
     def test_register_max_message_length(self):
-        from adapter import register
         ctx = MagicMock()
         register(ctx)
         kwargs = ctx.register_platform.call_args[1]
         assert kwargs["max_message_length"] == 28000
 
     def test_register_has_setup_fn(self):
-        from adapter import register
         ctx = MagicMock()
         register(ctx)
         kwargs = ctx.register_platform.call_args[1]
         assert callable(kwargs.get("setup_fn"))
 
     def test_register_has_platform_hint(self):
-        from adapter import register
         ctx = MagicMock()
         register(ctx)
         kwargs = ctx.register_platform.call_args[1]

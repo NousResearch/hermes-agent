@@ -1991,9 +1991,13 @@ class AIAgent:
         self._context_engine_tool_names: set = set()
         if hasattr(self, "context_compressor") and self.context_compressor and self.tools is not None:
             for _schema in self.context_compressor.get_tool_schemas():
+                _tname = _schema.get("name", "")
+                if _tname and _tname in self.valid_tool_names:
+                    # Already registered — skip duplicate (can happen on
+                    # session restore or context-engine re-init).
+                    continue
                 _wrapped = {"type": "function", "function": _schema}
                 self.tools.append(_wrapped)
-                _tname = _schema.get("name", "")
                 if _tname:
                     self.valid_tool_names.add(_tname)
                     self._context_engine_tool_names.add(_tname)

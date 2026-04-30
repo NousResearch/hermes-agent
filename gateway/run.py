@@ -38,6 +38,7 @@ from typing import Dict, Optional, Any, List
 # gateway is a long-running daemon, so its boot cost matters less than
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from agent.context_compressor import LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -175,6 +176,136 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
         return None
     return None
 
+
+_COMPACTION_CONTINUATION_MARKERS = (
+    "[your active task list was preserved across context compression]",
+    "continue",
+    "resume",
+    "keep going",
+    "proceed",
+    "carry on",
+)
+
+_COMPACTION_TASK_SECTIONS = {
+    "active task",
+    "in progress",
+    "pending user asks",
+    "remaining work",
+}
+
+_COMPACTION_STOPWORDS = {
+    "about", "above", "across", "active", "after", "again", "also", "and",
+    "are", "before", "being", "below", "between", "can", "context", "current",
+    "from", "have", "into", "latest", "message", "only", "pending", "please",
+    "preserved", "respond", "resume", "section", "summary", "task", "that", "the",
+    "this", "turn", "user", "when", "with", "work", "your",
+}
+
+
+def _compaction_text(content: Any) -> str:
+    """Return a plain-text view of text or multimodal message content."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return str(content)
+
+
+def _is_compaction_summary(content: Any) -> bool:
+    text = _compaction_text(content).lstrip()
+    return text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX)
+
+
+def _compaction_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", text.lower())
+        if token not in _COMPACTION_STOPWORDS
+    }
+
+
+def _extract_compaction_section(text: str, heading: str) -> str:
+    pattern = re.compile(
+        rf"(?ims)^##\s+{re.escape(heading)}\s*$\n(?P<body>.*?)(?=^##\s+|\Z)"
+    )
+    match = pattern.search(text)
+    return match.group("body").strip() if match else ""
+
+
+def _compaction_summary_matches_current_turn(summary: str, current_message: Any) -> bool:
+    """Heuristic semantic guard for compacted active-task handoffs.
+
+    Compacted summaries are useful for same-session continuation, but dangerous
+    when a stale/cross-chat transcript is accidentally loaded.  Keep task-like
+    sections only when the current turn explicitly says the task list was
+    preserved, uses a continuation cue, or overlaps with the summary's active
+    task vocabulary.  Otherwise the summary remains factual background only.
+    """
+    current_text = _compaction_text(current_message).lower()
+    if any(marker in current_text for marker in _COMPACTION_CONTINUATION_MARKERS):
+        return True
+
+    active_task = _extract_compaction_section(summary, "Active Task")
+    if not active_task:
+        return False
+
+    task_tokens = _compaction_tokens(active_task)
+    current_tokens = _compaction_tokens(current_text)
+    if not task_tokens or not current_tokens:
+        return False
+
+    overlap = task_tokens & current_tokens
+    return len(overlap) >= 2 or (len(overlap) / max(len(task_tokens), 1)) >= 0.25
+
+
+def _strip_compaction_task_sections(summary: str) -> str:
+    lines = summary.splitlines()
+    kept: list[str] = []
+    skipping = False
+    for line in lines:
+        heading_match = re.match(r"^##\s+(.+?)\s*$", line)
+        if heading_match:
+            heading = heading_match.group(1).strip().lower()
+            skipping = heading in _COMPACTION_TASK_SECTIONS
+            if skipping:
+                continue
+        if not skipping:
+            kept.append(line)
+    sanitized = "\n".join(kept).strip()
+    sanitized = sanitized.replace(
+        "Your current task is identified in the '## Active Task' section of the summary — resume exactly from there. ",
+        "Use this summary as background only unless it matches the latest user request. ",
+    )
+    sanitized = sanitized.replace(
+        "Your current task is identified in the '## Active Task' section of the summary — resume exactly from there.",
+        "Use this summary as background only unless it matches the latest user request.",
+    )
+    return sanitized
+
+
+def _sanitize_compaction_summary_for_current_turn(content: Any, current_message: Any) -> Any:
+    """Prevent stale compacted task directives from overriding a new turn."""
+    if not _is_compaction_summary(content):
+        return content
+    summary = _compaction_text(content)
+    if _compaction_summary_matches_current_turn(summary, current_message):
+        return content
+    sanitized = _strip_compaction_task_sections(summary)
+    if isinstance(content, str):
+        return sanitized
+    # Preserve multimodal shape only when needed; compaction summaries are
+    # normally plain text, but this keeps the helper safe for future callers.
+    return sanitized
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -428,6 +559,7 @@ from gateway.config import (
 from gateway.session import (
     SessionStore,
     SessionSource,
+    SessionGoalContract,
     SessionContext,
     build_session_context,
     build_session_context_prompt,
@@ -4162,6 +4294,8 @@ class GatewayRunner:
                     return await self._handle_commands_command(event)
                 if _cmd_def_inner.name == "profile":
                     return await self._handle_profile_command(event)
+                if _cmd_def_inner.name == "goal":
+                    return await self._handle_goal_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
 
@@ -4353,6 +4487,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "goal":
+            return await self._handle_goal_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -5993,6 +6130,94 @@ class GatewayRunner:
         ])
 
         return "\n".join(lines)
+
+    def _format_goal_status(self, contract: Optional[SessionGoalContract]) -> str:
+        if not contract:
+            return (
+                "🎯 **Session Goal**\n\n"
+                "No goal contract is set for this session.\n\n"
+                "Use `/goal new <objective>` to pin the active objective so "
+                "compression summaries cannot redefine the task."
+            )
+
+        lines = [
+            "🎯 **Session Goal**",
+            "",
+            f"**Objective:** {contract.current_objective}",
+            f"**Status:** {contract.status}",
+            f"**Scope policy:** {contract.scope_policy}",
+            f"**Locked:** {'yes' if contract.locked else 'no'}",
+            f"**Operator confirmed:** {'yes' if contract.operator_confirmed else 'no'}",
+        ]
+        if contract.allowed_subtasks:
+            lines.extend(["", "**Allowed subtasks:**"])
+            lines.extend(f"- {item}" for item in contract.allowed_subtasks)
+        if contract.non_goals:
+            lines.extend(["", "**Non-goals / out of scope:**"])
+            lines.extend(f"- {item}" for item in contract.non_goals)
+        return "\n".join(lines)
+
+    async def _handle_goal_command(self, event: MessageEvent) -> str:
+        """Handle /goal — manage the persisted session goal contract."""
+        session_entry = self.session_store.get_or_create_session(event.source)
+        args = event.get_command_args().strip()
+        if not args:
+            subcommand = "status"
+            rest = ""
+        else:
+            parts = args.split(maxsplit=1)
+            candidate = parts[0].strip().lower()
+            if candidate in {"status", "new", "lock", "unlock", "clear"}:
+                subcommand = candidate
+                rest = parts[1].strip() if len(parts) > 1 else ""
+            else:
+                # Ergonomic shorthand: /goal <objective> means /goal new <objective>.
+                subcommand = "new"
+                rest = args
+
+        if subcommand == "status":
+            return self._format_goal_status(session_entry.goal_contract)
+
+        if subcommand == "new":
+            objective = rest.strip()
+            if not objective:
+                return "Usage: `/goal new <objective>`"
+            session_entry.goal_contract = SessionGoalContract(
+                current_objective=objective,
+                status="active",
+                scope_policy="soft",
+                operator_confirmed=True,
+                original_prompt=objective,
+            )
+            self.session_store.update_session(session_entry.session_key)
+            return f"🎯 Goal set.\n\n**Objective:** {objective}"
+
+        contract = session_entry.goal_contract
+        if not contract:
+            return "No goal contract is set. Use `/goal new <objective>` first."
+
+        if subcommand == "lock":
+            contract.locked = True
+            contract.scope_policy = "locked"
+            contract.locked_at = datetime.now()
+            contract.touch()
+            self.session_store.update_session(session_entry.session_key)
+            return "🔒 Session goal locked. Hermes will ask before changing scope."
+
+        if subcommand == "unlock":
+            contract.locked = False
+            contract.scope_policy = "soft"
+            contract.locked_at = None
+            contract.touch()
+            self.session_store.update_session(session_entry.session_key)
+            return "🔓 Session goal unlocked. Scope changes are allowed when explicitly requested."
+
+        if subcommand == "clear":
+            session_entry.goal_contract = None
+            self.session_store.update_session(session_entry.session_key)
+            return "🧹 Session goal cleared."
+
+        return "Usage: `/goal [status|new|lock|unlock|clear] [objective]`"
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
@@ -11272,6 +11497,17 @@ class GatewayRunner:
                     # Simple text message - just need role and content
                     content = msg.get("content")
                     if content:
+                        # Compaction summaries are persisted in transcript history
+                        # as regular messages.  Before handing history back to the
+                        # model, remove stale task-directive sections unless the
+                        # current user turn semantically matches the handoff.  This
+                        # keeps useful background context while preventing cross-chat
+                        # stale "Active Task" blocks from outranking the latest user
+                        # request.
+                        content = _sanitize_compaction_summary_for_current_turn(
+                            content,
+                            message,
+                        )
                         # Tag cross-platform mirror messages so the agent knows their origin
                         if msg.get("mirror"):
                             mirror_src = msg.get("mirror_source", "another session")

@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.session import (
+    SessionGoalContract,
     SessionSource,
     SessionStore,
     build_session_context,
@@ -97,6 +98,56 @@ class TestSessionSourceRoundtrip:
         """
         with pytest.raises(ValueError):
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
+
+
+class TestSessionGoalContractRoundtrip:
+    def test_goal_contract_roundtrip_preserves_authority_fields(self):
+        from datetime import datetime
+
+        contract = SessionGoalContract(
+            current_objective="Implement Session Goal Contract",
+            status="active",
+            scope_policy="locked",
+            operator_confirmed=True,
+            locked=True,
+            original_prompt="ok let's do all the next steps",
+            allowed_subtasks=["scan pipeline", "write tests"],
+            non_goals=["merge unrelated PRs"],
+            created_at=datetime(2026, 4, 30, 12, 0, 0),
+            updated_at=datetime(2026, 4, 30, 12, 30, 0),
+            confirmed_at=datetime(2026, 4, 30, 12, 5, 0),
+            locked_at=datetime(2026, 4, 30, 12, 10, 0),
+        )
+
+        restored = SessionGoalContract.from_dict(contract.to_dict())
+
+        assert restored.current_objective == "Implement Session Goal Contract"
+        assert restored.scope_policy == "locked"
+        assert restored.operator_confirmed is True
+        assert restored.locked is True
+        assert restored.allowed_subtasks == ["scan pipeline", "write tests"]
+        assert restored.non_goals == ["merge unrelated PRs"]
+        assert restored.created_at == contract.created_at
+        assert restored.updated_at == contract.updated_at
+        assert restored.confirmed_at == contract.confirmed_at
+        assert restored.locked_at == contract.locked_at
+
+    def test_goal_contract_renders_high_authority_prompt_block(self):
+        contract = SessionGoalContract(
+            current_objective="Finish the active implementation and open PR",
+            locked=True,
+            scope_policy="locked",
+            allowed_subtasks=["implement", "verify-pr"],
+            non_goals=["restart old completed tasks"],
+        )
+
+        block = contract.to_prompt_block()
+
+        assert block.startswith("## Session Goal Contract")
+        assert "highest-priority session authority" in block
+        assert "Finish the active implementation and open PR" in block
+        assert "compaction summaries" in block
+        assert "restart old completed tasks" in block
 
 
 class TestSessionSourceDescription:
@@ -193,6 +244,35 @@ class TestBuildSessionContextPrompt:
 
         assert "Telegram" in prompt
         assert "Home Chat" in prompt
+
+    def test_prompt_includes_goal_contract_before_transport_context(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token"),
+            },
+        )
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="111", chat_type="dm")
+        entry = SessionStore(Path("/tmp/nonexistent"), config).get_or_create_session(source)
+        entry.goal_contract = SessionGoalContract(
+            current_objective="Keep implementing the Session Goal Contract PR",
+            locked=True,
+            allowed_subtasks=["implement", "verify-pr"],
+        )
+
+        ctx = build_session_context(source, config, entry)
+        prompt = build_session_context_prompt(ctx)
+
+        assert prompt.index("## Session Goal Contract") < prompt.index("## Current Session Context")
+        assert "Keep implementing the Session Goal Contract PR" in prompt
+        assert "compaction summaries" in prompt
+
+    def test_prompt_omits_goal_contract_when_absent(self):
+        config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")})
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="111", chat_type="dm")
+
+        prompt = build_session_context_prompt(build_session_context(source, config))
+
+        assert "## Session Goal Contract" not in prompt
 
     def test_bluebubbles_prompt_mentions_short_conversational_i_message_format(self):
         config = GatewayConfig(

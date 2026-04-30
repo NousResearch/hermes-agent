@@ -9404,11 +9404,17 @@ class GatewayRunner:
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
-        """Pull the subset of config values that must bust the agent cache.
+        """Pull values that must bust the cached agent.
 
-        Returns a flat dict keyed by 'section.key'.  Missing keys and
-        non-dict sections yield None values, which still contribute to
-        the signature (so 'absent' vs 'present-and-null' differ).
+        Returns a flat dict keyed by 'section.key'.  Missing config keys and
+        non-dict sections yield None values, which still contribute to the
+        signature (so 'absent' vs 'present-and-null' differ).
+
+        The live tool registry generation is included too.  MCP reloads and
+        dynamic MCP tool-list changes mutate the registry without necessarily
+        changing config.yaml.  Cached AIAgent instances freeze their tool
+        schemas at construction time, so a registry generation change must
+        rebuild the agent before the next turn.
         """
         out: Dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
@@ -9418,6 +9424,12 @@ class GatewayRunner:
                 out[f"{section}.{key}"] = section_val.get(key)
             else:
                 out[f"{section}.{key}"] = None
+        try:
+            from tools.registry import registry
+
+            out["tools.registry_generation"] = getattr(registry, "_generation", None)
+        except Exception:
+            out["tools.registry_generation"] = None
         return out
 
     @staticmethod

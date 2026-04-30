@@ -40,6 +40,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
 | **Google Gemini (OAuth)** | `hermes model` → "Google Gemini (OAuth)" (provider: `google-gemini-cli`, free tier supported, browser PKCE login) |
 | **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
+| **Manifest** | `MANIFEST_API_KEY` in `~/.hermes/.env` (provider: `manifest`, alias: `mnfst`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
 :::tip Model key alias
@@ -314,7 +315,13 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
+```bash
+# Manifest (open-source LLM router, smart routing to cut inference costs)
+hermes chat --provider manifest --model auto
+# Requires: MANIFEST_API_KEY in ~/.hermes/.env
+```
+
+Base URLs can be overridden with `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `TOKENHUB_BASE_URL`, or `MANIFEST_BASE_URL` environment variables.
 
 :::note Z.AI Endpoint Auto-Detection
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
@@ -505,6 +512,30 @@ Get your token at [huggingface.co/settings/tokens](https://huggingface.co/settin
 You can append routing suffixes to model names: `:fastest` (default), `:cheapest`, or `:provider_name` to force a specific backend.
 
 The base URL can be overridden with `HF_BASE_URL`.
+
+### Manifest — Open-Source LLM Router
+
+[Manifest](https://manifest.build) is an open-source LLM router that cuts inference costs through smart routing across 16+ providers. You get full control over which model handles each request. Route by complexity tier, task-specificity (coding, web browsing, etc.) and custom tiers.
+
+```bash
+# Cloud (app.manifest.build)
+hermes chat --provider manifest --model auto
+# Requires: MANIFEST_API_KEY in ~/.hermes/.env
+
+# Self-hosted, override base URL
+MANIFEST_BASE_URL=http://localhost:2099/v1 hermes chat --provider manifest --model auto
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "manifest"
+  default: "auto"
+```
+
+:::tip Self-hosted Manifest
+For self-hosted deployments, set `MANIFEST_BASE_URL=http://localhost:2099/v1`. Manifest exposes the same OpenAI-compatible chat completions API in both cloud and self-hosted modes, so switching is a one-line env-var change. Self-hosted Manifest can also route to local models (Ollama, vLLM, llama.cpp) for fully local inference.
+:::
 
 ## Custom & Self-Hosted LLM Providers
 
@@ -1160,9 +1191,9 @@ You can also select named custom providers from the interactive `hermes model` m
 | **Local models, easy setup** | Ollama |
 | **Production GPU serving** | vLLM or SGLang |
 | **Mac / no GPU** | Ollama or llama.cpp |
-| **Multi-provider routing** | LiteLLM Proxy or OpenRouter |
-| **Cost optimization** | ClawRouter or OpenRouter with `sort: "price"` |
-| **Maximum privacy** | Ollama, vLLM, or llama.cpp (fully local) |
+| **Multi-provider routing** | LiteLLM Proxy, OpenRouter, or Manifest |
+| **Cost optimization** | Manifest, ClawRouter, or OpenRouter with `sort: "price"` |
+| **Maximum privacy** | Ollama, vLLM, llama.cpp, or Manifest (self-hosted), fully local |
 | **Enterprise / Azure** | Azure OpenAI with custom endpoint |
 | **Chinese AI models** | z.ai (GLM), Kimi/Moonshot (`kimi-coding` or `kimi-coding-cn`), MiniMax, Xiaomi MiMo, or Tencent TokenHub (first-class providers) |
 
@@ -1239,7 +1270,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. It fires **at most once** per session.
 
-Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `bedrock`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `alibaba`, `tencent-tokenhub`, `manifest`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).

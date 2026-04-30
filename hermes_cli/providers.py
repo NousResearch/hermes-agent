@@ -189,6 +189,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="OLLAMA_BASE_URL",
     ),
+    "manifest": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        base_url_override="https://app.manifest.build/v1",
+        base_url_env_var="MANIFEST_BASE_URL",
+    ),
     # Azure Foundry: supports both OpenAI-style and Anthropic-style endpoints.
     # The transport is determined at runtime from config.yaml model.api_mode.
     "azure-foundry": HermesOverlay(
@@ -332,6 +338,9 @@ ALIASES: Dict[str, str] = {
     # gmi
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+
+    # manifest
+    "mnfst": "manifest",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",

@@ -1470,6 +1470,8 @@ def test_credential_sources_registry_has_expected_steps():
         "~/.hermes/.anthropic_oauth.json",
         "auth.json providers.nous",
         "auth.json providers.openai-codex + ~/.codex/auth.json",
+        "auth.json providers.minimax-oauth",
+        "~/.qwen/oauth_creds.json",
         "Custom provider config.yaml api_key field",
     }
     missing = required - set(descriptions)

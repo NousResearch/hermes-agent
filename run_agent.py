@@ -6531,6 +6531,9 @@ class AIAgent:
         Falls back to _interruptible_api_call on provider errors indicating
         streaming is not supported.
         """
+        if self._interrupt_requested:
+            raise InterruptedError("Agent interrupted before streaming API call")
+
         if self.api_mode == "codex_responses":
             # Codex streams internally via _run_codex_stream. The main dispatch
             # in _interruptible_api_call already calls it; we just need to
@@ -7189,6 +7192,12 @@ class AIAgent:
                         # to non-streaming on the next attempt via _disable_streaming.
                         result["error"] = e
                         return
+            except InterruptedError as e:
+                # The interrupt may be noticed inside the worker thread before
+                # the polling loop sees it. Surface it through the normal result
+                # channel so callers never miss a fast pre-retry interrupt.
+                result["error"] = e
+                return
             finally:
                 request_client = request_client_holder.get("client")
                 if request_client is not None:

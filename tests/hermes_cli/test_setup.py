@@ -30,6 +30,17 @@ def _clear_provider_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+def _clear_vercel_env(monkeypatch):
+    for key in (
+        "TERMINAL_VERCEL_RUNTIME",
+        "VERCEL_OIDC_TOKEN",
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 def _stub_tts(monkeypatch):
     """Stub out TTS prompts so setup_model_provider doesn't block."""
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda q, c, d=0: (
@@ -485,6 +496,7 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
 def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_vercel_env(monkeypatch)
     monkeypatch.setenv("VERCEL_OIDC_TOKEN", "old-oidc")
     monkeypatch.setitem(sys.modules, "vercel", types.ModuleType("vercel"))
     config = load_config()
@@ -515,13 +527,7 @@ def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
 
 def test_vercel_setup_prefills_project_and_team_from_link_file(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # Sibling test (test_vercel_setup_configures_access_token_auth) calls
-    # save_env_value which mutates os.environ directly and never restores
-    # it. When xdist schedules both tests in the same worker, VERCEL_*
-    # from the earlier run masks the .vercel/project.json defaults that
-    # this test exercises. Clear them before load.
-    for _leaked in ("VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID", "VERCEL_OIDC_TOKEN"):
-        monkeypatch.delenv(_leaked, raising=False)
+    _clear_vercel_env(monkeypatch)
     project_root = tmp_path / "project"
     nested = project_root / "app" / "src"
     nested.mkdir(parents=True)

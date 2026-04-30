@@ -1815,11 +1815,19 @@ class BasePlatformAdapter(ABC):
                 if stop_event is None:
                     await asyncio.sleep(interval)
                     continue
-                try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=interval)
-                except asyncio.TimeoutError:
-                    continue
-                return
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + interval
+                while not stop_event.is_set():
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    # Poll instead of wait_for(stop_event.wait()).  Cancelling
+                    # wait_for while it owns the inner Event.wait task can leave
+                    # shutdown paths stuck awaiting the typing task on Python
+                    # 3.11/pytest-asyncio; sleep cancellation is immediate.
+                    await asyncio.sleep(min(0.25, remaining))
+                if stop_event.is_set():
+                    return
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
         finally:
@@ -2429,6 +2437,16 @@ class BasePlatformAdapter(ABC):
                 **_keep_typing_kwargs,
             )
         )
+
+        async def _stop_typing_task() -> None:
+            typing_task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                # Cancellation cleanup must not block adapter shutdown.  The
+                # typing task is already cancelled; if the parent task is also
+                # cancelling, let this message-processing task unwind now.
+                pass
         
         try:
             await self._run_processing_hook("on_processing_start", event)
@@ -2651,11 +2669,7 @@ class BasePlatformAdapter(ABC):
                 _active = self._active_sessions.get(session_key)
                 if _active is not None:
                     _active.clear()
-                typing_task.cancel()
-                try:
-                    await typing_task
-                except asyncio.CancelledError:
-                    pass
+                await _stop_typing_task()
                 # Process pending message in new background task
                 await self._process_message_background(pending_event, session_key)
                 return  # Already cleaned up
@@ -2703,11 +2717,7 @@ class BasePlatformAdapter(ABC):
                 except Exception:
                     pass
             # Stop typing indicator
-            typing_task.cancel()
-            try:
-                await typing_task
-            except asyncio.CancelledError:
-                pass
+            await _stop_typing_task()
             # Also cancel any platform-level persistent typing tasks (e.g. Discord)
             # that may have been recreated by _keep_typing after the last stop_typing()
             try:

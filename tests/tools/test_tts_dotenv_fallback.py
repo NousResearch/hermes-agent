@@ -174,6 +174,45 @@ class TestRegressionGuard:
     key while ``os.environ`` does not.
     """
 
+    def test_import_after_config_env_patch_uses_restored_dotenv_loader(self, tmp_path, monkeypatch):
+        """Importing TTS while hermes_cli.config.get_env_value is patched must
+        not freeze that temporary helper into this module forever.
+        """
+        import importlib
+        import hermes_cli.config as config_mod
+        from tools import tts_tool
+
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(config_mod, "get_env_value", lambda name: "")
+            tts_tool = importlib.reload(tts_tool)
+
+        try:
+            captured: dict = {}
+
+            def fake_post(url, **kwargs):
+                captured["headers"] = kwargs.get("headers", {})
+                response = MagicMock()
+                response.json.return_value = {
+                    "data": {"audio": b"\x00".hex()},
+                    "base_resp": {"status_code": 0},
+                }
+                response.raise_for_status = MagicMock()
+                return response
+
+            with patch(
+                "hermes_cli.config.load_env",
+                return_value={"MINIMAX_API_KEY": "dotenv-secret"},
+            ), patch("requests.post", side_effect=fake_post):
+                tts_tool._generate_minimax_tts(
+                    "hi", str(tmp_path / "out.mp3"), {}
+                )
+
+            assert captured["headers"]["Authorization"] == "Bearer dotenv-secret"
+        finally:
+            importlib.reload(tts_tool)
+
     def test_minimax_missing_when_only_in_dotenv_before_fix(self, tmp_path, monkeypatch):
         from tools import tts_tool
 

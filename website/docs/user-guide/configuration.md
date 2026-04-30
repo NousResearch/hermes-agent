@@ -1151,6 +1151,8 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 ```yaml
 display:
   tool_progress: all      # off | new | all | verbose
+  tool_progress_transport: edit  # edit | messages
+  tool_progress_results: false  # Gateway: include tool completion output in progress messages
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   platforms: {}           # Per-platform display overrides (see below)
   tool_progress_overrides: {}  # DEPRECATED — use display.platforms instead
@@ -1172,7 +1174,7 @@ display:
 | `off` | Silent — just the final response |
 | `new` | Tool indicator only when the tool changes |
 | `all` | Every tool call with a short preview (default) |
-| `verbose` | Full args, results, and debug logs |
+| `verbose` | Full tool-call args and debug logs; set `tool_progress_results: true` to include tool outputs in gateway progress messages |
 
 In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
 
@@ -1210,6 +1212,18 @@ display:
 ```
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
+
+By default, edit-capable platforms collect tool progress into one message and edit it as new tools run. To send each tool call as its own chat message on a platform such as Telegram, set:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      tool_progress: all
+      tool_progress_transport: messages
+```
+
+When `tool_progress_transport: messages` is paired with `tool_progress: verbose`, Hermes sends reasoning and tool-call inputs as separate messages. Tool completion output is omitted by default; set `tool_progress_results: true` globally or per platform to include it.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 

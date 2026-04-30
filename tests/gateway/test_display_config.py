@@ -163,6 +163,20 @@ class TestYAMLNormalisation:
         config = {"display": {"platforms": {"slack": {"tool_preview_length": "80"}}}}
         assert resolve_display_setting(config, "slack", "tool_preview_length") == 80
 
+    def test_tool_progress_transport_aliases(self):
+        """Per-platform tool progress transport supports message-style aliases."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"telegram": {"tool_progress_transport": "separate"}}}}
+        assert resolve_display_setting(config, "telegram", "tool_progress_transport") == "messages"
+
+    def test_tool_progress_results_is_boolean(self):
+        """Tool progress result output accepts YAML-style booleans."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"telegram": {"tool_progress_results": "true"}}}}
+        assert resolve_display_setting(config, "telegram", "tool_progress_results") is True
+
     def test_platform_override_false_tool_progress(self):
         """Per-platform bare off → normalised."""
         from gateway.display_config import resolve_display_setting

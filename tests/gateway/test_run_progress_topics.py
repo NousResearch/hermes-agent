@@ -254,6 +254,98 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
 
 
 @pytest.mark.asyncio
+async def test_run_agent_progress_can_send_each_tool_as_telegram_message(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-progress-messages",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "tool_progress": "all",
+                        "tool_progress_transport": "messages",
+                    }
+                }
+            }
+        },
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    assert [call["content"] for call in adapter.sent] == [
+        '💻 terminal: "pwd"',
+        '🌐 browser_navigate: "https://example.com"',
+    ]
+    assert adapter.edits == []
+    assert all(call["metadata"] is None for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_verbose_message_transport_sends_reasoning_and_args_without_output(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VerboseMessagesOutputAgent,
+        session_id="sess-progress-input-messages",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "tool_progress": "verbose",
+                        "tool_progress_transport": "messages",
+                    }
+                }
+            }
+        },
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    contents = [call["content"] for call in adapter.sent]
+    assert contents[0] == "💭 Thinking\n```\nInspect the page, then run curl.\n```"
+    assert "terminal(['command'])" in contents[1]
+    assert "printf" in contents[1]
+    assert "ok\\\\n" in contents[1]
+    assert len(contents) == 2
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_verbose_message_transport_can_include_tool_output(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VerboseMessagesOutputAgent,
+        session_id="sess-progress-output-messages",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "tool_progress": "verbose",
+                        "tool_progress_transport": "messages",
+                        "tool_progress_results": True,
+                    }
+                }
+            }
+        },
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    contents = [call["content"] for call in adapter.sent]
+    assert contents[2].endswith("terminal completed in 1.2s\n```text\nok\n```")
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
 async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
     """Slack DM progress should keep event ts fallback threading."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
@@ -504,6 +596,32 @@ class VerboseAgent:
             {"code": self.LONG_CODE},
         )
         time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class VerboseMessagesOutputAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        cb("reasoning.available", "_thinking", "Inspect the page, then run curl.", None)
+        cb("tool.started", "terminal", None, {"command": "printf 'ok\\n'"})
+        cb(
+            "tool.completed",
+            "terminal",
+            None,
+            None,
+            duration=1.234,
+            is_error=False,
+            function_result="ok\n",
+        )
+        time.sleep(1.2)
         return {
             "final_response": "done",
             "messages": [],

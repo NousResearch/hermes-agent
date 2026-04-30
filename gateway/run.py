@@ -10679,6 +10679,22 @@ class GatewayRunner:
             if _env_tp and not _tool_progress_configured
             else (_resolved_tp or _env_tp or "all")
         )
+        progress_transport = resolve_display_setting(
+            user_config,
+            platform_key,
+            "tool_progress_transport",
+            "edit",
+        )
+        progress_transport = str(progress_transport or "edit").lower()
+        progress_as_messages = progress_transport in {"messages", "message", "send", "separate"}
+        progress_show_results = bool(
+            resolve_display_setting(
+                user_config,
+                platform_key,
+                "tool_progress_results",
+                False,
+            )
+        )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
@@ -10709,16 +10725,27 @@ class GatewayRunner:
             if not progress_queue or not _run_still_current():
                 return
 
+            # Reasoning events are only useful when progress is rendered as
+            # discrete messages; edited progress bubbles would bury them.
+            if event_type == "reasoning.available":
+                if progress_as_messages and progress_mode == "verbose" and preview:
+                    progress_queue.put(f"💭 Thinking\n```\n{str(preview).strip()}\n```")
+                return
+
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
             # (progress_mode == "all"), append a one-time hint suggesting
             # /verbose.  We only fire when (a) the user hasn't seen the hint
             # before and (b) /verbose is actually usable on this platform
             # (gateway gate must be open).  The CLI has its own trigger.
-            if event_type == "tool.completed" and not long_tool_hint_fired[0]:
+            if event_type == "tool.completed":
                 try:
-                    duration = kwargs.get("duration") or 0
-                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
+                    duration = float(kwargs.get("duration") or 0)
+                    if (
+                        not long_tool_hint_fired[0]
+                        and duration >= _LONG_TOOL_THRESHOLD_S
+                        and progress_mode == "all"
+                    ):
                         from agent.onboarding import (
                             TOOL_PROGRESS_FLAG,
                             is_seen,
@@ -10733,6 +10760,26 @@ class GatewayRunner:
                             mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
                 except Exception as _hint_err:
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+
+                if progress_as_messages and progress_mode == "verbose" and progress_show_results:
+                    from agent.display import get_tool_emoji, get_tool_preview_max_len
+                    emoji = get_tool_emoji(tool_name, default="⚙️")
+                    duration = float(kwargs.get("duration") or 0)
+                    is_error = bool(kwargs.get("is_error", False))
+                    result = kwargs.get("function_result", kwargs.get("result"))
+                    status = "errored" if is_error else "completed"
+                    if result is None:
+                        progress_queue.put(f"{emoji} {tool_name} {status} in {duration:.1f}s")
+                    else:
+                        result = str(result)
+                        _pl = get_tool_preview_max_len()
+                        if _pl > 0 and len(result) > _pl:
+                            result = result[:_pl - 3] + "..."
+                        result = result.replace("```", "` ` `").rstrip()
+                        progress_queue.put(
+                            f"{emoji} {tool_name} {status} in {duration:.1f}s\n"
+                            f"```text\n{result}\n```"
+                        )
                 return
 
 
@@ -10800,7 +10847,7 @@ class GatewayRunner:
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
             # code (same boilerplate imports → identical previews).
-            if msg == last_progress_msg[0]:
+            if not progress_as_messages and msg == last_progress_msg[0]:
                 repeat_count[0] += 1
                 # Update the last line in progress_lines with a counter
                 # via a special "dedup" queue message.
@@ -10832,6 +10879,46 @@ class GatewayRunner:
             adapter = self.adapters.get(source.platform)
             if not adapter:
                 return
+
+            async def _send_progress_item(raw):
+                if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                    _, base_msg, count = raw
+                    msg = f"{base_msg} (×{count + 1})"
+                else:
+                    msg = raw
+                await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+
+            if progress_as_messages:
+                while True:
+                    try:
+                        if not _run_still_current():
+                            while not progress_queue.empty():
+                                try:
+                                    progress_queue.get_nowait()
+                                except Exception:
+                                    break
+                            return
+
+                        raw = progress_queue.get_nowait()
+                        await _send_progress_item(raw)
+
+                        await asyncio.sleep(0.1)
+                        if _run_still_current():
+                            await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
+
+                    except queue.Empty:
+                        await asyncio.sleep(0.3)
+                    except asyncio.CancelledError:
+                        while not progress_queue.empty():
+                            try:
+                                raw = progress_queue.get_nowait()
+                                await _send_progress_item(raw)
+                            except Exception:
+                                break
+                        return
+                    except Exception as e:
+                        logger.error("Progress message error: %s", e)
+                        await asyncio.sleep(1)
 
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update

@@ -50,6 +50,14 @@ class TestParseNpmPackage:
     def test_latest_ignored(self):
         assert _parse_npm_package("react@latest") == ("react", None)
 
+    def test_scoped_latest_ignored(self):
+        assert _parse_npm_package("@scope/pkg@latest") == ("@scope/pkg", None)
+
+    def test_scoped_mcp_latest_ignored(self):
+        assert _parse_npm_package(
+            "@modelcontextprotocol/server-filesystem@latest"
+        ) == ("@modelcontextprotocol/server-filesystem", None)
+
 
 class TestParsePypiPackage:
     def test_simple(self):

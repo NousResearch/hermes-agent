@@ -182,8 +182,8 @@ def rewrite_command(command: str, auto_download: bool = True) -> Optional[str]:
             text=True,
             timeout=2,
         )
-        if result.returncode != 0:
-            return None
+        # RTK returns exit code 3 on successful rewrite, 1 when no rewrite
+        # is available. We trust non-empty stdout as the source of truth.
         rewritten = result.stdout.strip()
         return rewritten if rewritten and rewritten != command else None
     except Exception:

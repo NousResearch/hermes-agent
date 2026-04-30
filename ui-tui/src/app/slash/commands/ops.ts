@@ -2,6 +2,7 @@ import type {
   BrowserManageResponse,
   DelegationPauseResponse,
   ProcessStopResponse,
+  ReloadEnvResponse,
   ReloadMcpResponse,
   RollbackDiffResponse,
   RollbackListResponse,
@@ -75,14 +76,57 @@ export const opsCommands: SlashCommand[] = [
 
   {
     aliases: ['reload_mcp'],
-    help: 'reload MCP servers in the live session',
+    help: 'reload MCP servers in the live session (warns about prompt cache invalidation)',
     name: 'reload-mcp',
-    run: (_arg, ctx) => {
+    run: (arg, ctx) => {
+      // Parse arg: `now` / `always` skip the confirmation gate.
+      // `always` additionally persists approvals.mcp_reload_confirm=false.
+      const a = (arg || '').trim().toLowerCase()
+      const params: { session_id: string | null; confirm?: boolean; always?: boolean } = {
+        session_id: ctx.sid
+      }
+      if (a === 'now' || a === 'approve' || a === 'once' || a === 'yes') {
+        params.confirm = true
+      } else if (a === 'always') {
+        params.confirm = true
+        params.always = true
+      }
+
       ctx.gateway
-        .rpc<ReloadMcpResponse>('reload.mcp', { session_id: ctx.sid })
+        .rpc<ReloadMcpResponse>('reload.mcp', params)
         .then(
           ctx.guarded<ReloadMcpResponse>(r => {
-            ctx.transcript.sys(r.status === 'reloaded' ? 'MCP servers reloaded' : 'reload complete')
+            if (r.status === 'confirm_required') {
+              ctx.transcript.sys(r.message || '/reload-mcp requires confirmation')
+              return
+            }
+            if (r.status === 'reloaded') {
+              ctx.transcript.sys(
+                params.always
+                  ? 'MCP servers reloaded · future /reload-mcp will run without confirmation'
+                  : 'MCP servers reloaded'
+              )
+              return
+            }
+            ctx.transcript.sys('reload complete')
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 're-read ~/.hermes/.env into the running gateway (CLI parity)',
+    name: 'reload',
+    run: (_arg, ctx) => {
+      ctx.gateway
+        .rpc<ReloadEnvResponse>('reload.env', {})
+        .then(
+          ctx.guarded<ReloadEnvResponse>(r => {
+            const n = Number(r.updated ?? 0)
+            const noun = n === 1 ? 'var' : 'vars'
+
+            ctx.transcript.sys(`reloaded .env (${n} ${noun} updated)`)
           })
         )
         .catch(ctx.guardedErr)
@@ -93,9 +137,8 @@ export const opsCommands: SlashCommand[] = [
     help: 'manage browser CDP connection [connect|disconnect|status]',
     name: 'browser',
     run: (arg, ctx) => {
-      const trimmed = arg.trim()
-      const [rawAction, ...rest] = trimmed ? trimmed.split(/\s+/) : ['status']
-      const action = (rawAction || 'status').toLowerCase()
+      const [rawAction = 'status', ...rest] = arg.trim().split(/\s+/).filter(Boolean)
+      const action = rawAction.toLowerCase()
 
       if (!['connect', 'disconnect', 'status'].includes(action)) {
         return ctx.transcript.sys(
@@ -103,17 +146,23 @@ export const opsCommands: SlashCommand[] = [
         )
       }
 
-      const payload: Record<string, unknown> = { action }
-      const requested = rest.join(' ').trim()
+      const sid = ctx.sid ?? null
+      const url = action === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
 
-      if (action === 'connect') {
-        payload.url = requested || 'http://localhost:9222'
+      if (url) {
+        ctx.transcript.sys(`checking Chrome remote debugging at ${url}...`)
       }
 
       ctx.gateway
-        .rpc<BrowserManageResponse>('browser.manage', payload)
+        .rpc<BrowserManageResponse>('browser.manage', { action, session_id: sid, ...(url && { url }) })
         .then(
           ctx.guarded<BrowserManageResponse>(r => {
+            // Without a session we can't subscribe to streamed
+            // browser.progress events, so flush the bundled list.
+            if (!sid) {
+              r.messages?.forEach(message => ctx.transcript.sys(message))
+            }
+
             if (action === 'status') {
               return ctx.transcript.sys(
                 r.connected
@@ -122,18 +171,15 @@ export const opsCommands: SlashCommand[] = [
               )
             }
 
-            if (action === 'connect') {
-              if (r.connected) {
-                ctx.transcript.sys(`browser connected: ${r.url || '(url unavailable)'}`)
-                ctx.transcript.sys('next browser tool call will use this CDP endpoint')
-
-                return
-              }
-
-              return ctx.transcript.sys('browser connect failed')
+            if (action === 'disconnect') {
+              return ctx.transcript.sys('browser disconnected')
             }
 
-            ctx.transcript.sys('browser disconnected')
+            if (r.connected) {
+              ctx.transcript.sys('Browser connected to live Chrome via CDP')
+              ctx.transcript.sys(`Endpoint: ${r.url || '(url unavailable)'}`)
+              ctx.transcript.sys('next browser tool call will use this CDP endpoint')
+            }
           })
         )
         .catch(ctx.guardedErr)

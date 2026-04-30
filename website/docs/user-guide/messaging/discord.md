@@ -292,7 +292,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_ALLOW_MENTION_REPLIED_USER` | No | `true` | When `true` (default), replying to a message pings the original author. |
 | `DISCORD_PROXY` | No | — | Proxy URL for Discord connections (HTTP, WebSocket, REST). Overrides `HTTPS_PROXY`/`ALL_PROXY`. Supports `http://`, `https://`, and `socks5://` schemes. |
 | `HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS` | No | `0.6` | Grace window the adapter waits before flushing a queued text chunk. Useful for smoothing streamed output. |
-| `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `0.1` | Delay between split chunks when a single message exceeds Discord's length limit. |
+| `HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS` | No | `2.0` | Delay between split chunks when a single message exceeds Discord's length limit. |
 
 ### Config File (`config.yaml`)
 
@@ -481,6 +481,34 @@ Hermes automatically registers installed skills as **native Discord Application 
 - Skills are registered during bot startup alongside built-in commands like `/model`, `/reset`, and `/background`
 
 No extra configuration is needed — any skill installed via `hermes skills install` is automatically registered as a Discord slash command on the next gateway restart.
+
+### Disabling Slash Command Registration
+
+If you run multiple Hermes gateways against the same Discord application (e.g. staging + production), only one of them should own the global slash-command registration — otherwise the last startup wins and the registrations flap. Turn slash registration off on the "follower" gateway:
+
+```yaml
+gateway:
+  platforms:
+    discord:
+      extra:
+        slash_commands: false   # default: true
+```
+
+Leaving this at `true` on the "primary" gateway keeps the normal behavior — global `/`-menu commands for built-ins and installed skills.
+
+## Sending Media (`send_message` + `MEDIA:` tags)
+
+The Discord adapter supports native file uploads for every common media type via the `send_message` tool and inline `MEDIA:/path/to/file` tags emitted by the agent:
+
+| Type | How it's delivered |
+|---|---|
+| Images (PNG/JPG/WebP) | Native Discord image attachment with inline preview |
+| Animated GIFs | `send_animation` uploads as `animation.gif` so Discord plays it inline (not as a static thumbnail) |
+| Video (MP4/MOV) | `send_video` — native video player |
+| Audio / Voice | `send_voice` — native voice message when possible, file attachment otherwise |
+| Documents (PDF/ZIP/docx/etc.) | `send_document` — native attachment with download button |
+
+Discord's per-upload size limit depends on the server's boost tier (25 MB free, up to 500 MB). If Hermes gets an HTTP 413, the adapter falls back to a link pointing at the local cache path rather than failing silently.
 
 ## Home Channel
 

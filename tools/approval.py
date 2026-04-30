@@ -17,6 +17,7 @@ import threading
 import time
 import unicodedata
 from typing import Optional
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -711,7 +712,7 @@ def _get_cron_approval_mode() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        mode = str(config.get("approvals", {}).get("cron_mode", "deny")).lower().strip()
+        mode = str(cfg_get(config, "approvals", "cron_mode", default="deny")).lower().strip()
         if mode in ("approve", "off", "allow", "yes"):
             return "approve"
         return "deny"
@@ -781,7 +782,7 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         return {"approved": True, "message": None}
 
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
@@ -906,7 +907,7 @@ def check_all_command_guards(command: str, env_type: str,
     other was shown to the user.
     """
     # Skip containers for both checks
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands

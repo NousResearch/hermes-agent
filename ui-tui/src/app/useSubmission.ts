@@ -126,6 +126,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return sys('session not ready yet')
       }
 
+      // Plain prompts are the common path and should not pay an extra RPC
+      // before prompt.submit. File-drop detection still runs for absolute,
+      // tilde, file://, and explicit relative paths.
+      if (!looksLikeSlashCommand(text) && !/(?:^|\s)(?:file:\/\/|~\/|\.?\.\/|\/)[^\s]+/.test(text)) {
+        return startSubmit(text, expand(text), showUserMessage)
+      }
+
       gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
         .then(r => {
           if (!r?.matched) {
@@ -227,6 +234,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (full: string, opts: { fallbackToFront?: boolean } = {}) => {
       const live = getUiState()
       const mode = live.busyInputMode
+
       const fallback = (note: string) => {
         if (opts.fallbackToFront) {
           composerRefs.queueRef.current.unshift(full)
@@ -234,6 +242,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         } else {
           composerActions.enqueue(full)
         }
+
         sys(note)
       }
 
@@ -350,17 +359,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       send(full)
     },
-    [
-      appendMessage,
-      composerActions,
-      composerRefs,
-      handleBusyInput,
-      interpolate,
-      send,
-      sendQueued,
-      shellExec,
-      slashRef
-    ]
+    [appendMessage, composerActions, composerRefs, handleBusyInput, interpolate, send, sendQueued, shellExec, slashRef]
   )
 
   const submit = useCallback(

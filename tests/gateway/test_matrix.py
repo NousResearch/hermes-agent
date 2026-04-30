@@ -1276,9 +1276,10 @@ class TestMatrixUploadAndSend:
         mock_client.send_message_event = AsyncMock(return_value="$event")
         adapter._client = mock_client
 
-        result = await adapter._upload_and_send(
-            "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
-        )
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            result = await adapter._upload_and_send(
+                "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
+            )
 
         assert result.success is True
         # Should have uploaded ciphertext, not plaintext

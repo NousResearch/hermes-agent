@@ -862,6 +862,26 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert DEFAULT_AGENT_IDENTITY in prompt
 
+    def test_can_use_soul_identity_even_when_context_files_are_skipped(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("terminal")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("run_agent.load_soul_md", return_value="SOUL IDENTITY"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                load_soul_identity=True,
+                skip_memory=True,
+            )
+            prompt = agent._build_system_prompt()
+
+        assert "SOUL IDENTITY" in prompt
+        assert DEFAULT_AGENT_IDENTITY not in prompt
+
     def test_includes_system_message(self, agent):
         prompt = agent._build_system_prompt(system_message="Custom instruction")
         assert "Custom instruction" in prompt

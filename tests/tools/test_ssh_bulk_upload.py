@@ -166,10 +166,12 @@ class TestSSHBulkUpload:
         assert "-" in tar_cmd  # stdout
         assert "-C" in tar_cmd
 
-        # ssh: extract from stdin at /
+        # ssh: extract from stdin at /, preserving existing dir modes (#17767)
         ssh_str = " ".join(ssh_cmd)
         assert "ssh" in ssh_str
-        assert "tar xf - -C /" in ssh_str
+        assert "tar xf -" in ssh_str
+        assert "--no-overwrite-dir" in ssh_str
+        assert "-C /" in ssh_str
         assert "testuser@example.com" in ssh_str
 
     def test_mkdir_failure_raises(self, mock_env, tmp_path):

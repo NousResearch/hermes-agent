@@ -47,7 +47,12 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 #   (a) the single in-module `OpenAI(**client_kwargs)` call site at
 #       _create_openai_client, and
 #   (b) `patch("run_agent.OpenAI", ...)` test patterns used by ~28 test files.
-import fire
+#
+# NOTE: `fire` is ONLY used in the `__main__` block below (for running
+# run_agent.py directly as a CLI) — it is NOT needed for library usage.
+# It is imported there, not here, so that importing run_agent from a
+# daemon thread (e.g. curator's forked review agent) never fails with
+# ModuleNotFoundError on broken/partial installs where `fire` isn't present.
 from datetime import datetime
 from pathlib import Path
 
@@ -160,6 +165,7 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
+from hermes_cli.config import cfg_get
 
 
 
@@ -321,6 +327,12 @@ _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
+
+# Guard so the OpenRouter metadata pre-warm thread is only spawned once per
+# process, not once per AIAgent instantiation.  Without this, long-running
+# gateway processes leak one OS thread per incoming message and eventually
+# exhaust the system thread limit (RuntimeError: can't start new thread).
+_openrouter_prewarm_done = threading.Event()
 
 # Patterns that indicate a terminal command may modify/delete files.
 _DESTRUCTIVE_PATTERNS = re.compile(
@@ -925,6 +937,7 @@ class AIAgent:
         thread_id: str = None,
         gateway_session_key: str = None,
         skip_context_files: bool = False,
+        load_soul_identity: bool = False,
         skip_memory: bool = False,
         session_db=None,
         parent_session_id: str = None,
@@ -976,6 +989,9 @@ class AIAgent:
             skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
                 into the system prompt. Use this for batch processing and data generation to avoid
                 polluting trajectories with user-specific persona or project instructions.
+            load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
+                identity even when skip_context_files=True. Project context files from the cwd
+                remain skipped.
         """
         _install_safe_stdio()
 
@@ -1004,6 +1020,7 @@ class AIAgent:
         self._print_fn = None
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
+        self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
@@ -1101,10 +1118,17 @@ class AIAgent:
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
         # HTTP request on the first API response when pricing is estimated.
-        if self.provider == "openrouter" or self._is_openrouter_url():
+        # Use a process-level Event so this thread is only spawned once — a new
+        # AIAgent is created for every gateway request, so without the guard
+        # each message leaks one OS thread and the process eventually exhausts
+        # the system thread limit (RuntimeError: can't start new thread).
+        if (self.provider == "openrouter" or self._is_openrouter_url()) and \
+                not _openrouter_prewarm_done.is_set():
+            _openrouter_prewarm_done.set()
             threading.Thread(
-                target=lambda: fetch_model_metadata(),
+                target=fetch_model_metadata,
                 daemon=True,
+                name="openrouter-prewarm",
             ).start()
 
         self.tool_progress_callback = tool_progress_callback
@@ -1788,7 +1812,7 @@ class AIAgent:
         # compression model. Custom endpoints often cannot report this via
         # /models, so the startup feasibility check needs the config hint.
         try:
-            _aux_cfg = _agent_cfg.get("auxiliary", {}).get("compression", {})
+            _aux_cfg = cfg_get(_agent_cfg, "auxiliary", "compression", default={})
         except Exception:
             _aux_cfg = {}
         if isinstance(_aux_cfg, dict):
@@ -1892,6 +1916,7 @@ class AIAgent:
         self._ensure_lmstudio_runtime_loaded(_config_context_length)
 
 
+
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting
         # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
@@ -1981,16 +2006,31 @@ class AIAgent:
                 f"model.context_length in config.yaml to override."
             )
 
-        # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand)
+        # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).
+        # Skip names that are already present — the get_tool_definitions()
+        # quiet_mode cache returned a shared list pre-#17335, so a stray
+        # mutation here would poison subsequent agent inits in the same
+        # Gateway process and trip provider-side 'duplicate tool name'
+        # errors. Even with the cache fix, dedup is the right defense
+        # against plugin paths that may register the same schemas via
+        # ctx.register_tool(). Mirrors the memory tools dedup above.
         self._context_engine_tool_names: set = set()
         if hasattr(self, "context_compressor") and self.context_compressor and self.tools is not None:
+            _existing_tool_names = {
+                t.get("function", {}).get("name")
+                for t in self.tools
+                if isinstance(t, dict)
+            }
             for _schema in self.context_compressor.get_tool_schemas():
+                _tname = _schema.get("name", "")
+                if _tname and _tname in _existing_tool_names:
+                    continue  # already registered via plugin/cache path
                 _wrapped = {"type": "function", "function": _schema}
                 self.tools.append(_wrapped)
-                _tname = _schema.get("name", "")
                 if _tname:
                     self.valid_tool_names.add(_tname)
                     self._context_engine_tool_names.add(_tname)
+                    _existing_tool_names.add(_tname)
 
         # Notify context engine of session start
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -2029,6 +2069,8 @@ class AIAgent:
         # When running against an Ollama server, detect the model's max context
         # and pass num_ctx on every chat request so the full window is used.
         # User override: set model.ollama_num_ctx in config.yaml to cap VRAM use.
+        # If model.context_length is set, it caps num_ctx so the user's VRAM
+        # budget is respected even when GGUF metadata advertises a larger window.
         self._ollama_num_ctx: int | None = None
         _ollama_num_ctx_override = None
         if isinstance(_model_cfg, dict):
@@ -2045,6 +2087,21 @@ class AIAgent:
                     self._ollama_num_ctx = _detected
             except Exception as exc:
                 logger.debug("Ollama num_ctx detection failed: %s", exc)
+        # Cap auto-detected ollama_num_ctx to the user's explicit context_length.
+        # Without this, GGUF metadata can advertise 256K+ which Ollama honours
+        # by allocating that much VRAM — blowing up small GPUs even though the
+        # user explicitly set a smaller context_length in config.yaml.
+        if (
+            self._ollama_num_ctx
+            and _config_context_length
+            and _ollama_num_ctx_override is None  # don't override explicit ollama_num_ctx
+            and self._ollama_num_ctx > _config_context_length
+        ):
+            logger.info(
+                "Ollama num_ctx capped: %d -> %d (model.context_length override)",
+                self._ollama_num_ctx, _config_context_length,
+            )
+            self._ollama_num_ctx = _config_context_length
         if self._ollama_num_ctx and not self.quiet_mode:
             logger.info(
                 "Ollama num_ctx: will request %d tokens (model max from /api/show)",
@@ -2132,7 +2189,7 @@ class AIAgent:
         # Context engine reset (works for both built-in compressor and plugins)
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
-    
+
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
         Preload the LM Studio model with at least Hermes' minimum context.
@@ -2813,6 +2870,24 @@ class AIAgent:
             # Third-party Anthropic-compatible gateway.
             return True, True
 
+        # MiniMax on its Anthropic-compatible endpoint serves its own
+        # model family (MiniMax-M2.7, M2.5, M2.1, M2) with documented
+        # cache_control support (0.1× read pricing, 5-minute TTL).  The
+        # blanket is_claude gate above excludes these — opt them in
+        # explicitly via provider id or host match so users on
+        # provider=minimax / minimax-cn (or custom endpoints pointing at
+        # api.minimax.io/anthropic / api.minimaxi.com/anthropic) get the
+        # same cost reduction as Claude traffic.
+        # Docs: https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache
+        if is_anthropic_wire:
+            is_minimax_provider = provider_lower in {"minimax", "minimax-cn"}
+            is_minimax_host = (
+                base_url_host_matches(eff_base_url, "api.minimax.io")
+                or base_url_host_matches(eff_base_url, "api.minimaxi.com")
+            )
+            if is_minimax_provider or is_minimax_host:
+                return True, True
+
         # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
         # transport that accepts Anthropic-style cache_control markers and
         # rewards them with real cache hits.  Without this branch
@@ -2898,7 +2973,7 @@ class AIAgent:
 
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())
-    
+
     def _strip_think_blocks(self, content: str) -> str:
         """Remove reasoning/thinking blocks from content, returning only visible text.
 
@@ -3116,8 +3191,8 @@ class AIAgent:
             marker in assistant_text for marker in workspace_markers
         )
         return (user_targets_workspace or assistant_targets_workspace) and assistant_mentions_action
-    
-    
+
+
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """
         Extract reasoning/thinking content from an assistant message.
@@ -3230,49 +3305,135 @@ class AIAgent:
     )
 
     _SKILL_REVIEW_PROMPT = (
-        "Review the conversation above and consider whether a skill should be saved or updated.\n\n"
-        "Work in this order — do not skip steps:\n\n"
-        "1. SURVEY the existing skill landscape first. Call skills_list to see what you "
-        "have. If anything looks potentially relevant, skill_view it before deciding. "
-        "You are looking for the CLASS of task that just happened, not the exact task. "
-        "Example: a successful Tauri build is in the class \"desktop app build "
-        "troubleshooting\", not \"fix my specific Tauri error today\".\n\n"
-        "2. THINK CLASS-FIRST. What general pattern of task did the user just complete? "
-        "What conditions will trigger this pattern again? Describe the class in one "
-        "sentence before looking at what to save.\n\n"
-        "3. PREFER GENERALIZING AN EXISTING SKILL over creating a new one. If a skill "
-        "already covers the class — even partially — update it (skill_manage patch) "
-        "with the new insight. Broaden its \"when to use\" trigger if needed.\n\n"
-        "4. ONLY CREATE A NEW SKILL when no existing skill reasonably covers the class. "
-        "When you create one, name and scope it at the class level "
-        "(\"react-i18n-setup\", not \"add-i18n-to-my-dashboard-app\"). The trigger "
-        "section must describe the class of situations, not this one session.\n\n"
-        "5. If you notice two existing skills that overlap, note it in your response "
-        "so a future review can consolidate them. Do not consolidate now unless the "
-        "overlap is obvious and low-risk.\n\n"
-        "Only act when something is genuinely worth saving. "
-        "If nothing stands out, just say 'Nothing to save.' and stop."
+        "Review the conversation above and update the skill library. Be "
+        "ACTIVE — most sessions produce at least one skill update, even if "
+        "small. A pass that does nothing is a missed learning opportunity, "
+        "not a neutral outcome.\n\n"
+        "Target shape of the library: CLASS-LEVEL skills, each with a rich "
+        "SKILL.md and a `references/` directory for session-specific detail. "
+        "Not a long flat list of narrow one-session-one-skill entries. This "
+        "shapes HOW you update, not WHETHER you update.\n\n"
+        "Signals to look for (any one of these warrants action):\n"
+        "  • User corrected your style, tone, format, legibility, or "
+        "verbosity. Frustration signals like 'stop doing X', 'this is too "
+        "verbose', 'don't format like this', 'why are you explaining', "
+        "'just give me the answer', 'you always do Y and I hate it', or an "
+        "explicit 'remember this' are FIRST-CLASS skill signals, not just "
+        "memory signals. Update the relevant skill(s) to embed the "
+        "preference so the next session starts already knowing.\n"
+        "  • User corrected your workflow, approach, or sequence of steps. "
+        "Encode the correction as a pitfall or explicit step in the skill "
+        "that governs that class of task.\n"
+        "  • Non-trivial technique, fix, workaround, debugging path, or "
+        "tool-usage pattern emerged that a future session would benefit "
+        "from. Capture it.\n"
+        "  • A skill that got loaded or consulted this session turned out "
+        "to be wrong, missing a step, or outdated. Patch it NOW.\n\n"
+        "Preference order — prefer the earliest action that fits, but do "
+        "pick one when a signal above fired:\n"
+        "  1. UPDATE A CURRENTLY-LOADED SKILL. Look back through the "
+        "conversation for skills the user loaded via /skill-name or you "
+        "read via skill_view. If any of them covers the territory of the "
+        "new learning, PATCH that one first. It is the skill that was in "
+        "play, so it's the right one to extend.\n"
+        "  2. UPDATE AN EXISTING UMBRELLA (via skills_list + skill_view). "
+        "If no loaded skill fits but an existing class-level skill does, "
+        "patch it. Add a subsection, a pitfall, or broaden a trigger.\n"
+        "  3. ADD A SUPPORT FILE under an existing umbrella. Skills can be "
+        "packaged with three kinds of support files — use the right "
+        "directory per kind:\n"
+        "     • `references/<topic>.md` — session-specific detail (error "
+        "transcripts, reproduction recipes, provider quirks) AND "
+        "condensed knowledge banks: quoted research, API docs, external "
+        "authoritative excerpts, or domain notes you found while working "
+        "on the problem. Write it concise and for the value of the task, "
+        "not as a full mirror of upstream docs.\n"
+        "     • `templates/<name>.<ext>` — starter files meant to be "
+        "copied and modified (boilerplate configs, scaffolding, a "
+        "known-good example the agent can `reproduce with modifications`).\n"
+        "     • `scripts/<name>.<ext>` — statically re-runnable actions "
+        "the skill can invoke directly (verification scripts, fixture "
+        "generators, deterministic probes, anything the agent should run "
+        "rather than hand-type each time).\n"
+        "     Add support files via skill_manage action=write_file with "
+        "file_path starting 'references/', 'templates/', or 'scripts/'. "
+        "The umbrella's SKILL.md should gain a one-line pointer to any "
+        "new support file so future agents know it exists.\n"
+        "  4. CREATE A NEW CLASS-LEVEL UMBRELLA SKILL when no existing "
+        "skill covers the class. The name MUST be at the class level. "
+        "The name MUST NOT be a specific PR number, error string, feature "
+        "codename, library-alone name, or 'fix-X / debug-Y / audit-Z-today' "
+        "session artifact. If the proposed name only makes sense for "
+        "today's task, it's wrong — fall back to (1), (2), or (3).\n\n"
+        "User-preference embedding (important): when the user expressed a "
+        "style/format/workflow preference, the update belongs in the "
+        "SKILL.md body, not just in memory. Memory captures 'who the user "
+        "is and what the current situation and state of your operations "
+        "are'; skills capture 'how to do this class of task for this "
+        "user'. When they complain about how you handled a task, the "
+        "skill that governs that task needs to carry the lesson.\n\n"
+        "If you notice two existing skills that overlap, note it in your "
+        "reply — the background curator handles consolidation at scale.\n\n"
+        "'Nothing to save.' is a real option but should NOT be the "
+        "default. If the session ran smoothly with no corrections and "
+        "produced no new technique, just say 'Nothing to save.' and stop. "
+        "Otherwise, act."
     )
 
     _COMBINED_REVIEW_PROMPT = (
-        "Review the conversation above and consider two things:\n\n"
-        "**Memory**: Has the user revealed things about themselves — their persona, "
-        "desires, preferences, or personal details? Has the user expressed expectations "
-        "about how you should behave, their work style, or ways they want you to operate? "
-        "If so, save using the memory tool.\n\n"
-        "**Skills**: Was a non-trivial approach used to complete a task that required trial "
-        "and error, changing course due to experiential findings, or a different method "
-        "or outcome than the user expected? If so, work in this order:\n"
-        "  a. SURVEY existing skills first (skills_list, then skill_view on candidates).\n"
-        "  b. Identify the CLASS of task, not the specific task "
-        "(\"desktop app build troubleshooting\", not \"fix my Tauri error\").\n"
-        "  c. PREFER UPDATING/GENERALIZING an existing skill that covers the class.\n"
-        "  d. ONLY CREATE A NEW SKILL if no existing one covers the class. Scope at "
-        "the class level, not this one session.\n"
-        "  e. If you notice overlapping skills during the survey, note it so a future "
-        "review can consolidate them.\n\n"
-        "Only act if there's something genuinely worth saving. "
-        "If nothing stands out, just say 'Nothing to save.' and stop."
+        "Review the conversation above and update two things:\n\n"
+        "**Memory**: who the user is. Did the user reveal persona, "
+        "desires, preferences, personal details, or expectations about "
+        "how you should behave? Save facts about the user and durable "
+        "preferences with the memory tool.\n\n"
+        "**Skills**: how to do this class of task. Be ACTIVE — most "
+        "sessions produce at least one skill update. A pass that does "
+        "nothing is a missed learning opportunity, not a neutral outcome.\n\n"
+        "Target shape of the skill library: CLASS-LEVEL skills with a rich "
+        "SKILL.md and a `references/` directory for session-specific detail. "
+        "Not a long flat list of narrow one-session-one-skill entries.\n\n"
+        "Signals that warrant a skill update (any one is enough):\n"
+        "  • User corrected your style, tone, format, legibility, "
+        "verbosity, or approach. Frustration is a FIRST-CLASS skill "
+        "signal, not just a memory signal. 'stop doing X', 'don't format "
+        "like this', 'I hate when you Y' — embed the lesson in the skill "
+        "that governs that task so the next session starts fixed.\n"
+        "  • Non-trivial technique, fix, workaround, or debugging path "
+        "emerged.\n"
+        "  • A skill that was loaded or consulted turned out wrong, "
+        "missing, or outdated — patch it now.\n\n"
+        "Preference order for skills — pick the earliest that fits:\n"
+        "  1. UPDATE A CURRENTLY-LOADED SKILL. Check what skills were "
+        "loaded via /skill-name or skill_view in the conversation. If one "
+        "of them covers the learning, PATCH it first. It was in play; "
+        "it's the right place.\n"
+        "  2. UPDATE AN EXISTING UMBRELLA (skills_list + skill_view to "
+        "find the right one). Patch it.\n"
+        "  3. ADD A SUPPORT FILE under an existing umbrella via "
+        "skill_manage action=write_file. Three kinds: "
+        "`references/<topic>.md` for session-specific detail OR condensed "
+        "knowledge banks (quoted research, API docs excerpts, domain "
+        "notes) written concise and task-focused; `templates/<name>.<ext>` "
+        "for starter files meant to be copied and modified; "
+        "`scripts/<name>.<ext>` for statically re-runnable actions "
+        "(verification, fixture generators, probes). Add a one-line "
+        "pointer in SKILL.md so future agents find them.\n"
+        "  4. CREATE A NEW CLASS-LEVEL UMBRELLA when nothing exists. "
+        "Name at the class level — NOT a PR number, error string, "
+        "codename, library-alone name, or 'fix-X / debug-Y' session "
+        "artifact. If the name only fits today's task, fall back to (1), "
+        "(2), or (3).\n\n"
+        "User-preference embedding: when the user complains about how "
+        "you handled a task, update the skill that governs that task — "
+        "memory alone isn't enough. Memory says 'who the user is and "
+        "what the current situation and state of your operations are'; "
+        "skills say 'how to do this class of task for this user'. Both "
+        "should carry user-preference lessons when relevant.\n\n"
+        "If you notice overlapping existing skills, mention it — the "
+        "background curator handles consolidation.\n\n"
+        "Act on whichever of the two dimensions has real signal. If "
+        "genuinely nothing stands out on either, say 'Nothing to save.' "
+        "and stop — but don't reach for that conclusion as a default."
     )
 
     @staticmethod
@@ -3604,7 +3765,7 @@ class AIAgent:
         
         # Return everything up to (not including) the last assistant message
         return messages[:last_assistant_idx]
-    
+
     def _format_tools_for_system_message(self) -> str:
         """
         Format tool definitions for the system message in the trajectory format.
@@ -3628,7 +3789,7 @@ class AIAgent:
             formatted_tools.append(formatted_tool)
         
         return json.dumps(formatted_tools, ensure_ascii=False)
-    
+
     def _convert_to_trajectory_format(self, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
         """
         Convert internal message format to trajectory format for saving.
@@ -3793,7 +3954,7 @@ class AIAgent:
             i += 1
         
         return trajectory
-    
+
     def _save_trajectory(self, messages: List[Dict[str, Any]], user_query: str, completed: bool):
         """
         Save conversation trajectory to JSONL file.
@@ -3808,7 +3969,7 @@ class AIAgent:
         
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
         _save_trajectory_to_file(trajectory, self.model, completed)
-    
+
     @staticmethod
     def _summarize_api_error(error: Exception) -> str:
         """Extract a human-readable one-liner from an API error.
@@ -4120,7 +4281,7 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
-    
+
     def interrupt(self, message: str = None) -> None:
         """
         Request the agent to interrupt its current tool-calling loop.
@@ -4188,7 +4349,7 @@ class AIAgent:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
-    
+
     def clear_interrupt(self) -> None:
         """Clear any pending interrupt request and the per-thread tool interrupt signal."""
         self._interrupt_requested = False
@@ -4409,7 +4570,7 @@ class AIAgent:
                 )
             except Exception:
                 pass
-    
+
     def commit_memory_session(self, messages: list = None) -> None:
         """Trigger end-of-session extraction without tearing providers down.
         Called when session_id rotates (e.g. /new, context compression);
@@ -4460,8 +4621,14 @@ class AIAgent:
         if not (self._memory_manager and final_response and original_user_message):
             return
         try:
-            self._memory_manager.sync_all(original_user_message, final_response)
-            self._memory_manager.queue_prefetch_all(original_user_message)
+            self._memory_manager.sync_all(
+                original_user_message, final_response,
+                session_id=self.session_id or "",
+            )
+            self._memory_manager.queue_prefetch_all(
+                original_user_message,
+                session_id=self.session_id or "",
+            )
         except Exception:
             pass
 
@@ -4599,7 +4766,7 @@ class AIAgent:
             if not self.quiet_mode:
                 self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
         _set_interrupt(False)
-    
+
     @property
     def is_interrupted(self) -> bool:
         """Check if an interrupt has been requested."""
@@ -4631,9 +4798,11 @@ class AIAgent:
         #   6. Current date & time (frozen at build time)
         #   7. Platform-specific formatting hint
 
-        # Try SOUL.md as primary identity (unless context files are skipped)
+        # Try SOUL.md as primary identity unless the caller explicitly skipped it.
+        # Some execution modes (cron) still want HERMES_HOME persona while keeping
+        # cwd project instructions disabled.
         _soul_loaded = False
-        if not self.skip_context_files:
+        if self.load_soul_identity or not self.skip_context_files:
             _soul_content = load_soul_md()
             if _soul_content:
                 prompt_parts = [_soul_content]
@@ -4781,6 +4950,15 @@ class AIAgent:
         platform_key = (self.platform or "").lower().strip()
         if platform_key in PLATFORM_HINTS:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
+        elif platform_key:
+            # Check plugin registry for platform-specific LLM guidance
+            try:
+                from gateway.platform_registry import platform_registry
+                _entry = platform_registry.get(platform_key)
+                if _entry and _entry.platform_hint:
+                    prompt_parts.append(_entry.platform_hint)
+            except Exception:
+                pass
 
         return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
 
@@ -6069,7 +6247,12 @@ class AIAgent:
         correctly — rebuilding with the Bedrock SDK when provider is bedrock,
         rather than always falling back to build_anthropic_client() which
         requires a direct Anthropic API key.
+
+        Honors ``self._oauth_1m_beta_disabled`` (set by the reactive recovery
+        path when an OAuth subscription rejects the 1M-context beta) so the
+        rebuilt client carries the reduced beta set.
         """
+        _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
         if getattr(self, "provider", None) == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
@@ -6080,6 +6263,7 @@ class AIAgent:
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=_drop_1m,
             )
 
     def _interruptible_api_call(self, api_kwargs: dict):
@@ -6384,6 +6568,9 @@ class AIAgent:
         Falls back to _interruptible_api_call on provider errors indicating
         streaming is not supported.
         """
+        if self._interrupt_requested:
+            raise InterruptedError("Agent interrupted before streaming API call")
+
         if self.api_mode == "codex_responses":
             # Codex streams internally via _run_codex_stream. The main dispatch
             # in _interruptible_api_call already calls it; we just need to
@@ -7042,6 +7229,12 @@ class AIAgent:
                         # to non-streaming on the next attempt via _disable_streaming.
                         result["error"] = e
                         return
+            except InterruptedError as e:
+                # The interrupt may be noticed inside the worker thread before
+                # the polling loop sees it. Surface it through the normal result
+                # channel so callers never miss a fast pre-retry interrupt.
+                result["error"] = e
+                return
             finally:
                 request_client = request_client_holder.get("client")
                 if request_client is not None:
@@ -8026,6 +8219,7 @@ class AIAgent:
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
+                drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
             )
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -8148,6 +8342,7 @@ class AIAgent:
             model=self.model,
             messages=_msgs_for_chat,
             tools=self.tools,
+            base_url=self.base_url,
             timeout=self._resolved_api_call_timeout(),
             max_tokens=self.max_tokens,
             ephemeral_max_output_tokens=_ephemeral_out,
@@ -8832,6 +9027,23 @@ class AIAgent:
                 )
         except Exception as _ce_err:
             logger.debug("context engine on_session_start (compression): %s", _ce_err)
+
+        # Notify memory providers of the compression-driven session_id rotation
+        # so provider-cached per-session state (Hindsight's _document_id,
+        # accumulated turn buffers, counters) refreshes. reset=False because
+        # the logical conversation continues; only the id and DB row rolled
+        # over. See #6672.
+        try:
+            _old_sid = locals().get("old_session_id")
+            if _old_sid and self._memory_manager:
+                self._memory_manager.on_session_switch(
+                    self.session_id or "",
+                    parent_session_id=_old_sid,
+                    reset=False,
+                    reason="compression",
+                )
+        except Exception as _me_err:
+            logger.debug("memory manager on_session_switch (compression): %s", _me_err)
 
         # Warn on repeated compressions (quality degrades with each pass)
         _cc = self.context_compressor.compression_count
@@ -9854,7 +10066,7 @@ class AIAgent:
                                    is_oauth=self._is_anthropic_oauth,
                                    preserve_dots=self._anthropic_preserve_dots())
                     summary_response = self._anthropic_messages_create(_ant_kw)
-                    _summary_result = _tsum.normalize_response(summary_response)
+                    _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_summary_result.content or "").strip()
                 else:
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
@@ -9884,7 +10096,7 @@ class AIAgent:
                                     max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
                                     preserve_dots=self._anthropic_preserve_dots())
                     retry_response = self._anthropic_messages_create(_ant_kw2)
-                    _retry_result = _tretry.normalize_response(retry_response)
+                    _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_retry_result.content or "").strip()
                 else:
                     summary_kwargs = {
@@ -10593,6 +10805,7 @@ class AIAgent:
             copilot_auth_retry_attempted=False
             thinking_sig_retry_attempted = False
             image_shrink_retry_attempted = False
+            oauth_1m_beta_retry_attempted = False
             has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
@@ -11012,7 +11225,12 @@ class AIAgent:
                         # would have been appended in the non-truncated path.
                         _trunc_msg = None
                         _trunc_transport = self._get_transport()
-                        _trunc_result = _trunc_transport.normalize_response(response)
+                        if self.api_mode == "anthropic_messages":
+                            _trunc_result = _trunc_transport.normalize_response(
+                                response, strip_tool_prefix=self._is_anthropic_oauth
+                            )
+                        else:
+                            _trunc_result = _trunc_transport.normalize_response(response)
                         _trunc_msg = _trunc_result
 
                         _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
@@ -11543,6 +11761,36 @@ class AIAgent:
                                 "image-shrink recovery: no data-URL image parts found "
                                 "or shrink didn't reduce size; surfacing original error."
                             )
+
+                    # Anthropic OAuth subscription rejected the 1M-context beta
+                    # header ("long context beta is not yet available for this
+                    # subscription"). Disable the beta for the rest of this
+                    # session, rebuild the client, and retry once.  1M-capable
+                    # subscriptions never hit this branch — they accept the
+                    # beta and keep full 1M context.  See PR #17680 for the
+                    # original report (we chose reactive recovery over the
+                    # proposed unconditional omit so capable subscriptions
+                    # don't silently lose the capability).
+                    if (
+                        classified.reason == FailoverReason.oauth_long_context_beta_forbidden
+                        and self.api_mode == "anthropic_messages"
+                        and self._is_anthropic_oauth
+                        and not oauth_1m_beta_retry_attempted
+                    ):
+                        oauth_1m_beta_retry_attempted = True
+                        if not getattr(self, "_oauth_1m_beta_disabled", False):
+                            self._oauth_1m_beta_disabled = True
+                            try:
+                                self._anthropic_client.close()
+                            except Exception:
+                                pass
+                            self._rebuild_anthropic_client()
+                            self._vprint(
+                                f"{self.log_prefix}🔕 OAuth subscription doesn't support "
+                                f"the 1M-context beta — disabled for this session and retrying...",
+                                force=True,
+                            )
+                            continue
 
                     if (
                         self.api_mode == "codex_responses"
@@ -12350,7 +12598,10 @@ class AIAgent:
 
             try:
                 _transport = self._get_transport()
-                normalized = _transport.normalize_response(response)
+                _normalize_kwargs = {}
+                if self.api_mode == "anthropic_messages":
+                    _normalize_kwargs["strip_tool_prefix"] = self._is_anthropic_oauth
+                normalized = _transport.normalize_response(response, **_normalize_kwargs)
                 assistant_message = normalized
                 finish_reason = normalized.finish_reason
                 
@@ -13598,4 +13849,5 @@ def main(
 
 
 if __name__ == "__main__":
+    import fire
     fire.Fire(main)

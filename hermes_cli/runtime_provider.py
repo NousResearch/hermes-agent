@@ -391,7 +391,14 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
-                    api_mode = _parse_api_mode(entry.get("api_mode"))
+                    # The v11→v12 migration writes the API mode under the new
+                    # ``transport`` field, but hand-edited configs may still
+                    # use the legacy ``api_mode`` spelling.  Accept both —
+                    # the runtime normaliser ``_normalize_custom_provider_entry``
+                    # already does, so without this lift every migrated config
+                    # silently downgrades codex_responses / anthropic_messages
+                    # providers to chat_completions in the resolved runtime.
+                    api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
                     return result
@@ -409,7 +416,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
                         }
-                        api_mode = _parse_api_mode(entry.get("api_mode"))
+                        api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
                         return result
@@ -1069,6 +1076,20 @@ def resolve_runtime_provider(
                 raise
             logger.info("Qwen OAuth credentials failed; "
                         "falling through to next provider.")
+
+    if provider == "minimax-oauth":
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        if pconfig and pconfig.auth_type == "oauth_minimax":
+            from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+            creds = resolve_minimax_oauth_runtime_credentials()
+            return {
+                "provider": provider,
+                "api_mode": "anthropic_messages",
+                "base_url": creds["base_url"],
+                "api_key": creds["api_key"],
+                "source": creds.get("source", "oauth"),
+                "requested_provider": requested_provider,
+            }
 
     if provider == "google-gemini-cli":
         try:

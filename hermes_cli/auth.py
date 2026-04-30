@@ -72,6 +72,14 @@ DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60  # 30 minutes
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
+MINIMAX_OAUTH_SCOPE = "group_id profile model.completion"
+MINIMAX_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:user_code"
+MINIMAX_OAUTH_GLOBAL_BASE = "https://api.minimax.io"
+MINIMAX_OAUTH_CN_BASE = "https://api.minimaxi.com"
+MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
+MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
+MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
@@ -126,7 +134,7 @@ class ProviderConfig:
     """Describes a known inference provider."""
     id: str
     name: str
-    auth_type: str  # "oauth_device_code", "oauth_external", or "api_key"
+    auth_type: str  # "oauth_device_code", "oauth_external", "oauth_minimax", or "api_key"
     portal_base_url: str = ""
     inference_base_url: str = ""
     client_id: str = ""
@@ -254,6 +262,17 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.minimax.io/anthropic",
         api_key_env_vars=("MINIMAX_API_KEY",),
         base_url_env_var="MINIMAX_BASE_URL",
+    ),
+    "minimax-oauth": ProviderConfig(
+        id="minimax-oauth",
+        name="MiniMax (OAuth \u00b7 minimax.io)",
+        auth_type="oauth_minimax",
+        portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE,
+        inference_base_url=MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        client_id=MINIMAX_OAUTH_CLIENT_ID,
+        scope=MINIMAX_OAUTH_SCOPE,
+        extra={"region": "global", "cn_portal_base_url": MINIMAX_OAUTH_CN_BASE,
+               "cn_inference_base_url": MINIMAX_OAUTH_CN_INFERENCE},
     ),
     "anthropic": ProviderConfig(
         id="anthropic",
@@ -1153,6 +1172,7 @@ def resolve_provider(
         "arcee-ai": "arcee", "arceeai": "arcee",
         "gmi-cloud": "gmi", "gmicloud": "gmi",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
+        "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
         "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
         "alibaba_coding_plan": "alibaba-coding-plan",
         "claude": "anthropic", "claude-code": "anthropic",
@@ -4114,6 +4134,326 @@ def _codex_device_code_login() -> Dict[str, Any]:
         "auth_mode": "chatgpt",
         "source": "device-code",
     }
+
+
+# ==================== MiniMax Portal OAuth ====================
+
+def _minimax_pkce_pair() -> tuple:
+    """Generate (code_verifier, code_challenge_S256, state) for MiniMax OAuth."""
+    import secrets
+    verifier = secrets.token_urlsafe(64)[:96]
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).decode().rstrip("=")
+    state = secrets.token_urlsafe(16)
+    return verifier, challenge, state
+
+
+def _minimax_request_user_code(
+    client: httpx.Client, *, portal_base_url: str, client_id: str,
+    code_challenge: str, state: str,
+) -> Dict[str, Any]:
+    response = client.post(
+        f"{portal_base_url}/oauth/code",
+        data={
+            "response_type": "code",
+            "client_id": client_id,
+            "scope": MINIMAX_OAUTH_SCOPE,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+        },
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "x-request-id": str(uuid.uuid4()),
+        },
+    )
+    if response.status_code != 200:
+        raise AuthError(
+            f"MiniMax OAuth authorization failed: {response.text or response.reason_phrase}",
+            provider="minimax-oauth", code="authorization_failed",
+        )
+    payload = response.json()
+    for field in ("user_code", "verification_uri", "expired_in"):
+        if field not in payload:
+            raise AuthError(
+                f"MiniMax OAuth response missing field: {field}",
+                provider="minimax-oauth", code="authorization_incomplete",
+            )
+    if payload.get("state") != state:
+        raise AuthError(
+            "MiniMax OAuth state mismatch (possible CSRF).",
+            provider="minimax-oauth", code="state_mismatch",
+        )
+    return payload
+
+
+def _minimax_poll_token(
+    client: httpx.Client, *, portal_base_url: str, client_id: str,
+    user_code: str, code_verifier: str, expired_in: int, interval_ms: Optional[int],
+) -> Dict[str, Any]:
+    # OpenClaw treats expired_in as a unix-ms timestamp (Date.now() < expireTimeMs).
+    # Defensive parsing: if it's small enough to be a duration, treat as seconds.
+    import time as _time
+    now_ms = int(_time.time() * 1000)
+    if expired_in > now_ms // 2:
+        # Looks like a unix-ms timestamp.
+        deadline = expired_in / 1000.0
+    else:
+        # Treat as duration in seconds from now.
+        deadline = _time.time() + max(1, expired_in)
+    interval = max(2.0, (interval_ms or 2000) / 1000.0)
+
+    while _time.time() < deadline:
+        response = client.post(
+            f"{portal_base_url}/oauth/token",
+            data={
+                "grant_type": MINIMAX_OAUTH_GRANT_TYPE,
+                "client_id": client_id,
+                "user_code": user_code,
+                "code_verifier": code_verifier,
+            },
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            payload = response.json() if response.text else {}
+        except Exception:
+            payload = {}
+
+        if response.status_code != 200:
+            msg = (payload.get("base_resp", {}) or {}).get("status_msg") or response.text
+            raise AuthError(
+                f"MiniMax OAuth error: {msg or 'unknown'}",
+                provider="minimax-oauth", code="token_exchange_failed",
+            )
+
+        status = payload.get("status")
+        if status == "error":
+            raise AuthError(
+                "MiniMax OAuth reported an error. Please try again later.",
+                provider="minimax-oauth", code="authorization_denied",
+            )
+        if status == "success":
+            if not all(payload.get(k) for k in ("access_token", "refresh_token", "expired_in")):
+                raise AuthError(
+                    "MiniMax OAuth success payload missing required token fields.",
+                    provider="minimax-oauth", code="token_incomplete",
+                )
+            return payload
+        # "pending" or any other status -> keep polling
+        _time.sleep(interval)
+
+    raise AuthError(
+        "MiniMax OAuth timed out before authorization completed.",
+        provider="minimax-oauth", code="timeout",
+    )
+
+
+def _minimax_save_auth_state(auth_state: Dict[str, Any]) -> None:
+    """Persist MiniMax OAuth state to Hermes auth store (~/.hermes/auth.json)."""
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _save_provider_state(auth_store, "minimax-oauth", auth_state)
+        _save_auth_store(auth_store)
+
+
+def _minimax_oauth_login(
+    *, region: str = "global", open_browser: bool = True,
+    timeout_seconds: float = 15.0,
+) -> Dict[str, Any]:
+    """Run MiniMax OAuth flow, persist tokens, return auth state dict."""
+    pconfig = PROVIDER_REGISTRY["minimax-oauth"]
+    if region == "cn":
+        portal_base_url = pconfig.extra["cn_portal_base_url"]
+        inference_base_url = pconfig.extra["cn_inference_base_url"]
+    else:
+        portal_base_url = pconfig.portal_base_url
+        inference_base_url = pconfig.inference_base_url
+
+    verifier, challenge, state = _minimax_pkce_pair()
+
+    if _is_remote_session():
+        open_browser = False
+
+    print(f"Starting Hermes login via MiniMax ({region}) OAuth...")
+    print(f"Portal: {portal_base_url}")
+
+    with httpx.Client(timeout=httpx.Timeout(timeout_seconds),
+                      headers={"Accept": "application/json"}) as client:
+        code_data = _minimax_request_user_code(
+            client, portal_base_url=portal_base_url,
+            client_id=pconfig.client_id,
+            code_challenge=challenge, state=state,
+        )
+        verification_url = str(code_data["verification_uri"])
+        user_code = str(code_data["user_code"])
+
+        print()
+        print("To continue:")
+        print(f"  1. Open: {verification_url}")
+        print(f"  2. If prompted, enter code: {user_code}")
+        if open_browser:
+            if webbrowser.open(verification_url):
+                print("  (Opened browser for verification)")
+            else:
+                print("  Could not open browser automatically -- use the URL above.")
+
+        interval_raw = code_data.get("interval")
+        interval_ms = int(interval_raw) if interval_raw is not None else None
+        print("Waiting for approval...")
+
+        token_data = _minimax_poll_token(
+            client, portal_base_url=portal_base_url,
+            client_id=pconfig.client_id,
+            user_code=user_code, code_verifier=verifier,
+            expired_in=int(code_data["expired_in"]),
+            interval_ms=interval_ms,
+        )
+
+    now = datetime.now(timezone.utc)
+    expires_in_s = int(token_data["expired_in"])
+    expires_at = now.timestamp() + expires_in_s
+
+    auth_state = {
+        "provider": "minimax-oauth",
+        "region": region,
+        "portal_base_url": portal_base_url,
+        "inference_base_url": inference_base_url,
+        "client_id": pconfig.client_id,
+        "scope": MINIMAX_OAUTH_SCOPE,
+        "token_type": token_data.get("token_type", "Bearer"),
+        "access_token": token_data["access_token"],
+        "refresh_token": token_data["refresh_token"],
+        "resource_url": token_data.get("resource_url"),
+        "obtained_at": now.isoformat(),
+        "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
+        "expires_in": expires_in_s,
+    }
+
+    _minimax_save_auth_state(auth_state)
+    print("\u2713 MiniMax OAuth login successful.")
+    if msg := token_data.get("notification_message"):
+        print(f"Note from MiniMax: {msg}")
+    return auth_state
+
+
+def _refresh_minimax_oauth_state(
+    state: Dict[str, Any], *, timeout_seconds: float = 15.0,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Refresh MiniMax OAuth access token if close to expiry (or forced)."""
+    if not state.get("refresh_token"):
+        raise AuthError(
+            "MiniMax OAuth state has no refresh_token; please re-login.",
+            provider="minimax-oauth", code="no_refresh_token", relogin_required=True,
+        )
+    try:
+        expires_at = datetime.fromisoformat(state.get("expires_at", "")).timestamp()
+    except Exception:
+        expires_at = 0.0
+    now = time.time()
+    if not force and (expires_at - now) > MINIMAX_OAUTH_REFRESH_SKEW_SECONDS:
+        return state
+
+    portal_base_url = state["portal_base_url"]
+    with httpx.Client(timeout=httpx.Timeout(timeout_seconds)) as client:
+        response = client.post(
+            f"{portal_base_url}/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "client_id": state["client_id"],
+                "refresh_token": state["refresh_token"],
+            },
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+        )
+    if response.status_code != 200:
+        body = response.text.lower()
+        relogin = any(m in body for m in
+                      ("invalid_grant", "refresh_token_reused", "invalid_refresh_token"))
+        raise AuthError(
+            f"MiniMax OAuth refresh failed: {response.text or response.reason_phrase}",
+            provider="minimax-oauth", code="refresh_failed",
+            relogin_required=relogin,
+        )
+    payload = response.json()
+    if payload.get("status") != "success":
+        raise AuthError(
+            "MiniMax OAuth refresh did not return success.",
+            provider="minimax-oauth", code="refresh_failed",
+            relogin_required=True,
+        )
+    now_dt = datetime.now(timezone.utc)
+    expires_in_s = int(payload["expired_in"])
+    new_state = dict(state)
+    new_state.update({
+        "access_token": payload["access_token"],
+        "refresh_token": payload.get("refresh_token", state["refresh_token"]),
+        "obtained_at": now_dt.isoformat(),
+        "expires_at": datetime.fromtimestamp(now_dt.timestamp() + expires_in_s,
+                                             tz=timezone.utc).isoformat(),
+        "expires_in": expires_in_s,
+    })
+    _minimax_save_auth_state(new_state)
+    return new_state
+
+
+def resolve_minimax_oauth_runtime_credentials(
+    *, min_token_ttl_seconds: int = MINIMAX_OAUTH_REFRESH_SKEW_SECONDS,
+) -> Dict[str, Any]:
+    """Return {provider, api_key, base_url, source} for minimax-oauth."""
+    state = get_provider_auth_state("minimax-oauth")
+    if not state or not state.get("access_token"):
+        raise AuthError(
+            "Not logged into MiniMax OAuth. Run `hermes model` and select "
+            "MiniMax (OAuth).",
+            provider="minimax-oauth", code="not_logged_in", relogin_required=True,
+        )
+    state = _refresh_minimax_oauth_state(state)
+    return {
+        "provider": "minimax-oauth",
+        "api_key": state["access_token"],
+        "base_url": state["inference_base_url"].rstrip("/"),
+        "source": "oauth",
+    }
+
+
+def get_minimax_oauth_auth_status() -> Dict[str, Any]:
+    """Return auth status dict for MiniMax OAuth provider."""
+    state = get_provider_auth_state("minimax-oauth")
+    if not state or not state.get("access_token"):
+        return {"logged_in": False, "provider": "minimax-oauth"}
+    try:
+        expires_at = datetime.fromisoformat(state.get("expires_at", "")).timestamp()
+        token_valid = (expires_at - time.time()) > 0
+    except Exception:
+        token_valid = bool(state.get("access_token"))
+    return {
+        "logged_in": token_valid,
+        "provider": "minimax-oauth",
+        "region": state.get("region", "global"),
+        "expires_at": state.get("expires_at"),
+    }
+
+
+def _login_minimax_oauth(args, pconfig: ProviderConfig) -> None:
+    """CLI entry for MiniMax OAuth login."""
+    region = getattr(args, "region", None) or "global"
+    open_browser = not getattr(args, "no_browser", False)
+    timeout = getattr(args, "timeout", None) or 15.0
+    try:
+        _minimax_oauth_login(
+            region=region, open_browser=open_browser, timeout_seconds=timeout,
+        )
+    except AuthError as exc:
+        print(format_auth_error(exc))
+        raise SystemExit(1)
 
 
 def _nous_device_code_login(

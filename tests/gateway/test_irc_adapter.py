@@ -7,16 +7,19 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-# Ensure the plugins directory is on sys.path for direct import
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_IRC_PLUGIN_DIR = _REPO_ROOT / "plugins" / "platforms" / "irc"
-if str(_IRC_PLUGIN_DIR) not in sys.path:
-    sys.path.insert(0, str(_IRC_PLUGIN_DIR))
+from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
+# Load plugins/platforms/irc/adapter.py under a unique module name
+# (plugin_adapter_irc) so it cannot collide with other plugin adapters
+# loaded by sibling tests in the same xdist worker.
+_irc_mod = load_plugin_adapter("irc")
 
-# ── IRC protocol helpers ─────────────────────────────────────────────────
-
-from adapter import _parse_irc_message, _extract_nick
+_parse_irc_message = _irc_mod._parse_irc_message
+_extract_nick = _irc_mod._extract_nick
+IRCAdapter = _irc_mod.IRCAdapter
+check_requirements = _irc_mod.check_requirements
+validate_config = _irc_mod.validate_config
+register = _irc_mod.register
 
 
 class TestIRCProtocolHelpers:
@@ -51,8 +54,6 @@ class TestIRCProtocolHelpers:
 
 
 # ── IRC Adapter ──────────────────────────────────────────────────────────
-
-from adapter import IRCAdapter, check_requirements, validate_config
 
 
 class TestIRCAdapterInit:
@@ -493,8 +494,6 @@ class TestIRCPluginRegistration:
 
         # Clean up if already registered
         platform_registry.unregister("irc")
-
-        from adapter import register
 
         ctx = MagicMock()
         register(ctx)

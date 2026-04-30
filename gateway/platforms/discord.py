@@ -2173,6 +2173,9 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception:
             pass  # logging must never block command dispatch
 
+        if await self._reject_disallowed_slash_channel(interaction, command_text):
+            return
+
         await interaction.response.defer(ephemeral=True)
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
@@ -2313,6 +2316,8 @@ class DiscordAdapter(BasePlatformAdapter):
             message: str = "",
             auto_archive_duration: int = 1440,
         ):
+            if await self._reject_disallowed_slash_channel(interaction, "/thread"):
+                return
             await interaction.response.defer(ephemeral=True)
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
@@ -2722,6 +2727,77 @@ class DiscordAdapter(BasePlatformAdapter):
         if isinstance(raw, str) and raw.strip():
             return {part.strip() for part in raw.split(",") if part.strip()}
         return set()
+
+    def _discord_channel_ids(
+        self,
+        channel: Any,
+        fallback_channel_id: Any = None,
+    ) -> set[str]:
+        """Return the Discord channel and parent IDs used for channel policy checks."""
+        channel_ids: set[str] = set()
+        channel_id = getattr(channel, "id", None)
+        if channel_id is None:
+            channel_id = fallback_channel_id
+        if channel_id is not None:
+            channel_ids.add(str(channel_id))
+
+        parent_channel_id = self._get_parent_channel_id(channel)
+        if parent_channel_id:
+            channel_ids.add(parent_channel_id)
+        return channel_ids
+
+    def _discord_channel_allowed_by_lists(
+        self,
+        channel: Any,
+        fallback_channel_id: Any = None,
+        is_dm: bool = False,
+    ) -> bool:
+        """Apply Discord allowed/ignored channel lists to messages and slash commands."""
+        if is_dm or isinstance(channel, discord.DMChannel):
+            return True
+
+        channel_ids = self._discord_channel_ids(channel, fallback_channel_id)
+
+        allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+        if allowed_channels_raw:
+            allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
+            if "*" not in allowed_channels and not (channel_ids & allowed_channels):
+                return False
+
+        ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
+        ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
+        if "*" in ignored_channels or (channel_ids & ignored_channels):
+            return False
+
+        return True
+
+    async def _reject_disallowed_slash_channel(
+        self,
+        interaction: discord.Interaction,
+        command_text: str,
+    ) -> bool:
+        """Reject a Discord slash command when channel allow/ignore policy blocks it."""
+        if self._discord_channel_allowed_by_lists(
+            getattr(interaction, "channel", None),
+            fallback_channel_id=getattr(interaction, "channel_id", None),
+            is_dm=getattr(interaction, "guild_id", None) is None,
+        ):
+            return False
+
+        logger.info(
+            "[%s] Ignoring slash '%s' in non-allowed or ignored channel: %s",
+            self.name,
+            command_text,
+            getattr(interaction, "channel_id", None),
+        )
+        try:
+            await interaction.response.send_message(
+                "This command is not enabled in this channel.",
+                ephemeral=True,
+            )
+        except Exception as e:
+            logger.debug("Discord slash rejection failed: %s", e)
+        return True
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
@@ -3198,23 +3274,9 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
-            channel_ids = {str(message.channel.id)}
-            if parent_channel_id:
-                channel_ids.add(parent_channel_id)
-
-            # Check allowed channels - if set, only respond in these channels
-            allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_channels_raw:
-                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if "*" not in allowed_channels and not (channel_ids & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
-                    return
-
-            # Check ignored channels - never respond even when mentioned
-            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
-            if "*" in ignored_channels or (channel_ids & ignored_channels):
-                logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
+            channel_ids = self._discord_channel_ids(message.channel)
+            if not self._discord_channel_allowed_by_lists(message.channel):
+                logger.debug("[%s] Ignoring message in non-allowed or ignored channel: %s", self.name, channel_ids)
                 return
 
             free_channels = self._discord_free_response_channels()

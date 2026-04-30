@@ -110,6 +110,12 @@ def adapter():
     return adapter
 
 
+@pytest.fixture(autouse=True)
+def _clear_discord_channel_policy_env(monkeypatch):
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+
 # ------------------------------------------------------------------
 # /thread slash command registration
 # ------------------------------------------------------------------
@@ -129,6 +135,25 @@ async def test_registers_native_thread_slash_command(adapter):
 
     interaction.response.defer.assert_awaited_once_with(ephemeral=True)
     adapter._handle_thread_create_slash.assert_awaited_once_with(interaction, "Planning", "", 1440)
+
+
+@pytest.mark.asyncio
+async def test_native_thread_slash_command_respects_channel_policy(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")
+    adapter._handle_thread_create_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    command = adapter._client.tree.commands["thread"]
+    interaction = _fake_slash_interaction(_FakeThreadChannel(channel_id=555, parent_id=100))
+
+    await command(interaction, name="Planning", message="", auto_archive_duration=1440)
+
+    interaction.response.defer.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once_with(
+        "This command is not enabled in this channel.",
+        ephemeral=True,
+    )
+    adapter._handle_thread_create_slash.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -635,6 +660,93 @@ def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza
     )
 
 
+def _fake_slash_interaction(channel):
+    return SimpleNamespace(
+        channel=channel,
+        channel_id=getattr(channel, "id", None),
+        guild_id=getattr(getattr(channel, "guild", None), "id", None),
+        user=SimpleNamespace(id=42, name="jezza", display_name="Jezza"),
+        response=SimpleNamespace(
+            defer=AsyncMock(),
+            send_message=AsyncMock(),
+        ),
+        edit_original_response=AsyncMock(),
+        delete_original_response=AsyncMock(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_native_slash_command_respects_allowed_parent_channel(adapter, monkeypatch):
+    """Slash commands in threads should pass when the parent channel is allowlisted."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "100")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    interaction = _fake_slash_interaction(_FakeThreadChannel(channel_id=555, parent_id=100))
+    adapter.handle_message = AsyncMock()
+
+    await adapter._run_simple_slash(interaction, "/status", "Status sent~")
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    interaction.response.send_message.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    interaction.edit_original_response.assert_awaited_once_with(content="Status sent~")
+
+
+@pytest.mark.asyncio
+async def test_native_slash_command_rejects_non_allowed_channel(adapter, monkeypatch):
+    """Native slash commands must not bypass DISCORD_ALLOWED_CHANNELS."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    interaction = _fake_slash_interaction(_FakeThreadChannel(channel_id=555, parent_id=100))
+    adapter.handle_message = AsyncMock()
+
+    await adapter._run_simple_slash(interaction, "/reset", "Session reset~")
+
+    interaction.response.defer.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once_with(
+        "This command is not enabled in this channel.",
+        ephemeral=True,
+    )
+    adapter.handle_message.assert_not_awaited()
+    interaction.edit_original_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_native_slash_command_rejects_ignored_channel(adapter, monkeypatch):
+    """Native slash commands must also respect DISCORD_IGNORED_CHANNELS."""
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "100")
+
+    interaction = _fake_slash_interaction(_FakeThreadChannel(channel_id=555, parent_id=100))
+    adapter.handle_message = AsyncMock()
+
+    await adapter._run_simple_slash(interaction, "/status", "Status sent~")
+
+    interaction.response.send_message.assert_awaited_once_with(
+        "This command is not enabled in this channel.",
+        ephemeral=True,
+    )
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_native_slash_command_allows_dm_with_channel_allowlist(adapter, monkeypatch):
+    """DM slash commands keep the same allowlist exemption as DM messages."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    interaction = _fake_slash_interaction(_FakeTextChannel(channel_id=555))
+    interaction.guild_id = None
+    adapter.handle_message = AsyncMock()
+
+    await adapter._run_simple_slash(interaction, "/status")
+
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+    interaction.response.send_message.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
     """When DISCORD_AUTO_THREAD=true, a new thread is created and the event routes there."""
@@ -965,4 +1077,3 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # (covered in other tests). The autocomplete filter itself is exercised
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
-

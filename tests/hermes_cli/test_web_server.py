@@ -1748,6 +1748,7 @@ class TestPtyWebSocket:
         # its own fake argv via ``ws._resolve_chat_argv``.
         self.ws_module = ws
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        ws._event_channels.clear()
         self.token = ws._SESSION_TOKEN
         self.client = TestClient(ws.app)
 
@@ -1949,6 +1950,15 @@ class TestPtyWebSocket:
         sub_path = f"/api/events?{qs}"
 
         with self.client.websocket_connect(sub_path) as sub:
+            import time
+
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if self.ws_module._event_channels.get("broadcast-test"):
+                    break
+                time.sleep(0.01)
+            assert self.ws_module._event_channels.get("broadcast-test")
+
             with self.client.websocket_connect(pub_path) as pub:
                 pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
                 received = sub.receive_text()

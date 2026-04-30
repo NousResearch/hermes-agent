@@ -552,4 +552,18 @@ def _reset_tool_registry_caches():
         _clear_tool_defs_cache()
     except ImportError:
         pass
+    try:
+        import hermes_constants as _constants_mod
+        _constants_mod._wsl_detected = None
+        _constants_mod._container_detected = None
+    except ImportError:
+        pass
+    try:
+        from hermes_cli.config import get_env_value as _config_get_env_value
+        from tools import transcription_tools as _transcription_mod
+        from tools import tts_tool as _tts_mod
+        _transcription_mod.get_env_value = _config_get_env_value
+        _tts_mod.get_env_value = _config_get_env_value
+    except ImportError:
+        pass
     yield

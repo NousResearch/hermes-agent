@@ -758,9 +758,19 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
         _cfg = load_config()
-        _m = _cfg.get("model", {}) if isinstance(_cfg.get("model"), dict) else {}
-        _provider = _m.get("provider") or "auto"
-        _model_name = _m.get("default") or _m.get("model") or ""
+        
+        # Prefer curator.auxiliary when configured, fallback to main model
+        _curator_cfg = _cfg.get("curator", {}) if isinstance(_cfg.get("curator"), dict) else {}
+        _aux = _curator_cfg.get("auxiliary", {}) if isinstance(_curator_cfg.get("auxiliary"), dict) else {}
+        
+        if _aux.get("provider") or _aux.get("model"):
+            _provider = _aux.get("provider") or "auto"
+            _model_name = _aux.get("model") or ""
+        else:
+            _m = _cfg.get("model", {}) if isinstance(_cfg.get("model"), dict) else {}
+            _provider = _m.get("provider") or "auto"
+            _model_name = _m.get("default") or _m.get("model") or ""
+            
         _rp = resolve_runtime_provider(
             requested=_provider, target_model=_model_name
         )

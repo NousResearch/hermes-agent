@@ -401,6 +401,26 @@ def test_agent_created_report_excludes_bundled_and_hub(skills_home):
     assert "hubbed" not in names
 
 
+def test_agent_created_report_derives_activity_from_view_and_patch(skills_home, monkeypatch):
+    import tools.skill_usage as skill_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "mine")
+    timestamps = iter([
+        "2026-04-30T10:00:00+00:00",
+        "2026-04-30T11:00:00+00:00",
+        "2026-04-30T12:00:00+00:00",
+        "2026-04-30T13:00:00+00:00",
+    ])
+    monkeypatch.setattr(skill_usage, "_now_iso", lambda: next(timestamps))
+
+    skill_usage.bump_view("mine")
+    skill_usage.bump_patch("mine")
+
+    row = next(r for r in skill_usage.agent_created_report() if r["name"] == "mine")
+    assert row["activity_count"] == 2
+    assert row["last_activity_at"] == "2026-04-30T12:00:00+00:00"
+
 
 # ---------------------------------------------------------------------------
 # Provenance guard — telemetry must not leak records for bundled/hub skills

@@ -7,7 +7,7 @@ daemon): when the agent is idle and the last curator run was longer than
 the review.
 
 Responsibilities:
-  - Auto-transition lifecycle states based on last_used_at timestamps
+  - Auto-transition lifecycle states based on derived skill activity timestamps
   - Spawn a background review agent that can pin / archive / consolidate /
     patch agent-created skills via skill_manage
   - Persist curator state (last_run_at, paused, etc.) in .curator_state
@@ -213,8 +213,8 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 
 def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
     """Walk every agent-created skill and move active/stale/archived based on
-    last_used_at. Pinned skills are never touched. Returns a counter dict
-    describing what changed."""
+    the latest real activity timestamp. Pinned skills are never touched.
+    Returns a counter dict describing what changed."""
     from tools import skill_usage as _u
 
     if now is None:
@@ -230,10 +230,10 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
         if row.get("pinned"):
             continue
 
-        last_used = _parse_iso(row.get("last_used_at"))
-        # If never used, treat as using created_at as the anchor so new skills
-        # don't immediately archive themselves.
-        anchor = last_used or _parse_iso(row.get("created_at")) or now
+        last_activity = _parse_iso(row.get("last_activity_at"))
+        # If never active, treat created_at as the anchor so new skills don't
+        # immediately archive themselves.
+        anchor = last_activity or _parse_iso(row.get("created_at")) or now
         if anchor.tzinfo is None:
             anchor = anchor.replace(tzinfo=timezone.utc)
 
@@ -980,10 +980,11 @@ def _render_candidate_list() -> str:
             f"- {r['name']}  "
             f"state={r['state']}  "
             f"pinned={'yes' if r.get('pinned') else 'no'}  "
+            f"activity={r.get('activity_count', 0)}  "
             f"use={r.get('use_count', 0)}  "
             f"view={r.get('view_count', 0)}  "
             f"patches={r.get('patch_count', 0)}  "
-            f"last_used={r.get('last_used_at') or 'never'}"
+            f"last_activity={r.get('last_activity_at') or 'never'}"
         )
     return "\n".join(lines)
 

@@ -2,7 +2,8 @@
 
 Tracks per-skill usage metadata in a sidecar JSON file (~/.hermes/skills/.usage.json)
 keyed by skill name. Counters are bumped by the existing skill tools (skill_view,
-skill_manage); the curator orchestrator reads them to decide lifecycle transitions.
+skill_manage); the curator orchestrator reads the derived activity timestamp to
+decide lifecycle transitions.
 
 Design notes:
   - Sidecar, not frontmatter. Keeps operational telemetry out of user-authored
@@ -55,6 +56,50 @@ def _archive_dir() -> Path:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso_timestamp(value: Any) -> Optional[datetime]:
+    """Parse an ISO timestamp defensively for activity comparisons."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def latest_activity_at(record: Dict[str, Any]) -> Optional[str]:
+    """Return the newest actual activity timestamp for a usage record.
+
+    "Activity" means a skill was used, viewed, or patched. Creation time is
+    intentionally excluded so callers can still distinguish never-active skills;
+    lifecycle code can fall back to ``created_at`` as its own anchor.
+    """
+    latest_dt: Optional[datetime] = None
+    latest_raw: Optional[str] = None
+    for key in ("last_used_at", "last_viewed_at", "last_patched_at"):
+        raw = record.get(key)
+        dt = _parse_iso_timestamp(raw)
+        if dt is None:
+            continue
+        if latest_dt is None or dt > latest_dt:
+            latest_dt = dt
+            latest_raw = str(raw)
+    return latest_raw
+
+
+def activity_count(record: Dict[str, Any]) -> int:
+    """Return the total observed activity count across use/view/patch events."""
+    total = 0
+    for key in ("use_count", "view_count", "patch_count"):
+        try:
+            total += int(record.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +487,7 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
 # ---------------------------------------------------------------------------
 
 def agent_created_report() -> List[Dict[str, Any]]:
-    """Return a list of {name, state, pinned, last_used_at, use_count, ...}
+    """Return a list of {name, state, pinned, last_activity_at, ...}
     records for every agent-created skill. Missing usage records are backfilled
     with defaults so callers can always index fields."""
     data = load_usage()
@@ -454,5 +499,8 @@ def agent_created_report() -> List[Dict[str, Any]]:
         base = _empty_record()
         for k, v in base.items():
             rec.setdefault(k, v)
-        rows.append({"name": name, **rec})
+        row = {"name": name, **rec}
+        row["last_activity_at"] = latest_activity_at(row)
+        row["activity_count"] = activity_count(row)
+        rows.append(row)
     return rows

@@ -43,16 +43,41 @@ Use this skill when the user:
 
 ## Wiki Location
 
-**Location:** Set via `WIKI_PATH` environment variable (e.g. in `~/.hermes/.env`).
+The agent resolves the active wiki path from config on every operation. The skill
+config system injects two values:
 
-If unset, defaults to `~/wiki`.
+- `llm-wiki.active_wiki` — which wiki is currently selected (e.g. "default", "research")
+- `llm-wiki.wikis` — JSON registry of all wikis with their paths and descriptions
+
+**Path resolution:**
 
 ```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
+# Config values are injected by the agent as [Skill config: ...]
+# Parse the registry and resolve the active wiki path:
+WIKI="${HERMES_HOME}/wikis/${resolved_active_wiki_path}"
 ```
 
-The wiki is just a directory of markdown files — open it in Obsidian, VS Code, or
-any editor. No database, no special tooling required.
+The resolved path is always under `{HERMES_HOME}/wikis/`. Each wiki is a
+subdirectory — open it in Obsidian, VS Code, or any editor. No database,
+no special tooling required.
+
+**Profile isolation:** In named profiles, wikis live under
+`~/.hermes/profiles/<profile>/wikis/`. The `HERMES_HOME` env var already
+points to the profile root, so path resolution works identically.
+
+**Backward compatibility:** On first use after upgrading, if the agent detects
+an existing `~/wiki` directory and no `~/.hermes/wikis/default` exists, it
+silently creates a symlink:
+
+```
+~/.hermes/wikis/default → ~/wiki
+```
+
+The user's existing wiki and Obsidian vault continue working unchanged. If
+`WIKI_PATH` env var is set, it takes priority (existing behavior preserved).
+
+**Edge case:** If no `~/wiki` exists and no `WIKI_PATH` is set, the agent
+creates `~/.hermes/wikis/default/` with fresh structure on first use.
 
 ## Architecture: Three Layers
 
@@ -86,7 +111,7 @@ When the user has an existing wiki, **always orient yourself before doing anythi
 ③ **Scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
 
 ```bash
-WIKI="${WIKI_PATH:-$HOME/wiki}"
+# WIKI is resolved from skill config (see Wiki Location above)
 # Orientation reads at session start
 read_file "$WIKI/SCHEMA.md"
 read_file "$WIKI/index.md"

@@ -157,6 +157,19 @@ def test_report_md_is_human_readable(curator_env):
             final="Consolidated foo-like skills into foo-umbrella.",
             model="claude-opus-4.7",
             provider="openrouter",
+            tool_calls=[
+                # Evidence that `foo` was absorbed into `foo-umbrella`:
+                # write_file under foo-umbrella referencing foo.
+                {
+                    "name": "skill_manage",
+                    "arguments": json.dumps({
+                        "action": "write_file",
+                        "name": "foo-umbrella",
+                        "file_path": "references/foo.md",
+                        "file_content": "# foo\nContent absorbed from the old foo skill.\n",
+                    }),
+                },
+            ],
         ),
     )
     md = (run_dir / "REPORT.md").read_text()
@@ -171,11 +184,12 @@ def test_report_md_is_human_readable(curator_env):
     assert "claude-opus-4.7" in md
     assert "openrouter" in md
 
-    # The added/archived lists are present
-    assert "Skills archived" in md
+    # The consolidated/added lists are present with clear language
+    assert "Consolidated into umbrella skills" in md
     assert "`foo`" in md
-    assert "New skills this run" in md
+    assert "merged into" in md
     assert "`foo-umbrella`" in md
+    assert "New skills this run" in md
 
     # The full LLM final response is included verbatim (no 240-char truncation)
     assert "Consolidated foo-like skills into foo-umbrella." in md

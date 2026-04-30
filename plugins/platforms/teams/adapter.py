@@ -549,6 +549,21 @@ class TeamsAdapter(BasePlatformAdapter):
             logger.error("[teams] send_image failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e), retryable=True)
 
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self.send_image(
+            chat_id=chat_id,
+            image_url=image_path,
+            caption=caption,
+            reply_to=reply_to,
+        )
+
     async def get_chat_info(self, chat_id: str) -> dict:
         return {"name": chat_id, "type": "unknown", "chat_id": chat_id}
 

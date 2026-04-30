@@ -277,6 +277,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
         self._user_name_cache: Dict[str, str] = {}  # user_id → display name
+        self._channel_name_cache: Dict[str, str] = {}  # channel_id → resolved name
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Multi-workspace support
         self._team_clients: Dict[str, Any] = {}   # team_id → WebClient
@@ -1021,6 +1022,33 @@ class SlackAdapter(BasePlatformAdapter):
             self._user_name_cache[user_id] = user_id
             return user_id
 
+    async def _resolve_channel_name(self, channel_id: str) -> str:
+        """Resolve a Slack channel ID to a human-readable name (cached).
+
+        For public/private channels returns the channel name.
+        For DMs (im) returns the peer user's display name.
+        Falls back to the raw channel_id on any error.
+        """
+        if channel_id in self._channel_name_cache:
+            return self._channel_name_cache[channel_id]
+        try:
+            resp = await self._get_client(channel_id).conversations_info(channel=channel_id)
+            if not resp.get("ok"):
+                self._channel_name_cache[channel_id] = channel_id
+                return channel_id
+            ch = resp.get("channel", {})
+            if ch.get("is_im"):
+                peer_user = ch.get("user", "")
+                name = await self._resolve_user_name(peer_user, chat_id=channel_id) if peer_user else channel_id
+            else:
+                name = ch.get("name") or ch.get("name_normalized") or channel_id
+            self._channel_name_cache[channel_id] = name
+            return name
+        except Exception as e:
+            logger.debug("[Slack] conversations.info failed for %s: %s", channel_id, e)
+            self._channel_name_cache[channel_id] = channel_id
+            return channel_id
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -1379,7 +1407,7 @@ class SlackAdapter(BasePlatformAdapter):
 
         source = self.build_source(
             chat_id=channel_id,
-            chat_name=channel_id,
+            chat_name=self._channel_name_cache.get(channel_id, channel_id),
             chat_type="dm",
             user_id=user_id,
             thread_id=thread_ts,
@@ -1791,10 +1819,13 @@ class SlackAdapter(BasePlatformAdapter):
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
+        # Resolve channel name (cached after first lookup)
+        channel_name = await self._resolve_channel_name(channel_id)
+
         # Build source
         source = self.build_source(
             chat_id=channel_id,
-            chat_name=channel_id,  # Will be resolved later if needed
+            chat_name=channel_name,
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
             user_name=user_name,

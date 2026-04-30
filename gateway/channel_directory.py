@@ -190,10 +190,49 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
             continue
 
     # Merge in DM/group entries discovered from session history.
+    # Build a lookup from API-discovered channels so we can enrich session entries.
+    api_name_lookup = {ch["id"]: ch["name"] for ch in channels}
+
     for entry in _build_from_sessions("slack"):
-        if entry.get("id") not in seen_ids:
+        eid = entry.get("id")
+        if eid not in seen_ids:
+            # If the entry name is still a raw Slack ID (e.g. C0xxx / D0xxx),
+            # try to resolve it from the API lookup first.
+            if entry.get("name", "").startswith(("C0", "D0", "G0")):
+                if eid in api_name_lookup:
+                    entry["name"] = api_name_lookup[eid]
             channels.append(entry)
-            seen_ids.add(entry.get("id"))
+            seen_ids.add(eid)
+
+    # Resolve remaining raw-ID entries (DMs, private channels not in bot scope)
+    # by calling conversations.info + users.info for each.
+    unresolved = [ch for ch in channels if ch.get("name", "").startswith(("C0", "D0", "G0"))]
+    if unresolved and team_clients:
+        client = next(iter(team_clients.values()))
+        for entry in unresolved:
+            try:
+                resp = await client.conversations_info(channel=entry["id"])
+                if not resp.get("ok"):
+                    continue
+                ch_info = resp.get("channel", {})
+                if ch_info.get("is_im"):
+                    peer_user = ch_info.get("user", "")
+                    if peer_user:
+                        user_resp = await client.users_info(user=peer_user)
+                        if user_resp.get("ok"):
+                            u = user_resp["user"]
+                            entry["name"] = (
+                                u.get("profile", {}).get("display_name")
+                                or u.get("real_name")
+                                or u.get("name")
+                                or entry["id"]
+                            )
+                            entry["type"] = "dm"
+                else:
+                    entry["name"] = ch_info.get("name") or ch_info.get("name_normalized") or entry["id"]
+            except Exception as e:
+                logger.debug("Channel directory: failed to resolve %s: %s", entry["id"], e)
+                continue
 
     return channels
 

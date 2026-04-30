@@ -5,10 +5,13 @@ ImmutableStore to provide associative retrieval over conversation history.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from plugins.context_engine.lcm.dam.network import DenseAssociativeMemory
 from plugins.context_engine.lcm.dam.encoder import MessageEncoder
@@ -195,14 +198,30 @@ class DAMRetriever:
         if not hidden_acts:
             return []
 
-        if operation.upper() == "AND":
+        op = operation.upper()
+        if op == "AND":
             composed = hidden_acts[0]
             for h in hidden_acts[1:]:
                 composed = np.minimum(composed, h)
-        else:  # OR
+        elif op == "OR":
             composed = hidden_acts[0]
             for h in hidden_acts[1:]:
                 composed = np.maximum(composed, h)
+        elif op == "NOT":
+            # NOT is defined only for a single query (invert its binary activations).
+            # Multi-query NOT is semantically ambiguous — reject to avoid silent wrong results.
+            if len(hidden_acts) != 1:
+                logger.warning(
+                    "compose(operation='NOT') requires exactly 1 query; "
+                    "got %d — returning empty results",
+                    len(hidden_acts),
+                )
+                return []
+            # Hidden activations are binary (0.0 / 1.0 float32); inversion is exact.
+            composed = 1.0 - hidden_acts[0]
+        else:
+            logger.warning("compose(): unknown operation %r — returning empty results", operation)
+            return []
 
         # Reconstruct a visible vector from the composed hidden state
         # Use the network's internal reconstruct path directly

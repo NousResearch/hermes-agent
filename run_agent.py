@@ -837,6 +837,67 @@ def _pool_may_recover_from_rate_limit(pool) -> bool:
     return len(pool.entries()) > 1
 
 
+def _emit_dd_per_call_generation(
+    *,
+    dd_obs_module,
+    run_id: str,
+    session_key: Optional[str],
+    session_id_fallback: Optional[str],
+    model: str,
+    provider: Optional[str],
+    requested_at: str,
+    completed_at: Optional[str],
+    latency_ms: Optional[int],
+    canonical_usage: Any,
+    cost_amount_usd: Optional[float],
+    dd_context: Optional[dict],
+) -> None:
+    """Emit a per-API-call /log_generation row for a Hermes gateway turn.
+
+    Caller MUST pass identity (run_id/session_key/dd_context) via kwargs
+    after capturing them into locals at API-call start, NOT by reading
+    ``self._dd_*`` at write time. This keeps turn N from writing under
+    turn N+1's run_id when the cached AIAgent is reused across turns.
+
+    Uses ``log_generation_sync`` so the helper has a real accepted/failed
+    signal from obs-ingest. The flag is flipped ONLY on a 2xx response so
+    that a transport/registry/schema failure leaves the synthetic
+    fallback row intact (otherwise MC Live would lose both rows). Any
+    exception is swallowed — observability must never block the agent
+    loop — but a False return likewise leaves the flag untouched.
+    """
+    try:
+        import uuid as _uuid
+
+        _input = int(getattr(canonical_usage, "input_tokens", 0) or 0)
+        _output = int(getattr(canonical_usage, "output_tokens", 0) or 0)
+        _cache_read = int(getattr(canonical_usage, "cache_read_tokens", 0) or 0)
+        _cache_write = int(getattr(canonical_usage, "cache_write_tokens", 0) or 0)
+        _cost = float(cost_amount_usd) if cost_amount_usd is not None else 0.0
+        _latency = int(latency_ms) if latency_ms is not None else None
+        ok = dd_obs_module.log_generation_sync(
+            generation_id=_uuid.uuid4().hex,
+            session_id=session_key or session_id_fallback or "",
+            run_id=run_id,
+            model=model,
+            provider=provider,
+            requested_at=requested_at,
+            input_tokens=_input,
+            output_tokens=_output,
+            cache_read_tokens=_cache_read,
+            cache_creation_tokens=_cache_write,
+            cost_total_usd=_cost,
+            completed_at=completed_at,
+            latency_ms=_latency,
+        )
+        if ok and isinstance(dd_context, dict):
+            dd_context["per_call_generation_emitted"] = True
+    except Exception:
+        # Never block the agent loop; leave per_call_generation_emitted
+        # untouched so the gateway still writes its synthetic fallback.
+        pass
+
+
 def _qwen_portal_headers() -> dict:
     """Return default HTTP headers required by Qwen Portal API."""
     import platform as _plat
@@ -1583,7 +1644,16 @@ class AIAgent:
         self.logs_dir = hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
-        
+
+        # DecisionData observability — populated by gateway (api_server) when
+        # X-DD-Run-Id / X-DD-Parent-Run-Id headers are present on the request.
+        # When _dd_run_id is set, every API call emits /log_generation to
+        # obs-ingest (fire-and-forget, never blocks).
+        self._dd_run_id: Optional[str] = None
+        self._dd_parent_run_id: Optional[str] = None
+        self._dd_session_key: Optional[str] = None
+        self._dd_wts_task_id: Optional[str] = None
+
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
         self._memory_write_origin = "assistant_tool"
@@ -10718,6 +10788,14 @@ class AIAgent:
                 logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
             
             api_start_time = time.time()
+            # Capture DecisionData identity locally at API-call start so a
+            # cached AIAgent reused for a subsequent turn (which mutates
+            # self._dd_run_id/_dd_session_key) cannot cause this in-flight
+            # call to write its /log_generation under the wrong run_id.
+            _dd_call_run_id = getattr(self, "_dd_run_id", None)
+            _dd_call_session_key = getattr(self, "_dd_session_key", None)
+            _dd_call_session_id = getattr(self, "session_id", None)
+            _dd_call_context = getattr(self, "_dd_context", None)
             retry_count = 0
             max_retries = self._api_max_retries
             primary_recovery_attempted = False
@@ -11406,7 +11484,35 @@ class AIAgent:
                                 )
                             except Exception:
                                 pass  # never block the agent loop
-                        
+
+                        # DecisionData obs-ingest: emit /log_generation per API
+                        # call when a gateway-provided run_id is set. Identity
+                        # was captured at api_start_time above so a cached
+                        # AIAgent reused for the next turn cannot redirect
+                        # this write to the wrong run_id.
+                        if _dd_call_run_id:
+                            try:
+                                from datetime import datetime as _dt, timezone as _tz
+                                import dd_obs
+                                _req_iso = _dt.fromtimestamp(api_start_time, tz=_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                _comp_iso = _dt.now(tz=_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                _emit_dd_per_call_generation(
+                                    dd_obs_module=dd_obs,
+                                    run_id=_dd_call_run_id,
+                                    session_key=_dd_call_session_key,
+                                    session_id_fallback=_dd_call_session_id,
+                                    model=self.model,
+                                    provider=self.provider,
+                                    requested_at=_req_iso,
+                                    completed_at=_comp_iso,
+                                    latency_ms=int(api_duration * 1000),
+                                    canonical_usage=canonical_usage,
+                                    cost_amount_usd=cost_result.amount_usd,
+                                    dd_context=_dd_call_context,
+                                )
+                            except Exception:
+                                pass  # never block the agent loop
+
                         if self.verbose_logging:
                             logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
                         

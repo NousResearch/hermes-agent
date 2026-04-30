@@ -25,10 +25,13 @@ import signal
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
+import uuid
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any, List
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
@@ -700,6 +703,136 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     elif isinstance(model_cfg, dict):
         return model_cfg.get("default") or model_cfg.get("model") or ""
     return ""
+
+
+def _utc_iso() -> str:
+    """Return a compact UTC ISO-8601 timestamp for observability payloads."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _truthy_config_value(value: Any, *, default: bool = False) -> bool:
+    """Parse common bool-ish config/env values."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _dd_observability_config(config: dict | None = None) -> dict:
+    """Resolve DecisionData observability settings for gateway runs.
+
+    The integration is best-effort and intentionally local by default: if the
+    ingest service is absent, calls time out quickly and Hermes continues.
+    """
+    cfg = config if config is not None else _load_gateway_config()
+    obs_cfg = cfg.get("observability", {}) if isinstance(cfg, dict) else {}
+    dd_cfg = {}
+    if isinstance(obs_cfg, dict):
+        dd_cfg = obs_cfg.get("decisiondata", {}) or obs_cfg.get("mc_live", {}) or {}
+    if not isinstance(dd_cfg, dict):
+        dd_cfg = {}
+
+    enabled_raw = os.getenv("HERMES_DECISIONDATA_OBSERVABILITY_ENABLED")
+    enabled = _truthy_config_value(
+        enabled_raw if enabled_raw is not None else dd_cfg.get("enabled"),
+        default=True,
+    )
+    endpoint = (
+        os.getenv("HERMES_DECISIONDATA_OBSERVABILITY_URL")
+        or os.getenv("DECISIONDATA_OBSERVABILITY_URL")
+        or dd_cfg.get("url")
+        or dd_cfg.get("endpoint")
+        or "http://127.0.0.1:8511"
+    )
+    try:
+        timeout = float(
+            os.getenv("HERMES_DECISIONDATA_OBSERVABILITY_TIMEOUT")
+            or dd_cfg.get("timeout")
+            or 1.0
+        )
+    except Exception:
+        timeout = 1.0
+    return {
+        "enabled": bool(enabled),
+        "url": str(endpoint).rstrip("/"),
+        "timeout": max(0.1, min(timeout, 10.0)),
+    }
+
+
+def _dd_observability_post(path: str, payload: dict, config: dict | None = None) -> bool:
+    """Best-effort POST to DecisionData observability ingest.
+
+    Never raises: observability must not break user-facing Hermes turns.
+    """
+    obs = _dd_observability_config(config)
+    if not obs["enabled"]:
+        return False
+    try:
+        data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        req = urllib.request.Request(
+            obs["url"] + path,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=obs["timeout"]) as resp:
+            resp.read()
+        return True
+    except Exception as exc:
+        logger.debug("DecisionData observability POST %s failed: %s", path, exc)
+        return False
+
+
+def _dd_observability_run_id(session_id: str | None, generation: Optional[int] = None) -> str:
+    """Build a non-sensitive Hermes observability run id."""
+    base = re.sub(r"[^A-Za-z0-9_.:-]+", "-", session_id or "session").strip("-")[:80]
+    suffix = f"g{generation}" if generation is not None else uuid.uuid4().hex[:8]
+    return f"hermes-{base}-{suffix}"
+
+
+def _dd_observability_session_key(session_id: str | None) -> str:
+    """Build the MC Live grouping key expected by the Hermes tree mapper."""
+    base = re.sub(r"[^A-Za-z0-9_.:-]+", "-", session_id or "session").strip("-")[:96]
+    return f"agent:hermes:gateway:{base or uuid.uuid4().hex[:8]}"
+
+
+def _attach_dd_context_for_turn(
+    agent: Any,
+    *,
+    run_id: str,
+    session_key: str,
+    parent_run_id: Optional[str] = None,
+    wts_task_id: Optional[str] = None,
+) -> dict:
+    """Attach the per-turn DecisionData identity context to a (cached) AIAgent.
+
+    Hermes caches AIAgent instances per session_key; the same instance
+    can be reused across turns. Each turn must overwrite the agent's
+    DD identity AND replace the context dict so a stale
+    ``per_call_generation_emitted=True`` from the prior turn cannot
+    cause the gateway to skip the synthetic completion fallback when
+    the new turn never emitted a per-call row.
+
+    Returns the fresh context dict so the caller can inspect
+    ``per_call_generation_emitted`` after ``run_conversation`` returns
+    to decide whether to write the synthetic summary.
+    """
+    ctx = {
+        "run_id": run_id,
+        "session_key": session_key,
+        "parent_run_id": parent_run_id,
+        "wts_task_id": wts_task_id,
+        "agent_class": "Hermes",
+        "ingest_source": "hermes-gateway",
+        "per_call_generation_emitted": False,
+    }
+    agent._dd_run_id = run_id
+    agent._dd_session_key = session_key
+    agent._dd_parent_run_id = parent_run_id
+    agent._dd_wts_task_id = wts_task_id
+    agent._dd_context = ctx
+    return ctx
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -10391,6 +10524,14 @@ class GatewayRunner:
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         stream_consumer_holder = [None]  # Mutable container for stream consumer
+
+        # DecisionData / MC Live observability for real Hermes gateway runs.
+        # Use a non-sensitive synthetic grouping key instead of the raw platform
+        # session key, which can contain chat/user identifiers.
+        _dd_run_id = _dd_observability_run_id(session_id, run_generation)
+        _dd_session_key = _dd_observability_session_key(session_id)
+        _dd_generation_logged = False
+        _dd_context: dict | None = None
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
@@ -10450,7 +10591,7 @@ class GatewayRunner:
             # read *and* reassign the outer `_run_agent` parameter without
             # triggering an UnboundLocalError on the earlier read at
             # `_resolve_turn_agent_config(message, …)`.
-            nonlocal message
+            nonlocal message, _dd_generation_logged, _dd_context
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -10610,6 +10751,24 @@ class GatewayRunner:
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
 
+            _dd_provider = (turn_route.get("runtime") or {}).get("provider") or runtime_kwargs.get("provider")
+            _dd_model = turn_route.get("model") or model
+            _dd_observability_post("/log_spawn", {
+                "run_id": _dd_run_id,
+                "session_key": _dd_session_key,
+                "task_prompt": str(message)[:1000],
+                "label": f"Hermes {platform_key} turn",
+                "model": _dd_model,
+                "provider": _dd_provider,
+                "spawned_at": _utc_iso(),
+                "channel": "hermes",
+                "spawn_context": json.dumps({
+                    "platform": platform_key,
+                    "history_messages": len(history or []),
+                    "source": "hermes_gateway",
+                }, ensure_ascii=False),
+            }, user_config)
+
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
@@ -10678,6 +10837,14 @@ class GatewayRunner:
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
+            # DecisionData identity must be re-attached per turn so a cached
+            # agent reused across turns never inherits the prior turn's run_id
+            # or its per_call_generation_emitted flag (#hermes-mc-live-handoff).
+            _dd_context = _attach_dd_context_for_turn(
+                agent,
+                run_id=_dd_run_id,
+                session_key=_dd_session_key,
+            )
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
@@ -11029,6 +11196,31 @@ class GatewayRunner:
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
+            def _log_dd_generation_once(stop_reason: str | None = None) -> None:
+                nonlocal _dd_generation_logged
+                if _dd_generation_logged:
+                    return
+                _dd_generation_logged = True
+                _dd_observability_post("/log_generation", {
+                    "generation_id": f"{_dd_run_id}:generation:1",
+                    "session_id": _dd_session_key,
+                    "run_id": _dd_run_id,
+                    "agent_id": "hermes-gateway",
+                    "model": _resolved_model or _dd_model or "unknown",
+                    "requested_at": _utc_iso(),
+                    "stop_reason": stop_reason,
+                    "tool_count": len(tools_holder[0] or []),
+                    "input_message_count": len(agent_history) + 1,
+                }, user_config)
+
+            # Skip the synthetic completion-time generation when the agent's
+            # per-API-call logger has already emitted at least one row for
+            # this turn — otherwise we double-count tokens/cost. The
+            # synthetic row only fires as a fallback for turns that never
+            # reached a successful provider response.
+            if not (isinstance(_dd_context, dict) and _dd_context.get("per_call_generation_emitted")):
+                _log_dd_generation_once("completed" if final_response else "empty_response")
+
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
                 return {
@@ -11290,6 +11482,25 @@ class GatewayRunner:
 
         _notify_task = asyncio.create_task(_notify_long_running())
 
+        try:
+            _dd_keepalive_interval = float(os.getenv("HERMES_DECISIONDATA_KEEPALIVE_INTERVAL", "10"))
+        except Exception:
+            _dd_keepalive_interval = 10.0
+        _dd_keepalive_interval = max(1.0, _dd_keepalive_interval)
+
+        async def _dd_keepalive_loop():
+            while True:
+                await asyncio.sleep(_dd_keepalive_interval)
+                await asyncio.to_thread(
+                    _dd_observability_post,
+                    "/log_keepalive",
+                    {"run_id": _dd_run_id},
+                    user_config,
+                )
+
+        _dd_keepalive_task = asyncio.create_task(_dd_keepalive_loop())
+
+        response = None
         try:
             # Run in thread pool to not block.  Use an *inactivity*-based
             # timeout instead of a wall-clock limit: the agent can run for
@@ -11688,11 +11899,37 @@ class GatewayRunner:
                     channel_prompt=next_channel_prompt,
                 )
         finally:
-            # Stop progress sender, interrupt monitor, and notification task
+            # Complete the MC Live run before tearing down keepalive.
+            try:
+                _result_obj = response if isinstance(response, dict) else (result_holder[0] or {})
+                _failed = bool(_result_obj.get("failed")) if isinstance(_result_obj, dict) else False
+                _interrupted = bool(_result_obj.get("interrupted")) if isinstance(_result_obj, dict) else False
+                _status = "error" if _failed else "interrupted" if _interrupted else "done"
+                _summary = ""
+                if isinstance(_result_obj, dict):
+                    _summary = str(_result_obj.get("final_response") or _result_obj.get("error") or "")[:1000]
+                await asyncio.to_thread(
+                    _dd_observability_post,
+                    "/log_complete",
+                    {
+                        "run_id": _dd_run_id,
+                        "status": _status,
+                        "result_summary": _summary,
+                        "input_tokens": _result_obj.get("input_tokens") if isinstance(_result_obj, dict) else None,
+                        "output_tokens": _result_obj.get("output_tokens") if isinstance(_result_obj, dict) else None,
+                        "completed_at": _utc_iso(),
+                    },
+                    user_config,
+                )
+            except Exception as _dd_complete_err:
+                logger.debug("DecisionData observability complete failed: %s", _dd_complete_err)
+
+            # Stop progress sender, interrupt monitor, notification, and keepalive tasks
             if progress_task:
                 progress_task.cancel()
             interrupt_monitor.cancel()
             _notify_task.cancel()
+            _dd_keepalive_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
@@ -11720,7 +11957,7 @@ class GatewayRunner:
                 self._update_runtime_status("draining")
             
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:
+            for task in [progress_task, interrupt_monitor, tracking_task, _notify_task, _dd_keepalive_task]:
                 if task:
                     try:
                         await task

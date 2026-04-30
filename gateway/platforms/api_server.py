@@ -537,6 +537,24 @@ def _derive_chat_session_id(
     return f"api-{digest}"
 
 
+def _resolve_dd_session_key(headers, session_id: str) -> str:
+    """Resolve the DecisionData MC observability session_key for an api_server turn.
+
+    When a caller (e.g. hermes-dispatcher) supplies ``X-DD-Session-Key``,
+    use it verbatim so the spawn row's session_key matches the
+    generation rows that will be logged for the same run_id. Without
+    this, agent_runs.session_key would be ``agent:hermes:gateway:<run>``
+    (set by the dispatcher's /log_spawn) while generations.session_id
+    would be ``agent:hermes:api_server:<session>`` — splitting MC Live
+    drilldowns and breaking joins.
+
+    Falls back to the derived ``agent:hermes:api_server:<session_id>``
+    when the header is absent or blank.
+    """
+    val = (headers.get("X-DD-Session-Key") or "").strip()
+    return val or f"agent:hermes:api_server:{session_id}"
+
+
 _CRON_AVAILABLE = False
 try:
     from cron.jobs import (
@@ -717,6 +735,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        dd_obs_meta: Optional[Dict[str, str]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -760,6 +779,15 @@ class APIServerAdapter(BasePlatformAdapter):
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
         )
+        # DecisionData observability — propagate run lineage from caller.
+        if dd_obs_meta:
+            try:
+                agent._dd_run_id = dd_obs_meta.get("run_id")
+                agent._dd_parent_run_id = dd_obs_meta.get("parent_run_id")
+                agent._dd_session_key = dd_obs_meta.get("session_key")
+                agent._dd_wts_task_id = dd_obs_meta.get("wts_task_id")
+            except Exception:
+                pass
         return agent
 
     # ------------------------------------------------------------------
@@ -966,6 +994,59 @@ class APIServerAdapter(BasePlatformAdapter):
         model_name = body.get("model", self._model_name)
         created = int(time.time())
 
+        # ── DecisionData observability handshake ─────────────────────────
+        # If a caller (e.g. hermes-dispatcher) supplies X-DD-Run-Id, that
+        # caller already posted /log_spawn and will post /log_complete; we
+        # only forward the run_id so per-call /log_generation rows attribute
+        # to the right run. Otherwise, api_server owns the lifecycle and
+        # makes Hermes self-spawn for direct callers (Open WebUI, CLI, etc.).
+        _dd_run_id = (request.headers.get("X-DD-Run-Id") or "").strip()
+        _dd_parent_run_id = (request.headers.get("X-DD-Parent-Run-Id") or "").strip() or None
+        _dd_wts_task_id = (request.headers.get("X-DD-WTS-Task-Id") or "").strip() or None
+        _dd_caller_supplied_run_id = bool(_dd_run_id)
+        _dd_owns_lifecycle = False
+        if not _dd_run_id:
+            _dd_run_id = uuid.uuid4().hex
+            _dd_owns_lifecycle = True
+        _dd_session_key = _resolve_dd_session_key(request.headers, session_id)
+        _dd_meta = {
+            "run_id": _dd_run_id,
+            "parent_run_id": _dd_parent_run_id,
+            "session_key": _dd_session_key,
+            "wts_task_id": _dd_wts_task_id,
+        }
+        _dd_keepalive = None
+        # Only own lifecycle for non-streaming; streaming path completion is
+        # handled by the dispatcher when it supplies a run_id.
+        if _dd_owns_lifecycle and not stream:
+            try:
+                import dd_obs
+                _user_text_for_log = ""
+                if isinstance(user_message, str):
+                    _user_text_for_log = user_message
+                elif isinstance(user_message, list):
+                    for _part in user_message:
+                        if isinstance(_part, dict) and _part.get("type") == "text":
+                            _user_text_for_log = str(_part.get("text") or "")
+                            break
+                dd_obs.log_spawn(
+                    run_id=_dd_run_id,
+                    session_key=_dd_session_key,
+                    parent_run_id=_dd_parent_run_id,
+                    task_prompt=_user_text_for_log[:500],
+                    label="Hermes Worker",
+                    model=model_name or "",
+                    provider=getattr(self, "_provider", "") or "openai-codex",
+                    channel="hermes",
+                    spawn_context=(f"wts_task_id={_dd_wts_task_id}; api_server" if _dd_wts_task_id else "api_server"),
+                )
+                _dd_keepalive = dd_obs.KeepaliveLoop(run_id=_dd_run_id)
+                _dd_keepalive.start()
+            except Exception:
+                pass  # observability never blocks
+        else:
+            _dd_owns_lifecycle = False  # disable complete-on-return for streaming
+
         if stream:
             import queue as _q
             _stream_q: _q.Queue = _q.Queue()
@@ -1038,6 +1119,13 @@ class APIServerAdapter(BasePlatformAdapter):
             # The structured callbacks are strictly richer (they carry the
             # tool_call id), so they own the chat-completions SSE channel.
             agent_ref = [None]
+            # Streaming path: api_server does NOT own /log_spawn or /log_complete
+            # for streaming completions. Only forward dd_obs_meta when the
+            # caller (e.g. hermes-dispatcher) supplied X-DD-Run-Id and is
+            # running its own spawn/complete handshake — otherwise per-call
+            # /log_generation rows would attach to a run that never existed
+            # in agent_runs (orphan rows).
+            _dd_meta_for_stream = _dd_meta if _dd_caller_supplied_run_id else None
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
                 conversation_history=history,
@@ -1047,6 +1135,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
+                dd_obs_meta=_dd_meta_for_stream,
             ))
 
             return await self._write_sse_chat_completion(
@@ -1061,56 +1150,89 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                dd_obs_meta=_dd_meta,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
-        if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
-            try:
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
-            except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
-                return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
-                    status=500,
-                )
-        else:
-            try:
-                result, usage = await _compute_completion()
-            except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
-                return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
-                    status=500,
-                )
+        # ── DecisionData lifecycle invariant ─────────────────────────────
+        # When api_server owns the spawn/complete handshake, KeepaliveLoop
+        # MUST be stopped and /log_complete MUST fire on every exit path
+        # — including exceptions from _run_agent — otherwise MC Live shows
+        # a phantom "running" agent forever (keepalive thread alive,
+        # agent_runs.completed_at never set). The try/finally below makes
+        # that guarantee; the success branch later upgrades the status
+        # from "error" → "done" when the response is built.
+        _dd_complete_status = "error"
+        _dd_complete_summary = ""
+        _dd_input_tokens = 0
+        _dd_output_tokens = 0
+        try:
+            if idempotency_key:
+                fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+                try:
+                    result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
+                except Exception as e:
+                    logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                    return web.json_response(
+                        _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                        status=500,
+                    )
+            else:
+                try:
+                    result, usage = await _compute_completion()
+                except Exception as e:
+                    logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                    return web.json_response(
+                        _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                        status=500,
+                    )
 
-        final_response = result.get("final_response", "")
-        if not final_response:
-            final_response = result.get("error", "(No response generated)")
+            final_response = result.get("final_response", "")
+            if not final_response:
+                final_response = result.get("error", "(No response generated)")
 
-        response_data = {
-            "id": completion_id,
-            "object": "chat.completion",
-            "created": created,
-            "model": model_name,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": final_response,
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {
-                "prompt_tokens": usage.get("input_tokens", 0),
-                "completion_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
-        }
+            response_data = {
+                "id": completion_id,
+                "object": "chat.completion",
+                "created": created,
+                "model": model_name,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": final_response,
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": usage.get("input_tokens", 0),
+                    "completion_tokens": usage.get("output_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                },
+            }
 
-        return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
+            _dd_complete_status = "done"
+            _dd_complete_summary = (final_response or "")[:200]
+            _dd_input_tokens = int(usage.get("input_tokens", 0) or 0)
+            _dd_output_tokens = int(usage.get("output_tokens", 0) or 0)
+            return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
+        finally:
+            if _dd_owns_lifecycle:
+                try:
+                    if _dd_keepalive is not None:
+                        _dd_keepalive.stop()
+                    import dd_obs
+                    dd_obs.log_complete(
+                        run_id=_dd_run_id,
+                        status=_dd_complete_status,
+                        result_summary=_dd_complete_summary,
+                        input_tokens=_dd_input_tokens,
+                        output_tokens=_dd_output_tokens,
+                    )
+                except Exception:
+                    pass  # observability never blocks
 
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
@@ -2326,6 +2448,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        dd_obs_meta: Optional[Dict[str, str]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2348,6 +2471,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                dd_obs_meta=dd_obs_meta,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

@@ -454,6 +454,87 @@ class TestMediaGroups:
 
 
 # ---------------------------------------------------------------------------
+# TestSendVoice — outbound audio delivery
+# ---------------------------------------------------------------------------
+
+class TestSendVoice:
+    """Tests for TelegramAdapter.send_voice() routing across audio formats."""
+
+    @pytest.fixture()
+    def connected_adapter(self, adapter):
+        """Adapter with a mock bot attached."""
+        bot = AsyncMock()
+        adapter._bot = bot
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_flac_falls_back_to_document(self, connected_adapter, tmp_path):
+        """Telegram sendAudio does not accept FLAC — must fall back to sendDocument."""
+        audio_file = tmp_path / "clip.flac"
+        audio_file.write_bytes(b"fLaC" + b"\x00" * 32)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 101
+        connected_adapter._bot.send_voice = AsyncMock()
+        connected_adapter._bot.send_audio = AsyncMock()
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_voice(
+            chat_id="12345",
+            audio_path=str(audio_file),
+            caption="Audio",
+        )
+
+        assert result.success is True
+        assert result.message_id == "101"
+        connected_adapter._bot.send_document.assert_awaited_once()
+        connected_adapter._bot.send_audio.assert_not_awaited()
+        connected_adapter._bot.send_voice.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_wav_falls_back_to_document(self, connected_adapter, tmp_path):
+        """Telegram sendAudio does not accept WAV — must fall back to sendDocument."""
+        audio_file = tmp_path / "clip.wav"
+        audio_file.write_bytes(b"RIFF" + b"\x00" * 32)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 102
+        connected_adapter._bot.send_voice = AsyncMock()
+        connected_adapter._bot.send_audio = AsyncMock()
+        connected_adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_voice(
+            chat_id="12345",
+            audio_path=str(audio_file),
+        )
+
+        assert result.success is True
+        connected_adapter._bot.send_document.assert_awaited_once()
+        connected_adapter._bot.send_audio.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_mp3_routes_to_send_audio(self, connected_adapter, tmp_path):
+        """MP3 is Telegram-sendAudio-compatible."""
+        audio_file = tmp_path / "clip.mp3"
+        audio_file.write_bytes(b"ID3" + b"\x00" * 32)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 103
+        connected_adapter._bot.send_voice = AsyncMock()
+        connected_adapter._bot.send_audio = AsyncMock(return_value=mock_msg)
+        connected_adapter._bot.send_document = AsyncMock()
+
+        result = await connected_adapter.send_voice(
+            chat_id="12345",
+            audio_path=str(audio_file),
+        )
+
+        assert result.success is True
+        connected_adapter._bot.send_audio.assert_awaited_once()
+        connected_adapter._bot.send_document.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # TestSendDocument — outbound file attachment delivery
 # ---------------------------------------------------------------------------
 

@@ -63,10 +63,20 @@ export const api = {
   },
   getAnalytics: (days: number) =>
     fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
+  getModelsAnalytics: (days: number) =>
+    fetchJSON<ModelsAnalyticsResponse>(`/api/analytics/models?days=${days}`),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
+  getModelOptions: () => fetchJSON<ModelOptionsResponse>("/api/model/options"),
+  getAuxiliaryModels: () => fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
+  setModelAssignment: (body: ModelAssignmentRequest) =>
+    fetchJSON<ModelAssignmentResponse>("/api/model/set", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   saveConfig: (config: Record<string, unknown>) =>
     fetchJSON<{ ok: boolean }>("/api/config", {
       method: "PUT",
@@ -370,6 +380,46 @@ export interface AnalyticsResponse {
   };
 }
 
+export interface ModelsAnalyticsModelEntry {
+  model: string;
+  provider: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  reasoning_tokens: number;
+  estimated_cost: number;
+  actual_cost: number;
+  sessions: number;
+  api_calls: number;
+  tool_calls: number;
+  last_used_at: number;
+  avg_tokens_per_session: number;
+  capabilities: {
+    supports_tools?: boolean;
+    supports_vision?: boolean;
+    supports_reasoning?: boolean;
+    context_window?: number;
+    max_output_tokens?: number;
+    model_family?: string;
+  };
+}
+
+export interface ModelsAnalyticsResponse {
+  models: ModelsAnalyticsModelEntry[];
+  totals: {
+    distinct_models: number;
+    total_input: number;
+    total_output: number;
+    total_cache_read: number;
+    total_reasoning: number;
+    total_estimated_cost: number;
+    total_actual_cost: number;
+    total_sessions: number;
+    total_api_calls: number;
+  };
+  period_days: number;
+}
+
 export interface CronJob {
   id: string;
   name?: string;
@@ -429,6 +479,54 @@ export interface ModelInfoResponse {
     max_output_tokens?: number;
     model_family?: string;
   };
+}
+
+// ── Model options / assignment types ──────────────────────────────────
+
+export interface ModelOptionProvider {
+  name: string;
+  slug: string;
+  models?: string[];
+  total_models?: number;
+  is_current?: boolean;
+  is_user_defined?: boolean;
+  source?: string;
+  warning?: string;
+}
+
+export interface ModelOptionsResponse {
+  model?: string;
+  provider?: string;
+  providers?: ModelOptionProvider[];
+}
+
+export interface AuxiliaryTaskAssignment {
+  task: string;
+  provider: string;
+  model: string;
+  base_url: string;
+}
+
+export interface AuxiliaryModelsResponse {
+  tasks: AuxiliaryTaskAssignment[];
+  main: { provider: string; model: string };
+}
+
+export interface ModelAssignmentRequest {
+  scope: "main" | "auxiliary";
+  provider: string;
+  model: string;
+  /** For auxiliary: task slot name, "" for all, "__reset__" to reset all. */
+  task?: string;
+}
+
+export interface ModelAssignmentResponse {
+  ok: boolean;
+  scope?: string;
+  provider?: string;
+  model?: string;
+  tasks?: string[];
+  reset?: boolean;
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────

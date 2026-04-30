@@ -34,6 +34,7 @@ Guide for building RL environments in the hermes-agent repo that integrate with 
 
 ## Architecture Overview
 
+<!-- ascii-guard-ignore -->
 ```
 Atropos BaseEnv (atroposlib/envs/base.py)
     └── HermesAgentBaseEnv (environments/hermes_base_env.py)
@@ -44,6 +45,7 @@ Atropos BaseEnv (atroposlib/envs/base.py)
                     Only implements: setup, get_next_item, format_prompt,
                                     compute_reward, evaluate, wandb_log
 ```
+<!-- ascii-guard-ignore-end -->
 
 Hermes environments are special because they run a **multi-turn agent loop with tool calling** — not just single-turn completions. The base env handles the loop; you implement the task and scoring.
 

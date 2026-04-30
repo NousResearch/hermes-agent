@@ -1512,3 +1512,4 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
+

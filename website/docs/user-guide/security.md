@@ -119,7 +119,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `DELETE FROM` (without WHERE) | SQL DELETE without WHERE |
 | `TRUNCATE TABLE` | SQL TRUNCATE |
 | `> /etc/` | Overwrite system config |
-| `systemctl stop/disable/mask` | Stop/disable system services |
+| `systemctl stop/restart/disable/mask` | Stop/restart/disable system services |
 | `kill -9 -1` | Kill all processes |
 | `pkill -9` | Force kill processes |
 | Fork bomb patterns | Fork bombs |

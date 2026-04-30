@@ -358,7 +358,7 @@ auxiliary:
     model: "google/gemini-3-flash-preview"  # Model used for summarization
 ```
 
-When compression triggers, middle turns are summarized while the first 3 and last 4 turns are always preserved.
+When compression triggers, middle turns are summarized while the first 3 and last 20 turns are always preserved.
 
 ## Background Sessions
 

@@ -74,6 +74,7 @@ export const en: Translations = {
       documentation: "Documentation",
       keys: "Keys",
       logs: "Logs",
+      models: "Models",
       sessions: "Sessions",
       skills: "Skills",
     },
@@ -170,6 +171,18 @@ export const en: Translations = {
     perDayAvg: "/day avg",
     acrossModels: "across {count} models",
     inOut: "{input} in / {output} out",
+  },
+
+  models: {
+    modelsUsed: "Models Used",
+    estimatedCost: "Est. Cost",
+    tokens: "tokens",
+    sessions: "sessions",
+    avgPerSession: "avg/session",
+    apiCalls: "API calls",
+    toolCalls: "tool calls",
+    noModelsData: "No model usage data for this period",
+    startSession: "Start a session to see model data here",
   },
 
   logs: {

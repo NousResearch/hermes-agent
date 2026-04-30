@@ -72,6 +72,10 @@ def test_build_result_data_uses_rich_schema_and_runtime_metadata():
     assert isinstance(data["skipped_categories"], dict)
     assert "score_views" in data
     assert data["score_views"]["core"]["score"] == 0.8
+    assert data["score_views"]["discriminative"]["score"] == 0.8
+    assert data["official_comparison_score"] == 0.8
+    assert data["saturation"]["saturated_categories"] == []
+    assert data["saturation"]["saturated_fraction"] == 0.0
     assert "runtime" in data
     assert "python" in data["runtime"]
     assert data["runs"][0]["categories"]["semantic_recall"]["sub_scores"] == {"easy": 1.0}
@@ -99,8 +103,10 @@ def test_print_results_includes_fair_comparison_views(capsys):
 
     out = capsys.readouterr().out
     assert "Fair comparison views:" in out
-    assert "Executed score: 0.800 over 1 categories" in out
-    assert "Core score:     0.800 over 1 categories" in out
+    assert "Executed score:       0.800 over 1 categories" in out
+    assert "Core score:           0.800 over 1 categories" in out
+    assert "Discriminative score: 0.800 over 1 categories" in out
+    assert "Saturated categories: 0/1" in out
 
 
 def test_shared_category_view_scores_only_intersection():

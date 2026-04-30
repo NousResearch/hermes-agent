@@ -1,7 +1,98 @@
 [
-  {"id": "cs_01", "description": "50 facts, find the needle", "num_facts": 50, "target_fact": "The emergency contact number is 555-0199", "query": "What is the emergency contact number?", "gold_answer": "555-0199", "noise_template": "Office policy item {i}: standard procedure {val}", "difficulty": "easy"},
-  {"id": "cs_02", "description": "100 facts, retrieve recent over old", "num_facts": 100, "old_fact": "Server port was 3000", "new_fact": "Server port changed to 8080", "old_days_ago": 90, "new_days_ago": 5, "query": "What port does the server run on?", "gold_answer": "8080", "noise_template": "Config parameter {i} is set to {val}", "difficulty": "medium"},
-  {"id": "cs_03", "description": "200 facts, importance discrimination", "num_facts": 200, "target_fact": "CRITICAL: database master password is rotated monthly", "target_importance": 0.95, "query": "How often is the database password rotated?", "gold_answer": "monthly", "noise_template": "System metric {i}: current reading {val}", "noise_importance": 0.1, "difficulty": "medium"},
-  {"id": "cs_04", "description": "500 facts, find important technical detail", "num_facts": 500, "target_fact": "Maximum request payload size is 10MB for all API endpoints", "target_importance": 0.9, "query": "What is the max request size?", "gold_answer": "10MB", "noise_template": "Log entry {i}: operation completed with code {val}", "noise_importance": 0.05, "difficulty": "hard"},
-  {"id": "cs_05", "description": "1000 facts, stress test", "num_facts": 1000, "target_fact": "The JWT signing key rotates every 24 hours using AWS KMS", "target_importance": 0.85, "query": "How often does the JWT signing key rotate?", "gold_answer": "24 hours", "noise_template": "Telemetry data point {i}: value={val} timestamp=2024-01-{i}", "noise_importance": 0.05, "difficulty": "hard"}
+  {
+    "id": "cs_01",
+    "description": "50 facts, find the needle among same-domain contact distractors",
+    "num_facts": 50,
+    "target_fact": "The emergency contact number is 555-0199",
+    "query": "What is the emergency contact number?",
+    "gold_answer": "555-0199",
+    "related_noise": [
+      "The facilities contact number is 555-0100",
+      "The payroll emergency escalation number is 555-0142",
+      "The office reception contact number is 555-0123",
+      "The after-hours security contact number is 555-0188"
+    ],
+    "noise_template": "Office policy item {i}: standard procedure {val}",
+    "difficulty": "easy"
+  },
+  {
+    "id": "cs_02",
+    "description": "100 facts, retrieve recent server port over old and neighboring config ports",
+    "num_facts": 100,
+    "old_fact": "Server port was 3000",
+    "new_fact": "Server port changed to 8080",
+    "old_days_ago": 90,
+    "new_days_ago": 5,
+    "query": "What port does the server run on?",
+    "gold_answer": "8080",
+    "related_noise": [
+      "The metrics server port is 9090",
+      "The local development server port is 5173",
+      "The database port remains 5432",
+      "The admin console port is 8443",
+      "The legacy server port 3000 appears only in archived docs"
+    ],
+    "noise_template": "Config parameter {i} is set to {val}",
+    "difficulty": "medium"
+  },
+  {
+    "id": "cs_03",
+    "description": "200 facts, importance discrimination with database security distractors",
+    "num_facts": 200,
+    "target_fact": "CRITICAL: database master password is rotated monthly",
+    "target_importance": 0.95,
+    "query": "How often is the database password rotated?",
+    "gold_answer": "monthly",
+    "related_noise": [
+      "Database read-only passwords are reviewed quarterly",
+      "The database backup password rotates every 90 days",
+      "The API service password is rotated weekly",
+      "Database encryption keys rotate annually",
+      "The staging database password is reset after every demo"
+    ],
+    "noise_template": "System metric {i}: current reading {val}",
+    "noise_importance": 0.1,
+    "difficulty": "medium"
+  },
+  {
+    "id": "cs_04",
+    "description": "500 facts, find important API payload detail among same-domain limits",
+    "num_facts": 500,
+    "target_fact": "Maximum request payload size is 10MB for all API endpoints",
+    "target_importance": 0.9,
+    "query": "What is the max request size?",
+    "gold_answer": "10MB",
+    "related_noise": [
+      "Maximum response payload size is 25MB for export endpoints",
+      "The staging API request payload size is capped at 5MB",
+      "Maximum multipart upload chunk size is 64MB",
+      "The request timeout is 30 seconds for all API endpoints",
+      "Webhook request payloads are retried three times after failures",
+      "Maximum GraphQL query depth is 12 for public API endpoints"
+    ],
+    "noise_template": "Log entry {i}: operation completed with code {val}",
+    "noise_importance": 0.05,
+    "difficulty": "hard"
+  },
+  {
+    "id": "cs_05",
+    "description": "1000 facts, stress test with JWT/KMS/security distractors",
+    "num_facts": 1000,
+    "target_fact": "The JWT signing key rotates every 24 hours using AWS KMS",
+    "target_importance": 0.85,
+    "query": "How often does the JWT signing key rotate?",
+    "gold_answer": "24 hours",
+    "related_noise": [
+      "The JWT refresh token expires after 30 days",
+      "The API encryption key rotates every 7 days using AWS KMS",
+      "The session cookie signing secret rotates every 12 hours",
+      "The OAuth client secret rotates quarterly",
+      "The staging JWT signing key rotates every 48 hours",
+      "AWS KMS data keys are cached for 5 minutes",
+      "The webhook HMAC signing key rotates every 14 days"
+    ],
+    "noise_template": "Telemetry data point {i}: value={val} timestamp=2024-01-{i}",
+    "noise_importance": 0.05,
+    "difficulty": "hard"
+  }
 ]

@@ -6,6 +6,7 @@ from benchmarks.runner import (
     run_multi_hop_exploration,
     run_preference_memory,
     run_privacy_forgetting,
+    run_capacity_stress,
 )
 
 
@@ -125,3 +126,44 @@ def test_privacy_forgetting_uses_flat_store_forget_support():
     assert result.total == 1
     assert 0.0 <= result.score <= 1.0
     assert result.details[0]["id"] == "pf_smoke"
+
+
+class RecordingStore(FlatMemoryStore):
+    def __init__(self):
+        super().__init__()
+        self.stored = []
+
+    def store(self, content: str, category: str = "factual", scope: str = "global", importance: float = 0.5) -> None:
+        self.stored.append(content)
+        super().store(content, category=category, scope=scope, importance=importance)
+
+
+def test_capacity_stress_stores_related_noise_before_template_padding():
+    backend = RecordingStore()
+    judge = HeuristicJudge()
+
+    result = run_capacity_stress(
+        backend,
+        [
+            {
+                "id": "cs_related_noise_smoke",
+                "description": "related noise should be ingested as real distractors",
+                "num_facts": 6,
+                "target_fact": "The production API payload limit is 10MB.",
+                "query": "What is the production API payload limit?",
+                "gold_answer": "10MB",
+                "related_noise": [
+                    "The staging API payload limit is 5MB.",
+                    "The production API timeout limit is 30 seconds.",
+                ],
+                "noise_template": "API metric {i}: payload sample {val}",
+                "difficulty": "hard",
+            }
+        ],
+        judge,
+    )
+
+    assert result.category == "capacity_stress"
+    assert "The staging API payload limit is 5MB." in backend.stored
+    assert "The production API timeout limit is 30 seconds." in backend.stored
+    assert len(backend.stored) == 6

@@ -79,6 +79,10 @@ def _score_view_table_md(score_views: dict) -> str:
         add_row("Executed", score_views["executed"])
     if isinstance(score_views.get("core"), dict):
         add_row("Core", score_views["core"])
+    if isinstance(score_views.get("discriminative"), dict):
+        add_row("Discriminative", score_views["discriminative"])
+    if isinstance(score_views.get("conformance"), dict):
+        add_row("Conformance", score_views["conformance"])
     for track, view in sorted((score_views.get("tracks") or {}).items()):
         if isinstance(view, dict):
             add_row(f"Track: {track}", view)
@@ -231,6 +235,7 @@ def generate_report(result_json: dict, output_path: str = None) -> str:
     skipped   = result_json.get("skipped_categories", {})
     score_views = result_json.get("score_views", {})
     runtime   = result_json.get("runtime", {})
+    saturation = result_json.get("saturation", {})
     overall   = result_json.get("mean_score", 0.0)
     std       = result_json.get("std", 0.0)
     ci        = result_json.get("ci_95", [overall, overall])
@@ -302,6 +307,23 @@ def generate_report(result_json: dict, output_path: str = None) -> str:
         lines.append("## Fair Comparison Views")
         lines.append("")
         lines.append(_score_view_table_md(score_views))
+        lines.append("")
+
+    if saturation:
+        saturated = saturation.get("saturated_count", 0)
+        count = saturation.get("category_count", 0)
+        threshold = saturation.get("threshold", 1.0)
+        fraction = saturation.get("saturated_fraction", 0.0)
+        cats = saturation.get("saturated_categories", []) or []
+        lines.append("## Saturation")
+        lines.append("")
+        lines.append(
+            f"{saturated}/{count} categories at {float(threshold):.3f} "
+            f"({float(fraction) * 100:.1f}% saturated)."
+        )
+        if cats:
+            lines.append("")
+            lines.append(", ".join(f"`{cat}`" for cat in cats))
         lines.append("")
 
     if skipped:

@@ -154,7 +154,7 @@ def requested_categories_for_suites(suites: list[str]) -> list[str]:
 
 
 def build_score_views(runs: list[RunResult], requested_categories: list[str]) -> dict:
-    """Build fair comparison surfaces: executed, core, and per-track scores."""
+    """Build fair comparison surfaces: executed, core, discriminative, conformance, and per-track scores."""
     from benchmarks.tracks import get_category_spec
 
     executed = sorted({cat for run in runs for cat in run.results_by_category})
@@ -180,6 +180,12 @@ def build_score_views(runs: list[RunResult], requested_categories: list[str]) ->
 
     executed_view = score_for(executed)
     core_categories = [cat for cat in executed if get_category_spec(cat).in_core_score]
+    discriminative_categories = [
+        cat for cat in executed if get_category_spec(cat).is_discriminative
+    ]
+    conformance_categories = [
+        cat for cat in executed if get_category_spec(cat).is_conformance
+    ]
     tracks: dict[str, list[str]] = {}
     for cat in executed:
         track = get_category_spec(cat).track
@@ -188,6 +194,8 @@ def build_score_views(runs: list[RunResult], requested_categories: list[str]) ->
     return {
         "executed": executed_view,
         "core": score_for(core_categories),
+        "discriminative": score_for(discriminative_categories),
+        "conformance": score_for(conformance_categories),
         "tracks": {track: score_for(cats) for track, cats in sorted(tracks.items())},
     }
 
@@ -326,6 +334,39 @@ def capture_runtime_metadata(backend_name: str) -> dict:
     }
 
 
+def build_saturation_summary(runs: list[RunResult], threshold: float = 1.0) -> dict:
+    """Summarize categories at/above a ceiling threshold across all runs.
+
+    A high saturated_fraction is a benchmark-design warning: those categories
+    may be useful conformance gates, but they have weak discriminative power for
+    provider leaderboards.
+    """
+    categories = sorted({cat for run in runs for cat in run.results_by_category})
+    saturated = []
+    scenario_counts = {}
+    for cat in categories:
+        correct = 0
+        total = 0
+        for run in runs:
+            result = run.results_by_category.get(cat)
+            if result is None:
+                continue
+            correct += result.correct
+            total += result.total
+        scenario_counts[cat] = total
+        if total > 0 and correct / total >= threshold:
+            saturated.append(cat)
+
+    return {
+        "threshold": threshold,
+        "category_count": len(categories),
+        "saturated_count": len(saturated),
+        "saturated_fraction": len(saturated) / len(categories) if categories else 0.0,
+        "saturated_categories": saturated,
+        "scenario_counts": scenario_counts,
+    }
+
+
 def build_result_data(config: BenchmarkConfig, agg: AggregateResult, runs: list[RunResult]) -> dict:
     """Build the rich benchmark result JSON schema used for all saved results."""
     import datetime
@@ -339,6 +380,7 @@ def build_result_data(config: BenchmarkConfig, agg: AggregateResult, runs: list[
         capabilities,
     )
     score_views = build_score_views(runs, requested_categories)
+    saturation = build_saturation_summary(runs)
 
     return {
         "schema_version": "2.0",
@@ -352,6 +394,8 @@ def build_result_data(config: BenchmarkConfig, agg: AggregateResult, runs: list[
         "skipped_categories": skipped_categories,
         "skipped_category_names": sorted(skipped_categories),
         "score_views": score_views,
+        "official_comparison_score": score_views["discriminative"]["score"],
+        "saturation": saturation,
         "mean_score": agg.mean_score,
         "std": agg.std_score,
         "ci_95": [agg.ci_95_lower, agg.ci_95_upper],
@@ -1996,8 +2040,18 @@ def run_capacity_stress(backend: BenchmarkableStore, scenarios: list,
         target_importance = sc.get("target_importance", 0.8)
         backend.store(target_fact, category="factual", importance=target_importance)
 
-        # Store noise
-        for i in range(num_facts - 1):
+        # Store topically-related noise first. These same-domain distractors
+        # create real retrieval pressure; template padding alone is too easy
+        # and produces ceiling effects for keyword/recency baselines.
+        related_noise = list(sc.get("related_noise", []))
+        for content in related_noise:
+            backend.store(content, category="factual", importance=noise_importance)
+
+        # Store remaining template noise up to the requested capacity.
+        # One slot is reserved for the target/new fact. Time-series scenarios
+        # also stored an old_fact above, so reserve that slot too.
+        reserved = 1 + len(related_noise) + (1 if "old_fact" in sc else 0)
+        for i in range(max(num_facts - reserved, 0)):
             content = template.format(i=i, val=f"value_{i}")
             backend.store(content, category="factual", importance=noise_importance)
 
@@ -3022,14 +3076,30 @@ def print_results(agg: AggregateResult, config: BenchmarkConfig,
         score_views = build_score_views(runs, requested_categories)
         executed_view = score_views["executed"]
         core_view = score_views["core"]
+        discriminative_view = score_views["discriminative"]
+        conformance_view = score_views["conformance"]
+        saturation = build_saturation_summary(runs)
         print("  Fair comparison views:")
         print(
-            f"    Executed score: {executed_view['score']:.3f} "
+            f"    Executed score:       {executed_view['score']:.3f} "
             f"over {len(executed_view['categories'])} categories"
         )
         print(
-            f"    Core score:     {core_view['score']:.3f} "
+            f"    Core score:           {core_view['score']:.3f} "
             f"over {len(core_view['categories'])} categories"
+        )
+        print(
+            f"    Discriminative score: {discriminative_view['score']:.3f} "
+            f"over {len(discriminative_view['categories'])} categories"
+        )
+        if conformance_view["categories"]:
+            print(
+                f"    Conformance score:    {conformance_view['score']:.3f} "
+                f"over {len(conformance_view['categories'])} categories"
+            )
+        print(
+            f"    Saturated categories: {saturation['saturated_count']}/"
+            f"{saturation['category_count']}"
         )
         if score_views.get("tracks"):
             print("    Tracks:")

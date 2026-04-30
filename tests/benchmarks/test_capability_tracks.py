@@ -95,16 +95,19 @@ def test_requested_categories_and_score_views():
         seed=42,
         results_by_category={
             "adversarial": CategoryResult("adversarial", total=15, correct=14, score=14 / 15),
+            "privacy_forgetting": CategoryResult("privacy_forgetting", total=10, correct=10, score=1.0),
             "timestamp_integrity": CategoryResult("timestamp_integrity", total=8, correct=7, score=7 / 8),
         },
-        overall_score=21 / 23,
+        overall_score=31 / 33,
     )
 
-    views = build_score_views([run], ["adversarial", "timestamp_integrity"])
+    views = build_score_views([run], ["adversarial", "privacy_forgetting", "timestamp_integrity"])
 
-    assert views["executed"]["correct"] == 21
-    assert views["executed"]["total"] == 23
+    assert views["executed"]["correct"] == 31
+    assert views["executed"]["total"] == 33
     assert views["core"]["categories"] == ["adversarial"]
+    assert views["discriminative"]["categories"] == ["adversarial"]
+    assert views["conformance"]["categories"] == ["privacy_forgetting", "timestamp_integrity"]
     assert views["tracks"]["temporal"]["categories"] == ["timestamp_integrity"]
 
 

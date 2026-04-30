@@ -24,6 +24,18 @@ def _payload(backend, score, correct, total, skipped=None):
                 "total": total,
                 "categories": ["semantic_recall"],
             },
+            "discriminative": {
+                "score": score,
+                "correct": correct,
+                "total": total,
+                "categories": ["semantic_recall"],
+            },
+            "conformance": {
+                "score": 1.0,
+                "correct": 2,
+                "total": 2,
+                "categories": ["privacy_forgetting"],
+            },
             "tracks": {
                 "core": {
                     "score": score,
@@ -33,6 +45,14 @@ def _payload(backend, score, correct, total, skipped=None):
                 }
             },
         },
+        "saturation": {
+            "threshold": 1.0,
+            "saturated_categories": ["privacy_forgetting"],
+            "saturated_count": 1,
+            "category_count": 2,
+            "saturated_fraction": 0.5,
+        },
+        "official_comparison_score": score,
         "mean_score": score,
         "std": 0.0,
         "ci_95": [score, score],
@@ -78,6 +98,10 @@ def test_generate_report_includes_schema_v2_fairness_metadata():
     assert "Schema Version" in report
     assert "Fair Comparison Views" in report
     assert "Core" in report
+    assert "Discriminative" in report
+    assert "Conformance" in report
+    assert "Saturation" in report
+    assert "1/2 categories at 1.000" in report
     assert "Skipped Categories" in report
     assert "privacy_forgetting" in report
     assert "Runtime and Reproducibility Metadata" in report

@@ -1023,7 +1023,8 @@ def _compress_session_history(
             history_version = int(session.get("history_version", 0))
     history = before_messages
     if len(history) < 4:
-        return 0, _get_usage(agent)
+        usage = _get_usage(agent)
+        return 0, usage
     if approx_tokens is None:
         approx_tokens = estimate_messages_tokens_rough(history)
     # Pass system_message=None so AIAgent._compress_context rebuilds the
@@ -1041,10 +1042,12 @@ def _compress_session_history(
         if int(session.get("history_version", 0)) != history_version:
             # External mutation during compaction — drop the compressed
             # result so we don't clobber concurrent edits.
-            return 0, _get_usage(agent)
+            usage = _get_usage(agent)
+            return 0, usage
         session["history"] = compressed
         session["history_version"] = history_version + 1
-    return len(history) - len(compressed), _get_usage(agent)
+    usage = _get_usage(agent)
+    return len(history) - len(compressed), usage
 
 
 def _sync_session_key_after_compress(sid: str, session: dict) -> None:
@@ -4541,8 +4544,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             agent.ephemeral_system_prompt = new_prompt or None
             agent._cached_system_prompt = None
         elif name == "compress" and agent:
-            with session["history_lock"]:
-                _compress_session_history(session, arg)
+            _compress_session_history(session, arg)
+            _sync_session_key_after_compress(sid, session)
             _emit("session.info", sid, _session_info(agent))
         elif name == "fast" and agent:
             mode = arg.lower()

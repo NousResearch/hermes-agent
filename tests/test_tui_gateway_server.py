@@ -2327,6 +2327,39 @@ def test_mirror_slash_side_effects_allowed_when_idle(monkeypatch):
     assert applied["model"]
 
 
+def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
+    """Regression guard: /compress side effect must not hold history_lock
+    when calling _compress_session_history (the helper snapshots under
+    the same non-reentrant lock internally)."""
+    import types
+
+    seen = {"compress": False, "sync": False}
+    emitted = []
+
+    def _fake_compress(session, focus_topic=None, **_kw):
+        seen["compress"] = True
+        assert not session["history_lock"].locked()
+        return (0, {"total": 0})
+
+    def _fake_sync(_sid, _session):
+        seen["sync"] = True
+
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", _fake_sync)
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+
+    session = _session(running=False)
+    session["agent"] = types.SimpleNamespace(model="x")
+
+    warning = server._mirror_slash_side_effects("sid", session, "/compress")
+
+    assert warning == ""
+    assert seen["compress"]
+    assert seen["sync"]
+    assert ("session.info", "sid", {"model": "x"}) in emitted
+
+
 # ---------------------------------------------------------------------------
 # session.create / session.close race: fast /new churn must not orphan the
 # slash_worker subprocess or the global approval-notify registration.

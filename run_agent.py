@@ -6210,7 +6210,12 @@ class AIAgent:
         correctly — rebuilding with the Bedrock SDK when provider is bedrock,
         rather than always falling back to build_anthropic_client() which
         requires a direct Anthropic API key.
+
+        Honors ``self._oauth_1m_beta_disabled`` (set by the reactive recovery
+        path when an OAuth subscription rejects the 1M-context beta) so the
+        rebuilt client carries the reduced beta set.
         """
+        _drop_1m = bool(getattr(self, "_oauth_1m_beta_disabled", False))
         if getattr(self, "provider", None) == "bedrock":
             from agent.anthropic_adapter import build_anthropic_bedrock_client
             region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
@@ -6221,6 +6226,7 @@ class AIAgent:
                 self._anthropic_api_key,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                drop_context_1m_beta=_drop_1m,
             )
 
     def _interruptible_api_call(self, api_kwargs: dict):
@@ -8167,6 +8173,7 @@ class AIAgent:
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
+                drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
             )
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -10752,6 +10759,7 @@ class AIAgent:
             copilot_auth_retry_attempted=False
             thinking_sig_retry_attempted = False
             image_shrink_retry_attempted = False
+            oauth_1m_beta_retry_attempted = False
             has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
@@ -11707,6 +11715,36 @@ class AIAgent:
                                 "image-shrink recovery: no data-URL image parts found "
                                 "or shrink didn't reduce size; surfacing original error."
                             )
+
+                    # Anthropic OAuth subscription rejected the 1M-context beta
+                    # header ("long context beta is not yet available for this
+                    # subscription"). Disable the beta for the rest of this
+                    # session, rebuild the client, and retry once.  1M-capable
+                    # subscriptions never hit this branch — they accept the
+                    # beta and keep full 1M context.  See PR #17680 for the
+                    # original report (we chose reactive recovery over the
+                    # proposed unconditional omit so capable subscriptions
+                    # don't silently lose the capability).
+                    if (
+                        classified.reason == FailoverReason.oauth_long_context_beta_forbidden
+                        and self.api_mode == "anthropic_messages"
+                        and self._is_anthropic_oauth
+                        and not oauth_1m_beta_retry_attempted
+                    ):
+                        oauth_1m_beta_retry_attempted = True
+                        if not getattr(self, "_oauth_1m_beta_disabled", False):
+                            self._oauth_1m_beta_disabled = True
+                            try:
+                                self._anthropic_client.close()
+                            except Exception:
+                                pass
+                            self._rebuild_anthropic_client()
+                            self._vprint(
+                                f"{self.log_prefix}🔕 OAuth subscription doesn't support "
+                                f"the 1M-context beta — disabled for this session and retrying...",
+                                force=True,
+                            )
+                            continue
 
                     if (
                         self.api_mode == "codex_responses"

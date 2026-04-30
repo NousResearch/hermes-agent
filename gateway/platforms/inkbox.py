@@ -371,6 +371,37 @@ class InkboxAdapter(BasePlatformAdapter):
                 identity.phone_number.number, webhook_url, ws_url,
             )
 
+        # Persist the resolved identity so non-Inkbox sessions (CLI, etc.) can
+        # tell the agent which email + phone it can be reached on.  Read by
+        # ``prompt_builder.build_inkbox_identity_hint``.
+        self._write_identity_state(identity, webhook_url, ws_url)
+
+    def _write_identity_state(self, identity, webhook_url: str, ws_url: str) -> None:
+        try:
+            from hermes_cli.config import get_hermes_home
+            state_path = get_hermes_home() / "inkbox_identity_state.json"
+            state = {
+                "handle": self._identity_handle,
+                "email_address": (
+                    getattr(identity.mailbox, "email_address", None)
+                    if identity.mailbox else None
+                ),
+                "phone_number": (
+                    getattr(identity.phone_number, "number", None)
+                    if identity.phone_number else None
+                ),
+                "phone_number_id": (
+                    str(getattr(identity.phone_number, "id", ""))
+                    if identity.phone_number else None
+                ),
+                "public_url": self._public_url,
+                "webhook_url": webhook_url,
+                "ws_url": ws_url,
+            }
+            state_path.write_text(json.dumps(state, indent=2) + "\n")
+        except Exception as exc:
+            logger.debug("[Inkbox] Failed to write identity state file: %s", exc)
+
     # ------------------------------------------------------------------
     # Outbound: send / edit / get_chat_info
     # ------------------------------------------------------------------

@@ -831,6 +831,52 @@ def build_environment_hints() -> str:
     return "\n\n".join(hints)
 
 
+def build_inkbox_identity_hint() -> str:
+    """Return a paragraph describing the Inkbox identity bound to this gateway.
+
+    Unlike ``PLATFORM_HINTS["inkbox"]`` (which only fires for messages that
+    arrive via the Inkbox platform), this hint is platform-agnostic — it tells
+    the agent which email address + phone number it can be reached on, so a
+    CLI/Telegram/Discord user asking "what's your phone number?" gets the
+    answer that matches the gateway's actual reachability.
+
+    Returns an empty string when Inkbox isn't configured for this gateway.
+    """
+    try:
+        from hermes_cli.config import get_hermes_home
+        state_path = get_hermes_home() / "inkbox_identity_state.json"
+        if not state_path.exists():
+            return ""
+        import json as _json
+        state = _json.loads(state_path.read_text())
+    except Exception:
+        return ""
+
+    handle = state.get("handle")
+    if not handle:
+        return ""
+
+    parts = [f"You are bound to an Inkbox identity (handle: {handle})."]
+    email = state.get("email_address")
+    phone = state.get("phone_number")
+    if email:
+        parts.append(f"Inbound email arrives at {email}.")
+    if phone:
+        parts.append(f"Inbound SMS messages and voice calls arrive at {phone}.")
+    if email or phone:
+        parts.append(
+            "When asked what email address or phone number you have, "
+            "answer with these — they are real, reachable channels routed "
+            "back into your sessions via Inkbox webhooks."
+        )
+        parts.append(
+            "You can send outbound email or SMS through these channels via "
+            "send_message with platform='inkbox' (target a contact UUID or "
+            "raw email/E.164 phone)."
+        )
+    return " ".join(parts)
+
+
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2

@@ -729,14 +729,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         self._client.post(f"/api/v1/sessions/{self._session_id}/messages", {
             "role": "user",
-            "parts": [
-                {"type": "text", "text": text},
-            ],
+            "content": text,
         })
+        self._client.post(f"/api/v1/sessions/{self._session_id}/commit")
 
         return json.dumps({
             "status": "stored",
-            "message": "Memory recorded. Will be extracted and indexed on session commit.",
+            "message": "Memory recorded and session committed for extraction.",
         })
 
     def _tool_add_resource(self, args: dict) -> str:

@@ -418,8 +418,8 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 
 **Solution:**
 ```bash
-# Install messaging dependencies
-pip install "hermes-agent[telegram]"   # or [discord], [slack], [whatsapp]
+# Install core messaging gateway dependencies
+pip install "hermes-agent[messaging]"  # Telegram, Discord, Slack, and shared gateway deps
 
 # Check for port conflicts
 lsof -i :8080

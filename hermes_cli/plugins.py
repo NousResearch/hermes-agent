@@ -36,6 +36,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import importlib.util
+import inspect
 import logging
 import os
 import sys
@@ -1074,6 +1075,13 @@ class PluginManager:
         for cb in callbacks:
             try:
                 ret = cb(**kwargs)
+                if inspect.iscoroutine(ret):
+                    import asyncio
+                    logger.debug(
+                        "Hook '%s' callback %s returned a coroutine — awaiting",
+                        hook_name, getattr(cb, "__name__", repr(cb)),
+                    )
+                    ret = asyncio.run(ret)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:

@@ -6495,11 +6495,15 @@ class HermesCLI:
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
                 from hermes_cli.plugins import get_plugin_command_handler
+                import asyncio
+                import inspect as _inspect
                 plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
                 if plugin_handler:
                     user_args = cmd_original[len(base_cmd):].strip()
                     try:
                         result = plugin_handler(user_args)
+                        if _inspect.iscoroutine(result):
+                            result = asyncio.run(result)
                         if result:
                             _cprint(str(result))
                     except Exception as e:

@@ -902,6 +902,108 @@ def test_startup_runtime_detects_provider_for_model_env(monkeypatch):
     )
 
 
+def test_load_fallback_model_prefers_fallback_providers(monkeypatch):
+    fallback_chain = [
+        {"provider": "openrouter", "model": "openai/gpt-5.5"},
+        {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+    ]
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "fallback_model": {"provider": "legacy", "model": "legacy-model"},
+            "fallback_providers": fallback_chain,
+        },
+    )
+
+    assert server._load_fallback_model() == fallback_chain
+
+
+def test_make_agent_passes_configured_fallback_chain(monkeypatch):
+    captured = {}
+    fallback_chain = [
+        {"provider": "openrouter", "model": "openai/gpt-5.5"},
+    ]
+
+    def fake_agent(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model=kwargs.get("model"))
+
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "model": {"default": "gpt-5.5", "provider": "openai-codex"},
+            "fallback_providers": fallback_chain,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, target_model=None: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "token",
+            "api_mode": "codex_responses",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    agent = server._make_agent("sid", "session-key")
+
+    assert agent.model == "gpt-5.5"
+    assert captured["fallback_model"] == fallback_chain
+    assert captured["platform"] == "tui"
+
+
+def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
+    chain = [
+        {"provider": "openrouter", "model": "openai/gpt-5.5"},
+        {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+    ]
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="openai-codex",
+        _fallback_chain=chain,
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["fallback_model"] == chain
+
+
+def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="anthropic",
+        _fallback_chain=[],
+    )
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "max_turns": 25,
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "openai/gpt-5.5"},
+            ],
+        },
+    )
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["fallback_model"] == []
+
+
 def test_startup_runtime_resolves_short_alias_without_network(monkeypatch):
     monkeypatch.setenv("HERMES_MODEL", "sonnet")
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)

@@ -2587,6 +2587,34 @@ def _parse_tui_skills_env() -> list[str]:
     return skills
 
 
+def _load_fallback_model():
+    """Return the configured fallback chain for TUI-created agents.
+
+    Keep this in parity with ``HermesCLI.__init__``: prefer the new
+    ``fallback_providers`` list and accept the legacy single-dict
+    ``fallback_model`` shape.
+    """
+    cfg = _load_cfg()
+    fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or []
+    if isinstance(fb, dict):
+        fb = [fb] if fb.get("provider") and fb.get("model") else []
+    if isinstance(fb, list):
+        return [
+            f for f in fb
+            if isinstance(f, dict) and f.get("provider") and f.get("model")
+        ]
+    return []
+
+
+def _agent_fallback_model(agent):
+    """Return an agent's fallback chain without rehydrating deliberately empty chains."""
+    if hasattr(agent, "_fallback_chain"):
+        return getattr(agent, "_fallback_chain") or []
+    if hasattr(agent, "_fallback_model"):
+        return getattr(agent, "_fallback_model", None)
+    return _load_fallback_model()
+
+
 def _background_agent_kwargs(agent, task_id: str) -> dict:
     cfg = _load_cfg()
 
@@ -2621,7 +2649,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
         "session_db": _get_db(),
-        "fallback_model": getattr(agent, "_fallback_model", None),
+        "fallback_model": _agent_fallback_model(agent),
     }
 
 
@@ -2880,6 +2908,7 @@ def _make_agent(
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
+        fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )
 

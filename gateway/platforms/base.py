@@ -2117,6 +2117,12 @@ class BasePlatformAdapter(ABC):
         ``release_guard=False`` keeps the adapter-level session guard in place
         so reset-like commands can finish atomically before follow-up messages
         are allowed to start a fresh background task.
+
+        Bounded by a 5s timeout so a wedged finally block in the cancelled
+        task (typing-task cleanup, on_processing_complete hook, etc.) can't
+        stall the calling dispatch coroutine — particularly under pytest-
+        asyncio where the event loop's cancellation-propagation semantics
+        differ subtly from a bare ``asyncio.run`` harness.
         """
         task = self._session_tasks.pop(session_key, None)
         if task is not None and not task.done():
@@ -2128,9 +2134,15 @@ class BasePlatformAdapter(ABC):
             self._expected_cancelled_tasks.add(task)
             task.cancel()
             try:
-                await task
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
             except asyncio.CancelledError:
                 pass
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] Cancelled task for %s did not exit within 5s; "
+                    "unblocking dispatch and letting the task unwind in the background",
+                    self.name, session_key,
+                )
             except Exception:
                 logger.debug(
                     "[%s] Session cancellation raised while unwinding %s",
@@ -2713,6 +2725,11 @@ class BasePlatformAdapter(ABC):
 
         Used during gateway shutdown/replacement so active sessions from the old
         process do not keep running after adapters are being torn down.
+
+        Each cancelled task is awaited with a 5s bound so a wedged finally
+        (typing-task cleanup, on_processing_complete hook) can't stall the
+        whole shutdown path.  Stragglers are released from our tracking and
+        allowed to finish unwinding on their own.
         """
         # Loop until no new tasks appear.  Without this, a message
         # arriving during the `await asyncio.gather` below would spawn
@@ -2731,7 +2748,21 @@ class BasePlatformAdapter(ABC):
             for task in tasks:
                 self._expected_cancelled_tasks.add(task)
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *(asyncio.shield(t) for t in tasks),
+                        return_exceptions=True,
+                    ),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] %d background task(s) did not exit within 5s; "
+                    "releasing tracking and letting them unwind in the background",
+                    self.name, len([t for t in tasks if not t.done()]),
+                )
+                break
             # Loop: late-arrival tasks spawned during the gather above
             # will be in self._background_tasks now.  Re-check.
         self._background_tasks.clear()

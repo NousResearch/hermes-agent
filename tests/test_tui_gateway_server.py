@@ -2535,10 +2535,18 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
             self.base_url = ""
             self.api_key = ""
 
-    # Make _build block until we release it — simulates slow agent init
+    # Make _build block until we release it — simulates slow agent init.
+    # Also signal when _build actually reaches _make_agent so the test
+    # can close the session at the right moment: session.create now
+    # defers _start_agent_build behind a 50ms timer (see the
+    # `_deferred_build` path in @method("session.create")), so closing
+    # before the build thread has even started would skip the orphan
+    # detection entirely and the test would race a non-event.
+    build_started = threading.Event()
     release_build = threading.Event()
 
-    def _slow_make_agent(sid, key):
+    def _slow_make_agent(sid, key, session_id=None):
+        build_started.set()
         release_build.wait(timeout=3.0)
         return _FakeAgent()
 
@@ -2576,6 +2584,12 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert resp.get("result"), f"got error: {resp.get('error')}"
     sid = resp["result"]["session_id"]
+
+    # Wait until the (deferred) build thread has actually entered
+    # _make_agent — otherwise session.close pops _sessions[sid] before
+    # _build ever runs, _start_agent_build never calls _build, and we
+    # never exercise the orphan-cleanup path.
+    assert build_started.wait(timeout=2.0), "build thread never entered _make_agent"
 
     # Build thread is blocked in _slow_make_agent.  Close the session
     # NOW — this pops _sessions[sid] before _build can install the

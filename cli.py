@@ -4362,6 +4362,347 @@ class HermesCLI:
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
         self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _code_mode_dashboard_url(self) -> str:
+        dashboard = self.config.get("dashboard", {}) if isinstance(self.config, dict) else {}
+        host = str(dashboard.get("host") or "127.0.0.1")
+        port = int(dashboard.get("port") or 9119)
+        return f"http://{host}:{port}"
+
+    def _code_mode_backend_probe(self) -> tuple[str, dict[str, Any] | None]:
+        url = f"{self._code_mode_dashboard_url()}/api/code/status"
+        try:
+            import urllib.request
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=0.75) as resp:
+                if resp.status == 200:
+                    return "online", json.loads(resp.read().decode("utf-8"))
+                return f"http {resp.status}", None
+        except Exception:
+            return "offline", None
+
+    def _code_mode_git_branch(self, cwd: str) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            branch = result.stdout.strip()
+            return branch or "(detached or unavailable)"
+        except Exception:
+            return "(not a git repo)"
+
+    def _code_mode_state_status(self) -> dict[str, Any]:
+        if self._session_db:
+            try:
+                return self._session_db.code_mode_status()
+            except Exception as exc:
+                return {"mode": "unavailable", "error": str(exc)}
+        return {"mode": "unavailable", "error": "state database not available"}
+
+    def _handle_code_command(self, _cmd: str):
+        """Show the current Code Mode console summary."""
+        from hermes_cli.profiles import get_active_profile_name
+
+        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        backend_status, backend_payload = self._code_mode_backend_probe()
+        state_status = (backend_payload or {}).get("state") if backend_payload else self._code_mode_state_status()
+        if not isinstance(state_status, dict):
+            state_status = self._code_mode_state_status()
+        schema_version = state_status.get("schema_version", "(unknown)")
+        counts = state_status.get("counts") or {}
+
+        lines = [
+            "Hermes Code Mode",
+            "",
+            f"Provider: {getattr(self, 'provider', None) or 'unknown'}",
+            f"Model: {getattr(self, 'model', None) or '(unknown)'}",
+            f"Profile: {get_active_profile_name()}",
+            f"Workspace: {cwd}",
+            f"Git Branch: {self._code_mode_git_branch(cwd)}",
+            f"Backend: {backend_status}",
+            f"Web/Cockpit: {self._code_mode_dashboard_url()}",
+            f"Schema: {schema_version}",
+            (
+                "State: "
+                f"{counts.get('code_workspaces', 0)} workspace(s), "
+                f"{counts.get('code_sessions', 0)} session(s), "
+                f"{counts.get('code_events', 0)} event(s), "
+                f"{counts.get('code_approval_requests', 0)} approval request(s)"
+            ),
+            "",
+            "Commands: /workspace, /session, /web, /approvals, /skills-code, /github",
+            "Approval Governance: /api/code/approvals/*",
+        ]
+        if state_status.get("error"):
+            lines.insert(-2, f"State Note: {state_status['error']}")
+        self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_web_command(self, _cmd: str):
+        """Show dashboard launch hints for Code Mode."""
+        backend_status, _payload = self._code_mode_backend_probe()
+        url = self._code_mode_dashboard_url()
+        lines = [
+            "Hermes Web / Code Cockpit",
+            "",
+            f"URL: {url}",
+            f"Backend: {backend_status}",
+            "",
+            "Launch: python -m hermes_cli.main dashboard --port 9119",
+            "Note: hermesWeb is not present in this checkout; UI expansion is deferred.",
+        ]
+        self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_workspace_command(self, cmd: str):
+        """List known Code Mode workspaces, falling back to current cwd."""
+        query = ""
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            query = parts[1].strip()
+
+        workspaces = []
+        if self._session_db:
+            try:
+                workspaces = self._session_db.list_code_workspaces(q=query, limit=20)
+            except Exception:
+                workspaces = []
+
+        if not workspaces:
+            cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+            lines = [
+                "Code Mode Workspaces",
+                "",
+                "No stored Code Mode workspaces found.",
+                f"Current Path: {cwd}",
+                f"Git Branch: {self._code_mode_git_branch(cwd)}",
+            ]
+            self._console_print("\n".join(lines), highlight=False, markup=False)
+            return
+
+        lines = ["Code Mode Workspaces", ""]
+        for workspace in workspaces:
+            name = workspace.get("name") or workspace.get("id") or "(unnamed)"
+            repo = workspace.get("repo_url") or workspace.get("git_remote") or workspace.get("repo") or ""
+            path = workspace.get("path") or ""
+            lines.append(f"- {name}")
+            if repo:
+                lines.append(f"  Repo: {repo}")
+            if path:
+                lines.append(f"  Path: {path}")
+        self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_code_session_command(self, cmd: str):
+        """List known Code Mode sessions."""
+        workspace_id = None
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            workspace_id = parts[1].strip() or None
+
+        sessions = []
+        if self._session_db:
+            try:
+                sessions = self._session_db.list_code_sessions(workspace_id=workspace_id, limit=20)
+            except Exception:
+                sessions = []
+
+        if not sessions:
+            self._console_print(
+                "Code Mode Sessions\n\nNo stored Code Mode sessions found.",
+                highlight=False,
+                markup=False,
+            )
+            return
+
+        lines = ["Code Mode Sessions", ""]
+        for session in sessions:
+            sid = session.get("id") or "(unknown)"
+            status = session.get("status") or "(unknown)"
+            workspace = session.get("workspace_id") or "(none)"
+            branch = session.get("branch") or "(unknown)"
+            lines.append(f"- {sid}: {status} workspace={workspace} branch={branch}")
+        self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_code_approvals_command(self, _cmd: str):
+        backend_status, _payload = self._code_mode_backend_probe()
+        if backend_status == "online":
+            try:
+                import urllib.request
+
+                url = f"{self._code_mode_dashboard_url()}/api/code/approvals/summary"
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=1.0) as resp:
+                    if resp.status == 200:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        summary = data.get("summary") or {}
+                        by_status = summary.get("status") or {}
+                        by_kind = summary.get("kind") or {}
+                        pending = int(by_status.get("pending", 0) or 0)
+                        github_pending = int(by_kind.get("github_comment", 0) or 0)
+                        github_pending += int(by_kind.get("github_pr_prepare", 0) or 0)
+                        github_pending += int(by_kind.get("github_check_update", 0) or 0)
+                        github_pending += int(by_kind.get("github_status_update", 0) or 0)
+                        self._console_print(
+                            "\n".join(
+                                [
+                                    "Code Mode Approvals",
+                                    "",
+                                    f"Backend: {backend_status}",
+                                    f"Pending approvals: {pending}",
+                                    f"Pending GitHub write approvals: {github_pending}",
+                                    f"Approved: {int(by_status.get('approved', 0) or 0)}",
+                                    f"Executed: {int(by_status.get('executed', 0) or 0)}",
+                                    "",
+                                    "Use /code for backend status and /github for integration status.",
+                                ]
+                            ),
+                            highlight=False,
+                            markup=False,
+                        )
+                        return
+            except Exception as exc:
+                if "401" in str(exc):
+                    self._console_print(
+                        "\n".join(
+                            [
+                                "Code Mode Approvals",
+                                "",
+                                f"Backend: {backend_status}",
+                                "Approval summary endpoint requires dashboard auth.",
+                                "Use the dashboard session for /api/code/approvals/* operations.",
+                            ]
+                        ),
+                        highlight=False,
+                        markup=False,
+                    )
+                    return
+
+        self._console_print(
+            "\n".join(
+                [
+                    "Code Mode Approvals",
+                    "",
+                    f"Backend: {backend_status}",
+                    "P0 execution policy is available.",
+                    "Risk classes include safe_readonly, network, git_write, secret_sensitive, destructive.",
+                    "Use /code for backend status; policy assessments are exposed via /api/code/policy/assess-command.",
+                ]
+            ),
+            highlight=False,
+            markup=False,
+        )
+
+    def _handle_skills_code_command(self, _cmd: str):
+        discovered = []
+        workspace_skills = 0
+        workspace_path = Path(os.getenv("TERMINAL_CWD", os.getcwd()))
+        try:
+            from hermes_cli.code.skill_discovery import SkillDiscoveryService
+
+            service = SkillDiscoveryService()
+            discovered = service.list_skills(workspace_path=workspace_path)
+            workspace_skills = sum(1 for s in discovered if str(s.get("source", "")).startswith("workspace:"))
+        except Exception:
+            discovered = []
+
+        lines = [
+            "Code Mode Skills",
+            "",
+            f"Installed slash skills visible to this CLI: {len(_skill_commands)}",
+            f"Discovered skills (builtin/global/workspace): {len(discovered)}",
+            f"Workspace-local SKILL.md skills: {workspace_skills}",
+            "Skill folders supported: SKILL.md, scripts/, resources/",
+        ]
+        self._console_print("\n".join(lines), highlight=False, markup=False)
+
+    def _handle_github_command(self, cmd: str):
+        parts = [p for p in cmd.strip().split() if p]
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        try:
+            if action == "status":
+                from hermes_cli.code.github_integration import GitHubIntegrationService
+
+                status = GitHubIntegrationService().status()
+                lines = [
+                    "GitHub Integration",
+                    "",
+                    f"Mode: {status.get('mode')}",
+                    f"Configured: {'yes' if status.get('configured') else 'no'}",
+                    f"App ID configured: {'yes' if status.get('app_id_configured') else 'no'}",
+                    f"Private key configured: {'yes' if status.get('private_key_configured') else 'no'}",
+                    f"Webhook secret configured: {'yes' if status.get('webhook_secret_configured') else 'no'}",
+                    f"PAT dev enabled: {'yes' if status.get('pat_dev_configured') else 'no'}",
+                    f"Installations: {status.get('installations', 0)}",
+                    f"Repositories: {status.get('repositories', 0)}",
+                    "",
+                    "Usage: /github repos | /github sync [--dry-run]",
+                ]
+                self._console_print("\n".join(lines), highlight=False, markup=False)
+                return
+
+            if action == "repos":
+                from hermes_cli.code.github_integration import GitHubIntegrationStore
+
+                query = ""
+                if len(parts) > 2:
+                    query = " ".join(parts[2:])
+                store = GitHubIntegrationStore()
+                try:
+                    repos = store.list_repositories(q=query or None, limit=50)
+                finally:
+                    store.close()
+                if not repos:
+                    self._console_print(
+                        "GitHub Repositories\n\nNo synced repositories found.",
+                        highlight=False,
+                        markup=False,
+                    )
+                    return
+                lines = ["GitHub Repositories", ""]
+                for repo in repos:
+                    lines.append(f"- {repo.get('full_name')}")
+                    lines.append(f"  default: {repo.get('default_branch') or '(unknown)'}")
+                    lines.append(f"  private: {'yes' if repo.get('private') else 'no'}")
+                self._console_print("\n".join(lines), highlight=False, markup=False)
+                return
+
+            if action == "sync":
+                from hermes_cli.code.github_sync import GitHubSyncService
+
+                dry_run = "--dry-run" in parts
+                result = GitHubSyncService().sync_repositories(dry_run=dry_run, limit=100)
+                lines = [
+                    "GitHub Sync",
+                    "",
+                    f"Dry run: {'yes' if dry_run else 'no'}",
+                    f"Synced: {result.get('synced', 0)}",
+                    f"Returned: {len(result.get('repositories') or [])}",
+                ]
+                self._console_print("\n".join(lines), highlight=False, markup=False)
+                return
+
+            self._console_print(
+                "\n".join(
+                    [
+                        "GitHub Command",
+                        "",
+                        "Usage:",
+                        "/github status",
+                        "/github repos [query]",
+                        "/github sync [--dry-run]",
+                    ]
+                ),
+                highlight=False,
+                markup=False,
+            )
+        except Exception as exc:
+            self._console_print(
+                f"GitHub command unavailable: {exc}",
+                highlight=False,
+                markup=False,
+            )
     
     def _fast_command_available(self) -> bool:
         try:
@@ -6251,6 +6592,20 @@ class HermesCLI:
             self._show_gateway_status()
         elif canonical == "status":
             self._show_session_status()
+        elif canonical == "code":
+            self._handle_code_command(cmd_original)
+        elif canonical == "web":
+            self._handle_web_command(cmd_original)
+        elif canonical == "workspace":
+            self._handle_workspace_command(cmd_original)
+        elif canonical == "session":
+            self._handle_code_session_command(cmd_original)
+        elif canonical == "approvals":
+            self._handle_code_approvals_command(cmd_original)
+        elif canonical == "skills-code":
+            self._handle_skills_code_command(cmd_original)
+        elif canonical == "github":
+            self._handle_github_command(cmd_original)
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"

@@ -1312,11 +1312,52 @@ class TestSchemaInit:
         assert "sessions" in tables
         assert "messages" in tables
         assert "schema_version" in tables
+        assert "code_workspaces" in tables
+        assert "code_sessions" in tables
+        assert "code_events" in tables
+        assert "code_artifacts" in tables
+        assert "code_orchestrated_runs" in tables
+        assert "code_run_transitions" in tables
+        assert "code_checkpoints" in tables
+        assert "github_app_installations" in tables
+        assert "github_repositories" in tables
+        assert "github_branches" in tables
+        assert "github_issues" in tables
+        assert "github_pull_requests" in tables
+        assert "github_webhook_deliveries" in tables
+        assert "github_chatops_commands" in tables
+        assert "github_status_reports" in tables
+        assert "code_approval_requests" in tables
 
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 11
+        assert version == 15
+
+    def test_schema_migration_idempotent(self, tmp_path):
+        db_path = tmp_path / "idempotent.db"
+        first = SessionDB(db_path=db_path)
+        first.close()
+
+        second = SessionDB(db_path=db_path)
+        try:
+            version = second._conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()[0]
+            assert version == 15
+            table = second._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='code_approval_requests'"
+            ).fetchone()
+            assert table is not None
+        finally:
+            second.close()
+
+    def test_code_mode_status(self, db):
+        status = db.code_mode_status()
+        assert status["mode"] == "enabled"
+        assert status["schema_version"] == 15
+        assert status["workspace_count"] == 0
+        assert status["session_count"] == 0
+        assert status["event_count"] == 0
+        assert status["approval_count"] == 0
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1372,12 +1413,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v9
+        # Open with SessionDB — should migrate to the current schema
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == 15
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1396,6 +1437,61 @@ class TestSchemaInit:
         assert session["title"] == "Migrated Title"
 
         migrated_db.close()
+
+
+class TestCodeControlPlanePersistence:
+    def test_artifact_roundtrip(self, db):
+        created = {
+            "id": "art-1",
+            "artifact_type": "task_intake",
+            "title": "Task",
+            "content": "Build endpoint",
+            "content_type": "markdown",
+            "workspace_id": "ws-1",
+            "code_session_id": "cs-1",
+            "orchestrated_run_id": "run-1",
+            "command_id": "cmd-1",
+            "metadata": {"source": "test"},
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+        db.create_code_artifact(created)
+        rows = db.list_code_artifacts(code_session_id="cs-1")
+        assert len(rows) == 1
+        assert rows[0]["id"] == "art-1"
+
+    def test_orchestrated_run_and_transition_roundtrip(self, db):
+        now = time.time()
+        run = {
+            "id": "run-1",
+            "title": "Run",
+            "goal": "Goal",
+            "state": "intake",
+            "workspace_id": "ws-1",
+            "code_session_id": "cs-1",
+            "current_phase": "intake",
+            "metadata": {"k": "v"},
+            "created_at": now,
+            "updated_at": now,
+            "completed_at": None,
+        }
+        db.create_code_orchestrated_run(run)
+        db.add_code_run_transition(
+            {
+                "id": "tr-1",
+                "run_id": "run-1",
+                "from_state": "intake",
+                "to_state": "discovery",
+                "reason": "start",
+                "created_at": now + 1,
+            }
+        )
+        fetched = db.get_code_orchestrated_run("run-1")
+        assert fetched is not None
+        assert fetched["state"] == "intake"
+        transitions = db.list_code_run_transitions(run_id="run-1")
+        assert len(transitions) == 1
+        assert transitions[0]["to_state"] == "discovery"
 
     def test_reconciliation_adds_missing_columns(self, tmp_path):
         """Columns present in SCHEMA_SQL but missing from the live table
@@ -2481,7 +2577,6 @@ class TestFTS5ToolCallMigration:
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 11
+            assert version == 15
         finally:
             session_db.close()
-

@@ -1759,6 +1759,45 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "HERMES_GITHUB_APP_ID": {
+        "description": "GitHub App ID for Code Mode P1 integration",
+        "prompt": "Hermes GitHub App ID",
+        "url": "https://github.com/settings/apps",
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "HERMES_GITHUB_APP_PRIVATE_KEY_PATH": {
+        "description": "Filesystem path to GitHub App private key PEM",
+        "prompt": "GitHub App private key path",
+        "url": "https://github.com/settings/apps",
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "HERMES_GITHUB_WEBHOOK_SECRET": {
+        "description": "Webhook HMAC secret for /api/code/github/webhooks",
+        "prompt": "GitHub webhook secret",
+        "url": "https://github.com/settings/apps",
+        "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
+    "HERMES_GITHUB_DEV_PAT": {
+        "description": "Local development PAT fallback (disabled unless explicitly allowed)",
+        "prompt": "Hermes GitHub dev PAT",
+        "url": "https://github.com/settings/tokens",
+        "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
+    "HERMES_GITHUB_ALLOW_DEV_PAT": {
+        "description": "Set to 1 to allow HERMES_GITHUB_DEV_PAT fallback in local development",
+        "prompt": "Allow GitHub dev PAT fallback (1/0)",
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
 
     # ── Bundled skills (opt-in: only needed if the user uses that skill) ──
     # These use category="skill" (distinct from "tool") so the sandbox

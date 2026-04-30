@@ -648,6 +648,23 @@ Unlike Discord (where reactions are additive), Telegram's Bot API replaces all b
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
 
+### Inbound reactions (experimental)
+
+Hermes can also observe when *you* react to one of its messages and forward that as a lightweight confirmation signal. Reacting with 👍 or ✅ on a bot question has the same effect as replying "yes". Disabled by default.
+
+```yaml
+telegram:
+  inbound_reactions: true
+```
+
+Or via environment variable:
+
+```bash
+TELEGRAM_INBOUND_REACTIONS=true
+```
+
+**v1 scope:** only 👍 ✅ 👎 ❌ on recent bot-authored messages are routed, as synthetic `reaction:added:EMOJI` / `reaction:removed:EMOJI` events. Reactions on non-bot messages, unsupported emoji, and anonymous aggregated counts are ignored. The bot must have `message_reaction` update rights. Grant the bot admin in groups if reactions don't come through.
+
 ## Per-Channel Prompts
 
 Assign ephemeral system prompts to specific Telegram groups or forum topics. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.

@@ -12,9 +12,12 @@ import json
 import logging
 import os
 import tempfile
+import time
 import html as _html
 import re
-from typing import Dict, List, Optional, Any
+from collections import OrderedDict
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,11 @@ try:
         from telegram import LinkPreviewOptions
     except ImportError:
         LinkPreviewOptions = None
+    try:
+        from telegram import MessageReactionUpdated, ReactionTypeEmoji
+    except ImportError:
+        MessageReactionUpdated = Any  # type: ignore[assignment,misc]
+        ReactionTypeEmoji = None  # type: ignore[assignment]
     from telegram.ext import (
         Application,
         CommandHandler,
@@ -32,6 +40,10 @@ try:
         ContextTypes,
         filters,
     )
+    try:
+        from telegram.ext import MessageReactionHandler
+    except ImportError:
+        MessageReactionHandler = None  # type: ignore[assignment,misc]
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -43,10 +55,13 @@ except ImportError:
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
     LinkPreviewOptions = None
+    MessageReactionUpdated = Any
+    ReactionTypeEmoji = None
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    MessageReactionHandler = None
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -286,6 +301,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Cache of bot-authored outbound messages for inbound reaction routing.
+        # Key (chat_id, message_id) → {"ts", "kind", "thread_id", ...}
+        self._bot_message_cache: "OrderedDict[Tuple[str, str], Dict[str, Any]]" = OrderedDict()
+        self._bot_message_cache_lock = asyncio.Lock()
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -845,6 +864,11 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Handle inbound message reactions on bot-authored messages so
+            # users can confirm with 👍/✅ instead of typing "yes". Registered
+            # only when the feature is on so disabled installs pay no cost.
+            if self._inbound_reactions_enabled() and MessageReactionHandler is not None:
+                self._app.add_handler(MessageReactionHandler(self._handle_message_reaction))
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -1187,6 +1211,9 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+                await self._remember_bot_message(
+                    chat_id, str(msg.message_id), kind="regular", thread_id=thread_id,
+                )
             
             return SendResult(
                 success=True,
@@ -1342,6 +1369,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_markup=keyboard,
                 **self._link_preview_kwargs(),
             )
+            await self._remember_bot_message(
+                chat_id, str(msg.message_id), kind="approval",
+                session_key=session_key or None,
+            )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
@@ -1405,6 +1436,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
             # Store session_key keyed by approval_id for the callback handler
             self._approval_state[approval_id] = session_key
+
+            await self._remember_bot_message(
+                chat_id, str(msg.message_id), kind="approval",
+                thread_id=thread_id, session_key=session_key,
+            )
 
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -1479,6 +1515,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 "current_model": current_model,
                 "current_provider": current_provider,
             }
+
+            await self._remember_bot_message(
+                chat_id, str(msg.message_id), kind="model_picker",
+                thread_id=str(thread_id) if thread_id else None,
+                session_key=session_key,
+            )
 
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -1864,6 +1906,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=int(reply_to) if reply_to else None,
                         message_thread_id=self._message_thread_id_for_send(_audio_thread),
                     )
+            await self._remember_bot_message(
+                chat_id, str(msg.message_id), kind="regular",
+                thread_id=self._metadata_thread_id(metadata),
+            )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.error(
@@ -1900,6 +1946,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_message_id=int(reply_to) if reply_to else None,
                     message_thread_id=self._message_thread_id_for_send(_thread),
                 )
+            await self._remember_bot_message(
+                chat_id, str(msg.message_id), kind="regular", thread_id=_thread,
+            )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.error(
@@ -1940,6 +1989,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_message_id=int(reply_to) if reply_to else None,
                     message_thread_id=self._message_thread_id_for_send(_thread),
                 )
+            await self._remember_bot_message(
+                chat_id, str(msg.message_id), kind="regular", thread_id=_thread,
+            )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             print(f"[{self.name}] Failed to send document: {e}")
@@ -1971,6 +2023,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_message_id=int(reply_to) if reply_to else None,
                     message_thread_id=self._message_thread_id_for_send(_thread),
                 )
+            await self._remember_bot_message(
+                chat_id, str(msg.message_id), kind="regular", thread_id=_thread,
+            )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             print(f"[{self.name}] Failed to send video: {e}")
@@ -2007,6 +2062,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=int(reply_to) if reply_to else None,
                 message_thread_id=self._message_thread_id_for_send(_photo_thread),
             )
+            await self._remember_bot_message(
+                chat_id, str(msg.message_id), kind="regular", thread_id=_photo_thread,
+            )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning(
@@ -2029,6 +2087,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
                     message_thread_id=self._message_thread_id_for_send(_photo_thread),
+                )
+                await self._remember_bot_message(
+                    chat_id, str(msg.message_id), kind="regular", thread_id=_photo_thread,
                 )
                 return SendResult(success=True, message_id=str(msg.message_id))
             except Exception as e2:
@@ -2061,6 +2122,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 caption=caption[:1024] if caption else None,
                 reply_to_message_id=int(reply_to) if reply_to else None,
                 message_thread_id=self._message_thread_id_for_send(_anim_thread),
+            )
+            await self._remember_bot_message(
+                chat_id, str(msg.message_id), kind="regular", thread_id=_anim_thread,
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -3232,3 +3296,149 @@ class TelegramAdapter(BasePlatformAdapter):
                 message_id,
                 "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
             )
+
+    def _inbound_reactions_enabled(self) -> bool:
+        """Check if inbound user reactions on bot messages should be routed."""
+        return os.getenv("TELEGRAM_INBOUND_REACTIONS", "false").lower() not in ("false", "0", "no")
+
+    # ── Inbound reactions (user reacts to bot messages) ───────────────────
+
+    # Cache sizing: a single process tracks at most this many recent bot
+    # messages. TTL evicts older entries so a reaction a day later on an
+    # ancient message doesn't wake the agent.
+    _BOT_MSG_CACHE_MAX = 512
+    _BOT_MSG_CACHE_TTL = 24 * 60 * 60  # seconds
+
+    # 👍, ✅, 👎, ❌
+    _INBOUND_REACTION_ALLOWLIST = {"\U0001f44d", "✅", "\U0001f44e", "❌"}
+
+    async def _remember_bot_message(
+        self,
+        chat_id: Any,
+        message_id: Any,
+        *,
+        kind: str = "regular",
+        thread_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_key: Optional[str] = None,
+    ) -> None:
+        """Record a bot-authored outbound message for inbound reaction routing.
+
+        Only populated when ``TELEGRAM_INBOUND_REACTIONS`` is enabled so the
+        cache stays empty (and cheap) for users who haven't opted in.
+        """
+        if not self._inbound_reactions_enabled() or message_id is None:
+            return
+        key = (str(chat_id), str(message_id))
+        now = time.time()
+        async with self._bot_message_cache_lock:
+            self._bot_message_cache[key] = {
+                "ts": now,
+                "kind": kind,
+                "thread_id": thread_id,
+                "user_id": user_id,
+                "session_key": session_key,
+            }
+            # evict by size
+            while len(self._bot_message_cache) > self._BOT_MSG_CACHE_MAX:
+                self._bot_message_cache.popitem(last=False)
+            # evict stale entries (head of OrderedDict is oldest)
+            ttl = self._BOT_MSG_CACHE_TTL
+            for k, v in list(self._bot_message_cache.items()):
+                if now - v["ts"] > ttl:
+                    del self._bot_message_cache[k]
+                else:
+                    break
+
+    @staticmethod
+    def _extract_reaction_emojis(reactions: Any) -> set:
+        """Pull emoji strings out of a reactions iterable.
+
+        Skips ``ReactionTypeCustomEmoji`` (which has no plain ``.emoji``
+        attribute) so premium custom reactions are silently dropped.
+        """
+        out: set = set()
+        for r in reactions or ():
+            emoji = getattr(r, "emoji", None)
+            if isinstance(emoji, str):
+                out.add(emoji)
+        return out
+
+    async def _handle_message_reaction(self, update: Any, context: Any) -> None:
+        """Route user reactions on cached bot messages as synthetic events.
+
+        Only forwards allowlisted approval-style emoji (👍 ✅ 👎 ❌) on
+        messages the bot recently sent. Reactions from the bot itself,
+        reactions on unknown messages, and unsupported emoji are dropped.
+        """
+        reaction = getattr(update, "message_reaction", None)
+        if reaction is None:
+            return
+
+        chat = getattr(reaction, "chat", None)
+        if chat is None:
+            return
+        chat_id = str(chat.id)
+        message_id = str(reaction.message_id)
+
+        # 1. Must be a message we sent
+        async with self._bot_message_cache_lock:
+            cached = self._bot_message_cache.get((chat_id, message_id))
+        if cached is None:
+            return
+
+        # 2. Ignore reactions authored by the bot itself. Anonymous admin
+        # reactions have ``user is None`` (actor_chat is set instead) and
+        # are allowed through — they're still human-originated.
+        actor = getattr(reaction, "user", None)
+        bot_id = getattr(self._bot, "id", None) if self._bot else None
+        if actor is not None and bot_id is not None and getattr(actor, "id", None) == bot_id:
+            return
+
+        # 3. Diff old/new reaction sets, filtered by the allowlist
+        old_set = self._extract_reaction_emojis(getattr(reaction, "old_reaction", None))
+        new_set = self._extract_reaction_emojis(getattr(reaction, "new_reaction", None))
+        allowlist = self._INBOUND_REACTION_ALLOWLIST
+        added = (new_set - old_set) & allowlist
+        removed = (old_set - new_set) & allowlist
+        if not added and not removed:
+            return
+
+        # 4. Build a synthetic MessageEvent per emoji delta and dispatch
+        chat_type = getattr(chat, "type", None) or "dm"
+        chat_name = getattr(chat, "title", None)
+        if not chat_name and actor is not None:
+            chat_name = getattr(actor, "full_name", None)
+        if not chat_name:
+            chat_name = chat_id
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_name,
+            chat_type=str(chat_type),
+            user_id=str(actor.id) if actor is not None else None,
+            user_name=getattr(actor, "full_name", None) if actor else None,
+            thread_id=cached.get("thread_id"),
+        )
+        ts = getattr(reaction, "date", None) or datetime.now(timezone.utc)
+
+        for emoji in sorted(removed):
+            event = MessageEvent(
+                text=f"reaction:removed:{emoji}",
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=reaction,
+                message_id=message_id,
+                timestamp=ts,
+            )
+            await self.handle_message(event)
+
+        for emoji in sorted(added):
+            event = MessageEvent(
+                text=f"reaction:added:{emoji}",
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message=reaction,
+                message_id=message_id,
+                timestamp=ts,
+            )
+            await self.handle_message(event)

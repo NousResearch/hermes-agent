@@ -2326,7 +2326,7 @@ async def get_models_analytics(days: int = 30):
                    SUM(tool_call_count) as tool_calls,
                    MAX(started_at) as last_used_at,
                    AVG(input_tokens + output_tokens) as avg_tokens_per_session
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL
+            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
             GROUP BY model, billing_provider
             ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
         """, (cutoff,))
@@ -2379,7 +2379,7 @@ async def get_models_analytics(days: int = 30):
                    COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
                    COUNT(*) as total_sessions,
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL
+            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
         """, (cutoff,))
         totals = dict(totals_cur.fetchone())
 

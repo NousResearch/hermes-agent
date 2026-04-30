@@ -78,6 +78,7 @@ AUTHOR_MAP = {
     "beesr@bee.localdomain": "beesrsj2500",
     "mtf201013@gmail.com": "ma-pony",
     "sonoyuncudmr@gmail.com": "Sonoyunchu",
+    "43525405+yatesjalex@users.noreply.github.com": "yatesjalex",
     "maks.mir@yahoo.com": "say8hi",
     "27719690+Mirac1eSky@users.noreply.github.com": "Mirac1eSky",
     "web3blind@users.noreply.github.com": "web3blind",

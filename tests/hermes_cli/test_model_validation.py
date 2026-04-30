@@ -1,6 +1,6 @@
 """Tests for provider-aware `/model` validation in hermes_cli.models."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
     azure_foundry_model_api_mode,
@@ -8,6 +8,7 @@ from hermes_cli.models import (
     fetch_github_model_catalog,
     curated_models_for_provider,
     fetch_api_models,
+    fetch_lmstudio_models,
     github_model_reasoning_efforts,
     normalize_copilot_model_id,
     normalize_opencode_model_id,
@@ -637,6 +638,110 @@ class TestValidateApiFallback:
         assert result["persist"] is True
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]
+
+    def test_fetch_lmstudio_models_filters_embedding_type(self):
+        mock_resp = MagicMock()
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = False
+        mock_resp.read.return_value = (
+            b'{"models":['
+            b'{"key":"publisher/chat-model","id":"publisher/chat-model","type":"llm"},'
+            b'{"key":"publisher/embed-model","id":"publisher/embed-model","type":"embedding"}'
+            b']}'
+        )
+
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=mock_resp):
+            models = fetch_lmstudio_models(base_url="http://localhost:1234/v1")
+
+        assert models == ["publisher/chat-model"]
+
+    def test_validate_lmstudio_rejects_embedding_models(self):
+        mock_resp = MagicMock()
+        mock_resp.__enter__.return_value = mock_resp
+        mock_resp.__exit__.return_value = False
+        mock_resp.read.return_value = (
+            b'{"models":['
+            b'{"key":"publisher/chat-model","id":"publisher/chat-model","type":"llm"},'
+            b'{"key":"publisher/embed-model","id":"publisher/embed-model","type":"embedding"}'
+            b']}'
+        )
+
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=mock_resp):
+            result = validate_requested_model(
+                "publisher/embed-model",
+                "lmstudio",
+                base_url="http://localhost:1234/v1",
+            )
+
+        assert result["accepted"] is False
+        assert result["recognized"] is False
+        assert "not found in LM Studio's model listing" in result["message"]
+
+    def test_fetch_lmstudio_models_raises_auth_error_on_401(self):
+        import urllib.error
+        from hermes_cli.auth import AuthError
+        import pytest
+
+        http_error = urllib.error.HTTPError(
+            url="http://localhost:1234/api/v1/models",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=None,
+        )
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=http_error):
+            with pytest.raises(AuthError) as excinfo:
+                fetch_lmstudio_models(base_url="http://localhost:1234/v1")
+
+        assert excinfo.value.provider == "lmstudio"
+        assert excinfo.value.code == "auth_rejected"
+        assert "401" in str(excinfo.value)
+
+    def test_fetch_lmstudio_models_returns_empty_on_network_error(self):
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            side_effect=ConnectionRefusedError(),
+        ):
+            models = fetch_lmstudio_models(base_url="http://localhost:1234/v1")
+
+        assert models == []
+
+    def test_validate_lmstudio_distinguishes_auth_failure(self):
+        import urllib.error
+
+        http_error = urllib.error.HTTPError(
+            url="http://localhost:1234/api/v1/models",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=None,
+        )
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=http_error):
+            result = validate_requested_model(
+                "publisher/chat-model",
+                "lmstudio",
+                base_url="http://localhost:1234/v1",
+            )
+
+        assert result["accepted"] is False
+        assert "401" in result["message"]
+        assert "LM_API_KEY" in result["message"]
+
+    def test_validate_lmstudio_distinguishes_unreachable(self):
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            side_effect=ConnectionRefusedError(),
+        ):
+            result = validate_requested_model(
+                "publisher/chat-model",
+                "lmstudio",
+                base_url="http://localhost:1234/v1",
+            )
+
+        assert result["accepted"] is False
+        assert "Could not reach LM Studio" in result["message"]
 
 
 # -- validate — Codex auto-correction ------------------------------------------

@@ -41,12 +41,47 @@ import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
-from openai import OpenAI
+# NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
+# SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
+# that imports the SDK on first call/isinstance check. This preserves:
+#   (a) the single in-module `OpenAI(**client_kwargs)` call site at
+#       _create_openai_client, and
+#   (b) `patch("run_agent.OpenAI", ...)` test patterns used by ~28 test files.
 import fire
 from datetime import datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+
+
+_OPENAI_CLS_CACHE: Optional[type] = None
+
+
+def _load_openai_cls() -> type:
+    """Import and cache ``openai.OpenAI``."""
+    global _OPENAI_CLS_CACHE
+    if _OPENAI_CLS_CACHE is None:
+        from openai import OpenAI as _cls
+        _OPENAI_CLS_CACHE = _cls
+    return _OPENAI_CLS_CACHE
+
+
+class _OpenAIProxy:
+    """Module-level proxy that looks like ``openai.OpenAI`` but imports lazily."""
+
+    __slots__ = ()
+
+    def __call__(self, *args, **kwargs):
+        return _load_openai_cls()(*args, **kwargs)
+
+    def __instancecheck__(self, obj):
+        return isinstance(obj, _load_openai_cls())
+
+    def __repr__(self):
+        return "<lazy openai.OpenAI proxy>"
+
+
+OpenAI = _OpenAIProxy()
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -125,6 +160,7 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
+from hermes_cli.config import cfg_get
 
 
 
@@ -890,6 +926,7 @@ class AIAgent:
         thread_id: str = None,
         gateway_session_key: str = None,
         skip_context_files: bool = False,
+        load_soul_identity: bool = False,
         skip_memory: bool = False,
         session_db=None,
         parent_session_id: str = None,
@@ -941,6 +978,9 @@ class AIAgent:
             skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
                 into the system prompt. Use this for batch processing and data generation to avoid
                 polluting trajectories with user-specific persona or project instructions.
+            load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
+                identity even when skip_context_files=True. Project context files from the cwd
+                remain skipped.
         """
         _install_safe_stdio()
 
@@ -969,6 +1009,7 @@ class AIAgent:
         self._print_fn = None
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
+        self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
@@ -1754,7 +1795,7 @@ class AIAgent:
         # compression model. Custom endpoints often cannot report this via
         # /models, so the startup feasibility check needs the config hint.
         try:
-            _aux_cfg = _agent_cfg.get("auxiliary", {}).get("compression", {})
+            _aux_cfg = cfg_get(_agent_cfg, "auxiliary", "compression", default={})
         except Exception:
             _aux_cfg = {}
         if isinstance(_aux_cfg, dict):
@@ -1791,9 +1832,6 @@ class AIAgent:
                     file=sys.stderr,
                 )
                 _config_context_length = None
-
-        # Store for reuse in switch_model (so config override persists across model switches)
-        self._config_context_length = _config_context_length
 
         # Resolve custom_providers list once for reuse below (startup
         # context-length override and plugin context-engine init).
@@ -1853,7 +1891,14 @@ class AIAgent:
                                             file=sys.stderr,
                                         )
                         break
-        
+
+        # Persist for reuse on switch_model / fallback activation. Must come
+        # AFTER the custom_providers branch so per-model overrides aren't lost.
+        self._config_context_length = _config_context_length
+
+        self._ensure_lmstudio_runtime_loaded(_config_context_length)
+
+
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting
         # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
@@ -2095,6 +2140,39 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
     
+    def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
+        """
+        Preload the LM Studio model with at least Hermes' minimum context.
+        """
+        if (self.provider or "").strip().lower() != "lmstudio":
+            return
+        try:
+            from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+            from hermes_cli.models import ensure_lmstudio_model_loaded
+            if config_context_length is None:
+                config_context_length = getattr(self, "_config_context_length", None)
+            target_ctx = max(config_context_length or 0, MINIMUM_CONTEXT_LENGTH)
+            loaded_ctx = ensure_lmstudio_model_loaded(
+                self.model, self.base_url, getattr(self, "api_key", ""), target_ctx,
+            )
+            if loaded_ctx:
+                # Push into the live compressor so the status bar reflects the
+                # real loaded ctx the moment the load resolves, instead of
+                # holding the previous model's value (or "ctx --") through the
+                # next render tick.
+                cc = getattr(self, "context_compressor", None)
+                if cc is not None:
+                    cc.update_model(
+                        model=self.model,
+                        context_length=loaded_ctx,
+                        base_url=self.base_url,
+                        api_key=getattr(self, "api_key", ""),
+                        provider=self.provider,
+                        api_mode=self.api_mode,
+                    )
+        except Exception as err:
+            logger.debug("LM Studio preload skipped: %s", err)
+
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Switch the model/provider in-place for a live agent.
 
@@ -2189,6 +2267,9 @@ class AIAgent:
                 model=new_model,
             )
         )
+
+        # ── LM Studio: preload before probing context length ──
+        self._ensure_lmstudio_runtime_loaded()
 
         # ── Update context compressor ──
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -2739,6 +2820,24 @@ class AIAgent:
             # Third-party Anthropic-compatible gateway.
             return True, True
 
+        # MiniMax on its Anthropic-compatible endpoint serves its own
+        # model family (MiniMax-M2.7, M2.5, M2.1, M2) with documented
+        # cache_control support (0.1× read pricing, 5-minute TTL).  The
+        # blanket is_claude gate above excludes these — opt them in
+        # explicitly via provider id or host match so users on
+        # provider=minimax / minimax-cn (or custom endpoints pointing at
+        # api.minimax.io/anthropic / api.minimaxi.com/anthropic) get the
+        # same cost reduction as Claude traffic.
+        # Docs: https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache
+        if is_anthropic_wire:
+            is_minimax_provider = provider_lower in {"minimax", "minimax-cn"}
+            is_minimax_host = (
+                base_url_host_matches(eff_base_url, "api.minimax.io")
+                or base_url_host_matches(eff_base_url, "api.minimaxi.com")
+            )
+            if is_minimax_provider or is_minimax_host:
+                return True, True
+
         # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
         # transport that accepts Anthropic-style cache_control markers and
         # rewards them with real cache hits.  Without this branch
@@ -3156,49 +3255,135 @@ class AIAgent:
     )
 
     _SKILL_REVIEW_PROMPT = (
-        "Review the conversation above and consider whether a skill should be saved or updated.\n\n"
-        "Work in this order — do not skip steps:\n\n"
-        "1. SURVEY the existing skill landscape first. Call skills_list to see what you "
-        "have. If anything looks potentially relevant, skill_view it before deciding. "
-        "You are looking for the CLASS of task that just happened, not the exact task. "
-        "Example: a successful Tauri build is in the class \"desktop app build "
-        "troubleshooting\", not \"fix my specific Tauri error today\".\n\n"
-        "2. THINK CLASS-FIRST. What general pattern of task did the user just complete? "
-        "What conditions will trigger this pattern again? Describe the class in one "
-        "sentence before looking at what to save.\n\n"
-        "3. PREFER GENERALIZING AN EXISTING SKILL over creating a new one. If a skill "
-        "already covers the class — even partially — update it (skill_manage patch) "
-        "with the new insight. Broaden its \"when to use\" trigger if needed.\n\n"
-        "4. ONLY CREATE A NEW SKILL when no existing skill reasonably covers the class. "
-        "When you create one, name and scope it at the class level "
-        "(\"react-i18n-setup\", not \"add-i18n-to-my-dashboard-app\"). The trigger "
-        "section must describe the class of situations, not this one session.\n\n"
-        "5. If you notice two existing skills that overlap, note it in your response "
-        "so a future review can consolidate them. Do not consolidate now unless the "
-        "overlap is obvious and low-risk.\n\n"
-        "Only act when something is genuinely worth saving. "
-        "If nothing stands out, just say 'Nothing to save.' and stop."
+        "Review the conversation above and update the skill library. Be "
+        "ACTIVE — most sessions produce at least one skill update, even if "
+        "small. A pass that does nothing is a missed learning opportunity, "
+        "not a neutral outcome.\n\n"
+        "Target shape of the library: CLASS-LEVEL skills, each with a rich "
+        "SKILL.md and a `references/` directory for session-specific detail. "
+        "Not a long flat list of narrow one-session-one-skill entries. This "
+        "shapes HOW you update, not WHETHER you update.\n\n"
+        "Signals to look for (any one of these warrants action):\n"
+        "  • User corrected your style, tone, format, legibility, or "
+        "verbosity. Frustration signals like 'stop doing X', 'this is too "
+        "verbose', 'don't format like this', 'why are you explaining', "
+        "'just give me the answer', 'you always do Y and I hate it', or an "
+        "explicit 'remember this' are FIRST-CLASS skill signals, not just "
+        "memory signals. Update the relevant skill(s) to embed the "
+        "preference so the next session starts already knowing.\n"
+        "  • User corrected your workflow, approach, or sequence of steps. "
+        "Encode the correction as a pitfall or explicit step in the skill "
+        "that governs that class of task.\n"
+        "  • Non-trivial technique, fix, workaround, debugging path, or "
+        "tool-usage pattern emerged that a future session would benefit "
+        "from. Capture it.\n"
+        "  • A skill that got loaded or consulted this session turned out "
+        "to be wrong, missing a step, or outdated. Patch it NOW.\n\n"
+        "Preference order — prefer the earliest action that fits, but do "
+        "pick one when a signal above fired:\n"
+        "  1. UPDATE A CURRENTLY-LOADED SKILL. Look back through the "
+        "conversation for skills the user loaded via /skill-name or you "
+        "read via skill_view. If any of them covers the territory of the "
+        "new learning, PATCH that one first. It is the skill that was in "
+        "play, so it's the right one to extend.\n"
+        "  2. UPDATE AN EXISTING UMBRELLA (via skills_list + skill_view). "
+        "If no loaded skill fits but an existing class-level skill does, "
+        "patch it. Add a subsection, a pitfall, or broaden a trigger.\n"
+        "  3. ADD A SUPPORT FILE under an existing umbrella. Skills can be "
+        "packaged with three kinds of support files — use the right "
+        "directory per kind:\n"
+        "     • `references/<topic>.md` — session-specific detail (error "
+        "transcripts, reproduction recipes, provider quirks) AND "
+        "condensed knowledge banks: quoted research, API docs, external "
+        "authoritative excerpts, or domain notes you found while working "
+        "on the problem. Write it concise and for the value of the task, "
+        "not as a full mirror of upstream docs.\n"
+        "     • `templates/<name>.<ext>` — starter files meant to be "
+        "copied and modified (boilerplate configs, scaffolding, a "
+        "known-good example the agent can `reproduce with modifications`).\n"
+        "     • `scripts/<name>.<ext>` — statically re-runnable actions "
+        "the skill can invoke directly (verification scripts, fixture "
+        "generators, deterministic probes, anything the agent should run "
+        "rather than hand-type each time).\n"
+        "     Add support files via skill_manage action=write_file with "
+        "file_path starting 'references/', 'templates/', or 'scripts/'. "
+        "The umbrella's SKILL.md should gain a one-line pointer to any "
+        "new support file so future agents know it exists.\n"
+        "  4. CREATE A NEW CLASS-LEVEL UMBRELLA SKILL when no existing "
+        "skill covers the class. The name MUST be at the class level. "
+        "The name MUST NOT be a specific PR number, error string, feature "
+        "codename, library-alone name, or 'fix-X / debug-Y / audit-Z-today' "
+        "session artifact. If the proposed name only makes sense for "
+        "today's task, it's wrong — fall back to (1), (2), or (3).\n\n"
+        "User-preference embedding (important): when the user expressed a "
+        "style/format/workflow preference, the update belongs in the "
+        "SKILL.md body, not just in memory. Memory captures 'who the user "
+        "is and what the current situation and state of your operations "
+        "are'; skills capture 'how to do this class of task for this "
+        "user'. When they complain about how you handled a task, the "
+        "skill that governs that task needs to carry the lesson.\n\n"
+        "If you notice two existing skills that overlap, note it in your "
+        "reply — the background curator handles consolidation at scale.\n\n"
+        "'Nothing to save.' is a real option but should NOT be the "
+        "default. If the session ran smoothly with no corrections and "
+        "produced no new technique, just say 'Nothing to save.' and stop. "
+        "Otherwise, act."
     )
 
     _COMBINED_REVIEW_PROMPT = (
-        "Review the conversation above and consider two things:\n\n"
-        "**Memory**: Has the user revealed things about themselves — their persona, "
-        "desires, preferences, or personal details? Has the user expressed expectations "
-        "about how you should behave, their work style, or ways they want you to operate? "
-        "If so, save using the memory tool.\n\n"
-        "**Skills**: Was a non-trivial approach used to complete a task that required trial "
-        "and error, changing course due to experiential findings, or a different method "
-        "or outcome than the user expected? If so, work in this order:\n"
-        "  a. SURVEY existing skills first (skills_list, then skill_view on candidates).\n"
-        "  b. Identify the CLASS of task, not the specific task "
-        "(\"desktop app build troubleshooting\", not \"fix my Tauri error\").\n"
-        "  c. PREFER UPDATING/GENERALIZING an existing skill that covers the class.\n"
-        "  d. ONLY CREATE A NEW SKILL if no existing one covers the class. Scope at "
-        "the class level, not this one session.\n"
-        "  e. If you notice overlapping skills during the survey, note it so a future "
-        "review can consolidate them.\n\n"
-        "Only act if there's something genuinely worth saving. "
-        "If nothing stands out, just say 'Nothing to save.' and stop."
+        "Review the conversation above and update two things:\n\n"
+        "**Memory**: who the user is. Did the user reveal persona, "
+        "desires, preferences, personal details, or expectations about "
+        "how you should behave? Save facts about the user and durable "
+        "preferences with the memory tool.\n\n"
+        "**Skills**: how to do this class of task. Be ACTIVE — most "
+        "sessions produce at least one skill update. A pass that does "
+        "nothing is a missed learning opportunity, not a neutral outcome.\n\n"
+        "Target shape of the skill library: CLASS-LEVEL skills with a rich "
+        "SKILL.md and a `references/` directory for session-specific detail. "
+        "Not a long flat list of narrow one-session-one-skill entries.\n\n"
+        "Signals that warrant a skill update (any one is enough):\n"
+        "  • User corrected your style, tone, format, legibility, "
+        "verbosity, or approach. Frustration is a FIRST-CLASS skill "
+        "signal, not just a memory signal. 'stop doing X', 'don't format "
+        "like this', 'I hate when you Y' — embed the lesson in the skill "
+        "that governs that task so the next session starts fixed.\n"
+        "  • Non-trivial technique, fix, workaround, or debugging path "
+        "emerged.\n"
+        "  • A skill that was loaded or consulted turned out wrong, "
+        "missing, or outdated — patch it now.\n\n"
+        "Preference order for skills — pick the earliest that fits:\n"
+        "  1. UPDATE A CURRENTLY-LOADED SKILL. Check what skills were "
+        "loaded via /skill-name or skill_view in the conversation. If one "
+        "of them covers the learning, PATCH it first. It was in play; "
+        "it's the right place.\n"
+        "  2. UPDATE AN EXISTING UMBRELLA (skills_list + skill_view to "
+        "find the right one). Patch it.\n"
+        "  3. ADD A SUPPORT FILE under an existing umbrella via "
+        "skill_manage action=write_file. Three kinds: "
+        "`references/<topic>.md` for session-specific detail OR condensed "
+        "knowledge banks (quoted research, API docs excerpts, domain "
+        "notes) written concise and task-focused; `templates/<name>.<ext>` "
+        "for starter files meant to be copied and modified; "
+        "`scripts/<name>.<ext>` for statically re-runnable actions "
+        "(verification, fixture generators, probes). Add a one-line "
+        "pointer in SKILL.md so future agents find them.\n"
+        "  4. CREATE A NEW CLASS-LEVEL UMBRELLA when nothing exists. "
+        "Name at the class level — NOT a PR number, error string, "
+        "codename, library-alone name, or 'fix-X / debug-Y' session "
+        "artifact. If the name only fits today's task, fall back to (1), "
+        "(2), or (3).\n\n"
+        "User-preference embedding: when the user complains about how "
+        "you handled a task, update the skill that governs that task — "
+        "memory alone isn't enough. Memory says 'who the user is and "
+        "what the current situation and state of your operations are'; "
+        "skills say 'how to do this class of task for this user'. Both "
+        "should carry user-preference lessons when relevant.\n\n"
+        "If you notice overlapping existing skills, mention it — the "
+        "background curator handles consolidation.\n\n"
+        "Act on whichever of the two dimensions has real signal. If "
+        "genuinely nothing stands out on either, say 'Nothing to save.' "
+        "and stop — but don't reach for that conclusion as a default."
     )
 
     @staticmethod
@@ -4386,8 +4571,14 @@ class AIAgent:
         if not (self._memory_manager and final_response and original_user_message):
             return
         try:
-            self._memory_manager.sync_all(original_user_message, final_response)
-            self._memory_manager.queue_prefetch_all(original_user_message)
+            self._memory_manager.sync_all(
+                original_user_message, final_response,
+                session_id=self.session_id or "",
+            )
+            self._memory_manager.queue_prefetch_all(
+                original_user_message,
+                session_id=self.session_id or "",
+            )
         except Exception:
             pass
 
@@ -4557,9 +4748,11 @@ class AIAgent:
         #   6. Current date & time (frozen at build time)
         #   7. Platform-specific formatting hint
 
-        # Try SOUL.md as primary identity (unless context files are skipped)
+        # Try SOUL.md as primary identity unless the caller explicitly skipped it.
+        # Some execution modes (cron) still want HERMES_HOME persona while keeping
+        # cwd project instructions disabled.
         _soul_loaded = False
-        if not self.skip_context_files:
+        if self.load_soul_identity or not self.skip_context_files:
             _soul_content = load_soul_md()
             if _soul_content:
                 prompt_parts = [_soul_content]
@@ -5244,6 +5437,8 @@ class AIAgent:
             keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""))
             if keepalive_http is not None:
                 client_kwargs["http_client"] = keepalive_http
+        # Uses the module-level `OpenAI` name, resolved lazily on first
+        # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",
@@ -7291,6 +7486,9 @@ class AIAgent:
                 )
             )
 
+            # LM Studio: preload before probing the fallback's context length.
+            self._ensure_lmstudio_runtime_loaded()
+
             # Update context compressor limits for the fallback model.
             # Without this, compression decisions use the primary model's
             # context window (e.g. 200K) instead of the fallback's (e.g. 32K),
@@ -8011,6 +8209,7 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
         _is_tokenhub = base_url_host_matches(self._base_url_lower, "tokenhub.tencentmaas.com")
+        _is_lmstudio = (self.provider or "").strip().lower() == "lmstudio"
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -8068,6 +8267,7 @@ class AIAgent:
             model=self.model,
             messages=_msgs_for_chat,
             tools=self.tools,
+            base_url=self.base_url,
             timeout=self._resolved_api_call_timeout(),
             max_tokens=self.max_tokens,
             ephemeral_max_output_tokens=_ephemeral_out,
@@ -8083,6 +8283,7 @@ class AIAgent:
             is_nvidia_nim=_is_nvidia,
             is_kimi=_is_kimi,
             is_tokenhub=_is_tokenhub,
+            is_lmstudio=_is_lmstudio,
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,
@@ -8093,6 +8294,7 @@ class AIAgent:
             omit_temperature=_omit_temp,
             supports_reasoning=self._supports_reasoning_extra_body(),
             github_reasoning_extra=self._github_models_reasoning_extra_body() if _is_gh else None,
+            lmstudio_reasoning_options=self._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
             anthropic_max_output=_ant_max,
             provider_name=self.provider,
         )
@@ -8118,6 +8320,10 @@ class AIAgent:
                 return bool(github_model_reasoning_efforts(self.model))
             except Exception:
                 return False
+        if (self.provider or "").strip().lower() == "lmstudio":
+            opts = self._lmstudio_reasoning_options_cached()
+            # "off-only" (or absent) means no real reasoning capability.
+            return any(opt and opt != "off" for opt in opts)
         if "openrouter" not in self._base_url_lower:
             return False
         if "api.mistral.ai" in self._base_url_lower:
@@ -8134,6 +8340,53 @@ class AIAgent:
             "tencent/hy3-preview",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
+
+    def _lmstudio_reasoning_options_cached(self) -> list[str]:
+        """Probe LM Studio's published reasoning ``allowed_options`` once per
+        (model, base_url). The list (e.g. ``["off","on"]`` or
+        ``["off","minimal","low"]``) is needed both for the supports-reasoning
+        gate and for clamping the emitted ``reasoning_effort`` so toggle-style
+        models don't 400 on ``high``. Cache is keyed on (model, base_url) so
+        ``/model`` swaps and base-URL changes don't reuse a stale list.
+        Non-empty results are cached permanently (model capabilities don't
+        change). Empty results (transient probe failure OR genuinely
+        non-reasoning model) are cached with a 60-second TTL to avoid an
+        HTTP round-trip on every turn while still retrying reasonably soon.
+        """
+        import time as _time
+
+        cache = getattr(self, "_lm_reasoning_opts_cache", None)
+        if cache is None:
+            cache = self._lm_reasoning_opts_cache = {}
+        key = (self.model, self.base_url)
+        cached = cache.get(key)
+        if cached is not None:
+            opts, ts = cached
+            # Non-empty → permanent. Empty → 60s TTL.
+            if opts or (_time.monotonic() - ts) < 60:
+                return opts
+        try:
+            from hermes_cli.models import lmstudio_model_reasoning_options
+            opts = lmstudio_model_reasoning_options(
+                self.model, self.base_url, getattr(self, "api_key", ""),
+            )
+        except Exception:
+            opts = []
+        cache[key] = (opts, _time.monotonic())
+        return opts
+
+    def _resolve_lmstudio_summary_reasoning_effort(self) -> Optional[str]:
+        """Resolve a safe top-level ``reasoning_effort`` for LM Studio.
+
+        The iteration-limit summary path calls ``chat.completions.create()``
+        directly, bypassing the transport. Share the helper so the two paths
+        can't drift on effort resolution and clamping.
+        """
+        from agent.lmstudio_reasoning import resolve_lmstudio_effort
+        return resolve_lmstudio_effort(
+            self.reasoning_config,
+            self._lmstudio_reasoning_options_cached(),
+        )
 
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
@@ -8699,6 +8952,23 @@ class AIAgent:
                 )
         except Exception as _ce_err:
             logger.debug("context engine on_session_start (compression): %s", _ce_err)
+
+        # Notify memory providers of the compression-driven session_id rotation
+        # so provider-cached per-session state (Hindsight's _document_id,
+        # accumulated turn buffers, counters) refreshes. reset=False because
+        # the logical conversation continues; only the id and DB row rolled
+        # over. See #6672.
+        try:
+            _old_sid = locals().get("old_session_id")
+            if _old_sid and self._memory_manager:
+                self._memory_manager.on_session_switch(
+                    self.session_id or "",
+                    parent_session_id=_old_sid,
+                    reset=False,
+                    reason="compression",
+                )
+        except Exception as _me_err:
+            logger.debug("memory manager on_session_switch (compression): %s", _me_err)
 
         # Warn on repeated compressions (quality degrades with each pass)
         _cc = self.context_compressor.compression_count
@@ -9662,7 +9932,19 @@ class AIAgent:
             _omit_summary_temperature = _raw_summary_temp is _OMIT_TEMP
             _summary_temperature = None if _omit_summary_temperature else _raw_summary_temp
             _is_nous = "nousresearch" in self._base_url_lower
-            if self._supports_reasoning_extra_body():
+            # LM Studio uses top-level `reasoning_effort` (not extra_body.reasoning).
+            # Mirror ChatCompletionsTransport.build_kwargs() so the summary path
+            # — which calls chat.completions.create() directly without going
+            # through the transport — sends the same shape the transport does.
+            _is_lmstudio_summary = (
+                (self.provider or "").strip().lower() == "lmstudio"
+                and self._supports_reasoning_extra_body()
+            )
+            _lm_reasoning_effort: str | None = (
+                self._resolve_lmstudio_summary_reasoning_effort()
+                if _is_lmstudio_summary else None
+            )
+            if not _is_lmstudio_summary and self._supports_reasoning_extra_body():
                 if self.reasoning_config is not None:
                     summary_extra_body["reasoning"] = self.reasoning_config
                 else:
@@ -9689,6 +9971,8 @@ class AIAgent:
                     summary_kwargs["temperature"] = _summary_temperature
                 if self.max_tokens is not None:
                     summary_kwargs.update(self._max_tokens_param(self.max_tokens))
+                if _lm_reasoning_effort is not None:
+                    summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
 
                 # Include provider routing preferences
                 provider_preferences = {}
@@ -9713,7 +9997,7 @@ class AIAgent:
                                    is_oauth=self._is_anthropic_oauth,
                                    preserve_dots=self._anthropic_preserve_dots())
                     summary_response = self._anthropic_messages_create(_ant_kw)
-                    _summary_result = _tsum.normalize_response(summary_response)
+                    _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_summary_result.content or "").strip()
                 else:
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
@@ -9743,7 +10027,7 @@ class AIAgent:
                                     max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
                                     preserve_dots=self._anthropic_preserve_dots())
                     retry_response = self._anthropic_messages_create(_ant_kw2)
-                    _retry_result = _tretry.normalize_response(retry_response)
+                    _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=self._is_anthropic_oauth)
                     final_response = (_retry_result.content or "").strip()
                 else:
                     summary_kwargs = {
@@ -9754,6 +10038,8 @@ class AIAgent:
                         summary_kwargs["temperature"] = _summary_temperature
                     if self.max_tokens is not None:
                         summary_kwargs.update(self._max_tokens_param(self.max_tokens))
+                    if _lm_reasoning_effort is not None:
+                        summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
                     if summary_extra_body:
                         summary_kwargs["extra_body"] = summary_extra_body
 
@@ -10563,6 +10849,16 @@ class AIAgent:
                     # session instead of re-failing every retry.
                     if getattr(self, "_disable_streaming", False):
                         _use_streaming = False
+                    # CopilotACPClient communicates via subprocess stdio and
+                    # returns a plain SimpleNamespace — not an iterable
+                    # stream.  Mirror the ACP exclusion used for Responses
+                    # API upgrade (lines ~1083-1085).
+                    elif (
+                        self.provider == "copilot-acp"
+                        or str(self.base_url or "").lower().startswith("acp://copilot")
+                        or str(self.base_url or "").lower().startswith("acp+tcp://")
+                    ):
+                        _use_streaming = False
                     elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for
                         # health checking, but skip for Mock clients in tests
@@ -10859,7 +11155,12 @@ class AIAgent:
                         # would have been appended in the non-truncated path.
                         _trunc_msg = None
                         _trunc_transport = self._get_transport()
-                        _trunc_result = _trunc_transport.normalize_response(response)
+                        if self.api_mode == "anthropic_messages":
+                            _trunc_result = _trunc_transport.normalize_response(
+                                response, strip_tool_prefix=self._is_anthropic_oauth
+                            )
+                        else:
+                            _trunc_result = _trunc_transport.normalize_response(response)
                         _trunc_msg = _trunc_result
 
                         _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
@@ -12197,7 +12498,10 @@ class AIAgent:
 
             try:
                 _transport = self._get_transport()
-                normalized = _transport.normalize_response(response)
+                _normalize_kwargs = {}
+                if self.api_mode == "anthropic_messages":
+                    _normalize_kwargs["strip_tool_prefix"] = self._is_anthropic_oauth
+                normalized = _transport.normalize_response(response, **_normalize_kwargs)
                 assistant_message = normalized
                 finish_reason = normalized.finish_reason
                 

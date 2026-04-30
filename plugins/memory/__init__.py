@@ -27,6 +27,7 @@ import logging
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -314,7 +315,7 @@ def _get_active_memory_provider() -> Optional[str]:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("memory", {}).get("provider") or None
+        return cfg_get(config, "memory", "provider") or None
     except Exception:
         return None
 

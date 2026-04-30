@@ -71,6 +71,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="cloudcode-pa://google",
     ),
+    "lmstudio": HermesOverlay(
+        transport="openai_chat",
+        auth_type="api_key",
+        extra_env_vars=("LM_API_KEY",),
+        base_url_override="http://127.0.0.1:1234/v1",
+        base_url_env_var="LM_BASE_URL",
+    ),
     "copilot-acp": HermesOverlay(
         transport="codex_responses",
         auth_type="external_process",
@@ -103,6 +110,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "minimax": HermesOverlay(
         transport="anthropic_messages",
         base_url_env_var="MINIMAX_BASE_URL",
+    ),
+    "minimax-oauth": HermesOverlay(
+        transport="anthropic_messages",
+        auth_type="oauth_external",
+        base_url_override="https://api.minimax.io/anthropic",
     ),
     "minimax-cn": HermesOverlay(
         transport="anthropic_messages",
@@ -345,6 +357,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
     "tencent-tokenhub": "Tencent TokenHub",
+    "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",

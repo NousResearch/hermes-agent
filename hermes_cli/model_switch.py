@@ -984,6 +984,7 @@ def list_authenticated_providers(
     user_providers: dict = None,
     custom_providers: list | None = None,
     max_models: int = 8,
+    current_model: str = "",
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1017,6 +1018,37 @@ def list_authenticated_providers(
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
     seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
+    # Effective base URLs of every built-in row we emit (normalized lower+rstrip).
+    # Section 4 uses this to hide ``custom_providers`` entries that point at the
+    # same endpoint as a built-in (e.g. a user-defined "my-dashscope" on
+    # https://coding-intl.dashscope.aliyuncs.com/v1 collides with the built-in
+    # alibaba-coding-plan row when DASHSCOPE_API_KEY is present). Fixes #16970.
+    _builtin_endpoints: set = set()
+
+    def _norm_url(url: str) -> str:
+        return str(url or "").strip().rstrip("/").lower()
+
+    def _record_builtin_endpoint(slug: str) -> None:
+        """Record the effective base URL for a built-in provider row.
+
+        Prefers the live env-override (e.g. DASHSCOPE_BASE_URL) over the
+        static inference_base_url so the dedup matches what a user typing
+        that URL into custom_providers would actually hit."""
+        try:
+            from hermes_cli.auth import PROVIDER_REGISTRY as _reg
+        except Exception:
+            return
+        pcfg = _reg.get(slug)
+        if not pcfg:
+            return
+        url = ""
+        if getattr(pcfg, "base_url_env_var", ""):
+            url = os.environ.get(pcfg.base_url_env_var, "") or ""
+        if not url:
+            url = getattr(pcfg, "inference_base_url", "") or ""
+        normed = _norm_url(url)
+        if normed:
+            _builtin_endpoints.add(normed)
 
     data = fetch_models_dev()
 
@@ -1030,6 +1062,34 @@ def list_authenticated_providers(
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
         curated["ollama-cloud"] = fetch_ollama_cloud_models()
+    # LM Studio has no static catalog — probe its native /api/v1/models
+    # endpoint live so the picker reflects whatever the user has loaded.
+    # Base URL precedence: LM_BASE_URL env var > active config's base_url
+    # (when current provider is lmstudio) > 127.0.0.1 default.
+    # On auth rejection or unreachable server, fall back to the caller-supplied
+    # current model so the picker still shows something when offline / mis-keyed.
+    if "lmstudio" not in curated and (
+        os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or current_provider.strip().lower() == "lmstudio"
+    ):
+        from hermes_cli.models import fetch_lmstudio_models
+        from hermes_cli.auth import AuthError
+        is_current_lmstudio = current_provider.strip().lower() == "lmstudio"
+        lm_base = (
+            os.environ.get("LM_BASE_URL")
+            or (current_base_url if is_current_lmstudio and current_base_url else None)
+            or "http://127.0.0.1:1234/v1"
+        )
+        try:
+            live = fetch_lmstudio_models(
+                api_key=os.environ.get("LM_API_KEY", ""),
+                base_url=lm_base,
+                timeout=1.5, # Smaller timeout for picker
+            )
+        except AuthError:
+            live = []
+        if not live and is_current_lmstudio and current_model:
+            live = [current_model]
+        curated["lmstudio"] = live
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
@@ -1095,6 +1155,7 @@ def list_authenticated_providers(
         })
         seen_slugs.add(slug.lower())
         seen_mdev_ids.add(mdev_id)
+        _record_builtin_endpoint(slug)
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
@@ -1209,6 +1270,7 @@ def list_authenticated_providers(
         })
         seen_slugs.add(pid.lower())
         seen_slugs.add(hermes_slug.lower())
+        _record_builtin_endpoint(hermes_slug)
 
     # --- 2b. Cross-check canonical provider list ---
     # Catches providers that are in CANONICAL_PROVIDERS but weren't found
@@ -1288,6 +1350,7 @@ def list_authenticated_providers(
             "source": "canonical",
         })
         seen_slugs.add(_cp.slug.lower())
+        _record_builtin_endpoint(_cp.slug)
 
     # --- 3. User-defined endpoints from config ---
     # Track (name, base_url) of what section 3 emits so section 4 can skip
@@ -1496,6 +1559,15 @@ def list_authenticated_providers(
                 str(grp["api_url"]).strip().rstrip("/").lower(),
             )
             if _pair_key[0] and _pair_key[1] and _pair_key in _section3_emitted_pairs:
+                continue
+            # Skip if a built-in row (sections 1/2/2b) already represents this
+            # endpoint. Fixes #16970: a user-defined "my-dashscope" pointing at
+            # https://coding-intl.dashscope.aliyuncs.com/v1 duplicates the
+            # built-in alibaba-coding-plan row whenever DASHSCOPE_API_KEY is
+            # set. The built-in row carries the curated model list, correct
+            # auth wiring, and canonical slug — keep it and hide the shadow.
+            _grp_url_norm = _pair_key[1]
+            if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
             results.append({
                 "slug": slug,

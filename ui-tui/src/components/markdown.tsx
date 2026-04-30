@@ -1,9 +1,60 @@
 import { Box, Link, Text } from '@hermes/ink'
-import { memo, type ReactNode, useMemo } from 'react'
+import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
+import { BOX_CLOSE, BOX_OPEN, texToUnicode } from '../lib/mathUnicode.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
 import type { Theme } from '../theme.js'
+
+// `\boxed{X}` regions in `texToUnicode` output are marked with the
+// non-printable U+0001 / U+0002 sentinels. Split on them and render the
+// boxed segment with `inverse + bold` so it reads as a highlighter-pen
+// emphasis on top of whatever color the parent `<Text>` is using (the
+// theme accent for math). The leading / trailing space inside the
+// highlight gives a one-cell visual margin so the highlight reads as a
+// block, not a hug.
+const renderMath = (text: string): ReactNode => {
+  if (!text.includes(BOX_OPEN)) {
+    return text
+  }
+
+  const out: ReactNode[] = []
+  let i = 0
+  let key = 0
+
+  while (i < text.length) {
+    const start = text.indexOf(BOX_OPEN, i)
+
+    if (start < 0) {
+      out.push(text.slice(i))
+
+      break
+    }
+
+    if (start > i) {
+      out.push(text.slice(i, start))
+    }
+
+    const end = text.indexOf(BOX_CLOSE, start + 1)
+
+    if (end < 0) {
+      out.push(text.slice(start))
+
+      break
+    }
+
+    out.push(
+      <Text bold inverse key={key++}>
+        {' '}
+        {text.slice(start + 1, end)}{' '}
+      </Text>
+    )
+
+    i = end + 1
+  }
+
+  return out
+}
 
 const FENCE_RE = /^\s*(`{3,}|~{3,})(.*)$/
 const FENCE_CLOSE_RE = /^\s*(`{3,}|~{3,})\s*$/
@@ -19,6 +70,15 @@ const QUOTE_RE = /^\s*(?:>\s*)+/
 const TABLE_DIVIDER_CELL_RE = /^:?-{3,}:?$/
 const MD_URL_RE = '((?:[^\\s()]|\\([^\\s()]*\\))+?)'
 
+// Display math openers: `$$ ... $$` (TeX) and `\[ ... \]` (LaTeX). The
+// opener is matched only when `$$` / `\[` appears at the very start of the
+// trimmed line — `startsWith('$$')` used to fire on prose like
+// `$$x+y$$ followed by more`, opening a block that never closed because the
+// trailing `$$` on the same line was invisible to the close-scan loop.
+const MATH_BLOCK_OPEN_RE = /^\s*(\$\$|\\\[)(.*)$/
+const MATH_BLOCK_CLOSE_DOLLAR_RE = /^(.*?)\$\$\s*$/
+const MATH_BLOCK_CLOSE_BRACKET_RE = /^(.*?)\\\]\s*$/
+
 export const MEDIA_LINE_RE = /^\s*[`"']?MEDIA:\s*(\S+?)[`"']?\s*$/
 export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
 
@@ -31,6 +91,13 @@ export const AUDIO_DIRECTIVE_RE = /^\s*\[\[audio_as_voice\]\]\s*$/
 // `thing ~! more ~?` from Kimi / Qwen / GLM (kaomoji-style decorators)
 // doesn't pair up the first `~` with the next one on the line and swallow
 // the text between them as a dim `_`-prefixed span.
+//
+// Inline math (`$x$` and `\(x\)`) takes precedence over emphasis at the
+// same start position because regex alternation is leftmost-first; a
+// dollar-delimited span at column N wins over a `*` at column N+1, so
+// `$P=a*b*c$` renders as math instead of having `*b*` corrupted into
+// italics. Single-character minimums and "no space adjacent to delimiter"
+// rules keep currency prose like `$5 to $10` from being swallowed.
 export const INLINE_RE = new RegExp(
   [
     `!\\[(.*?)\\]\\(${MD_URL_RE}\\)`, // 1,2  image
@@ -46,7 +113,13 @@ export const INLINE_RE = new RegExp(
     `\\[\\^([^\\]]+)\\]`, // 13   footnote ref
     `\\^([^^\\s][^^]*?)\\^`, // 14   superscript
     `~([A-Za-z0-9]{1,8})~`, // 15   subscript
-    `https?:\\/\\/[^\\s<]+` //  16   bare URL
+    `(https?:\\/\\/[^\\s<]+)`, // 16   bare URL — wrapped so it owns its own
+    //                                capture group; without this, the math
+    //                                spans below would land in m[16] and the
+    //                                MdInline dispatcher would treat them as
+    //                                bare URLs and render them as autolinks.
+    `(?<!\\$)\\$([^\\s$](?:[^$\\n]*?[^\\s$])?)\\$(?!\\$)`, // 17   inline math $...$
+    `\\\\\\(([^\\n]+?)\\\\\\)` // 18   inline math \(...\)
   ].join('|'),
   'g'
 )
@@ -72,7 +145,7 @@ const autolinkUrl = (raw: string) =>
 
 const renderAutolink = (k: number, t: Theme, raw: string) => (
   <Link key={k} url={autolinkUrl(raw)}>
-    <Text color={t.color.amber} underline>
+    <Text color={t.color.accent} underline>
       {raw.replace(/^mailto:/, '')}
     </Text>
   </Link>
@@ -93,22 +166,41 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/\[\^([^\]]+)\]/g, '[$1]')
     .replace(/\^([^^\s][^^]*?)\^/g, '^$1')
     .replace(/~([A-Za-z0-9]{1,8})~/g, '_$1')
+    .replace(/(?<!\$)\$([^\s$](?:[^$\n]*?[^\s$])?)\$(?!\$)/g, '$1')
+    .replace(/\\\(([^\n]+?)\\\)/g, '$1')
 
 const renderTable = (k: number, rows: string[][], t: Theme) => {
   const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => stripInlineMarkup(r[ci] ?? '').length)))
 
+  // Thin divider under the header.  Without it tables look like prose
+  // with extra spacing because the header is just accent-coloured text
+  // (#15534).  We avoid full borders on purpose — column widths come
+  // from `stripInlineMarkup(...).length` (UTF-16 code units, not
+  // display width), so a real outline often misaligns on emoji and
+  // East-Asian wide characters; one dim solid rule (`─`) under row 0
+  // plus tab-style column gaps reads cleanly on every terminal we
+  // tested.
+  const sep = widths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
+
   return (
     <Box flexDirection="column" key={k} paddingLeft={2}>
       {rows.map((row, ri) => (
-        <Box key={ri}>
-          {widths.map((w, ci) => (
-            <Text color={ri === 0 ? t.color.amber : undefined} key={ci}>
-              <MdInline t={t} text={row[ci] ?? ''} />
-              {' '.repeat(Math.max(0, w - stripInlineMarkup(row[ci] ?? '').length))}
-              {ci < widths.length - 1 ? '  ' : ''}
+        <Fragment key={ri}>
+          <Box>
+            {widths.map((w, ci) => (
+              <Text bold={ri === 0} color={ri === 0 ? t.color.accent : undefined} key={ci}>
+                <MdInline t={t} text={row[ci] ?? ''} />
+                {' '.repeat(Math.max(0, w - stripInlineMarkup(row[ci] ?? '').length))}
+                {ci < widths.length - 1 ? '  ' : ''}
+              </Text>
+            ))}
+          </Box>
+          {ri === 0 && rows.length > 1 ? (
+            <Text color={t.color.muted} dimColor>
+              {sep}
             </Text>
-          ))}
-        </Box>
+          ) : null}
+        </Fragment>
       ))}
     </Box>
   )
@@ -129,14 +221,14 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
 
     if (m[1] && m[2]) {
       parts.push(
-        <Text color={t.color.dim} key={parts.length}>
+        <Text color={t.color.muted} key={parts.length}>
           [image: {m[1]}] {m[2]}
         </Text>
       )
     } else if (m[3] && m[4]) {
       parts.push(
         <Link key={parts.length} url={m[4]}>
-          <Text color={t.color.amber} underline>
+          <Text color={t.color.accent} underline>
             {m[3]}
           </Text>
         </Link>
@@ -146,48 +238,56 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     } else if (m[6]) {
       parts.push(
         <Text key={parts.length} strikethrough>
-          {m[6]}
+          <MdInline t={t} text={m[6]} />
         </Text>
       )
     } else if (m[7]) {
+      // Code is the one wrap that does NOT recurse — inline `code` spans
+      // are verbatim by definition. Letting MdInline reprocess them
+      // would corrupt regex examples and shell snippets.
       parts.push(
-        <Text color={t.color.amber} dimColor key={parts.length}>
+        <Text color={t.color.accent} dimColor key={parts.length}>
           {m[7]}
         </Text>
       )
     } else if (m[8] ?? m[9]) {
+      // Recurse into bold / italic / strike / highlight so nested
+      // `$...$` math (and other inline tokens) inside a `**bolded
+      // statement with $\mathbb{Z}$ math**` actually render. Without
+      // this the inner content is dropped into a single `<Text bold>`
+      // verbatim and the math renderer never sees it.
       parts.push(
         <Text bold key={parts.length}>
-          {m[8] ?? m[9]}
+          <MdInline t={t} text={m[8] ?? m[9]!} />
         </Text>
       )
     } else if (m[10] ?? m[11]) {
       parts.push(
         <Text italic key={parts.length}>
-          {m[10] ?? m[11]}
+          <MdInline t={t} text={m[10] ?? m[11]!} />
         </Text>
       )
     } else if (m[12]) {
       parts.push(
         <Text backgroundColor={t.color.diffAdded} color={t.color.diffAddedWord} key={parts.length}>
-          {m[12]}
+          <MdInline t={t} text={m[12]} />
         </Text>
       )
     } else if (m[13]) {
       parts.push(
-        <Text color={t.color.dim} key={parts.length}>
+        <Text color={t.color.muted} key={parts.length}>
           [{m[13]}]
         </Text>
       )
     } else if (m[14]) {
       parts.push(
-        <Text color={t.color.dim} key={parts.length}>
+        <Text color={t.color.muted} key={parts.length}>
           ^{m[14]}
         </Text>
       )
     } else if (m[15]) {
       parts.push(
-        <Text color={t.color.dim} key={parts.length}>
+        <Text color={t.color.muted} key={parts.length}>
           _{m[15]}
         </Text>
       )
@@ -201,6 +301,19 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
       if (url.length < m[16].length) {
         parts.push(<Text key={parts.length}>{m[16].slice(url.length)}</Text>)
       }
+    } else if (m[17] ?? m[18]) {
+      // Inline math is run through `texToUnicode` (Greek letters, ℕℤℚℝ,
+      // operators, sub/superscripts, fractions) and rendered in italic
+      // accent. Italic is the disambiguator — links use accent+underline,
+      // so without italic readers can't tell `\mathbb{R}` (math) from a
+      // hyperlinked word. Anything `texToUnicode` doesn't recognise is
+      // preserved verbatim, so unfamiliar commands just look like their
+      // raw LaTeX rather than vanishing.
+      parts.push(
+        <Text color={t.color.accent} italic key={parts.length}>
+          {renderMath(texToUnicode(m[17] ?? m[18]!))}
+        </Text>
+      )
     }
 
     last = i + m[0].length
@@ -307,11 +420,11 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (media) {
         start('paragraph')
         nodes.push(
-          <Text color={t.color.dim} key={key}>
+          <Text color={t.color.muted} key={key}>
             {'▸ '}
 
             <Link url={/^(?:\/|[a-z]:[\\/])/i.test(media) ? `file://${media}` : media}>
-              <Text color={t.color.amber} underline>
+              <Text color={t.color.accent} underline>
                 {media}
               </Text>
             </Link>
@@ -358,7 +471,7 @@ function MdImpl({ compact, t, text }: MdProps) {
 
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
-            {lang && !isDiff && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
+            {lang && !isDiff && <Text color={t.color.muted}>{'─ ' + lang}</Text>}
 
             {block.map((l, j) => {
               if (highlighted) {
@@ -384,7 +497,7 @@ function MdImpl({ compact, t, text }: MdProps) {
               return (
                 <Text
                   backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
-                  color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.dim : undefined}
+                  color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.muted : undefined}
                   dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
                   key={j}
                 >
@@ -398,32 +511,80 @@ function MdImpl({ compact, t, text }: MdProps) {
         continue
       }
 
-      if (line.trim().startsWith('$$')) {
-        start('code')
+      const mathOpen = line.match(MATH_BLOCK_OPEN_RE)
 
+      if (mathOpen) {
+        const opener = mathOpen[1]!
+        const closeRe = opener === '$$' ? MATH_BLOCK_CLOSE_DOLLAR_RE : MATH_BLOCK_CLOSE_BRACKET_RE
+        const headRest = mathOpen[2] ?? ''
         const block: string[] = []
 
-        for (i++; i < lines.length; i++) {
-          if (lines[i]!.trim().startsWith('$$')) {
-            i++
+        // Single-line block: `$$x + y = z$$` or `\[x\]`. Capture inner content
+        // and emit the block immediately. Without this, the close-scan loop
+        // skips line `i` and treats the next opener as our closer, swallowing
+        // every paragraph in between.
+        const sameLineClose = headRest.match(closeRe)
+
+        if (sameLineClose) {
+          const inner = sameLineClose[1]!.trim()
+
+          start('code')
+          nodes.push(
+            <Box flexDirection="column" key={key} paddingLeft={2}>
+              {inner ? <Text color={t.color.accent}>{renderMath(texToUnicode(inner))}</Text> : null}
+            </Box>
+          )
+          i++
+
+          continue
+        }
+
+        // Multi-line block: scan ahead for a real closer before committing.
+        // If none exists in the rest of the document, render this line as a
+        // paragraph instead of consuming everything that follows.
+        let closeIdx = -1
+
+        for (let j = i + 1; j < lines.length; j++) {
+          if (closeRe.test(lines[j]!)) {
+            closeIdx = j
 
             break
           }
-
-          block.push(lines[i]!)
         }
 
+        if (closeIdx < 0) {
+          start('paragraph')
+          nodes.push(<MdInline key={key} t={t} text={line} />)
+          i++
+
+          continue
+        }
+
+        if (headRest.trim()) {
+          block.push(headRest)
+        }
+
+        for (let j = i + 1; j < closeIdx; j++) {
+          block.push(lines[j]!)
+        }
+
+        const tail = lines[closeIdx]!.match(closeRe)![1]!.trimEnd()
+
+        if (tail.trim()) {
+          block.push(tail)
+        }
+
+        start('code')
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
-            <Text color={t.color.dim}>─ math</Text>
-
             {block.map((l, j) => (
-              <Text color={t.color.amber} key={j}>
-                {l}
+              <Text color={t.color.accent} key={j}>
+                {renderMath(texToUnicode(l))}
               </Text>
             ))}
           </Box>
         )
+        i = closeIdx + 1
 
         continue
       }
@@ -433,8 +594,8 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (heading) {
         start('heading')
         nodes.push(
-          <Text bold color={t.color.amber} key={key}>
-            {heading}
+          <Text bold color={t.color.accent} key={key}>
+            <MdInline t={t} text={heading} />
           </Text>
         )
         i++
@@ -445,8 +606,8 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (i + 1 < lines.length && SETEXT_RE.test(lines[i + 1]!)) {
         start('heading')
         nodes.push(
-          <Text bold color={t.color.amber} key={key}>
-            {line.trim()}
+          <Text bold color={t.color.accent} key={key}>
+            <MdInline t={t} text={line.trim()} />
           </Text>
         )
         i += 2
@@ -457,7 +618,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (HR_RE.test(line)) {
         start('rule')
         nodes.push(
-          <Text color={t.color.dim} key={key}>
+          <Text color={t.color.muted} key={key}>
             {'─'.repeat(36)}
           </Text>
         )
@@ -471,7 +632,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (footnote) {
         start('list')
         nodes.push(
-          <Text color={t.color.dim} key={key}>
+          <Text color={t.color.muted} key={key}>
             [{footnote[1]}] <MdInline t={t} text={footnote[2] ?? ''} />
           </Text>
         )
@@ -480,7 +641,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         while (i < lines.length && /^\s{2,}\S/.test(lines[i]!)) {
           nodes.push(
             <Box key={`${key}-cont-${i}`} paddingLeft={2}>
-              <Text color={t.color.dim}>
+              <Text color={t.color.muted}>
                 <MdInline t={t} text={lines[i]!.trim()} />
               </Text>
             </Box>
@@ -509,7 +670,7 @@ function MdImpl({ compact, t, text }: MdProps) {
 
           nodes.push(
             <Text key={`${key}-def-${i}`}>
-              <Text color={t.color.dim}> · </Text>
+              <Text color={t.color.muted}> · </Text>
               <MdInline t={t} text={def} />
             </Text>
           )
@@ -529,7 +690,7 @@ function MdImpl({ compact, t, text }: MdProps) {
 
         nodes.push(
           <Text key={key}>
-            <Text color={t.color.dim}>
+            <Text color={t.color.muted}>
               {' '.repeat(indentDepth(bullet[1]!) * 2)}
               {marker}{' '}
             </Text>
@@ -548,7 +709,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         start('list')
         nodes.push(
           <Text key={key}>
-            <Text color={t.color.dim}>
+            <Text color={t.color.muted}>
               {' '.repeat(indentDepth(numbered[1]!) * 2)}
               {numbered[2]}.{' '}
             </Text>
@@ -576,7 +737,7 @@ function MdImpl({ compact, t, text }: MdProps) {
         nodes.push(
           <Box flexDirection="column" key={key}>
             {quoteLines.map((ql, qi) => (
-              <Text color={t.color.dim} key={qi}>
+              <Text color={t.color.muted} key={qi}>
                 {' '.repeat(Math.max(0, ql.depth - 1) * 2)}
                 {'│ '}
                 <MdInline t={t} text={ql.text} />
@@ -613,7 +774,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (summary) {
         start('paragraph')
         nodes.push(
-          <Text color={t.color.dim} key={key}>
+          <Text color={t.color.muted} key={key}>
             ▶ {summary}
           </Text>
         )
@@ -625,7 +786,7 @@ function MdImpl({ compact, t, text }: MdProps) {
       if (/^<\/?[^>]+>$/.test(line.trim())) {
         start('paragraph')
         nodes.push(
-          <Text color={t.color.dim} key={key}>
+          <Text color={t.color.muted} key={key}>
             {line.trim()}
           </Text>
         )

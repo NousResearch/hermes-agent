@@ -76,6 +76,45 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('applies /reasoning hide to the thinking section immediately', async () => {
+    patchUiState({ sections: { thinking: 'expanded' }, showReasoning: true, sid: 'sid-abc' })
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'hide' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/reasoning hide')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(getUiState().showReasoning).toBe(false)
+      expect(getUiState().sections.thinking).toBe('hidden')
+    })
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      session_id: 'sid-abc',
+      value: 'hide'
+    })
+  })
+
+  it('applies /reasoning show to the thinking section immediately', async () => {
+    patchUiState({ sections: { thinking: 'hidden' }, showReasoning: false, sid: 'sid-abc' })
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'show' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/reasoning show')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(getUiState().showReasoning).toBe(true)
+      expect(getUiState().sections.thinking).toBe('expanded')
+    })
+  })
+
   it('opens the skills hub locally for bare /skills', () => {
     const ctx = buildCtx()
 
@@ -141,6 +180,12 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/details toggle')).toBe(true)
     expect(getUiState().detailsMode).toBe('expanded')
     expect(getUiState().detailsModeCommandOverride).toBe(true)
+    expect(getUiState().sections).toEqual({
+      thinking: 'expanded',
+      tools: 'expanded',
+      subagents: 'expanded',
+      activity: 'expanded'
+    })
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
       key: 'details_mode',
       value: 'expanded'
@@ -191,11 +236,14 @@ describe('createSlashHandler', () => {
   })
 
   it.each([
-    ['/browser status', 'browser.manage', { action: 'status' }],
+    ['/browser status', 'browser.manage', { action: 'status', session_id: null }],
+    ['/browser connect', 'browser.manage', { action: 'connect', session_id: null, url: 'http://127.0.0.1:9222' }],
     ['/reload-mcp', 'reload.mcp', { session_id: null }],
+    ['/reload', 'reload.env', {}],
     ['/stop', 'process.stop', {}],
     ['/fast status', 'config.get', { key: 'fast', session_id: null }],
-    ['/busy status', 'config.get', { key: 'busy' }]
+    ['/busy status', 'config.get', { key: 'busy' }],
+    ['/indicator', 'config.get', { key: 'indicator' }]
   ])('routes %s through native RPC (no slash worker)', (command, method, params) => {
     const rpc = vi.fn(() => Promise.resolve({}))
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
@@ -203,6 +251,34 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)(command)).toBe(true)
     expect(rpc).toHaveBeenCalledWith(method, params)
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('renders browser connect progress messages from the gateway', async () => {
+    const rpc = vi.fn(() =>
+      Promise.resolve({
+        connected: false,
+        messages: [
+          "Chrome isn't running with remote debugging — attempting to launch...",
+          'Browser not connected — start Chrome with remote debugging and retry /browser connect'
+        ],
+        url: 'http://127.0.0.1:9222'
+      })
+    )
+
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/browser connect')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('checking Chrome remote debugging at http://127.0.0.1:9222...')
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        "Chrome isn't running with remote debugging — attempting to launch..."
+      )
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        'Browser not connected — start Chrome with remote debugging and retry /browser connect'
+      )
+      expect(ctx.transcript.sys).not.toHaveBeenCalledWith('browser connect failed')
+    })
   })
 
   it('routes /rollback through native RPC when a session is active', () => {
@@ -213,6 +289,24 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/rollback')).toBe(true)
     expect(rpc).toHaveBeenCalledWith('rollback.list', { session_id: 'sid-abc' })
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('hot-swaps the live indicator when /indicator <style> succeeds', async () => {
+    const rpc = vi.fn(() => Promise.resolve({ value: 'emoji' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/indicator emoji')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('config.set', { key: 'indicator', value: 'emoji' })
+    await vi.waitFor(() => expect(getUiState().indicatorStyle).toBe('emoji'))
+  })
+
+  it('rejects unknown indicator styles before hitting the gateway', () => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/indicator sparkle')).toBe(true)
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /indicator [ascii|emoji|kaomoji|unicode]')
   })
 
   it('drops stale slash.exec output after a newer slash', async () => {
@@ -296,6 +390,45 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/h')).toBe(true)
     expect(ctx.transcript.panel).toHaveBeenCalledWith(expect.any(String), expect.any(Array))
+  })
+
+  it('lets exact catalog commands win over longer prefix matches', async () => {
+    const ctx = buildCtx({
+      local: {
+        catalog: {
+          canon: {
+            '/status': '/status',
+            '/statusbar': '/statusbar'
+          }
+        }
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/status')).toBe(true)
+    await vi.waitFor(() => {
+      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+        command: 'status',
+        session_id: null
+      })
+    })
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('ambiguous command'))
+  })
+
+  it('keeps ambiguous prefix handling when there is no exact catalog match', () => {
+    const ctx = buildCtx({
+      local: {
+        catalog: {
+          canon: {
+            '/status': '/status',
+            '/statusbar': '/statusbar'
+          }
+        }
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/stat')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('ambiguous command: /status, /statusbar')
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
   it('falls through to command.dispatch for skill commands and sends the message', async () => {

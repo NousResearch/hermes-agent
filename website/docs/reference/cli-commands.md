@@ -38,6 +38,7 @@ hermes [global-options] <command> [subcommand/options]
 |---------|---------|
 | `hermes chat` | Interactive or one-shot chat with the agent. |
 | `hermes model` | Interactively choose the default provider and model. |
+| `hermes fallback` | Manage fallback providers tried when the primary model errors. |
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
@@ -47,6 +48,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
+| `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
 | `hermes debug` | Debug tools — upload logs and system info for support. |
@@ -56,8 +58,8 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes config` | Show, edit, migrate, and query configuration files. |
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
 | `hermes skills` | Browse, install, publish, audit, and configure skills. |
-| `hermes honcho` | Manage Honcho cross-session memory integration. |
-| `hermes memory` | Configure external memory provider. |
+| `hermes curator` | Background skill maintenance — status, run, pause, pin. See [Curator](../user-guide/features/curator.md). |
+| `hermes memory` | Configure external memory provider. Plugin-specific subcommands (e.g. `hermes honcho`) register automatically when their provider is active. |
 | `hermes acp` | Run Hermes as an ACP server for editor integration. |
 | `hermes mcp` | Manage MCP server configurations and run Hermes as an MCP server. |
 | `hermes plugins` | Manage Hermes Agent plugins (install, enable, disable, remove). |
@@ -68,7 +70,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes claw` | OpenClaw migration helpers. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
-| `hermes completion` | Print shell completion scripts (bash/zsh). |
+| `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
 | `hermes version` | Show version information. |
 | `hermes update` | Pull latest code and reinstall dependencies. `--check` prints commit diff without pulling; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
 | `hermes uninstall` | Remove Hermes from the system. |
@@ -671,33 +673,59 @@ Notes:
 - `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
 - Passing an `http(s)://…/*.md` URL installs a single-file SKILL.md directly. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
 
-## `hermes honcho`
+## `hermes curator`
 
 ```bash
-hermes honcho [--target-profile NAME] <subcommand>
+hermes curator <subcommand>
 ```
 
-Manage Honcho cross-session memory integration. This command is provided by the Honcho memory provider plugin and is only available when `memory.provider` is set to `honcho` in your config.
-
-The `--target-profile` flag lets you manage another profile's Honcho config without switching to it.
-
-Subcommands:
+The curator is an auxiliary-model background task that periodically reviews agent-created skills, prunes stale ones, consolidates overlaps, and archives obsolete skills. Bundled and hub-installed skills are never touched. Archives are recoverable; auto-deletion never happens.
 
 | Subcommand | Description |
 |------------|-------------|
-| `setup` | Redirects to `hermes memory setup` (unified setup path). |
-| `status [--all]` | Show current Honcho config and connection status. `--all` shows a cross-profile overview. |
-| `peers` | Show peer identities across all profiles. |
-| `sessions` | List known Honcho session mappings. |
-| `map [name]` | Map the current directory to a Honcho session name. Omit `name` to list current mappings. |
-| `peer` | Show or update peer names and dialectic reasoning level. Options: `--user NAME`, `--ai NAME`, `--reasoning LEVEL`. |
-| `mode [mode]` | Show or set recall mode: `hybrid`, `context`, or `tools`. Omit to show current. |
-| `tokens` | Show or set token budgets for context and dialectic. Options: `--context N`, `--dialectic N`. |
-| `identity [file] [--show]` | Seed or show the AI peer identity representation. |
-| `enable` | Enable Honcho for the active profile. |
-| `disable` | Disable Honcho for the active profile. |
-| `sync` | Sync Honcho config to all existing profiles (creates missing host blocks). |
-| `migrate` | Step-by-step migration guide from openclaw-honcho to Hermes Honcho. |
+| `status` | Show curator status and skill stats |
+| `run` | Trigger a curator review now |
+| `pause` | Pause the curator until resumed |
+| `resume` | Resume a paused curator |
+| `pin <skill>` | Pin a skill so the curator never auto-transitions it |
+| `unpin <skill>` | Unpin a skill |
+| `restore <skill>` | Restore an archived skill |
+
+See [Curator](../user-guide/features/curator.md) for behavior and config.
+
+## `hermes fallback`
+
+```bash
+hermes fallback <subcommand>
+```
+
+Manage the fallback provider chain. Fallback providers are tried in order when the primary model fails with rate-limit, overload, or connection errors.
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` (alias: `ls`) | Show the current fallback chain (default when no subcommand) |
+| `add` | Pick a provider + model (same picker as `hermes model`) and append to the chain |
+| `remove` (alias: `rm`) | Pick an entry to delete from the chain |
+| `clear` | Remove all fallback entries |
+
+See [Fallback Providers](../user-guide/features/fallback-providers.md).
+
+## `hermes hooks`
+
+```bash
+hermes hooks <subcommand>
+```
+
+Inspect shell-script hooks declared in `~/.hermes/config.yaml`, test them against synthetic payloads, and manage the first-use consent allowlist at `~/.hermes/shell-hooks-allowlist.json`.
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` (alias: `ls`) | List configured hooks with matcher, timeout, and consent status |
+| `test <event>` | Fire every hook matching `<event>` against a synthetic payload |
+| `revoke` (aliases: `remove`, `rm`) | Remove a command's allowlist entries (takes effect on next restart) |
+| `doctor` | Check each configured hook: exec bit, allowlist, mtime drift, JSON validity, and synthetic run timing |
+
+See [Hooks](../user-guide/features/hooks.md) for event signatures and payload shapes.
 
 ## `hermes memory`
 
@@ -714,6 +742,10 @@ Subcommands:
 | `setup` | Interactive provider selection and configuration. |
 | `status` | Show current memory provider config. |
 | `off` | Disable external provider (built-in only). |
+
+:::info Provider-specific subcommands
+When an external memory provider is active, it may register its own top-level `hermes <provider>` command for provider-specific management (e.g. `hermes honcho` when Honcho is active). Inactive providers do not expose their subcommands. Run `hermes --help` to see what's currently wired in.
+:::
 
 ## `hermes acp`
 
@@ -935,7 +967,7 @@ hermes -p work chat -q "Hello from work profile"
 ## `hermes completion`
 
 ```bash
-hermes completion [bash|zsh]
+hermes completion [bash|zsh|fish]
 ```
 
 Print a shell completion script to stdout. Source the output in your shell profile for tab-completion of Hermes commands, subcommands, and profile names.
@@ -948,6 +980,9 @@ hermes completion bash >> ~/.bashrc
 
 # Zsh
 hermes completion zsh >> ~/.zshrc
+
+# Fish
+hermes completion fish > ~/.config/fish/completions/hermes.fish
 ```
 
 ## `hermes update`

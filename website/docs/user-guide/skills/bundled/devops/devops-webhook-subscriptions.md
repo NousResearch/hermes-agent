@@ -1,14 +1,14 @@
 ---
-title: "Webhook Subscriptions"
+title: "Webhook Subscriptions — Webhook subscriptions: event-driven agent runs"
 sidebar_label: "Webhook Subscriptions"
-description: "Create and manage webhook subscriptions for event-driven agent activation, or for direct push notifications (zero LLM cost)"
+description: "Webhook subscriptions: event-driven agent runs"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Webhook Subscriptions
 
-Create and manage webhook subscriptions for event-driven agent activation, or for direct push notifications (zero LLM cost). Use when the user wants external services to trigger agent runs OR push notifications to chats.
+Webhook subscriptions: event-driven agent runs.
 
 ## Skill metadata
 

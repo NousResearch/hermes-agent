@@ -18,11 +18,11 @@ User ↔ Messaging Platform ↔ Platform Adapter ↔ Gateway Runner ↔ AIAgent
 
 Every adapter extends `BasePlatformAdapter` from `gateway/platforms/base.py` and implements:
 
-- **`connect()`** — Establish connection (WebSocket, long-poll, HTTP server, etc.)
-- **`disconnect()`** — Clean shutdown
-- **`send()`** — Send a text message to a chat
-- **`send_typing()`** — Show typing indicator (optional)
-- **`get_chat_info()`** — Return chat metadata
+- **`connect()`** — Establish connection (WebSocket, long-poll, HTTP server, etc.) *(abstract)*
+- **`disconnect()`** — Clean shutdown *(abstract)*
+- **`send()`** — Send a text message to a chat *(abstract)*
+- **`send_typing()`** — Show typing indicator (optional override)
+- **`get_chat_info()`** — Return chat metadata (optional override)
 
 Inbound messages are received by the adapter and forwarded via `self.handle_message(event)`, which the base class routes to the gateway runner.
 

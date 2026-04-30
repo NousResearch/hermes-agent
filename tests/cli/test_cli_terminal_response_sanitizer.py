@@ -68,6 +68,10 @@ class TestStripLeakedTerminalResponses:
         text = "abc<65;1;49Mdef"
         assert _strip_leaked_terminal_responses(text) == "abcdef"
 
+    def test_strips_sgr_mouse_report_with_large_coordinates(self):
+        text = "abc\x1b[<10000;12345;98765Mdef"
+        assert _strip_leaked_terminal_responses(text) == "abcdef"
+
     def test_strips_multiple_concatenated_sgr_mouse_reports(self):
         text = "<65;1;49M<35;1;42Mhello<64;1;40m"
         assert _strip_leaked_terminal_responses(text) == "hello"

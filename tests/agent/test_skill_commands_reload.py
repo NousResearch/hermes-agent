@@ -1,11 +1,15 @@
-"""Tests for ``agent.skill_commands.reload_skills`` and the ``skills_reload`` tool.
+"""Tests for ``agent.skill_commands.reload_skills``.
 
-Covers the helper that powers ``/reload-skills`` (CLI + gateway slash command)
-and the ``skills_reload`` agent tool — both clear in-process skill caches and
-return a diff of newly-visible / removed skill names.
+Covers the helper that powers ``/reload-skills`` (CLI + gateway slash command).
+The helper rescans the skills directory and returns a diff of what changed.
+It does NOT invalidate the skills system-prompt cache — skills are invoked
+at runtime via ``/skill-name``, ``skills_list``, or ``skill_view`` and don't
+need to live in the system prompt.
+
+``added`` and ``removed`` are lists of ``{"name": str, "description": str}``
+dicts. Descriptions are truncated to 60 chars.
 """
 
-import json
 import shutil
 import tempfile
 import textwrap
@@ -72,49 +76,53 @@ class TestReloadSkillsHelper:
         assert result["added"] == []
         assert result["removed"] == []
 
-    def test_detects_newly_added_skill(self, hermes_home):
+    def test_detects_newly_added_skill_with_description(self, hermes_home):
         from agent.skill_commands import reload_skills, get_skill_commands
 
         # Prime the cache so subsequent diff is meaningful
         get_skill_commands()
 
-        _write_skill(hermes_home / "skills", "demo")
+        _write_skill(hermes_home / "skills", "demo", "a demo skill")
         result = reload_skills()
 
-        assert result["added"] == ["demo"]
+        assert result["added"] == [{"name": "demo", "description": "a demo skill"}]
         assert result["removed"] == []
         assert result["total"] == 1
         assert result["commands"] == 1
 
-    def test_detects_removed_skill(self, hermes_home):
+    def test_detects_removed_skill_carries_description(self, hermes_home):
         from agent.skill_commands import reload_skills
 
-        skill_dir = _write_skill(hermes_home / "skills", "demo")
+        skill_dir = _write_skill(hermes_home / "skills", "demo", "soon to be gone")
         # First reload: demo present
         first = reload_skills()
         assert first["total"] == 1
+        assert first["added"] == [{"name": "demo", "description": "soon to be gone"}]
 
-        # Remove and reload
+        # Remove and reload — the description must survive the removal diff
+        # (we cached it from the pre-rescan snapshot).
         shutil.rmtree(skill_dir)
         second = reload_skills()
 
-        assert second["removed"] == ["demo"]
+        assert second["removed"] == [{"name": "demo", "description": "soon to be gone"}]
         assert second["added"] == []
         assert second["total"] == 0
 
-    def test_clears_prompt_cache_snapshot(self, hermes_home):
-        """The disk snapshot at ``.skills_prompt_snapshot.json`` must be removed."""
-        from agent.prompt_builder import _skills_prompt_snapshot_path
-        from agent.skill_commands import reload_skills
+    def test_description_passes_through_verbatim(self, hermes_home):
+        """``description`` must be the full SKILL.md frontmatter string — no
+        truncation. The system prompt renders skills as
+        ``    - name: description`` without a length cap, and the reload
+        note mirrors that format, so truncating here would make the diff
+        render differently from the original catalog."""
+        from agent.skill_commands import reload_skills, get_skill_commands
 
-        snapshot = _skills_prompt_snapshot_path()
-        snapshot.parent.mkdir(parents=True, exist_ok=True)
-        snapshot.write_text("{}")
-        assert snapshot.exists()
+        get_skill_commands()  # prime
+        long_desc = "x" * 200
+        _write_skill(hermes_home / "skills", "longdesc", long_desc)
 
-        reload_skills()
-
-        assert not snapshot.exists(), "prompt cache snapshot should be removed"
+        result = reload_skills()
+        assert len(result["added"]) == 1
+        assert result["added"][0]["description"] == long_desc
 
     def test_unchanged_skills_appear_in_unchanged_list(self, hermes_home):
         from agent.skill_commands import reload_skills, get_skill_commands
@@ -129,50 +137,24 @@ class TestReloadSkillsHelper:
         assert result["added"] == []
         assert result["removed"] == []
 
+    def test_does_not_invalidate_prompt_cache_snapshot(self, hermes_home):
+        """reload_skills must NOT delete the skills prompt-cache snapshot.
 
-class TestSkillsReloadTool:
-    """``tools.skills_tool.skills_reload`` — the agent-facing tool."""
+        Skills are called at runtime — the system prompt doesn't need to
+        mention them for the model to use them — so reloading them should
+        preserve prefix caching.
+        """
+        from agent.prompt_builder import _skills_prompt_snapshot_path
+        from agent.skill_commands import reload_skills
 
-    def test_tool_returns_json(self, hermes_home):
-        from tools.skills_tool import skills_reload
+        snapshot = _skills_prompt_snapshot_path()
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_text("{}")
+        assert snapshot.exists()
 
-        out = skills_reload()
-        result = json.loads(out)
-        assert result["success"] is True
-        assert set(result) == {
-            "success",
-            "added",
-            "removed",
-            "unchanged_count",
-            "total",
-            "commands",
-        }
+        reload_skills()
 
-    def test_tool_reports_added_skill(self, hermes_home):
-        from agent.skill_commands import get_skill_commands
-        from tools.skills_tool import skills_reload
-
-        get_skill_commands()  # prime cache
-        _write_skill(hermes_home / "skills", "freshly-added", "fresh skill")
-
-        result = json.loads(skills_reload())
-        assert result["success"] is True
-        assert result["added"] == ["freshly-added"]
-        assert result["total"] == 1
-
-    def test_tool_is_registered_in_skills_toolset(self, hermes_home):
-        # Importing the module triggers registry.register
-        import tools.skills_tool  # noqa: F401
-        from tools.registry import registry
-
-        assert "skills_reload" in registry.get_tool_names_for_toolset("skills")
-        assert registry.get_toolset_for_tool("skills_reload") == "skills"
-
-    def test_tool_schema_has_no_required_args(self, hermes_home):
-        import tools.skills_tool  # noqa: F401
-        from tools.registry import registry
-
-        schema = registry.get_schema("skills_reload")
-        assert schema["name"] == "skills_reload"
-        # Caller invokes with no arguments; tool returns the diff verbatim.
-        assert schema["parameters"].get("required", []) == []
+        assert snapshot.exists(), (
+            "prompt cache snapshot should be preserved — skills don't live "
+            "in the system prompt so there's no reason to invalidate it"
+        )

@@ -11057,6 +11057,27 @@ class AIAgent:
                                 error_details.append("response.choices is None")
                             else:
                                 error_details.append("response.choices is empty")
+                        else:
+                            # Some providers (e.g. GLM 5.1 via Ollama) sometimes
+                            # return a well-shaped choice with empty text
+                            # content, finish_reason="stop", and no tool calls.
+                            # Without this guard, the assistant turn is recorded
+                            # as the placeholder "(empty)" and the user sees a
+                            # blank reply.  Route through the existing
+                            # retry/fallback machinery.
+                            _choice0 = response.choices[0]
+                            _msg0 = getattr(_choice0, "message", None)
+                            _content0 = getattr(_msg0, "content", None) if _msg0 is not None else None
+                            _reasoning0 = getattr(_msg0, "reasoning_content", None) if _msg0 is not None else None
+                            _tool_calls0 = getattr(_msg0, "tool_calls", None) if _msg0 is not None else None
+                            _finish0 = getattr(_choice0, "finish_reason", None)
+                            _content_empty = (_content0 is None) or (isinstance(_content0, str) and not _content0.strip())
+                            _reasoning_empty = (_reasoning0 is None) or (isinstance(_reasoning0, str) and not _reasoning0.strip())
+                            if _content_empty and _reasoning_empty and not _tool_calls0 and _finish0 in (None, "stop"):
+                                response_invalid = True
+                                error_details.append(
+                                    f"empty assistant content with finish_reason={_finish0!r}"
+                                )
 
                     if response_invalid:
                         # Stop spinner before printing error messages

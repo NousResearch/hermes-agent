@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with nine providers:
+Convert text to speech with ten providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -27,6 +27,7 @@ Convert text to speech with nine providers:
 | **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
+| **Piper** | Good | Free (local) | None needed |
 
 ### Platform Delivery
 
@@ -42,7 +43,7 @@ Convert text to speech with nine providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -83,6 +84,15 @@ tts:
     voice: Jasper                               # Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo
     speed: 1.0                                  # 0.5 - 2.0
     clean_text: true                            # Expand numbers, currencies, units
+  piper:
+    voice: en_US-lessac-medium                  # voice name (auto-downloaded) OR absolute path to .onnx
+    # voices_dir: ''                            # default: ~/.hermes/cache/piper-voices/
+    # use_cuda: false                           # requires onnxruntime-gpu
+    # length_scale: 1.0                         # 2.0 = twice as slow
+    # noise_scale: 0.667
+    # noise_w_scale: 0.8
+    # volume: 1.0                               # 0.5 = half as loud
+    # normalize_audio: true
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
@@ -98,6 +108,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 
 ```bash
 # Ubuntu/Debian
@@ -110,27 +121,51 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, and KittenTTS audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
 :::
 
+### Piper (local, 44 languages)
+
+Piper is a fast, local neural TTS engine from the Open Home Foundation (the Home Assistant maintainers). It runs entirely on CPU, supports **44 languages** with pre-trained voices, and needs no API key.
+
+**Install via `hermes tools`** → Voice & TTS → Piper — Hermes runs `pip install piper-tts` for you. Or install manually: `pip install piper-tts`.
+
+**Switch to Piper:**
+
+```yaml
+tts:
+  provider: piper
+  piper:
+    voice: en_US-lessac-medium
+```
+
+On the first TTS call for a voice that isn't cached locally, Hermes runs `python -m piper.download_voices <name>` and downloads the model (~20-90MB depending on quality tier) into `~/.hermes/cache/piper-voices/`. Subsequent calls reuse the cached model.
+
+**Picking a voice.** The [full voice catalog](https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md) covers English, Spanish, French, German, Italian, Dutch, Portuguese, Russian, Polish, Turkish, Chinese, Arabic, Hindi, and more — each with `x_low` / `low` / `medium` / `high` quality tiers. Sample voices at [rhasspy.github.io/piper-samples](https://rhasspy.github.io/piper-samples/).
+
+**Using a pre-downloaded voice.** Set `tts.piper.voice` to an absolute path ending in `.onnx`:
+
+```yaml
+tts:
+  piper:
+    voice: /path/to/my-custom-voice.onnx
+```
+
+**Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
+
 ### Custom command providers
 
-If a TTS engine you want isn't natively supported (Piper, VoxCPM, MLX-Kokoro, XTTS CLI, a voice-cloning script, anything else that exposes a CLI), you can wire it in as a **command-type provider** without writing any Python. Hermes writes the input text to a temp UTF-8 file, runs your shell command, and reads the audio file the command produced.
+If a TTS engine you want isn't natively supported (VoxCPM, MLX-Kokoro, XTTS CLI, a voice-cloning script, anything else that exposes a CLI), you can wire it in as a **command-type provider** without writing any Python. Hermes writes the input text to a temp UTF-8 file, runs your shell command, and reads the audio file the command produced.
 
 Declare one or more providers under `tts.providers.<name>` and switch between them with `tts.provider: <name>` — the same way you switch between built-ins like `edge` and `openai`.
 
 ```yaml
 tts:
-  provider: piper-en               # pick any name under tts.providers
+  provider: voxcpm                 # pick any name under tts.providers
   providers:
-    piper-en:
-      type: command
-      command: "piper -m ~/models/en_US-amy.onnx -f {output_path} < {input_path}"
-      output_format: wav
-
     voxcpm:
       type: command
       command: "voxcpm --ref ~/voice.wav --text-file {input_path} --out {output_path}"
@@ -142,6 +177,11 @@ tts:
       type: command
       command: "python -m mlx_kokoro --in {input_path} --out {output_path} --voice {voice}"
       voice: af_sky
+      output_format: wav
+
+    piper-custom:                  # native Piper also supports custom .onnx via tts.piper.voice
+      type: command
+      command: "piper -m /path/to/custom.onnx -f {output_path} < {input_path}"
       output_format: wav
 ```
 

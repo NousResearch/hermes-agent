@@ -1848,7 +1848,8 @@ class TestMatrixReadReceipts:
 
     @pytest.mark.asyncio
     async def test_accepted_message_schedules_read_receipt(self):
-        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._dm_rooms = {"!room:ex": True}
+        self.adapter._require_mention = False
         self.adapter._get_display_name = AsyncMock(return_value="Alice")
         self.adapter._background_read_receipt = MagicMock()
 
@@ -1906,7 +1907,7 @@ class TestMatrixImageOnlyMediaNormalization:
         self.adapter = _make_adapter()
         self.adapter._client = MagicMock()
         self.adapter._client.download_media = AsyncMock(return_value=None)
-        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._dm_rooms = {"!room:example.org": True}
         self.adapter._get_display_name = AsyncMock(return_value="Alice")
         self.adapter._background_read_receipt = MagicMock()
         self.adapter._mxc_to_http = (
@@ -2216,7 +2217,7 @@ class TestMatrixOnRoomMessageFilter:
 class TestMatrixDmAutoThread:
     def setup_method(self):
         self.adapter = _make_adapter()
-        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._dm_rooms = {"!dm:ex": True}
         self.adapter._get_display_name = AsyncMock(return_value="Alice")
         self.adapter._background_read_receipt = MagicMock()
         # Disable require_mention so DMs pass gating

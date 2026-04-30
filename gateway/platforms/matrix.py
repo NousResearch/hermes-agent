@@ -106,6 +106,36 @@ from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
 
+@dataclass(frozen=True)
+class MatrixRoomIdentity:
+    """Resolved Matrix room identity used for Hermes session routing."""
+
+    room_id: str
+    room_name: Optional[str] = None
+    canonical_alias: Optional[str] = None
+    joined_member_count: Optional[int] = None
+    is_direct_account_data: bool = False
+
+    @property
+    def display_name(self) -> str:
+        return self.room_name or self.canonical_alias or self.room_id
+
+    @property
+    def has_explicit_name(self) -> bool:
+        return bool(self.room_name and self.room_name.strip())
+
+    @property
+    def chat_type(self) -> str:
+        # Matrix DMs are account-data facts. Member count is metadata only,
+        # and named rooms should retain room/group context in Hermes prompts.
+        if self.has_explicit_name:
+            return "group"
+        return "dm" if self.is_direct_account_data else "group"
+
+    @property
+    def has_direct_name_conflict(self) -> bool:
+        return self.is_direct_account_data and self.has_explicit_name
+
 
 @dataclass
 class _MatrixApprovalPrompt:
@@ -945,22 +975,9 @@ class MatrixAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=last_event_id)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        """Return room name and type (dm/group)."""
-        name = chat_id
-        chat_type = "dm" if await self._is_dm_room(chat_id) else "group"
-
-        if self._client:
-            try:
-                name_evt = await self._client.get_state_event(
-                    RoomID(chat_id),
-                    EventType.ROOM_NAME,
-                )
-                if name_evt and hasattr(name_evt, "name") and name_evt.name:
-                    name = name_evt.name
-            except Exception:
-                pass
-
-        return {"name": name, "type": chat_type}
+        """Return Matrix room identity and Hermes chat type."""
+        identity = await self._resolve_room_identity(chat_id)
+        return {"name": identity.display_name, "type": identity.chat_type}
 
     # ------------------------------------------------------------------
     # Optional overrides
@@ -1542,8 +1559,9 @@ class MatrixAdapter(BasePlatformAdapter):
         Returns (body, is_dm, chat_type, thread_id, display_name, source)
         or None if the message should be dropped (mention gating).
         """
-        is_dm = await self._is_dm_room(room_id)
-        chat_type = "dm" if is_dm else "group"
+        identity = await self._resolve_room_identity(room_id)
+        chat_type = identity.chat_type
+        is_dm = chat_type == "dm"
 
         thread_id = None
         if relates_to.get("rel_type") == "m.thread":
@@ -1588,6 +1606,7 @@ class MatrixAdapter(BasePlatformAdapter):
         display_name = await self._get_display_name(room_id, sender)
         source = self.build_source(
             chat_id=room_id,
+            chat_name=identity.display_name,
             chat_type=chat_type,
             user_id=sender,
             user_name=display_name,
@@ -2284,22 +2303,119 @@ class MatrixAdapter(BasePlatformAdapter):
     # Helpers
     # ------------------------------------------------------------------
 
-    async def _is_dm_room(self, room_id: str) -> bool:
-        """Check if a room is a DM."""
-        if self._dm_rooms.get(room_id, False):
-            return True
-        # Fallback: check member count via state store.
-        state_store = (
-            getattr(self._client, "state_store", None) if self._client else None
+    async def _matrix_state_value(
+        self, room_id: str, event_type: Any, key: str
+    ) -> Optional[str]:
+        """Read one string value from Matrix room state."""
+        if not self._client:
+            return None
+
+        try:
+            evt = await self._client.get_state_event(RoomID(room_id), event_type)
+        except Exception as exc:
+            logger.debug(
+                "Matrix: failed to read state %s: %s",
+                event_type,
+                exc,
+            )
+            return None
+
+        if not evt:
+            return None
+
+        value = None
+        if isinstance(evt, dict):
+            content = evt.get("content", evt)
+            if isinstance(content, dict):
+                value = content.get(key)
+        else:
+            value = getattr(evt, key, None)
+            if value is None and hasattr(evt, "content"):
+                content = getattr(evt, "content", None)
+                if isinstance(content, dict):
+                    value = content.get(key)
+                else:
+                    value = getattr(content, key, None)
+
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return None
+
+    async def _matrix_joined_member_count(self, room_id: str) -> Optional[int]:
+        """Return joined member count as metadata only."""
+        if not self._client:
+            return None
+
+        state_store = getattr(self._client, "state_store", None)
+        if not state_store:
+            return None
+
+        try:
+            members = await state_store.get_members(room_id)
+        except Exception as exc:
+            logger.debug("Matrix: failed to read Matrix room members: %s", exc)
+            return None
+
+        if not members:
+            return None
+
+        values = members.values() if isinstance(members, dict) else members
+        count = 0
+        for member in values:
+            membership = None
+            if isinstance(member, dict):
+                membership = member.get("membership")
+                content = member.get("content")
+                if membership is None and isinstance(content, dict):
+                    membership = content.get("membership")
+            else:
+                membership = getattr(member, "membership", None)
+                content = getattr(member, "content", None)
+                if membership is None and isinstance(content, dict):
+                    membership = content.get("membership")
+                elif membership is None and content is not None:
+                    membership = getattr(content, "membership", None)
+
+            if membership is None or str(membership) == "join":
+                count += 1
+
+        return count
+
+    async def _resolve_room_identity(self, room_id: str) -> MatrixRoomIdentity:
+        """Resolve Matrix room identity before Hermes session routing."""
+        if room_id not in self._dm_rooms:
+            await self._refresh_dm_cache()
+
+        is_direct = bool(self._dm_rooms.get(room_id, False))
+        room_name = await self._matrix_state_value(
+            room_id, EventType.ROOM_NAME, "name"
         )
-        if state_store:
-            try:
-                members = await state_store.get_members(room_id)
-                if members and len(members) == 2:
-                    return True
-            except Exception:
-                pass
-        return False
+        canonical_alias = await self._matrix_state_value(
+            room_id, "m.room.canonical_alias", "alias"
+        )
+        joined_member_count = await self._matrix_joined_member_count(room_id)
+
+        identity = MatrixRoomIdentity(
+            room_id=room_id,
+            room_name=room_name,
+            canonical_alias=canonical_alias,
+            joined_member_count=joined_member_count,
+            is_direct_account_data=is_direct,
+        )
+
+        if identity.has_direct_name_conflict:
+            logger.warning(
+                "Matrix: room has m.direct=true and an explicit name; "
+                "using named-room context for Hermes session routing"
+            )
+
+        return identity
+
+    async def _is_dm_room(self, room_id: str) -> bool:
+        """Return Hermes DM classification without member-count heuristics."""
+        identity = await self._resolve_room_identity(room_id)
+        return identity.chat_type == "dm"
 
     async def _refresh_dm_cache(self) -> None:
         """Refresh the DM room cache from m.direct account data."""

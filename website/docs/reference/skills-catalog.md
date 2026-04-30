@@ -14,114 +14,119 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`apple-notes`](/docs/user-guide/skills/bundled/apple/apple-apple-notes) | Manage Apple Notes via the memo CLI on macOS (create, view, search, edit). | `apple/apple-notes` |
-| [`apple-reminders`](/docs/user-guide/skills/bundled/apple/apple-apple-reminders) | Manage Apple Reminders via remindctl CLI (list, add, complete, delete). | `apple/apple-reminders` |
-| [`findmy`](/docs/user-guide/skills/bundled/apple/apple-findmy) | Track Apple devices and AirTags via FindMy.app on macOS using AppleScript and screen capture. | `apple/findmy` |
+| [`apple-notes`](/docs/user-guide/skills/bundled/apple/apple-apple-notes) | Manage Apple Notes via memo CLI: create, search, edit. | `apple/apple-notes` |
+| [`apple-reminders`](/docs/user-guide/skills/bundled/apple/apple-apple-reminders) | Apple Reminders via remindctl: add, list, complete. | `apple/apple-reminders` |
+| [`findmy`](/docs/user-guide/skills/bundled/apple/apple-findmy) | Track Apple devices/AirTags via FindMy.app on macOS. | `apple/findmy` |
 | [`imessage`](/docs/user-guide/skills/bundled/apple/apple-imessage) | Send and receive iMessages/SMS via the imsg CLI on macOS. | `apple/imessage` |
 
 ## autonomous-ai-agents
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`claude-code`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code) | Delegate coding tasks to Claude Code (Anthropic's CLI agent). Use for building features, refactoring, PR reviews, and iterative coding. Requires the claude CLI installed. | `autonomous-ai-agents/claude-code` |
-| [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex) | Delegate coding tasks to OpenAI Codex CLI agent. Use for building features, refactoring, PR reviews, and batch issue fixing. Requires the codex CLI and a git repository. | `autonomous-ai-agents/codex` |
-| [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) | Complete guide to using and extending Hermes Agent — CLI usage, setup, configuration, spawning additional agents, gateway platforms, skills, voice, tools, profiles, and a concise contributor reference. Load this skill when helping users... | `autonomous-ai-agents/hermes-agent` |
-| [`opencode`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode) | Delegate coding tasks to OpenCode CLI agent for feature implementation, refactoring, PR review, and long-running autonomous sessions. Requires the opencode CLI installed and authenticated. | `autonomous-ai-agents/opencode` |
+| [`claude-code`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code) | Delegate coding to Claude Code CLI (features, PRs). | `autonomous-ai-agents/claude-code` |
+| [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex) | Delegate coding to OpenAI Codex CLI (features, PRs). | `autonomous-ai-agents/codex` |
+| [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) | Configure, extend, or contribute to Hermes Agent. | `autonomous-ai-agents/hermes-agent` |
+| [`opencode`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode) | Delegate coding to OpenCode CLI (features, PR review). | `autonomous-ai-agents/opencode` |
 
 ## creative
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram) | Generate dark-themed SVG diagrams of software systems and cloud infrastructure as standalone HTML files with inline SVG graphics. Semantic component colors (cyan=frontend, emerald=backend, violet=database, amber=cloud/AWS, rose=security,... | `creative/architecture-diagram` |
-| [`ascii-art`](/docs/user-guide/skills/bundled/creative/creative-ascii-art) | Generate ASCII art using pyfiglet (571 fonts), cowsay, boxes, toilet, image-to-ascii, remote APIs (asciified, ascii.co.uk), and LLM fallback. No API keys required. | `creative/ascii-art` |
-| [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video) | Production pipeline for ASCII art video — any format. Converts video/audio/images/generative input into colored ASCII character video output (MP4, GIF, image sequence). Covers: video-to-ASCII conversion, audio-reactive music visualizers,... | `creative/ascii-video` |
-| [`baoyu-comic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-comic) | Knowledge comic creator supporting multiple art styles and tones. Creates original educational comics with detailed panel layouts and sequential image generation. Use when user asks to create "知识漫画", "教育漫画", "biography comic", "tutorial... | `creative/baoyu-comic` |
-| [`baoyu-infographic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-infographic) | Generate professional infographics with 21 layout types and 21 visual styles. Analyzes content, recommends layout×style combinations, and generates publication-ready infographics. Use when user asks to create "infographic", "visual summa... | `creative/baoyu-infographic` |
-| [`ideation`](/docs/user-guide/skills/bundled/creative/creative-creative-ideation) | Generate project ideas through creative constraints. Use when the user says 'I want to build something', 'give me a project idea', 'I'm bored', 'what should I make', 'inspire me', or any variant of 'I have tools but no direction'. Works... | `creative/creative-ideation` |
-| [`design-md`](/docs/user-guide/skills/bundled/creative/creative-design-md) | Author, validate, diff, and export DESIGN.md files — Google's open-source format spec that gives coding agents a persistent, structured understanding of a design system (tokens + rationale in one file). Use when building a design system,... | `creative/design-md` |
-| [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw) | Create hand-drawn style diagrams using Excalidraw JSON format. Generate .excalidraw files for architecture diagrams, flowcharts, sequence diagrams, concept maps, and more. Files can be opened at excalidraw.com or uploaded for shareable l... | `creative/excalidraw` |
-| [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video) | Production pipeline for mathematical and technical animations using Manim Community Edition. Creates 3Blue1Brown-style explainer videos, algorithm visualizations, equation derivations, architecture diagrams, and data stories. Use when us... | `creative/manim-video` |
-| [`p5js`](/docs/user-guide/skills/bundled/creative/creative-p5js) | Production pipeline for interactive and generative visual art using p5.js. Creates browser-based sketches, generative art, data visualizations, interactive experiences, 3D scenes, audio-reactive visuals, and motion graphics — exported as... | `creative/p5js` |
-| [`pixel-art`](/docs/user-guide/skills/bundled/creative/creative-pixel-art) | Convert images into retro pixel art with hardware-accurate palettes (NES, Game Boy, PICO-8, C64, etc.), and animate them into short videos. Presets cover arcade, SNES, and 10+ era-correct looks. Use `clarify` to let the user pick a style... | `creative/pixel-art` |
-| [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs) | 54 production-quality design systems extracted from real websites. Load a template to generate HTML/CSS that matches the visual identity of sites like Stripe, Linear, Vercel, Notion, Airbnb, and more. Each template includes colors, typog... | `creative/popular-web-designs` |
-| [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) | Songwriting craft, AI music generation prompts (Suno focus), parody/adaptation techniques, phonetic tricks, and lessons learned. These are tools and ideas, not rules. Break any of them when the art calls for it. | `creative/songwriting-and-ai-music` |
+| [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram) | Dark-themed SVG architecture/cloud/infra diagrams as HTML. | `creative/architecture-diagram` |
+| [`ascii-art`](/docs/user-guide/skills/bundled/creative/creative-ascii-art) | ASCII art: pyfiglet, cowsay, boxes, image-to-ascii. | `creative/ascii-art` |
+| [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video) | ASCII video: convert video/audio to colored ASCII MP4/GIF. | `creative/ascii-video` |
+| [`baoyu-comic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-comic) | Knowledge comics (知识漫画): educational, biography, tutorial. | `creative/baoyu-comic` |
+| [`baoyu-infographic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-infographic) | Infographics: 21 layouts x 21 styles (信息图, 可视化). | `creative/baoyu-infographic` |
+| [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design) | Design one-off HTML artifacts (landing, deck, prototype). | `creative/claude-design` |
+| [`comfyui`](/docs/user-guide/skills/bundled/creative/creative-comfyui) | Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection. Uses the official comfy-cli for lifecycle and direct REST API for execution. | `creative/comfyui` |
+| [`ideation`](/docs/user-guide/skills/bundled/creative/creative-creative-ideation) | Generate project ideas via creative constraints. | `creative/creative-ideation` |
+| [`design-md`](/docs/user-guide/skills/bundled/creative/creative-design-md) | Author/validate/export Google's DESIGN.md token spec files. | `creative/design-md` |
+| [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw) | Hand-drawn Excalidraw JSON diagrams (arch, flow, seq). | `creative/excalidraw` |
+| [`humanizer`](/docs/user-guide/skills/bundled/creative/creative-humanizer) | Humanize text: strip AI-isms and add real voice. | `creative/humanizer` |
+| [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video) | Manim CE animations: 3Blue1Brown math/algo videos. | `creative/manim-video` |
+| [`p5js`](/docs/user-guide/skills/bundled/creative/creative-p5js) | p5.js sketches: gen art, shaders, interactive, 3D. | `creative/p5js` |
+| [`pixel-art`](/docs/user-guide/skills/bundled/creative/creative-pixel-art) | Pixel art w/ era palettes (NES, Game Boy, PICO-8). | `creative/pixel-art` |
+| [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs) | 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS. | `creative/popular-web-designs` |
+| [`pretext`](/docs/user-guide/skills/bundled/creative/creative-pretext) | Use when building creative browser demos with @chenglou/pretext — DOM-free text layout for ASCII art, typographic flow around obstacles, text-as-geometry games, kinetic typography, and text-powered generative art. Produces single-file HT... | `creative/pretext` |
+| [`sketch`](/docs/user-guide/skills/bundled/creative/creative-sketch) | Throwaway HTML mockups: 2-3 design variants to compare. | `creative/sketch` |
+| [`songwriting-and-ai-music`](/docs/user-guide/skills/bundled/creative/creative-songwriting-and-ai-music) | Songwriting craft and Suno AI music prompts. | `creative/songwriting-and-ai-music` |
 | [`touchdesigner-mcp`](/docs/user-guide/skills/bundled/creative/creative-touchdesigner-mcp) | Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools. | `creative/touchdesigner-mcp` |
 
 ## data-science
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`jupyter-live-kernel`](/docs/user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel) | Use a live Jupyter kernel for stateful, iterative Python execution via hamelnb. Load this skill when the task involves exploration, iteration, or inspecting intermediate results — data science, ML experimentation, API exploration, or bui... | `data-science/jupyter-live-kernel` |
+| [`jupyter-live-kernel`](/docs/user-guide/skills/bundled/data-science/data-science-jupyter-live-kernel) | Iterative Python via live Jupyter kernel (hamelnb). | `data-science/jupyter-live-kernel` |
 
 ## devops
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`webhook-subscriptions`](/docs/user-guide/skills/bundled/devops/devops-webhook-subscriptions) | Create and manage webhook subscriptions for event-driven agent activation, or for direct push notifications (zero LLM cost). Use when the user wants external services to trigger agent runs OR push notifications to chats. | `devops/webhook-subscriptions` |
+| [`webhook-subscriptions`](/docs/user-guide/skills/bundled/devops/devops-webhook-subscriptions) | Webhook subscriptions: event-driven agent runs. | `devops/webhook-subscriptions` |
 
 ## dogfood
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`dogfood`](/docs/user-guide/skills/bundled/dogfood/dogfood-dogfood) | Systematic exploratory QA testing of web applications — find bugs, capture evidence, and generate structured reports | `dogfood` |
+| [`dogfood`](/docs/user-guide/skills/bundled/dogfood/dogfood-dogfood) | Exploratory QA of web apps: find bugs, evidence, reports. | `dogfood` |
 
 ## email
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`himalaya`](/docs/user-guide/skills/bundled/email/email-himalaya) | CLI to manage emails via IMAP/SMTP. Use himalaya to list, read, write, reply, forward, search, and organize emails from the terminal. Supports multiple accounts and message composition with MML (MIME Meta Language). | `email/himalaya` |
+| [`himalaya`](/docs/user-guide/skills/bundled/email/email-himalaya) | Himalaya CLI: IMAP/SMTP email from terminal. | `email/himalaya` |
 
 ## gaming
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`minecraft-modpack-server`](/docs/user-guide/skills/bundled/gaming/gaming-minecraft-modpack-server) | Set up a modded Minecraft server from a CurseForge/Modrinth server pack zip. Covers NeoForge/Forge install, Java version, JVM tuning, firewall, LAN config, backups, and launch scripts. | `gaming/minecraft-modpack-server` |
-| [`pokemon-player`](/docs/user-guide/skills/bundled/gaming/gaming-pokemon-player) | Play Pokemon games autonomously via headless emulation. Starts a game server, reads structured game state from RAM, makes strategic decisions, and sends button inputs — all from the terminal. | `gaming/pokemon-player` |
+| [`minecraft-modpack-server`](/docs/user-guide/skills/bundled/gaming/gaming-minecraft-modpack-server) | Host modded Minecraft servers (CurseForge, Modrinth). | `gaming/minecraft-modpack-server` |
+| [`pokemon-player`](/docs/user-guide/skills/bundled/gaming/gaming-pokemon-player) | Play Pokemon via headless emulator + RAM reads. | `gaming/pokemon-player` |
 
 ## github
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`codebase-inspection`](/docs/user-guide/skills/bundled/github/github-codebase-inspection) | Inspect and analyze codebases using pygount for LOC counting, language breakdown, and code-vs-comment ratios. Use when asked to check lines of code, repo size, language composition, or codebase stats. | `github/codebase-inspection` |
-| [`github-auth`](/docs/user-guide/skills/bundled/github/github-github-auth) | Set up GitHub authentication for the agent using git (universally available) or the gh CLI. Covers HTTPS tokens, SSH keys, credential helpers, and gh auth — with a detection flow to pick the right method automatically. | `github/github-auth` |
-| [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review) | Review code changes by analyzing git diffs, leaving inline comments on PRs, and performing thorough pre-push review. Works with gh CLI or falls back to git + GitHub REST API via curl. | `github/github-code-review` |
-| [`github-issues`](/docs/user-guide/skills/bundled/github/github-github-issues) | Create, manage, triage, and close GitHub issues. Search existing issues, add labels, assign people, and link to PRs. Works with gh CLI or falls back to git + GitHub REST API via curl. | `github/github-issues` |
-| [`github-pr-workflow`](/docs/user-guide/skills/bundled/github/github-github-pr-workflow) | Full pull request lifecycle — create branches, commit changes, open PRs, monitor CI status, auto-fix failures, and merge. Works with gh CLI or falls back to git + GitHub REST API via curl. | `github/github-pr-workflow` |
-| [`github-repo-management`](/docs/user-guide/skills/bundled/github/github-github-repo-management) | Clone, create, fork, configure, and manage GitHub repositories. Manage remotes, secrets, releases, and workflows. Works with gh CLI or falls back to git + GitHub REST API via curl. | `github/github-repo-management` |
+| [`codebase-inspection`](/docs/user-guide/skills/bundled/github/github-codebase-inspection) | Inspect codebases w/ pygount: LOC, languages, ratios. | `github/codebase-inspection` |
+| [`github-auth`](/docs/user-guide/skills/bundled/github/github-github-auth) | GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login. | `github/github-auth` |
+| [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review) | Review PRs: diffs, inline comments via gh or REST. | `github/github-code-review` |
+| [`github-issues`](/docs/user-guide/skills/bundled/github/github-github-issues) | Create, triage, label, assign GitHub issues via gh or REST. | `github/github-issues` |
+| [`github-pr-workflow`](/docs/user-guide/skills/bundled/github/github-github-pr-workflow) | GitHub PR lifecycle: branch, commit, open, CI, merge. | `github/github-pr-workflow` |
+| [`github-repo-management`](/docs/user-guide/skills/bundled/github/github-github-repo-management) | Clone/create/fork repos; manage remotes, releases. | `github/github-repo-management` |
 
 ## mcp
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`native-mcp`](/docs/user-guide/skills/bundled/mcp/mcp-native-mcp) | Built-in MCP (Model Context Protocol) client that connects to external MCP servers, discovers their tools, and registers them as native Hermes Agent tools. Supports stdio and HTTP transports with automatic reconnection, security filterin... | `mcp/native-mcp` |
+| [`native-mcp`](/docs/user-guide/skills/bundled/mcp/mcp-native-mcp) | MCP client: connect servers, register tools (stdio/HTTP). | `mcp/native-mcp` |
 
 ## media
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`gif-search`](/docs/user-guide/skills/bundled/media/media-gif-search) | Search and download GIFs from Tenor using curl. No dependencies beyond curl and jq. Useful for finding reaction GIFs, creating visual content, and sending GIFs in chat. | `media/gif-search` |
-| [`heartmula`](/docs/user-guide/skills/bundled/media/media-heartmula) | Set up and run HeartMuLa, the open-source music generation model family (Suno-like). Generates full songs from lyrics + tags with multilingual support. | `media/heartmula` |
-| [`songsee`](/docs/user-guide/skills/bundled/media/media-songsee) | Generate spectrograms and audio feature visualizations (mel, chroma, MFCC, tempogram, etc.) from audio files via CLI. Useful for audio analysis, music production debugging, and visual documentation. | `media/songsee` |
-| [`spotify`](/docs/user-guide/skills/bundled/media/media-spotify) | Control Spotify — play music, search the catalog, manage playlists and library, inspect devices and playback state. Loads when the user asks to play/pause/queue music, search tracks/albums/artists, manage playlists, or check what's playi... | `media/spotify` |
-| [`youtube-content`](/docs/user-guide/skills/bundled/media/media-youtube-content) | Fetch YouTube video transcripts and transform them into structured content (chapters, summaries, threads, blog posts). Use when the user shares a YouTube URL or video link, asks to summarize a video, requests a transcript, or wants to ex... | `media/youtube-content` |
+| [`gif-search`](/docs/user-guide/skills/bundled/media/media-gif-search) | Search/download GIFs from Tenor via curl + jq. | `media/gif-search` |
+| [`heartmula`](/docs/user-guide/skills/bundled/media/media-heartmula) | HeartMuLa: Suno-like song generation from lyrics + tags. | `media/heartmula` |
+| [`songsee`](/docs/user-guide/skills/bundled/media/media-songsee) | Audio spectrograms/features (mel, chroma, MFCC) via CLI. | `media/songsee` |
+| [`spotify`](/docs/user-guide/skills/bundled/media/media-spotify) | Spotify: play, search, queue, manage playlists and devices. | `media/spotify` |
+| [`youtube-content`](/docs/user-guide/skills/bundled/media/media-youtube-content) | YouTube transcripts to summaries, threads, blogs. | `media/youtube-content` |
 
 ## mlops
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`audiocraft-audio-generation`](/docs/user-guide/skills/bundled/mlops/mlops-models-audiocraft) | PyTorch library for audio generation including text-to-music (MusicGen) and text-to-sound (AudioGen). Use when you need to generate music from text descriptions, create sound effects, or perform melody-conditioned music generation. | `mlops/models/audiocraft` |
-| [`axolotl`](/docs/user-guide/skills/bundled/mlops/mlops-training-axolotl) | Expert guidance for fine-tuning LLMs with Axolotl - YAML configs, 100+ models, LoRA/QLoRA, DPO/KTO/ORPO/GRPO, multimodal support | `mlops/training/axolotl` |
-| [`dspy`](/docs/user-guide/skills/bundled/mlops/mlops-research-dspy) | Build complex AI systems with declarative programming, optimize prompts automatically, create modular RAG systems and agents with DSPy - Stanford NLP's framework for systematic LM programming | `mlops/research/dspy` |
-| [`huggingface-hub`](/docs/user-guide/skills/bundled/mlops/mlops-huggingface-hub) | Hugging Face Hub CLI (hf) — search, download, and upload models and datasets, manage repos, query datasets with SQL, deploy inference endpoints, manage Spaces and buckets. | `mlops/huggingface-hub` |
+| [`audiocraft-audio-generation`](/docs/user-guide/skills/bundled/mlops/mlops-models-audiocraft) | AudioCraft: MusicGen text-to-music, AudioGen text-to-sound. | `mlops/models/audiocraft` |
+| [`axolotl`](/docs/user-guide/skills/bundled/mlops/mlops-training-axolotl) | Axolotl: YAML LLM fine-tuning (LoRA, DPO, GRPO). | `mlops/training/axolotl` |
+| [`dspy`](/docs/user-guide/skills/bundled/mlops/mlops-research-dspy) | DSPy: declarative LM programs, auto-optimize prompts, RAG. | `mlops/research/dspy` |
+| [`huggingface-hub`](/docs/user-guide/skills/bundled/mlops/mlops-huggingface-hub) | HuggingFace hf CLI: search/download/upload models, datasets. | `mlops/huggingface-hub` |
 | [`llama-cpp`](/docs/user-guide/skills/bundled/mlops/mlops-inference-llama-cpp) | llama.cpp local GGUF inference + HF Hub model discovery. | `mlops/inference/llama-cpp` |
-| [`evaluating-llms-harness`](/docs/user-guide/skills/bundled/mlops/mlops-evaluation-lm-evaluation-harness) | Evaluates LLMs across 60+ academic benchmarks (MMLU, HumanEval, GSM8K, TruthfulQA, HellaSwag). Use when benchmarking model quality, comparing models, reporting academic results, or tracking training progress. Industry standard used by El... | `mlops/evaluation/lm-evaluation-harness` |
-| [`obliteratus`](/docs/user-guide/skills/bundled/mlops/mlops-inference-obliteratus) | Remove refusal behaviors from open-weight LLMs using OBLITERATUS — mechanistic interpretability techniques (diff-in-means, SVD, whitened SVD, LEACE, SAE decomposition, etc.) to excise guardrails while preserving reasoning. 9 CLI methods,... | `mlops/inference/obliteratus` |
-| [`outlines`](/docs/user-guide/skills/bundled/mlops/mlops-inference-outlines) | Guarantee valid JSON/XML/code structure during generation, use Pydantic models for type-safe outputs, support local models (Transformers, vLLM), and maximize inference speed with Outlines - dottxt.ai's structured generation library | `mlops/inference/outlines` |
-| [`segment-anything-model`](/docs/user-guide/skills/bundled/mlops/mlops-models-segment-anything) | Foundation model for image segmentation with zero-shot transfer. Use when you need to segment any object in images using points, boxes, or masks as prompts, or automatically generate all object masks in an image. | `mlops/models/segment-anything` |
-| [`fine-tuning-with-trl`](/docs/user-guide/skills/bundled/mlops/mlops-training-trl-fine-tuning) | Fine-tune LLMs using reinforcement learning with TRL - SFT for instruction tuning, DPO for preference alignment, PPO/GRPO for reward optimization, and reward model training. Use when need RLHF, align model with preferences, or train from... | `mlops/training/trl-fine-tuning` |
-| [`unsloth`](/docs/user-guide/skills/bundled/mlops/mlops-training-unsloth) | Expert guidance for fast fine-tuning with Unsloth - 2-5x faster training, 50-80% less memory, LoRA/QLoRA optimization | `mlops/training/unsloth` |
-| [`serving-llms-vllm`](/docs/user-guide/skills/bundled/mlops/mlops-inference-vllm) | Serves LLMs with high throughput using vLLM's PagedAttention and continuous batching. Use when deploying production LLM APIs, optimizing inference latency/throughput, or serving models with limited GPU memory. Supports OpenAI-compatible... | `mlops/inference/vllm` |
-| [`weights-and-biases`](/docs/user-guide/skills/bundled/mlops/mlops-evaluation-weights-and-biases) | Track ML experiments with automatic logging, visualize training in real-time, optimize hyperparameters with sweeps, and manage model registry with W&B - collaborative MLOps platform | `mlops/evaluation/weights-and-biases` |
+| [`evaluating-llms-harness`](/docs/user-guide/skills/bundled/mlops/mlops-evaluation-lm-evaluation-harness) | lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.). | `mlops/evaluation/lm-evaluation-harness` |
+| [`obliteratus`](/docs/user-guide/skills/bundled/mlops/mlops-inference-obliteratus) | OBLITERATUS: abliterate LLM refusals (diff-in-means). | `mlops/inference/obliteratus` |
+| [`outlines`](/docs/user-guide/skills/bundled/mlops/mlops-inference-outlines) | Outlines: structured JSON/regex/Pydantic LLM generation. | `mlops/inference/outlines` |
+| [`segment-anything-model`](/docs/user-guide/skills/bundled/mlops/mlops-models-segment-anything) | SAM: zero-shot image segmentation via points, boxes, masks. | `mlops/models/segment-anything` |
+| [`fine-tuning-with-trl`](/docs/user-guide/skills/bundled/mlops/mlops-training-trl-fine-tuning) | TRL: SFT, DPO, PPO, GRPO, reward modeling for LLM RLHF. | `mlops/training/trl-fine-tuning` |
+| [`unsloth`](/docs/user-guide/skills/bundled/mlops/mlops-training-unsloth) | Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM. | `mlops/training/unsloth` |
+| [`serving-llms-vllm`](/docs/user-guide/skills/bundled/mlops/mlops-inference-vllm) | vLLM: high-throughput LLM serving, OpenAI API, quantization. | `mlops/inference/vllm` |
+| [`weights-and-biases`](/docs/user-guide/skills/bundled/mlops/mlops-evaluation-weights-and-biases) | W&B: log ML experiments, sweeps, model registry, dashboards. | `mlops/evaluation/weights-and-biases` |
 
 ## note-taking
 
@@ -134,49 +139,60 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | Skill | Description | Path |
 |-------|-------------|------|
 | [`airtable`](/docs/user-guide/skills/bundled/productivity/productivity-airtable) | Airtable REST API via curl. Records CRUD, filters, upserts. | `productivity/airtable` |
-| [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace) | Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration for Hermes. Uses Hermes-managed OAuth2 setup, prefers the Google Workspace CLI (`gws`) when available for broader API coverage, and falls back to the Python client libraries... | `productivity/google-workspace` |
-| [`linear`](/docs/user-guide/skills/bundled/productivity/productivity-linear) | Manage Linear issues, projects, and teams via the GraphQL API. Create, update, search, and organize issues. Uses API key auth (no OAuth needed). All operations via curl — no dependencies. | `productivity/linear` |
-| [`maps`](/docs/user-guide/skills/bundled/productivity/productivity-maps) | Location intelligence — geocode a place, reverse-geocode coordinates, find nearby places (46 POI categories), driving/walking/cycling distance + time, turn-by-turn directions, timezone lookup, bounding box + area for a named place, and P... | `productivity/maps` |
-| [`nano-pdf`](/docs/user-guide/skills/bundled/productivity/productivity-nano-pdf) | Edit PDFs with natural-language instructions using the nano-pdf CLI. Modify text, fix typos, update titles, and make content changes to specific pages without manual editing. | `productivity/nano-pdf` |
-| [`notion`](/docs/user-guide/skills/bundled/productivity/productivity-notion) | Notion API for creating and managing pages, databases, and blocks via curl. Search, create, update, and query Notion workspaces directly from the terminal. | `productivity/notion` |
-| [`ocr-and-documents`](/docs/user-guide/skills/bundled/productivity/productivity-ocr-and-documents) | Extract text from PDFs and scanned documents. Use web_extract for remote URLs, pymupdf for local text-based PDFs, marker-pdf for OCR/scanned docs. For DOCX use python-docx, for PPTX see the powerpoint skill. | `productivity/ocr-and-documents` |
-| [`powerpoint`](/docs/user-guide/skills/bundled/productivity/productivity-powerpoint) | Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx file (even if the extracted... | `productivity/powerpoint` |
+| [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace) | Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python. | `productivity/google-workspace` |
+| [`linear`](/docs/user-guide/skills/bundled/productivity/productivity-linear) | Linear: manage issues, projects, teams via GraphQL + curl. | `productivity/linear` |
+| [`maps`](/docs/user-guide/skills/bundled/productivity/productivity-maps) | Geocode, POIs, routes, timezones via OpenStreetMap/OSRM. | `productivity/maps` |
+| [`nano-pdf`](/docs/user-guide/skills/bundled/productivity/productivity-nano-pdf) | Edit PDF text/typos/titles via nano-pdf CLI (NL prompts). | `productivity/nano-pdf` |
+| [`notion`](/docs/user-guide/skills/bundled/productivity/productivity-notion) | Notion API via curl: pages, databases, blocks, search. | `productivity/notion` |
+| [`ocr-and-documents`](/docs/user-guide/skills/bundled/productivity/productivity-ocr-and-documents) | Extract text from PDFs/scans (pymupdf, marker-pdf). | `productivity/ocr-and-documents` |
+| [`powerpoint`](/docs/user-guide/skills/bundled/productivity/productivity-powerpoint) | Create, read, edit .pptx decks, slides, notes, templates. | `productivity/powerpoint` |
 
 ## red-teaming
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`godmode`](/docs/user-guide/skills/bundled/red-teaming/red-teaming-godmode) | Jailbreak API-served LLMs using G0DM0D3 techniques — Parseltongue input obfuscation (33 techniques), GODMODE CLASSIC system prompt templates, ULTRAPLINIAN multi-model racing, encoding escalation, and Hermes-native prefill/system prompt i... | `red-teaming/godmode` |
+| [`godmode`](/docs/user-guide/skills/bundled/red-teaming/red-teaming-godmode) | Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN. | `red-teaming/godmode` |
 
 ## research
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv) | Search and retrieve academic papers from arXiv using their free REST API. No API key needed. Search by keyword, author, category, or ID. Combine with web_extract or the ocr-and-documents skill to read full paper content. | `research/arxiv` |
-| [`blogwatcher`](/docs/user-guide/skills/bundled/research/research-blogwatcher) | Monitor blogs and RSS/Atom feeds for updates using the blogwatcher-cli tool. Add blogs, scan for new articles, track read status, and filter by category. | `research/blogwatcher` |
-| [`llm-wiki`](/docs/user-guide/skills/bundled/research/research-llm-wiki) | Karpathy's LLM Wiki — build and maintain a persistent, interlinked markdown knowledge base. Ingest sources, query compiled knowledge, and lint for consistency. | `research/llm-wiki` |
-| [`polymarket`](/docs/user-guide/skills/bundled/research/research-polymarket) | Query Polymarket prediction market data — search markets, get prices, orderbooks, and price history. Read-only via public REST APIs, no API key needed. | `research/polymarket` |
-| [`research-paper-writing`](/docs/user-guide/skills/bundled/research/research-research-paper-writing) | End-to-end pipeline for writing ML/AI research papers — from experiment design through analysis, drafting, revision, and submission. Covers NeurIPS, ICML, ICLR, ACL, AAAI, COLM. Integrates automated experiment monitoring, statistical ana... | `research/research-paper-writing` |
+| [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv) | Search arXiv papers by keyword, author, category, or ID. | `research/arxiv` |
+| [`blogwatcher`](/docs/user-guide/skills/bundled/research/research-blogwatcher) | Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool. | `research/blogwatcher` |
+| [`llm-wiki`](/docs/user-guide/skills/bundled/research/research-llm-wiki) | Karpathy's LLM Wiki: build/query interlinked markdown KB. | `research/llm-wiki` |
+| [`polymarket`](/docs/user-guide/skills/bundled/research/research-polymarket) | Query Polymarket: markets, prices, orderbooks, history. | `research/polymarket` |
+| [`research-paper-writing`](/docs/user-guide/skills/bundled/research/research-research-paper-writing) | Write ML papers for NeurIPS/ICML/ICLR: design→submit. | `research/research-paper-writing` |
 
 ## smart-home
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`openhue`](/docs/user-guide/skills/bundled/smart-home/smart-home-openhue) | Control Philips Hue lights, rooms, and scenes via the OpenHue CLI. Turn lights on/off, adjust brightness, color, color temperature, and activate scenes. | `smart-home/openhue` |
+| [`openhue`](/docs/user-guide/skills/bundled/smart-home/smart-home-openhue) | Control Philips Hue lights, scenes, rooms via OpenHue CLI. | `smart-home/openhue` |
 
 ## social-media
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl) | Interact with X/Twitter via xurl, the official X API CLI. Use for posting, replying, quoting, searching, timelines, mentions, likes, reposts, bookmarks, follows, DMs, media upload, and raw v2 endpoint access. | `social-media/xurl` |
+| [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl) | X/Twitter via xurl CLI: post, search, DM, media, v2 API. | `social-media/xurl` |
 
 ## software-development
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan) | Plan mode for Hermes — inspect context, write a markdown plan into the active workspace's `.hermes/plans/` directory, and do not execute the work. | `software-development/plan` |
-| [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review) | Pre-commit verification pipeline — static security scan, baseline-aware quality gates, independent reviewer subagent, and auto-fix loop. Use after code changes and before committing, pushing, or opening a PR. | `software-development/requesting-code-review` |
-| [`subagent-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-subagent-driven-development) | Use when executing implementation plans with independent tasks. Dispatches fresh delegate_task per task with two-stage review (spec compliance then code quality). | `software-development/subagent-driven-development` |
-| [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging) | Use when encountering any bug, test failure, or unexpected behavior. 4-phase root cause investigation — NO fixes without understanding the problem first. | `software-development/systematic-debugging` |
-| [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) | Use when implementing any feature or bugfix, before writing implementation code. Enforces RED-GREEN-REFACTOR cycle with test-first approach. | `software-development/test-driven-development` |
-| [`writing-plans`](/docs/user-guide/skills/bundled/software-development/software-development-writing-plans) | Use when you have a spec or requirements for a multi-step task. Creates comprehensive implementation plans with bite-sized tasks, exact file paths, and complete code examples. | `software-development/writing-plans` |
+| [`debugging-hermes-tui-commands`](/docs/user-guide/skills/bundled/software-development/software-development-debugging-hermes-tui-commands) | Debug Hermes TUI slash commands: Python, gateway, Ink UI. | `software-development/debugging-hermes-tui-commands` |
+| [`hermes-agent-skill-authoring`](/docs/user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring) | Author in-repo SKILL.md: frontmatter, validator, structure. | `software-development/hermes-agent-skill-authoring` |
+| [`node-inspect-debugger`](/docs/user-guide/skills/bundled/software-development/software-development-node-inspect-debugger) | Debug Node.js via --inspect + Chrome DevTools Protocol CLI. | `software-development/node-inspect-debugger` |
+| [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan) | Plan mode: write markdown plan to .hermes/plans/, no exec. | `software-development/plan` |
+| [`python-debugpy`](/docs/user-guide/skills/bundled/software-development/software-development-python-debugpy) | Debug Python: pdb REPL + debugpy remote (DAP). | `software-development/python-debugpy` |
+| [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review) | Pre-commit review: security scan, quality gates, auto-fix. | `software-development/requesting-code-review` |
+| [`spike`](/docs/user-guide/skills/bundled/software-development/software-development-spike) | Throwaway experiments to validate an idea before build. | `software-development/spike` |
+| [`subagent-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-subagent-driven-development) | Execute plans via delegate_task subagents (2-stage review). | `software-development/subagent-driven-development` |
+| [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging) | 4-phase root cause debugging: understand bugs before fixing. | `software-development/systematic-debugging` |
+| [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) | TDD: enforce RED-GREEN-REFACTOR, tests before code. | `software-development/test-driven-development` |
+| [`writing-plans`](/docs/user-guide/skills/bundled/software-development/software-development-writing-plans) | Write implementation plans: bite-sized tasks, paths, code. | `software-development/writing-plans` |
+
+## yuanbao
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`yuanbao`](/docs/user-guide/skills/bundled/yuanbao/yuanbao-yuanbao) | Yuanbao (元宝) groups: @mention users, query info/members. | `yuanbao` |

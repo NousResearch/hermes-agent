@@ -669,7 +669,7 @@ class TestSyncTurn:
         p._client = _make_mock_client()
 
         p.sync_turn("hello", "hi there")
-        p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
 
         p._client.aretain_batch.assert_called_once()
         call_kwargs = p._client.aretain_batch.call_args.kwargs
@@ -710,8 +710,7 @@ class TestSyncTurn:
     def test_sync_turn_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["conv", "session1"])
         p.sync_turn("hello", "hi")
-        if p._sync_thread:
-            p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert "conv" in item["tags"]
         assert "session1" in item["tags"]
@@ -720,8 +719,7 @@ class TestSyncTurn:
     def test_sync_turn_uses_aretain_batch(self, provider):
         """sync_turn should use aretain_batch with retain_async."""
         provider.sync_turn("hello", "hi")
-        if provider._sync_thread:
-            provider._sync_thread.join(timeout=5.0)
+        provider._retain_queue.join()
         provider._client.aretain_batch.assert_called_once()
         call_kwargs = provider._client.aretain_batch.call_args.kwargs
         assert call_kwargs["document_id"].startswith("test-session-")
@@ -732,8 +730,7 @@ class TestSyncTurn:
     def test_sync_turn_custom_context(self, provider_with_config):
         p = provider_with_config(retain_context="my-agent")
         p.sync_turn("hello", "hi")
-        if p._sync_thread:
-            p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert item["context"] == "my-agent"
 
@@ -744,7 +741,7 @@ class TestSyncTurn:
         p.sync_turn("turn2-user", "turn2-asst")
         assert p._sync_thread is None
         p.sync_turn("turn3-user", "turn3-asst")
-        p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
         p._client.aretain_batch.assert_called_once()
         call_kwargs = p._client.aretain_batch.call_args.kwargs
         assert call_kwargs["document_id"].startswith("test-session-")
@@ -765,15 +762,13 @@ class TestSyncTurn:
 
         p.sync_turn("turn1-user", "turn1-asst")
         p.sync_turn("turn2-user", "turn2-asst")
-        if p._sync_thread:
-            p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
 
         p._client.aretain_batch.reset_mock()
 
         p.sync_turn("turn3-user", "turn3-asst")
         p.sync_turn("turn4-user", "turn4-asst")
-        if p._sync_thread:
-            p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
 
         content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
         # Should contain ALL turns from the session
@@ -785,8 +780,7 @@ class TestSyncTurn:
     def test_sync_turn_passes_document_id(self, provider):
         """sync_turn should pass document_id (session_id + per-startup ts)."""
         provider.sync_turn("hello", "hi")
-        if provider._sync_thread:
-            provider._sync_thread.join(timeout=5.0)
+        provider._retain_queue.join()
         call_kwargs = provider._client.aretain_batch.call_args.kwargs
         # Format: {session_id}-{YYYYMMDD_HHMMSS_microseconds}
         assert call_kwargs["document_id"].startswith("test-session-")
@@ -819,8 +813,7 @@ class TestSyncTurn:
     def test_sync_turn_session_tag(self, provider):
         """Each retain should be tagged with session:<id> for filtering."""
         provider.sync_turn("hello", "hi")
-        if provider._sync_thread:
-            provider._sync_thread.join(timeout=5.0)
+        provider._retain_queue.join()
         item = provider._client.aretain_batch.call_args.kwargs["items"][0]
         assert "session:test-session" in item["tags"]
 
@@ -841,8 +834,7 @@ class TestSyncTurn:
         )
         p._client = _make_mock_client()
         p.sync_turn("hello", "hi")
-        if p._sync_thread:
-            p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
 
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         assert "session:child-session" in item["tags"]
@@ -851,15 +843,14 @@ class TestSyncTurn:
     def test_sync_turn_error_does_not_raise(self, provider):
         provider._client.aretain_batch.side_effect = RuntimeError("network error")
         provider.sync_turn("hello", "hi")
-        if provider._sync_thread:
-            provider._sync_thread.join(timeout=5.0)
+        provider._retain_queue.join()
 
     def test_sync_turn_preserves_unicode(self, provider_with_config):
         """Non-ASCII text (CJK, ZWJ emoji) must survive JSON round-trip intact."""
         p = provider_with_config()
         p._client = _make_mock_client()
         p.sync_turn("안녕 こんにちは 你好", "👨‍👩‍👧‍👦 family")
-        p._sync_thread.join(timeout=5.0)
+        p._retain_queue.join()
         p._client.aretain_batch.assert_called_once()
         item = p._client.aretain_batch.call_args.kwargs["items"][0]
         # ensure_ascii=False means non-ASCII chars appear as-is in the raw JSON,
@@ -869,6 +860,216 @@ class TestSyncTurn:
         assert "こんにちは" in raw_json
         assert "你好" in raw_json
         assert "👨‍👩‍👧‍👦" in raw_json
+
+
+# ---------------------------------------------------------------------------
+# Shutdown / writer tests
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownRace:
+    def test_sync_turn_uses_single_writer_thread(self, provider):
+        """All retains run through one long-lived writer thread."""
+        provider.sync_turn("a", "b")
+        provider._retain_queue.join()
+        first_writer = provider._writer_thread
+        assert first_writer is not None
+        assert first_writer.is_alive()
+
+        provider.sync_turn("c", "d")
+        provider._retain_queue.join()
+        # Same thread reused — no ad-hoc thread per call.
+        assert provider._writer_thread is first_writer
+        assert provider._client.aretain_batch.call_count == 2
+
+    def test_sync_turn_after_shutdown_is_dropped(self, provider):
+        """Once shutdown has fired, new sync_turn() calls are no-ops.
+
+        This is the core of the fix: the plugin must not enqueue a retain
+        during interpreter teardown — that's what causes the
+        'cannot schedule new futures' RuntimeError + unclosed aiohttp
+        sessions on CLI exit.
+        """
+        client = provider._client
+        provider.shutdown()
+        before_calls = client.aretain_batch.call_count
+        provider.sync_turn("late", "turn")
+        # No new enqueue — the retain queue stays empty.
+        assert provider._retain_queue.empty()
+        # And no new client call (would be impossible anyway since shutdown
+        # nulled self._client; we assert via the captured handle).
+        assert client.aretain_batch.call_count == before_calls
+
+    def test_queue_prefetch_after_shutdown_is_dropped(self, provider):
+        provider.shutdown()
+        provider.queue_prefetch("late query")
+        assert provider._prefetch_thread is None
+
+    def test_shutdown_drains_pending_retains(self, provider):
+        """Shutdown must wait for queued retains to complete, not abandon them.
+
+        Otherwise the LAST in-flight turn — typically the most important —
+        is silently lost.
+        """
+        client = provider._client
+        provider.sync_turn("a", "b")
+        provider.sync_turn("c", "d")
+        provider.shutdown()
+        # Both retains drained before shutdown returned.
+        assert client.aretain_batch.call_count == 2
+        assert provider._retain_queue.empty()
+
+    def test_shutdown_is_idempotent(self, provider):
+        provider.sync_turn("a", "b")
+        provider.shutdown()
+        # Second shutdown shouldn't blow up or re-close the client.
+        provider.shutdown()
+        assert provider._shutting_down.is_set()
+
+
+# ---------------------------------------------------------------------------
+# on_session_switch — flush + prefetch reset behavior
+# ---------------------------------------------------------------------------
+
+
+class TestSessionSwitchBufferFlush:
+    def test_buffered_turns_flushed_before_clear(self, provider_with_config):
+        """retain_every_n_turns > 1 must not silently drop partial buffers
+        on session switch. Whatever's in _session_turns at switch time
+        should land in the OLD document under the OLD session id."""
+        p = provider_with_config(retain_every_n_turns=3, retain_async=False)
+        old_doc = p._document_id
+
+        # Two turns buffered, no retain yet (boundary is at turn 3). The
+        # writer hasn't been started either — sync_turn's early return
+        # skips _ensure_writer when no retain is due.
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+        assert p._sync_thread is None
+        p._client.aretain_batch.assert_not_called()
+
+        # Switch — flush should fire under OLD document_id via the writer queue.
+        p.on_session_switch("new-sid", parent_session_id="test-session", reset=True)
+        p._retain_queue.join()
+
+        p._client.aretain_batch.assert_called_once()
+        kw = p._client.aretain_batch.call_args.kwargs
+        assert kw["document_id"] == old_doc
+        item = kw["items"][0]
+        # Both buffered turns must be present in the flushed payload.
+        content = json.loads(item["content"])
+        flat = json.dumps(content)
+        assert "turn1-user" in flat
+        assert "turn2-user" in flat
+        # Old session id must appear in lineage tags / metadata.
+        assert "session:test-session" in item["tags"]
+        assert item["metadata"]["session_id"] == "test-session"
+
+        # And the new session must start with a clean slate.
+        assert p._session_id == "new-sid"
+        assert p._session_turns == []
+        assert p._turn_counter == 0
+        assert p._document_id != old_doc
+        assert p._document_id.startswith("new-sid-")
+
+    def test_no_flush_when_buffer_empty(self, provider):
+        """Switch with no buffered turns must not fire a spurious retain."""
+        provider.on_session_switch("new-sid")
+        # Nothing enqueued — join is immediate.
+        provider._retain_queue.join()
+        provider._client.aretain_batch.assert_not_called()
+        assert provider._session_id == "new-sid"
+
+    def test_prefetch_result_cleared_on_switch(self, provider):
+        """Stale recall text from the old session must not leak into the
+        next session's first prefetch read."""
+        provider._prefetch_result = "old-session recall: User likes Rust"
+        provider.on_session_switch("new-sid")
+        assert provider._prefetch_result == ""
+        # And subsequent prefetch() should now report empty, not the leftover.
+        assert provider.prefetch("anything") == ""
+
+    def test_in_flight_prefetch_thread_drained_on_switch(self, provider, monkeypatch):
+        """on_session_switch must wait for an in-flight prefetch from the
+        old session to settle before clearing _prefetch_result, otherwise
+        the thread can race and re-populate the field after the clear."""
+        import threading
+        import time as _time
+
+        gate = threading.Event()
+        finished = threading.Event()
+
+        def _slow_prefetch():
+            gate.wait(timeout=5.0)
+            with provider._prefetch_lock:
+                provider._prefetch_result = "old-session recall"
+            finished.set()
+
+        provider._prefetch_thread = threading.Thread(target=_slow_prefetch, daemon=True)
+        provider._prefetch_thread.start()
+
+        # Release the prefetch worker so it writes _prefetch_result, then
+        # call on_session_switch — it must join the thread before clearing.
+        gate.set()
+        provider.on_session_switch("new-sid")
+
+        assert finished.is_set(), "switch returned before prefetch thread settled"
+        assert provider._prefetch_result == ""
+
+    def test_flush_serializes_behind_pending_retains_via_writer_queue(
+        self, provider_with_config
+    ):
+        """The flush closure must ride the same _retain_queue sync_turn
+        uses, so it lands FIFO behind any still-queued old-session
+        retains rather than racing them on a separate thread.
+
+        Regression guard: an earlier draft spawned a raw threading.Thread
+        for flush, overwriting _sync_thread and racing the writer against
+        the same document_id.
+        """
+        import threading as _threading
+
+        p = provider_with_config(retain_every_n_turns=2, retain_async=False)
+
+        # Block the first writer job until we've enqueued the flush
+        # behind it. This proves ordering — the flush MUST wait.
+        gate = _threading.Event()
+        call_order: list[str] = []
+
+        def _aretain_batch_tracking(**kw):
+            idx = kw["items"][0]["metadata"].get("turn_index", "")
+            call_order.append(str(idx))
+            if idx == "2":
+                # First retain blocks until we've enqueued the flush.
+                gate.wait(timeout=5.0)
+
+        p._client.aretain_batch = AsyncMock(side_effect=_aretain_batch_tracking)
+
+        # Turn 1+2 → boundary hit → retain enqueued (will block).
+        p.sync_turn("turn1-user", "turn1-asst")
+        p.sync_turn("turn2-user", "turn2-asst")
+
+        # One more buffered turn so flush has something to land.
+        p.sync_turn("turn3-user", "turn3-asst")
+
+        # Switch while the first retain is still blocked on `gate`.
+        p.on_session_switch("new-sid", parent_session_id="test-session")
+
+        # Release the first retain. Flush must have been enqueued
+        # BEHIND it, and run second.
+        gate.set()
+        p._retain_queue.join()
+
+        # The flush carries all buffered turns; sync_turn's retain #2
+        # carried the batch at boundary time. Two distinct calls.
+        assert p._client.aretain_batch.call_count == 2
+        # First call landed while buffer was [t1, t2]; flush landed
+        # after we added t3. So the second call must be strictly after.
+        assert call_order[0] == "2"
+        # Flush retain has turn_index matching the buffered count at
+        # switch time (3 turns accumulated, _turn_index was set to 3
+        # by the last sync_turn).
+        assert call_order[1] == "3"
 
 
 # ---------------------------------------------------------------------------

@@ -179,8 +179,9 @@ Hermes supports a configured fallback model/provider pair, allowing runtime fail
 ### What does NOT support fallback
 
 - **Subagent delegation** (`tools/delegate_tool.py`): subagents inherit the parent's provider but not the fallback config
-- **Cron jobs** (`cron/`): run with a fixed provider, no fallback mechanism
 - **Auxiliary tasks**: use their own independent provider auto-detection chain (see Auxiliary model routing above)
+
+Cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or legacy `fallback_model`) from `config.yaml` and passes it to `AIAgent(fallback_model=...)`, matching the gateway's `_load_fallback_model()` pattern. See [Cron Internals](./cron-internals.md).
 
 ### Test coverage
 

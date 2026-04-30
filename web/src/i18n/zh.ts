@@ -73,6 +73,7 @@ export const zh: Translations = {
       documentation: "文档",
       keys: "密钥",
       logs: "日志",
+      models: "模型",
       profiles: "多Agent配置",
       sessions: "会话",
       skills: "技能",
@@ -169,6 +170,18 @@ export const zh: Translations = {
     perDayAvg: "/天 平均",
     acrossModels: "共 {count} 个模型",
     inOut: "输入 {input} / 输出 {output}",
+  },
+
+  models: {
+    modelsUsed: "使用模型数",
+    estimatedCost: "预估费用",
+    tokens: "Token",
+    sessions: "会话",
+    avgPerSession: "平均/会话",
+    apiCalls: "API 调用",
+    toolCalls: "工具调用",
+    noModelsData: "该时间段暂无模型使用数据",
+    startSession: "开始会话后将在此显示模型数据",
   },
 
   logs: {

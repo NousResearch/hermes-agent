@@ -1,14 +1,14 @@
 ---
-title: "Openhue — Control Philips Hue lights, rooms, and scenes via the OpenHue CLI"
+title: "Openhue — Control Philips Hue lights, scenes, rooms via OpenHue CLI"
 sidebar_label: "Openhue"
-description: "Control Philips Hue lights, rooms, and scenes via the OpenHue CLI"
+description: "Control Philips Hue lights, scenes, rooms via OpenHue CLI"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Openhue
 
-Control Philips Hue lights, rooms, and scenes via the OpenHue CLI. Turn lights on/off, adjust brightness, color, color temperature, and activate scenes.
+Control Philips Hue lights, scenes, rooms via OpenHue CLI.
 
 ## Skill metadata
 

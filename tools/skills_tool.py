@@ -77,6 +77,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Tuple
 
 from tools.registry import registry, tool_error
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,9 @@ _PLATFORM_MAP = {
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub"))
-_REMOTE_ENV_BACKENDS = frozenset({"docker", "singularity", "modal", "ssh", "daytona"})
+_REMOTE_ENV_BACKENDS = frozenset(
+    {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
+)
 _secret_capture_callback = None
 
 
@@ -535,7 +538,7 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         skills_cfg = config.get("skills", {})
         resolved_platform = platform or os.getenv("HERMES_PLATFORM") or _get_session_platform()
         if resolved_platform:
-            platform_disabled = skills_cfg.get("platform_disabled", {}).get(resolved_platform)
+            platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)
             if platform_disabled is not None:
                 return name in platform_disabled
         return name in skills_cfg.get("disabled", [])
@@ -1509,3 +1512,4 @@ registry.register(
     check_fn=check_skills_requirements,
     emoji="📚",
 )
+

@@ -792,6 +792,111 @@ class SlackAdapter(BasePlatformAdapter):
 
         raise last_exc
 
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images as a single Slack message with multiple file uploads.
+
+        Uses ``files_upload_v2`` with its ``file_uploads`` parameter so all
+        images show up attached to one ``initial_comment`` message instead
+        of N separate messages. Falls back to the base per-image loop on
+        any failure.
+
+        The batch limit is 10 file uploads per call (Slack server-side cap).
+        """
+        if not self._app:
+            return
+        if not images:
+            return
+
+        try:
+            import httpx as _httpx
+            from urllib.parse import unquote as _unquote
+            from tools.url_safety import is_safe_url as _is_safe_url
+        except Exception:
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return
+
+        thread_ts = self._resolve_thread_ts(None, metadata)
+
+        CHUNK = 10
+        chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
+
+        for chunk_idx, chunk in enumerate(chunks):
+            if human_delay > 0 and chunk_idx > 0:
+                await asyncio.sleep(human_delay)
+
+            file_uploads: List[Dict[str, Any]] = []
+            initial_comment_parts: List[str] = []
+            try:
+                async with _httpx.AsyncClient(timeout=30.0, follow_redirects=True) as http_client:
+                    for image_url, alt_text in chunk:
+                        if alt_text:
+                            initial_comment_parts.append(alt_text)
+
+                        if image_url.startswith("file://"):
+                            local_path = _unquote(image_url[7:])
+                            if not os.path.exists(local_path):
+                                logger.warning("[Slack] Skipping missing image: %s", local_path)
+                                continue
+                            file_uploads.append({
+                                "file": local_path,
+                                "filename": os.path.basename(local_path),
+                            })
+                        else:
+                            if not _is_safe_url(image_url):
+                                logger.warning("[Slack] Blocked unsafe image URL in batch")
+                                continue
+                            try:
+                                response = await http_client.get(image_url)
+                                response.raise_for_status()
+                                ext = "png"
+                                ct = response.headers.get("content-type", "")
+                                if "jpeg" in ct or "jpg" in ct:
+                                    ext = "jpg"
+                                elif "gif" in ct:
+                                    ext = "gif"
+                                elif "webp" in ct:
+                                    ext = "webp"
+                                file_uploads.append({
+                                    "content": response.content,
+                                    "filename": f"image_{len(file_uploads)}.{ext}",
+                                })
+                            except Exception as dl_err:
+                                logger.warning(
+                                    "[Slack] Download failed for %s: %s",
+                                    safe_url_for_log(image_url), dl_err,
+                                )
+                                continue
+
+                if not file_uploads:
+                    continue
+
+                initial_comment = "\n".join(initial_comment_parts) if initial_comment_parts else ""
+                logger.info(
+                    "[Slack] Sending %d image(s) in single files_upload_v2 (chunk %d/%d)",
+                    len(file_uploads), chunk_idx + 1, len(chunks),
+                )
+                result = await self._get_client(chat_id).files_upload_v2(
+                    channel=chat_id,
+                    file_uploads=file_uploads,
+                    initial_comment=initial_comment,
+                    thread_ts=thread_ts,
+                )
+                self._record_uploaded_file_thread(chat_id, thread_ts)
+                _ = result
+            except Exception as e:
+                logger.warning(
+                    "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
+                    chunk_idx + 1, len(chunks), e,
+                    exc_info=True,
+                )
+                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+
     def _record_uploaded_file_thread(self, chat_id: str, thread_ts: Optional[str]) -> None:
         """Treat successful file uploads as bot participation in a thread."""
         if not thread_ts:

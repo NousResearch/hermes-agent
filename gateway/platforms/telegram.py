@@ -1992,6 +1992,117 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return await super().send_voice(chat_id, audio_path, caption, reply_to)
 
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[tuple],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images natively via Telegram's media group API.
+
+        Telegram's ``send_media_group`` bundles up to 10 photos/videos into
+        a single album. Larger batches are chunked. Animated GIFs cannot
+        go into a media group (they require ``send_animation``), so they
+        are peeled off and sent individually via the base default path.
+
+        URL-based photos go into the group directly; local files are
+        opened as byte streams. On failure the whole batch falls back to
+        the base adapter's per-image loop.
+        """
+        if not self._bot:
+            return
+        if not images:
+            return
+
+        try:
+            from telegram import InputMediaPhoto
+        except Exception as exc:  # pragma: no cover - missing SDK
+            logger.warning(
+                "[%s] InputMediaPhoto unavailable, falling back to per-image send: %s",
+                self.name, exc,
+            )
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return
+
+        # Peel off animations — they need send_animation, not send_media_group
+        animations: List[tuple] = []
+        photos: List[tuple] = []
+        for image_url, alt_text in images:
+            if not image_url.startswith("file://") and self._is_animation_url(image_url):
+                animations.append((image_url, alt_text))
+            else:
+                photos.append((image_url, alt_text))
+
+        # Animations: route through the base default (per-image send_animation)
+        if animations:
+            await super().send_multiple_images(
+                chat_id, animations, metadata, human_delay=human_delay,
+            )
+
+        if not photos:
+            return
+
+        from urllib.parse import unquote as _unquote
+        _thread = self._metadata_thread_id(metadata)
+        _thread_id = self._message_thread_id_for_send(_thread)
+
+        # Chunk into groups of 10 (Telegram's album limit)
+        CHUNK = 10
+        chunks = [photos[i:i + CHUNK] for i in range(0, len(photos), CHUNK)]
+
+        for chunk_idx, chunk in enumerate(chunks):
+            if human_delay > 0 and chunk_idx > 0:
+                await asyncio.sleep(human_delay)
+
+            media: List[Any] = []
+            opened_files: List[Any] = []
+            try:
+                for image_url, alt_text in chunk:
+                    caption = alt_text[:1024] if alt_text else None
+                    if image_url.startswith("file://"):
+                        local_path = _unquote(image_url[7:])
+                        if not os.path.exists(local_path):
+                            logger.warning(
+                                "[%s] Skipping missing image in media group: %s",
+                                self.name, local_path,
+                            )
+                            continue
+                        fh = open(local_path, "rb")
+                        opened_files.append(fh)
+                        media.append(InputMediaPhoto(media=fh, caption=caption))
+                    else:
+                        media.append(InputMediaPhoto(media=image_url, caption=caption))
+
+                if not media:
+                    continue
+
+                logger.info(
+                    "[%s] Sending media group of %d photo(s) (chunk %d/%d)",
+                    self.name, len(media), chunk_idx + 1, len(chunks),
+                )
+                await self._bot.send_media_group(
+                    chat_id=int(chat_id),
+                    media=media,
+                    message_thread_id=_thread_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[%s] send_media_group failed (chunk %d/%d), falling back to per-image: %s",
+                    self.name, chunk_idx + 1, len(chunks), e,
+                    exc_info=True,
+                )
+                # Fallback: send each photo in this chunk individually
+                await super().send_multiple_images(
+                    chat_id, chunk, metadata, human_delay=human_delay,
+                )
+            finally:
+                for fh in opened_files:
+                    try:
+                        fh.close()
+                    except Exception:
+                        pass
+
     async def send_image_file(
         self,
         chat_id: str,

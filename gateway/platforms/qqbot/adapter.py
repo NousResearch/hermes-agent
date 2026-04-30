@@ -484,6 +484,9 @@ class QQAdapter(BasePlatformAdapter):
                         RATE_LIMIT_DELAY,
                     )
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
+                        logger.error("[%s] Rate limit max reconnect attempts reached", self._log_tag)
+                        self._set_fatal_error("qqbot_rate_limit_reconnect", "Max reconnect attempts reached under rate limit", retryable=True)
+                        await self._notify_fatal_error()
                         return
                     await asyncio.sleep(RATE_LIMIT_DELAY)
                     if await self._reconnect(backoff_idx):
@@ -537,6 +540,8 @@ class QQAdapter(BasePlatformAdapter):
                     backoff_idx += 1
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                         logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
+                        self._set_fatal_error("qqbot_close_error_reconnect", "Max reconnect attempts reached after QQCloseError", retryable=True)
+                        await self._notify_fatal_error()
                         return
 
             except Exception as exc:
@@ -548,6 +553,8 @@ class QQAdapter(BasePlatformAdapter):
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                     logger.error("[%s] Max reconnect attempts reached", self._log_tag)
+                    self._set_fatal_error("qqbot_ws_reconnect", "Max reconnect attempts reached after WebSocket errors", retryable=True)
+                    await self._notify_fatal_error()
                     return
 
                 if await self._reconnect(backoff_idx):

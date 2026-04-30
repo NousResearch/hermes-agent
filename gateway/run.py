@@ -1874,6 +1874,22 @@ class GatewayRunner:
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        # --- Authorization gate (#17775) ---
+        # The cold path (_handle_message) checks _is_user_authorized before
+        # creating a session.  The busy path must enforce the same check;
+        # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
+        # can inject messages into an active session they don't own.
+        if not self._is_user_authorized(event.source):
+            logger.warning(
+                "Dropping message from unauthorized user in active session: "
+                "user=%s (%s), platform=%s, session=%s",
+                event.source.user_id,
+                event.source.user_name,
+                event.source.platform.value if event.source.platform else "unknown",
+                session_key,
+            )
+            return True  # handled (silently dropped); do not fall through
+
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
             adapter = self.adapters.get(event.source.platform)

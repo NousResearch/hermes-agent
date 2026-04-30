@@ -622,6 +622,53 @@ class TestSend:
         assert result.success is True
 
     @pytest.mark.asyncio
+    async def test_create_message_passes_messageReplyOption_when_thread_set(self, adapter):
+        """Critical Google Chat API quirk: when messages.create is called
+        with body.thread.name set BUT WITHOUT messageReplyOption query
+        param, Google SILENTLY ignores the thread and creates a new
+        thread. From official docs: 'Default. Starts a new thread.
+        Using this option ignores any thread ID or threadKey that's
+        included.'
+
+        This test pins down the messageReplyOption=
+        REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD parameter so a future
+        refactor doesn't silently regress threading. (The user-visible
+        symptom of regression: bot replies land at top-level instead of
+        inside the user's thread.)"""
+        # Capture the kwargs handed to .create() — this is what hits
+        # Google's API. The mock chain is: spaces() -> messages() ->
+        # create(**kwargs) -> .execute(...).
+        create_call = MagicMock()
+        create_call.return_value.execute = MagicMock(
+            return_value={"name": "spaces/S/messages/M"}
+        )
+        adapter._chat_api.spaces.return_value.messages.return_value.create = create_call
+
+        body = {
+            "text": "respuesta",
+            "thread": {"name": "spaces/S/threads/USER_THREAD"},
+        }
+        await adapter._create_message("spaces/S", body)
+        kwargs = create_call.call_args.kwargs
+        assert kwargs.get("parent") == "spaces/S"
+        assert kwargs.get("body") == body
+        assert kwargs.get("messageReplyOption") == "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
+
+    @pytest.mark.asyncio
+    async def test_create_message_omits_messageReplyOption_when_no_thread(self, adapter):
+        """No thread.name in body → no messageReplyOption needed.
+        Sending it would imply a thread intent we don't have."""
+        create_call = MagicMock()
+        create_call.return_value.execute = MagicMock(
+            return_value={"name": "spaces/S/messages/M"}
+        )
+        adapter._chat_api.spaces.return_value.messages.return_value.create = create_call
+
+        await adapter._create_message("spaces/S", {"text": "hola"})
+        kwargs = create_call.call_args.kwargs
+        assert "messageReplyOption" not in kwargs
+
+    @pytest.mark.asyncio
     async def test_with_typing_card_patches_instead_of_creating(self, adapter):
         adapter._typing_messages["spaces/S"] = "spaces/S/messages/THINK"
         adapter._patch_message = AsyncMock(

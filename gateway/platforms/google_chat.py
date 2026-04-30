@@ -1497,13 +1497,33 @@ class GoogleChatAdapter(BasePlatformAdapter):
     async def _create_message(
         self, chat_id: str, body: Dict[str, Any]
     ) -> SendResult:
-        """POST spaces/{space}/messages via REST, returning SendResult."""
+        """POST spaces/{space}/messages via REST, returning SendResult.
+
+        When ``body`` carries ``thread.name``, we MUST pass
+        ``messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD`` —
+        otherwise Google Chat silently ignores ``thread.name`` and
+        creates a new thread anyway. From the official docs:
+
+            "Default. Starts a new thread. Using this option ignores
+             any thread ID or threadKey that's included."
+
+        See https://developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages/create
+        """
+        kwargs: Dict[str, Any] = {"parent": chat_id, "body": body}
+        thread_meta = body.get("thread") or {}
+        if thread_meta.get("name"):
+            # FALLBACK_TO_NEW_THREAD: try the requested thread; if Chat
+            # can't route there (e.g. thread no longer exists), create a
+            # new one rather than erroring. Safer than REPLY_MESSAGE_OR_FAIL
+            # for a chat-bot context where stale thread names are rare
+            # but possible.
+            kwargs["messageReplyOption"] = "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
 
         def _do_create() -> Dict[str, Any]:
             return (
                 self._chat_api.spaces()
                 .messages()
-                .create(parent=chat_id, body=body)
+                .create(**kwargs)
                 .execute(http=self._new_authed_http())
             )
 
@@ -1929,12 +1949,20 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         # The accompanying messages.create that references the attachment
         # also needs user auth (the attachmentDataRef is bound to the
-        # uploading principal).
+        # uploading principal). messageReplyOption is required for the
+        # thread.name in body to actually be honored — see
+        # _create_message docstring for the API quirk.
+        create_kwargs: Dict[str, Any] = {"parent": chat_id, "body": body}
+        if thread_id:
+            create_kwargs["messageReplyOption"] = (
+                "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
+            )
+
         def _create_with_attachment() -> Dict[str, Any]:
             return (
                 self._user_chat_api.spaces()
                 .messages()
-                .create(parent=chat_id, body=body)
+                .create(**create_kwargs)
                 .execute()
             )
 

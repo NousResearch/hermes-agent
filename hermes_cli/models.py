@@ -255,6 +255,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "z-ai/glm5",
         "openai/gpt-oss-120b",
     ],
+    # xfyun / iFLYTEK (科大讯飞) - 讯飞星辰MaaS
+    "xfyun": [
+        # Primary coding models (Astron series)
+        "astron-code-latest",
+        "astron-code-medium",
+    ],
     "kimi-coding": [
         "kimi-k2.6",
         "kimi-k2.5",

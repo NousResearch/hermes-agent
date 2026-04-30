@@ -291,13 +291,30 @@ class TelegramAdapter(BasePlatformAdapter):
         self._slash_confirm_state: Dict[str, str] = {}
 
     @staticmethod
-    def _is_callback_user_authorized(user_id: str) -> bool:
-        """Return whether a Telegram inline-button caller may perform gated actions."""
+    def _is_callback_user_authorized(user_id: str, username: Optional[str] = None) -> bool:
+        """Return whether a Telegram inline-button caller may perform gated actions.
+
+        TELEGRAM_ALLOWED_USERS historically accepts either numeric Telegram user IDs
+        or @usernames. Approval/update buttons only exposed the numeric callback user
+        ID, which broke existing username-based allowlists after the button flow
+        shipped. Accept both forms here so button auth matches normal Telegram auth.
+        """
         allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
         if not allowed_csv:
             return True
-        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-        return "*" in allowed_ids or user_id in allowed_ids
+
+        allowed_entries = {entry.strip().lower() for entry in allowed_csv.split(",") if entry.strip()}
+        if "*" in allowed_entries:
+            return True
+
+        normalized_id = str(user_id or "").strip().lower()
+        normalized_username = str(username or "").strip().lower().lstrip("@")
+        candidates = {normalized_id}
+        if normalized_username:
+            candidates.add(normalized_username)
+            candidates.add(f"@{normalized_username}")
+
+        return any(candidate and candidate in allowed_entries for candidate in candidates)
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -1781,7 +1798,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # Only authorized users may click approval buttons.
                 caller_id = str(getattr(query.from_user, "id", ""))
-                if not self._is_callback_user_authorized(caller_id):
+                caller_username = str(getattr(query.from_user, "username", "") or "")
+                if not self._is_callback_user_authorized(caller_id, caller_username):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
@@ -1891,7 +1909,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         answer = data.split(":", 1)[1]  # "y" or "n"
         caller_id = str(getattr(query.from_user, "id", ""))
-        if not self._is_callback_user_authorized(caller_id):
+        caller_username = str(getattr(query.from_user, "username", "") or "")
+        if not self._is_callback_user_authorized(caller_id, caller_username):
             await query.answer(text="⛔ You are not authorized to answer update prompts.")
             return
         await query.answer(text=f"Sent '{answer}' to the update process.")

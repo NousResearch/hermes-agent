@@ -187,6 +187,8 @@ class TestTelegramApprovalCallback:
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.from_user = MagicMock()
+        query.from_user.id = 123
+        query.from_user.username = "norbert"
         query.from_user.first_name = "Norbert"
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -215,6 +217,8 @@ class TestTelegramApprovalCallback:
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.from_user = MagicMock()
+        query.from_user.id = 123
+        query.from_user.username = "alice"
         query.from_user.first_name = "Alice"
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
@@ -240,6 +244,8 @@ class TestTelegramApprovalCallback:
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.from_user = MagicMock()
+        query.from_user.id = 123
+        query.from_user.username = "bob"
         query.from_user.first_name = "Bob"
         query.answer = AsyncMock()
 
@@ -334,16 +340,47 @@ class TestTelegramApprovalCallback:
         assert not (tmp_path / ".update_response").exists()
 
     @pytest.mark.asyncio
-    async def test_update_prompt_callback_allows_authorized_user(self, tmp_path):
-        """Allowed Telegram users can still answer update prompt buttons."""
+    async def test_approval_callback_allows_username_allowlist(self):
+        """Username-based TELEGRAM_ALLOWED_USERS entries should work for buttons too."""
         adapter = _make_adapter()
+        adapter._approval_state[7] = "agent:main:telegram:dm:12345"
 
         query = AsyncMock()
-        query.data = "update_prompt:n"
+        query.data = "ea:session:7"
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.from_user = MagicMock()
-        query.from_user.id = 111
+        query.from_user.id = 222
+        query.from_user.username = "waynemattadeen"
+        query.from_user.first_name = "Wayne"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "@waynemattadeen"}):
+            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+                await adapter._handle_callback_query(update, context)
+
+        mock_resolve.assert_called_once_with("agent:main:telegram:dm:12345", "session")
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_called_once()
+        assert 7 not in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_update_prompt_callback_allows_username_allowlist(self, tmp_path):
+        """Username-based TELEGRAM_ALLOWED_USERS entries should work for update buttons."""
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = "update_prompt:y"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.username = "waynemattadeen"
         query.answer = AsyncMock()
         query.edit_message_text = AsyncMock()
 
@@ -352,9 +389,9 @@ class TestTelegramApprovalCallback:
         context = MagicMock()
 
         with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
-            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "@waynemattadeen"}):
                 await adapter._handle_callback_query(update, context)
 
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
-        assert (tmp_path / ".update_response").read_text() == "n"
+        assert (tmp_path / ".update_response").read_text() == "y"

@@ -38,17 +38,17 @@ function formatCost(n: number): string {
   return "$0";
 }
 
-/** Short model name: strip provider prefix like "openrouter/" or "anthropic/". */
+/** Short model name: strip vendor prefix like "openrouter/" or "anthropic/". */
 function shortModelName(model: string): string {
   const slashIdx = model.indexOf("/");
-  if (slashIdx > 0 && slashIdx < 20) return model.slice(slashIdx + 1);
+  if (slashIdx > 0) return model.slice(slashIdx + 1);
   return model;
 }
 
-/** Extract provider from model string like "openrouter/gemini-2.5-pro" → "openrouter" */
-function modelProvider(model: string, fallback?: string): string {
+/** Extract vendor prefix from a model string like "anthropic/claude-opus-4.7" → "anthropic". */
+function modelVendor(model: string, fallback?: string): string {
   const slashIdx = model.indexOf("/");
-  if (slashIdx > 0 && slashIdx < 20) return model.slice(0, slashIdx);
+  if (slashIdx > 0) return model.slice(0, slashIdx);
   return fallback || "";
 }
 
@@ -142,7 +142,7 @@ function ModelCard({
   rank: number;
 }) {
   const { t } = useI18n();
-  const provider = entry.provider || modelProvider(entry.model);
+  const provider = entry.provider || modelVendor(entry.model);
   const totalTokens = entry.input_tokens + entry.output_tokens;
   const caps = entry.capabilities;
 

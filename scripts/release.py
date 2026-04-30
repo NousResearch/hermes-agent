@@ -618,6 +618,7 @@ AUTHOR_MAP = {
     "nfb0408@163.com": "ningfangbin",
     "164839249+Joseph19820124@users.noreply.github.com": "Joseph19820124",
     "rugved@lmstudio.ai": "rugvedS07",
+    "44333070+Heltman@users.noreply.github.com": "Heltman",
 }
 
 

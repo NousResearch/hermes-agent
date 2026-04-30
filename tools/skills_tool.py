@@ -1497,8 +1497,12 @@ def _skill_view_with_bump(args, **kw):
             # qualified forms ("plugin:skill") return with the canonical name.
             resolved = parsed.get("name") or name
             if resolved:
-                from tools.skill_usage import bump_view
+                from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))
+                # A skill_view tool call is the agent actively loading the skill
+                # to act on it — that counts as use, not just a browse/view.
+                # Curator's stale timer keys off last_used_at (see agent/curator.py).
+                bump_use(str(resolved))
     except Exception:
         pass
     return result

@@ -177,6 +177,11 @@ The `/title` command works in all gateway platforms (Telegram, Discord, Slack, W
 - `/title My Research` — set the session title
 - `/title` — show the current title
 
+Use `/resume` with no arguments in a messaging platform to list recent sessions
+for that platform. The list shows the same first-message preview used by the
+CLI/TUI session browser, plus a session ID prefix. Resume with
+`/resume <session id or title>`.
+
 ## Session Management Commands
 
 Hermes provides a full set of session management commands via `hermes sessions`:

@@ -8101,7 +8101,7 @@ class GatewayRunner:
                 return f"📌 Session: `{session_id}`\nNo title set. Usage: `/title My Session Name`"
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
-        """Handle /resume command — switch to a previously-named session."""
+        """Handle /resume command — switch to a previous session."""
         if not self._session_db:
             return "Session database not available."
 
@@ -8110,37 +8110,43 @@ class GatewayRunner:
         name = event.get_command_args().strip()
 
         if not name:
-            # List recent titled sessions for this user/platform
+            # List recent sessions for this user/platform.  Match the CLI/TUI
+            # convention: show the first user prompt preview when a title is
+            # absent, and include an ID prefix users can copy into /resume.
             try:
                 user_source = source.platform.value if source.platform else None
                 sessions = self._session_db.list_sessions_rich(
-                    source=user_source, limit=10
+                    source=user_source, limit=20
                 )
-                titled = [s for s in sessions if s.get("title")]
-                if not titled:
-                    return (
-                        "No named sessions found.\n"
-                        "Use `/title My Session` to name your current session, "
-                        "then `/resume My Session` to return to it later."
-                    )
-                lines = ["📋 **Named Sessions**\n"]
-                for s in titled[:10]:
-                    title = s["title"]
-                    preview = s.get("preview", "")[:40]
-                    preview_part = f" — _{preview}_" if preview else ""
-                    lines.append(f"• **{title}**{preview_part}")
-                lines.append("\nUsage: `/resume <session name>`")
+                current_entry = self.session_store.get_or_create_session(source)
+                current_id = getattr(current_entry, "session_id", None)
+                recent = [s for s in sessions if s.get("id") != current_id][:10]
+                if not recent:
+                    return "No previous sessions found."
+
+                lines = ["📋 **Recent Sessions**\n"]
+                for s in recent:
+                    session_id = s.get("id") or ""
+                    short_id = session_id[:18]
+                    label = (s.get("preview") or s.get("title") or session_id).strip()
+                    label = " ".join(label.split())
+                    if len(label) > 80:
+                        label = label[:77].rstrip() + "..."
+                    lines.append(f"• `{short_id}` {label}")
+                lines.append("\nUsage: `/resume <session id or title>`")
                 return "\n".join(lines)
             except Exception as e:
-                logger.debug("Failed to list titled sessions: %s", e)
+                logger.debug("Failed to list sessions: %s", e)
                 return f"Could not list sessions: {e}"
 
-        # Resolve the name to a session ID.
-        target_id = self._session_db.resolve_session_by_title(name)
+        # Resolve the argument as an ID/prefix first, then as a title.
+        target_id = self._session_db.resolve_session_id(name)
+        if not target_id:
+            target_id = self._session_db.resolve_session_by_title(name)
         if not target_id:
             return (
                 f"No session found matching '**{name}**'.\n"
-                "Use `/resume` with no arguments to see available sessions."
+                "Use `/resume` with no arguments to see recent sessions."
             )
         # Compression creates child continuations that hold the live transcript.
         # Follow that chain so gateway /resume matches CLI behavior (#15000).

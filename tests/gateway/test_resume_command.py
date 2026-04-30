@@ -74,7 +74,7 @@ class TestHandleResumeCommand:
 
     @pytest.mark.asyncio
     async def test_list_named_sessions_when_no_arg(self, tmp_path):
-        """With no argument, lists recently titled sessions."""
+        """With no argument, lists recent sessions."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session("sess_001", "telegram")
@@ -87,21 +87,23 @@ class TestHandleResumeCommand:
         result = await runner._handle_resume_command(event)
         assert "Research" in result
         assert "Coding" in result
-        assert "Named Sessions" in result
+        assert "Recent Sessions" in result
         db.close()
 
     @pytest.mark.asyncio
-    async def test_list_shows_usage_when_no_titled(self, tmp_path):
-        """With no arg and no titled sessions, shows instructions."""
+    async def test_list_uses_first_prompt_when_no_title(self, tmp_path):
+        """With no arg and no title, lists the first user prompt preview."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("sess_001", "telegram")  # No title
+        db.create_session("sess_001", "telegram")
+        db.append_message("sess_001", "user", "check the broken gateway resume flow")
 
         event = _make_event(text="/resume")
         runner = _make_runner(session_db=db, event=event)
         result = await runner._handle_resume_command(event)
-        assert "No named sessions" in result
-        assert "/title" in result
+        assert "check the broken gateway resume flow" in result
+        assert "sess_001" in result
+        assert "/resume <session id or title>" in result
         db.close()
 
     @pytest.mark.asyncio
@@ -122,6 +124,24 @@ class TestHandleResumeCommand:
         assert "My Project" in result
         # Verify switch_session was called with the old session ID
         runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "old_session_abc"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_by_session_id(self, tmp_path):
+        """Resolves a session ID or unique prefix and switches to that session."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session_abc", "telegram")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume old_session")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
         call_args = runner.session_store.switch_session.call_args
         assert call_args[0][1] == "old_session_abc"
         db.close()

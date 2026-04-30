@@ -1027,6 +1027,86 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         fake_db.close.assert_called_once()
 
+    def test_run_job_appends_memory_diagnostics_to_output(self, tmp_path):
+        job = {
+            "id": "diag-job",
+            "name": "diag test",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        activity = {
+            "last_activity_desc": "tool_call:read_file",
+            "seconds_since_activity": 0.2,
+            "current_tool": "read_file",
+            "api_call_count": 3,
+            "max_iterations": 90,
+            "budget_used": 12,
+            "budget_max": 200,
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent.get_activity_summary.return_value = activity
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "## Memory Diagnostics" in output
+        assert '"current_tool": "read_file"' in output
+        assert '"budget_used": 12' in output
+
+    def test_run_job_skips_memory_diagnostics_when_summary_unavailable(self, tmp_path):
+        job = {
+            "id": "diag-missing",
+            "name": "diag missing",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent.get_activity_summary.side_effect = RuntimeError("summary unavailable")
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "## Memory Diagnostics" not in output
+
 
 class TestRunJobConfigLogging:
     """Verify that config.yaml parse failures are logged, not silently swallowed."""

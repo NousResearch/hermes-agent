@@ -1146,7 +1146,22 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
-        
+
+        _memory_diag = None
+        if hasattr(agent, "get_activity_summary"):
+            try:
+                _candidate_diag = agent.get_activity_summary()
+                if isinstance(_candidate_diag, dict):
+                    _memory_diag = _candidate_diag
+                elif _candidate_diag is not None:
+                    logger.debug(
+                        "Job '%s': skipping non-dict activity summary of type %s",
+                        job_id,
+                        type(_candidate_diag).__name__,
+                    )
+            except Exception as diag_exc:
+                logger.debug("Job '%s': failed to capture activity summary: %s", job_id, diag_exc)
+
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
@@ -1160,6 +1175,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 ## Response
 
 {logged_response}
+"""
+        if _memory_diag:
+            _diag_json = json.dumps(_memory_diag, ensure_ascii=False, indent=2, sort_keys=True)
+            output += f"""
+
+## Memory Diagnostics
+
+```json
+{_diag_json}
+```
 """
         
         logger.info("Job '%s' completed successfully", job_name)

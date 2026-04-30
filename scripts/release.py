@@ -65,6 +65,9 @@ AUTHOR_MAP = {
     "pty819@outlook.com": "pty819",
     "pty819@users.noreply.github.com": "pty819",
     "517024110@qq.com": "chennest",
+    # Curator fixes (Apr 30 2026)
+    "yuxiangl490@gmail.com": "y0shua1ee",
+    "manmit0x@gmail.com": "0xDevNinja",
     "aamirjawaid@microsoft.com": "heyitsaamir",
     "johnnncenaaa77@gmail.com": "johnncenae",
     "thomasjhon6666@gmail.com": "ThomassJonax",

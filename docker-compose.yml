@@ -34,6 +34,13 @@ services:
       # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
       # - API_SERVER_HOST=0.0.0.0
       # - API_SERVER_KEY=${API_SERVER_KEY}
+      # Microsoft Teams — uncomment and fill in to enable Teams gateway.
+      # Register your bot at https://dev.botframework.com/ to get these values.
+      # - TEAMS_CLIENT_ID=${TEAMS_CLIENT_ID}
+      # - TEAMS_CLIENT_SECRET=${TEAMS_CLIENT_SECRET}
+      # - TEAMS_TENANT_ID=${TEAMS_TENANT_ID}
+      # - TEAMS_ALLOWED_USERS=${TEAMS_ALLOWED_USERS}
+      # - TEAMS_PORT=3978
     command: ["gateway", "run"]
 
   dashboard:

@@ -91,10 +91,10 @@ This is useful when you want a scheduled agent to inherit reusable workflows wit
 Cron jobs default to running detached from any repo — no `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` is loaded, and the terminal / file / code-exec tools run from whatever working directory the gateway started in. Pass `--workdir` (CLI) or `workdir=` (tool call) to change that:
 
 ```bash
-# Standalone CLI
-hermes cron create --schedule "every 1d at 09:00" \
-  --workdir /home/me/projects/acme \
-  --prompt "Audit open PRs, summarize CI health, and post to #eng"
+# Standalone CLI (schedule and prompt are positional)
+hermes cron create "every 1d at 09:00" \
+  "Audit open PRs, summarize CI health, and post to #eng" \
+  --workdir /home/me/projects/acme
 ```
 
 ```python
@@ -365,6 +365,64 @@ cronjob(action="remove", job_id="...")
 ```
 
 For `update`, pass `skills=[]` to remove all attached skills.
+
+## Toolsets available to cron jobs
+
+Cron runs each job in a fresh agent session with no chat platform attached. By default the cron agent gets **the toolset you configured for the `cron` platform in `hermes tools`** — not the CLI default, not everything under the sun.
+
+```bash
+hermes tools
+# → pick the "cron" platform in the curses UI
+# → toggle toolsets on/off just like you would for Telegram/Discord/etc.
+```
+
+Tighter per-job control is available via the `enabled_toolsets` field on `cronjob.create` (or on an existing job via `cronjob.update`):
+
+```text
+cronjob(action="create", name="weekly-news-summary",
+        schedule="every sunday 9am",
+        enabled_toolsets=["web", "file"],      # just web + file, no terminal/browser/etc.
+        prompt="Summarize this week's AI news: ...")
+```
+
+When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. This matters for cost control: carrying `moa`, `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
+
+### Skipping the agent entirely: `wakeAgent`
+
+If your cron job attaches a pre-check script (via `script=`), the script can decide at runtime whether Hermes should even invoke the agent. Emit a final stdout line of the form:
+
+```text
+{"wakeAgent": false}
+```
+
+…and cron skips the agent run entirely for this tick. Useful for frequent polls (every 1–5 min) that only need to wake the LLM when state actually changed — otherwise you pay for zero-content agent turns over and over.
+
+```python
+# pre-check script
+import json, sys
+latest = fetch_latest_issue_count()
+prev = read_state("issue_count")
+if latest == prev:
+    print(json.dumps({"wakeAgent": False}))   # skip this tick
+    sys.exit(0)
+write_state("issue_count", latest)
+print(json.dumps({"wakeAgent": True, "context": {"new_issues": latest - prev}}))
+```
+
+When `wakeAgent` is omitted, the default is `true` (wake the agent as usual).
+
+### Chaining jobs: `context_from`
+
+A cron job can consume the most recent successful output of one or more other jobs by listing their names (or IDs) in `context_from`:
+
+```text
+cronjob(action="create", name="daily-digest",
+        schedule="every day 7am",
+        context_from=["ai-news-fetch", "github-prs-fetch"],
+        prompt="Write the daily digest using the outputs above.")
+```
+
+The referenced jobs' most recent completed outputs are injected above the prompt as context for this run. Each upstream entry must be a valid job ID or name (see `cronjob action="list"`). Note: chaining reads the *most recent completed* output — it does not wait for upstream jobs that are running in the same tick.
 
 ## Job storage
 

@@ -800,15 +800,23 @@ class TestSignalSendDocumentViaHelper:
 
 
 # ---------------------------------------------------------------------------
-# send() returns message_id from timestamp (#4647)
+# Signal streaming edit capability / message_id behavior
 # ---------------------------------------------------------------------------
 
+class TestSignalStreamingCapabilities:
+    """Signal must opt out of edit-based streaming behavior."""
+
+    def test_signal_declares_no_message_editing(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        assert adapter.SUPPORTS_MESSAGE_EDITING is False
+
+
 class TestSignalSendReturnsMessageId:
-    """Signal send() must return a timestamp-based message_id so the stream
-    consumer can follow its edit→fallback path correctly."""
+    """Signal send() should not pretend sent messages are editable."""
 
     @pytest.mark.asyncio
-    async def test_send_returns_timestamp_as_message_id(self, monkeypatch):
+    async def test_send_returns_none_message_id_even_with_timestamp(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         mock_rpc, _ = _stub_rpc({"timestamp": 1712345678000})
         adapter._rpc = mock_rpc
@@ -817,7 +825,7 @@ class TestSignalSendReturnsMessageId:
         result = await adapter.send(chat_id="+155****4567", content="hello")
 
         assert result.success is True
-        assert result.message_id == "1712345678000"
+        assert result.message_id is None
 
     @pytest.mark.asyncio
     async def test_send_returns_none_message_id_when_no_timestamp(self, monkeypatch):
@@ -997,3 +1005,100 @@ class TestSignalTypingBackoff:
 
         assert "+155****4567" not in adapter._typing_failures
         assert "+155****4567" not in adapter._typing_skip_until
+
+
+# ---------------------------------------------------------------------------
+# Reply quote extraction
+# ---------------------------------------------------------------------------
+
+class TestSignalQuoteExtraction:
+    """Verify Signal reply quote fields are propagated to MessageEvent."""
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_sets_reply_context_from_quote(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "yes I agree",
+                    "quote": {
+                        "id": 99,
+                        "text": "want to grab lunch?",
+                        "author": "+15550002222",
+                    },
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.text == "yes I agree"
+        assert event.reply_to_message_id == "99"
+        assert event.reply_to_text == "want to grab lunch?"
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_without_quote_leaves_reply_fields_none(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "plain message",
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.text == "plain message"
+        assert event.reply_to_message_id is None
+        assert event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_quote_without_text_sets_only_reply_id(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "reply without quote text",
+                    "quote": {
+                        "id": 123,
+                        "author": "+15550002222",
+                    },
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.reply_to_message_id == "123"
+        assert event.reply_to_text is None

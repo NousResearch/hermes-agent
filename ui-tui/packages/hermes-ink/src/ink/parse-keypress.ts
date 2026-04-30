@@ -697,16 +697,17 @@ function parseKeypress(s: string = ''): ParsedKey {
   // never reach here. Mask with 0x43 (bits 6+1+0) to check wheel-flag
   // + direction while ignoring modifier bits (Shift=0x04, Meta=0x08,
   // Ctrl=0x10) — modified wheel events (e.g. Ctrl+scroll, button=80)
-  // should still be recognized as wheelup/wheeldown.
+  // should still be recognized as wheelup/wheeldown. Preserve those
+  // modifier bits for callers that bind modified wheel gestures.
   if ((match = SGR_MOUSE_RE.exec(s))) {
     const button = parseInt(match[1]!, 10)
 
     if ((button & 0x43) === 0x40) {
-      return createNavKey(s, 'wheelup', false)
+      return createWheelKey(s, 'wheelup', button)
     }
 
     if ((button & 0x43) === 0x41) {
-      return createNavKey(s, 'wheeldown', false)
+      return createWheelKey(s, 'wheeldown', button)
     }
 
     // Shouldn't reach here (parseMouseEvent catches non-wheel) but be safe
@@ -722,11 +723,11 @@ function parseKeypress(s: string = ''): ParsedKey {
     const button = s.charCodeAt(3) - 32
 
     if ((button & 0x43) === 0x40) {
-      return createNavKey(s, 'wheelup', false)
+      return createWheelKey(s, 'wheelup', button)
     }
 
     if ((button & 0x43) === 0x41) {
-      return createNavKey(s, 'wheeldown', false)
+      return createWheelKey(s, 'wheeldown', button)
     }
 
     return createNavKey(s, 'mouse', false)
@@ -826,6 +827,22 @@ function createNavKey(s: string, name: string, ctrl: boolean): ParsedKey {
     ctrl,
     meta: false,
     shift: false,
+    option: false,
+    super: false,
+    fn: false,
+    sequence: s,
+    raw: s,
+    isPasted: false
+  }
+}
+
+function createWheelKey(s: string, name: 'wheelup' | 'wheeldown', button: number): ParsedKey {
+  return {
+    kind: 'key',
+    name,
+    ctrl: !!(button & 0x10),
+    meta: !!(button & 0x08),
+    shift: !!(button & 0x04),
     option: false,
     super: false,
     fn: false,

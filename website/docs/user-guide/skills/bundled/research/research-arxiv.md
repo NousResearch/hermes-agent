@@ -1,14 +1,14 @@
 ---
-title: "Arxiv — Search and retrieve academic papers from arXiv using their free REST API"
+title: "Arxiv — Search arXiv papers by keyword, author, category, or ID"
 sidebar_label: "Arxiv"
-description: "Search and retrieve academic papers from arXiv using their free REST API"
+description: "Search arXiv papers by keyword, author, category, or ID"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Arxiv
 
-Search and retrieve academic papers from arXiv using their free REST API. No API key needed. Search by keyword, author, category, or ID. Combine with web_extract or the ocr-and-documents skill to read full paper content.
+Search arXiv papers by keyword, author, category, or ID.
 
 ## Skill metadata
 

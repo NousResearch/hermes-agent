@@ -1,14 +1,14 @@
 ---
-title: "Architecture Diagram"
+title: "Architecture Diagram — Dark-themed SVG architecture/cloud/infra diagrams as HTML"
 sidebar_label: "Architecture Diagram"
-description: "Generate dark-themed SVG diagrams of software systems and cloud infrastructure as standalone HTML files with inline SVG graphics"
+description: "Dark-themed SVG architecture/cloud/infra diagrams as HTML"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Architecture Diagram
 
-Generate dark-themed SVG diagrams of software systems and cloud infrastructure as standalone HTML files with inline SVG graphics. Semantic component colors (cyan=frontend, emerald=backend, violet=database, amber=cloud/AWS, rose=security, orange=message bus), JetBrains Mono font, grid background. Best suited for software architecture, cloud/VPC topology, microservice maps, service-mesh diagrams, database + API layer diagrams, security groups, message buses — anything that fits a tech-infra deck with a dark aesthetic. If a more specialized diagramming skill exists for the subject (scientific, educational, hand-drawn, animated, etc.), prefer that — otherwise this skill can also serve as a general-purpose SVG diagram fallback. Based on Cocoon AI's architecture-diagram-generator (MIT).
+Dark-themed SVG architecture/cloud/infra diagrams as HTML.
 
 ## Skill metadata
 

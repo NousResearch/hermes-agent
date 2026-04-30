@@ -38,6 +38,7 @@ from typing import Dict, Optional, Any, List
 # gateway is a long-running daemon, so its boot cost matters less than
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -46,6 +47,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 # from _enforce_agent_cache_cap() and _session_expiry_watcher() below.
 _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
+_PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 # Only auto-continue interrupted gateway turns while the interruption is fresh.
 # Stale tool-tail/resume markers can otherwise revive an unrelated old task
 # after a gateway restart when the user's next message starts new work.
@@ -265,6 +267,7 @@ if _config_path.exists():
                 "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
                 "modal_image": "TERMINAL_MODAL_IMAGE",
                 "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+                "vercel_runtime": "TERMINAL_VERCEL_RUNTIME",
                 "ssh_host": "TERMINAL_SSH_HOST",
                 "ssh_user": "TERMINAL_SSH_USER",
                 "ssh_port": "TERMINAL_SSH_PORT",
@@ -274,6 +277,8 @@ if _config_path.exists():
                 "container_disk": "TERMINAL_CONTAINER_DISK",
                 "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
                 "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+                "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+                "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
                 "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
             }
@@ -416,6 +421,7 @@ if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
 
 from gateway.config import (
     Platform,
+    _BUILTIN_PLATFORM_VALUES,
     GatewayConfig,
     load_gateway_config,
 )
@@ -777,6 +783,13 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
     return None
 
 
+# Module-level weak reference to the active GatewayRunner instance.
+# Used by tools (e.g. send_message) that need to route through a live
+# adapter for plugin platforms.  Set in GatewayRunner.__init__().
+import weakref as _weakref
+_gateway_runner_ref: _weakref.ref = lambda: None
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -799,11 +812,13 @@ class GatewayRunner:
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
-    
+
     def __init__(self, config: Optional[GatewayConfig] = None):
+        global _gateway_runner_ref
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
         self._warn_if_docker_media_delivery_is_risky()
+        _gateway_runner_ref = _weakref.ref(self)
 
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
@@ -886,6 +901,14 @@ class GatewayRunner:
         # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
+
+        # Slash-confirm state lives in tools.slash_confirm (module-level),
+        # so platform adapters can resolve callbacks without a backref to
+        # this runner.  Keep a local counter for confirm_id generation so
+        # IDs stay compact (button callback_data has a 64-byte cap on
+        # some platforms).
+        import itertools as _itertools
+        self._slash_confirm_counter = _itertools.count(1)
 
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
@@ -1156,6 +1179,33 @@ class GatewayRunner:
                 platform.value if platform is not None else "adapter",
                 e,
             )
+
+    def _platform_connect_timeout_secs(self) -> float:
+        """Return the per-platform connect timeout used during startup/retry."""
+        raw = os.getenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "").strip()
+        if raw:
+            try:
+                timeout = float(raw)
+            except ValueError:
+                logger.warning(
+                    "Ignoring invalid HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT=%r",
+                    raw,
+                )
+            else:
+                return max(0.0, timeout)
+        return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
+
+    async def _connect_adapter_with_timeout(self, adapter, platform) -> bool:
+        """Connect an adapter without allowing one platform to block others."""
+        timeout = self._platform_connect_timeout_secs()
+        if timeout <= 0:
+            return await adapter.connect()
+        try:
+            return await asyncio.wait_for(adapter.connect(), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"{platform.value} connect timed out after {timeout:g}s"
+            ) from exc
 
     @property
     def should_exit_cleanly(self) -> bool:
@@ -1494,7 +1544,7 @@ class GatewayRunner:
             )
         except Exception:
             pass
-    
+
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
@@ -1549,7 +1599,7 @@ class GatewayRunner:
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                return (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
+                return (cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
         except Exception:
             pass
         return ""
@@ -1570,7 +1620,7 @@ class GatewayRunner:
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
+                effort = str(cfg_get(cfg, "agent", "reasoning_effort", default="") or "").strip()
         except Exception:
             pass
         result = parse_reasoning_effort(effort)
@@ -1653,7 +1703,7 @@ class GatewayRunner:
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                raw = str(cfg.get("agent", {}).get("service_tier", "") or "").strip()
+                raw = str(cfg_get(cfg, "agent", "service_tier", default="") or "").strip()
         except Exception:
             pass
 
@@ -1674,7 +1724,7 @@ class GatewayRunner:
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                return bool(cfg.get("display", {}).get("show_reasoning", False))
+                return bool(cfg_get(cfg, "display", "show_reasoning", default=False))
         except Exception:
             pass
         return False
@@ -1690,7 +1740,7 @@ class GatewayRunner:
                 if cfg_path.exists():
                     with open(cfg_path, encoding="utf-8") as _f:
                         cfg = _y.safe_load(_f) or {}
-                    mode = str(cfg.get("display", {}).get("busy_input_mode", "") or "").strip().lower()
+                    mode = str(cfg_get(cfg, "display", "busy_input_mode", default="") or "").strip().lower()
             except Exception:
                 pass
         if mode == "queue":
@@ -1710,7 +1760,7 @@ class GatewayRunner:
                 if cfg_path.exists():
                     with open(cfg_path, encoding="utf-8") as _f:
                         cfg = _y.safe_load(_f) or {}
-                    raw = str(cfg.get("agent", {}).get("restart_drain_timeout", "") or "").strip()
+                    raw = str(cfg_get(cfg, "agent", "restart_drain_timeout", default="") or "").strip()
             except Exception:
                 pass
         value = parse_restart_drain_timeout(raw)
@@ -1743,7 +1793,7 @@ class GatewayRunner:
                 if cfg_path.exists():
                     with open(cfg_path, encoding="utf-8") as _f:
                         cfg = _y.safe_load(_f) or {}
-                    raw = cfg.get("display", {}).get("background_process_notifications")
+                    raw = cfg_get(cfg, "display", "background_process_notifications")
                     if raw is False:
                         mode = "off"
                     elif raw not in (None, ""):
@@ -2308,37 +2358,61 @@ class GatewayRunner:
             pass
         
         # Warn if no user allowlists are configured and open access is not opted in
+        _builtin_allowed_vars = (
+            "TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
+            "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
+            "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
+            "TELEGRAM_GROUP_ALLOWED_USERS",
+            "TELEGRAM_GROUP_ALLOWED_CHATS",
+            "EMAIL_ALLOWED_USERS",
+            "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
+            "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
+            "FEISHU_ALLOWED_USERS",
+            "WECOM_ALLOWED_USERS",
+            "WECOM_CALLBACK_ALLOWED_USERS",
+            "WEIXIN_ALLOWED_USERS",
+            "BLUEBUBBLES_ALLOWED_USERS",
+            "QQ_ALLOWED_USERS",
+            "YUANBAO_ALLOWED_USERS",
+            "GATEWAY_ALLOWED_USERS",
+        )
+        _builtin_allow_all_vars = (
+            "TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
+            "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
+            "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
+            "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
+            "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
+            "FEISHU_ALLOW_ALL_USERS",
+            "WECOM_ALLOW_ALL_USERS",
+            "WECOM_CALLBACK_ALLOW_ALL_USERS",
+            "WEIXIN_ALLOW_ALL_USERS",
+            "BLUEBUBBLES_ALLOW_ALL_USERS",
+            "QQ_ALLOW_ALL_USERS",
+            "YUANBAO_ALLOW_ALL_USERS",
+        )
+        # Also pick up plugin-registered platforms — each entry can declare
+        # its own allowed_users_env / allow_all_env, so the warning stays
+        # accurate as plugins like IRC come online.
+        _plugin_allowed_vars: tuple = ()
+        _plugin_allow_all_vars: tuple = ()
+        try:
+            from gateway.platform_registry import platform_registry
+            _plugin_allowed_vars = tuple(
+                e.allowed_users_env for e in platform_registry.plugin_entries()
+                if e.allowed_users_env
+            )
+            _plugin_allow_all_vars = tuple(
+                e.allow_all_env for e in platform_registry.plugin_entries()
+                if e.allow_all_env
+            )
+        except Exception:
+            pass
         _any_allowlist = any(
-            os.getenv(v)
-            for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
-                       "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
-                       "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
-                       "EMAIL_ALLOWED_USERS",
-                       "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
-                       "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
-                       "FEISHU_ALLOWED_USERS",
-                       "WECOM_ALLOWED_USERS",
-                       "WECOM_CALLBACK_ALLOWED_USERS",
-                       "WEIXIN_ALLOWED_USERS",
-                       "BLUEBUBBLES_ALLOWED_USERS",
-                       "QQ_ALLOWED_USERS",
-                       "YUANBAO_ALLOWED_USERS",
-                       "GATEWAY_ALLOWED_USERS")
+            os.getenv(v) for v in _builtin_allowed_vars + _plugin_allowed_vars
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
             os.getenv(v, "").lower() in ("true", "1", "yes")
-            for v in ("TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
-                       "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
-                       "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
-                       "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
-                       "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
-                       "FEISHU_ALLOW_ALL_USERS",
-                       "WECOM_ALLOW_ALL_USERS",
-                       "WECOM_CALLBACK_ALLOW_ALL_USERS",
-                       "WEIXIN_ALLOW_ALL_USERS",
-                       "BLUEBUBBLES_ALLOW_ALL_USERS",
-                       "QQ_ALLOW_ALL_USERS",
-                       "YUANBAO_ALLOW_ALL_USERS")
+            for v in _builtin_allow_all_vars + _plugin_allow_all_vars
         )
         if not _any_allowlist and not _allow_all:
             logger.warning(
@@ -2441,7 +2515,17 @@ class GatewayRunner:
             
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                logger.warning("No adapter available for %s", platform.value)
+                # Distinguish between missing builtin deps and missing plugin
+                _pval = platform.value
+                _builtin_names = {m.value for m in Platform.__members__.values()}
+                if _pval not in _builtin_names:
+                    logger.warning(
+                        "No adapter for '%s' — is the plugin installed? "
+                        "(platform is enabled in config.yaml but no plugin registered it)",
+                        _pval,
+                    )
+                else:
+                    logger.warning("No adapter available for %s", _pval)
                 continue
             
             # Set up message + fatal error handlers
@@ -2459,7 +2543,7 @@ class GatewayRunner:
                 error_message=None,
             )
             try:
-                success = await adapter.connect()
+                success = await self._connect_adapter_with_timeout(adapter, platform)
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
@@ -2629,7 +2713,7 @@ class GatewayRunner:
         logger.info("Press Ctrl+C to stop")
         
         return True
-    
+
     async def _session_expiry_watcher(self, interval: int = 300):
         """Background task that finalizes expired sessions.
 
@@ -2850,7 +2934,7 @@ class GatewayRunner:
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
 
-                    success = await adapter.connect()
+                    success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
@@ -3170,17 +3254,21 @@ class GatewayRunner:
 
         self._stop_task = asyncio.create_task(_stop_impl())
         await self._stop_task
-    
+
     async def wait_for_shutdown(self) -> None:
         """Wait for shutdown signal."""
         await self._shutdown_event.wait()
-    
+
     def _create_adapter(
         self, 
         platform: Platform, 
         config: Any
     ) -> Optional[BasePlatformAdapter]:
-        """Create the appropriate adapter for a platform."""
+        """Create the appropriate adapter for a platform.
+
+        Checks the platform_registry first (plugin adapters), then falls
+        through to the built-in if/elif chain for core platforms.
+        """
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault(
                 "group_sessions_per_user",
@@ -3190,6 +3278,25 @@ class GatewayRunner:
                 "thread_sessions_per_user",
                 getattr(self.config, "thread_sessions_per_user", False),
             )
+
+        # ── Plugin-registered platforms (checked first) ───────────────────
+        try:
+            from gateway.platform_registry import platform_registry
+            if platform_registry.is_registered(platform.value):
+                adapter = platform_registry.create_adapter(platform.value, config)
+                if adapter is not None:
+                    return adapter
+                # Registered but failed to instantiate — don't silently fall
+                # through to built-ins (there are none for plugin platforms).
+                logger.error(
+                    "Platform '%s' is registered but adapter creation failed "
+                    "(check dependencies and config)",
+                    platform.value,
+                )
+                return None
+        except Exception as e:
+            logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
+        # Fall through to built-in adapters below
 
         if platform == Platform.TELEGRAM:
             from gateway.platforms.telegram import TelegramAdapter, check_telegram_requirements
@@ -3379,8 +3486,11 @@ class GatewayRunner:
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
         }
-        platform_group_env_map = {
+        platform_group_user_env_map = {
             Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
+        }
+        platform_group_chat_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
         }
         platform_allow_all_map = {
@@ -3402,6 +3512,19 @@ class GatewayRunner:
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
+
+        # Plugin platforms: check the registry for auth env var names
+        if source.platform not in platform_env_map:
+            try:
+                from gateway.platform_registry import platform_registry
+                entry = platform_registry.get(source.platform.value)
+                if entry:
+                    if entry.allowed_users_env:
+                        platform_env_map[source.platform] = entry.allowed_users_env
+                    if entry.allow_all_env:
+                        platform_allow_all_map[source.platform] = entry.allow_all_env
+            except Exception:
+                pass
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
@@ -3437,27 +3560,66 @@ class GatewayRunner:
 
         # Check platform-specific and global allowlists
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
-        group_allowlist = ""
+        group_user_allowlist = ""
+        group_chat_allowlist = ""
         if source.chat_type in {"group", "forum"}:
-            group_allowlist = os.getenv(platform_group_env_map.get(source.platform, ""), "").strip()
+            group_user_allowlist = os.getenv(platform_group_user_env_map.get(source.platform, ""), "").strip()
+            group_chat_allowlist = os.getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
         global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
 
-        if not platform_allowlist and not group_allowlist and not global_allowlist:
+        if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
             # No allowlists configured -- check global allow-all flag
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
 
-        # Some platforms authorize group traffic by chat ID rather than sender ID.
-        if group_allowlist and source.chat_type in {"group", "forum"} and source.chat_id:
+        # Telegram can optionally authorize group traffic by chat ID.
+        # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates
+        # the sender user ID for group/forum messages.
+        if group_chat_allowlist and source.chat_type in {"group", "forum"} and source.chat_id:
             allowed_group_ids = {
-                chat_id.strip() for chat_id in group_allowlist.split(",") if chat_id.strip()
+                chat_id.strip() for chat_id in group_chat_allowlist.split(",") if chat_id.strip()
             }
             if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
                 return True
 
-        # Check if user is in any allowlist
+        # Backward-compat shim for #15027: prior to PR #17686,
+        # TELEGRAM_GROUP_ALLOWED_USERS was (mis)used as a chat-ID allowlist.
+        # Values starting with "-" are Telegram chat IDs, not user IDs, so if
+        # users still have those in TELEGRAM_GROUP_ALLOWED_USERS we honor them
+        # as chat IDs and warn once. The correct var is now
+        # TELEGRAM_GROUP_ALLOWED_CHATS.
+        if (
+            source.platform == Platform.TELEGRAM
+            and group_user_allowlist
+            and source.chat_type in {"group", "forum"}
+            and source.chat_id
+        ):
+            legacy_chat_ids = {
+                v.strip()
+                for v in group_user_allowlist.split(",")
+                if v.strip().startswith("-")
+            }
+            if legacy_chat_ids:
+                if not getattr(self, "_warned_telegram_group_users_legacy", False):
+                    logger.warning(
+                        "TELEGRAM_GROUP_ALLOWED_USERS contains chat-ID-shaped values "
+                        "(%s). Treating them as chat IDs for backward compatibility. "
+                        "Move chat IDs to TELEGRAM_GROUP_ALLOWED_CHATS — the _USERS var "
+                        "is now for sender user IDs.",
+                        ",".join(sorted(legacy_chat_ids)),
+                    )
+                    self._warned_telegram_group_users_legacy = True
+                if source.chat_id in legacy_chat_ids:
+                    return True
+
+        # Check if user is in any allowlist. In group/forum chats,
+        # TELEGRAM_GROUP_ALLOWED_USERS is the scoped allowlist and should not
+        # imply DM access; TELEGRAM_ALLOWED_USERS remains the platform-wide
+        # allowlist and still works everywhere for backward compatibility.
         allowed_ids = set()
         if platform_allowlist:
             allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
+        if group_user_allowlist:
+            allowed_ids.update(uid.strip() for uid in group_user_allowlist.split(",") if uid.strip())
         if global_allowlist:
             allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
 
@@ -3491,10 +3653,12 @@ class GatewayRunner:
         Resolution order:
         1. Explicit per-platform ``unauthorized_dm_behavior`` in config — always wins.
         2. Explicit global ``unauthorized_dm_behavior`` in config — wins when no per-platform.
-        3. When an allowlist (``PLATFORM_ALLOWED_USERS`` or ``GATEWAY_ALLOWED_USERS``) is
-           configured, default to ``"ignore"`` — the allowlist signals that the owner has
-           deliberately restricted access; spamming unknown contacts with pairing codes
-           is both noisy and a potential info-leak. (#9337)
+        3. When an allowlist (``PLATFORM_ALLOWED_USERS``,
+           ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
+           or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
+           the allowlist signals that the owner has deliberately restricted
+           access; spamming unknown contacts with pairing codes is both noisy
+           and a potential info-leak. (#9337)
         4. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
         """
         config = getattr(self, "config", None)
@@ -3533,14 +3697,24 @@ class GatewayRunner:
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
             }
+            platform_group_env_map = {
+                Platform.TELEGRAM: (
+                    "TELEGRAM_GROUP_ALLOWED_USERS",
+                    "TELEGRAM_GROUP_ALLOWED_CHATS",
+                ),
+                Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
+            }
             if os.getenv(platform_env_map.get(platform, ""), "").strip():
                 return "ignore"
+            for env_key in platform_group_env_map.get(platform, ()):
+                if os.getenv(env_key, "").strip():
+                    return "ignore"
 
         if os.getenv("GATEWAY_ALLOWED_USERS", "").strip():
             return "ignore"
 
         return "pair"
-    
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -3716,6 +3890,50 @@ class GatewayRunner:
                         e,
                     )
                 _update_prompts.pop(_quick_key, None)
+
+        # Intercept messages that are responses to a pending /reload-mcp
+        # (or future) slash-confirm prompt.  Recognized confirm replies are
+        # /approve, /always, /cancel (plus short aliases).  Anything else
+        # falls through to normal dispatch — a stale pending confirm does
+        # NOT block other commands.
+        #
+        # Important: if a dangerous-command approval is ALSO pending (agent
+        # blocked inside tools/approval.py), the tool approval takes
+        # precedence — /approve there unblocks the waiting tool thread.
+        # Slash-confirm only catches /approve when no tool approval is live.
+        from tools import slash_confirm as _slash_confirm_mod
+        _pending_confirm = _slash_confirm_mod.get_pending(_quick_key)
+        _tool_approval_live = False
+        try:
+            from tools.approval import has_blocking_approval
+            _tool_approval_live = has_blocking_approval(_quick_key)
+        except Exception:
+            _tool_approval_live = False
+        if _pending_confirm and not _tool_approval_live:
+            _raw_reply = (event.text or "").strip()
+            _cmd_reply = event.get_command()
+            _confirm_choice = None
+            if _cmd_reply in ("approve", "yes", "ok", "confirm"):
+                _confirm_choice = "once"
+            elif _cmd_reply in ("always", "remember"):
+                _confirm_choice = "always"
+            elif _cmd_reply in ("cancel", "no", "deny", "nevermind"):
+                _confirm_choice = "cancel"
+            elif _raw_reply.lower() in ("approve", "approve once", "once"):
+                _confirm_choice = "once"
+            elif _raw_reply.lower() in ("always", "always approve"):
+                _confirm_choice = "always"
+            elif _raw_reply.lower() in ("cancel", "nevermind", "no"):
+                _confirm_choice = "cancel"
+            if _confirm_choice is not None:
+                _resolved = await _slash_confirm_mod.resolve(
+                    _quick_key, _pending_confirm.get("confirm_id"), _confirm_choice,
+                )
+                return _resolved or ""
+            # Stale pending + unrelated command: drop the pending state so
+            # the confirm doesn't block normal usage indefinitely.  The user
+            # clearly moved on.
+            _slash_confirm_mod.clear_if_stale(_quick_key)
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
@@ -4186,6 +4404,9 @@ class GatewayRunner:
 
         if canonical == "reload-mcp":
             return await self._handle_reload_mcp_command(event)
+
+        if canonical == "reload-skills":
+            return await self._handle_reload_skills_command(event)
 
         if canonical == "approve":
             return await self._handle_approve_command(event)
@@ -5516,7 +5737,7 @@ class GatewayRunner:
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
-    
+
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.
 
@@ -5713,7 +5934,7 @@ class GatewayRunner:
         if session_info:
             return f"{header}\n\n{session_info}{_tip_line}"
         return f"{header}{_tip_line}"
-    
+
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
         from hermes_constants import display_hermes_home
@@ -5862,7 +6083,7 @@ class GatewayRunner:
             lines.append("No active agents or running tasks.")
 
         return "\n".join(lines)
-    
+
     async def _handle_stop_command(self, event: MessageEvent) -> str:
         """Handle /stop command - interrupt a running agent.
 
@@ -6102,7 +6323,7 @@ class GatewayRunner:
         if page != requested_page:
             lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
         return "\n".join(lines)
-    
+
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.
 
@@ -6449,7 +6670,7 @@ class GatewayRunner:
 
         try:
             config = _load_gateway_config()
-            personalities = config.get("agent", {}).get("personalities", {}) if config else {}
+            personalities = cfg_get(config, "agent", "personalities", default={})
         except Exception:
             config = {}
             personalities = {}
@@ -6508,7 +6729,7 @@ class GatewayRunner:
 
         available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
         return f"Unknown personality: `{args}`\n\nAvailable: {available}"
-    
+
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
         source = event.source
@@ -6544,7 +6765,7 @@ class GatewayRunner:
         
         # Let the normal message handler process it
         return await self._handle_message(retry_event)
-    
+
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo command - remove the last user/assistant exchange."""
         source = event.source
@@ -6569,7 +6790,7 @@ class GatewayRunner:
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
-    
+
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
         source = event.source
@@ -6590,7 +6811,7 @@ class GatewayRunner:
             f"✅ Home channel set to **{chat_name}** (ID: {chat_id}).\n"
             f"Cron jobs and cross-platform messages will be delivered here."
         )
-    
+
     @staticmethod
     def _get_guild_id(event: MessageEvent) -> Optional[int]:
         """Extract Discord guild_id from the raw message object."""
@@ -6958,14 +7179,15 @@ class GatewayRunner:
 
             _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
 
-            _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
+            from gateway.platforms.base import should_send_media_as_audio
+
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
             for media_path, is_voice in media_files:
                 try:
                     ext = Path(media_path).suffix.lower()
-                    if ext in _AUDIO_EXTS:
+                    if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
                         await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
@@ -7450,7 +7672,7 @@ class GatewayRunner:
         # --- check config gate ------------------------------------------------
         try:
             user_config = _load_gateway_config()
-            gate_enabled = user_config.get("display", {}).get("tool_progress_command", False)
+            gate_enabled = cfg_get(user_config, "display", "tool_progress_command", default=False)
         except Exception:
             gate_enabled = False
 
@@ -7814,6 +8036,13 @@ class GatewayRunner:
             return "Failed to switch session."
         self._clear_session_boundary_security_state(session_key)
 
+        # Evict any cached agent for this session so the next message
+        # rebuilds with the correct session_id end-to-end — mirrors
+        # /branch and /reset. Without this, the cached AIAgent (and its
+        # memory provider, which cached `_session_id` during initialize())
+        # keeps writing into the wrong session's record. See #6672.
+        self._evict_cached_agent(session_key)
+
         # Get the title for confirmation
         title = self._session_db.get_session_title(target_id) or name
 
@@ -8102,8 +8331,91 @@ class GatewayRunner:
             logger.error("Insights command error: %s", e, exc_info=True)
             return f"Error generating insights: {e}"
 
-    async def _handle_reload_mcp_command(self, event: MessageEvent) -> str:
-        """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""
+    async def _handle_reload_mcp_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /reload-mcp — reconnect MCP servers and rebuild the cached agent.
+
+        Reloading MCP tools invalidates the provider prompt cache for the
+        active session (tool schemas are baked into the system prompt).  The
+        next message re-sends full input tokens, which is expensive on
+        long-context or high-reasoning models.
+
+        To surface that cost, the command routes through the slash-confirm
+        primitive: users get an Approve Once / Always Approve / Cancel
+        prompt before the reload actually runs.  "Always Approve" persists
+        ``approvals.mcp_reload_confirm: false`` so the prompt is silenced
+        for subsequent reloads in any session.
+
+        Users can also skip the confirm by flipping the config key directly.
+        """
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        # Read the gate fresh from disk so a prior "always" click takes
+        # effect on the next invocation without restarting the gateway.
+        user_config = self._read_user_config()
+        approvals = user_config.get("approvals") if isinstance(user_config, dict) else None
+        confirm_required = True
+        if isinstance(approvals, dict):
+            confirm_required = bool(approvals.get("mcp_reload_confirm", True))
+
+        if not confirm_required:
+            return await self._execute_mcp_reload(event)
+
+        # Route through slash-confirm.  The primitive sends the prompt and
+        # stores the resume handler; the button/text response triggers
+        # ``_resolve_slash_confirm`` which invokes the handler with the
+        # chosen outcome.
+        async def _on_confirm(choice: str) -> Optional[str]:
+            if choice == "cancel":
+                return "🟡 /reload-mcp cancelled. MCP tools unchanged."
+            if choice == "always":
+                # Persist the opt-out and run the reload.
+                try:
+                    from cli import save_config_value
+                    save_config_value("approvals.mcp_reload_confirm", False)
+                    logger.info(
+                        "User opted out of /reload-mcp confirmation (session=%s)",
+                        session_key,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)
+            # once / always → run the reload
+            result = await self._execute_mcp_reload(event)
+            if choice == "always":
+                return (
+                    f"{result}\n\n"
+                    "ℹ️ Future `/reload-mcp` calls will run without confirmation. "
+                    "Re-enable via `approvals.mcp_reload_confirm: true` in config.yaml."
+                )
+            return result
+
+        prompt_message = (
+            "⚠️ **Confirm /reload-mcp**\n\n"
+            "Reloading MCP servers rebuilds the tool set for this session "
+            "and **invalidates the provider prompt cache** — the next "
+            "message will re-send full input tokens.  On long-context or "
+            "high-reasoning models this can be expensive.\n\n"
+            "Choose:\n"
+            "• **Approve Once** — reload now\n"
+            "• **Always Approve** — reload now and silence this prompt permanently\n"
+            "• **Cancel** — leave MCP tools unchanged\n\n"
+            "_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
+        )
+        return await self._request_slash_confirm(
+            event=event,
+            command="reload-mcp",
+            title="/reload-mcp",
+            message=prompt_message,
+            handler=_on_confirm,
+        )
+
+    async def _execute_mcp_reload(self, event: MessageEvent) -> str:
+        """Actually disconnect, reconnect, and notify MCP tool changes.
+
+        Split out from ``_handle_reload_mcp_command`` so the confirmation
+        wrapper can invoke the same path whether the user confirmed via
+        button, text reply, or has the confirm gate disabled.
+        """
         loop = asyncio.get_running_loop()
         try:
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
@@ -8168,6 +8480,178 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("MCP reload failed: %s", e)
             return f"❌ MCP reload failed: {e}"
+
+    async def _handle_reload_skills_command(self, event: MessageEvent) -> str:
+        """Handle /reload-skills — rescan skills dir, queue a note for next turn.
+
+        Skills don't need to be in the system prompt for the model to use
+        them (they're invoked via ``/skill-name``, ``skills_list``, or
+        ``skill_view`` at runtime), so this does NOT clear the prompt cache
+        — prefix caching stays intact.
+
+        If any skills were added or removed, a one-shot note is queued on
+        ``self._pending_skills_reload_notes[session_key]``. The gateway
+        prepends it to the NEXT user message in this session (see the
+        consumer at ~L11025 in ``_run_agent_turn``), then clears it. Nothing
+        is written to the session transcript out-of-band, so message
+        alternation is preserved.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            from agent.skill_commands import reload_skills
+
+            result = await loop.run_in_executor(None, reload_skills)
+            added = result.get("added", [])      # [{"name", "description"}, ...]
+            removed = result.get("removed", [])  # [{"name", "description"}, ...]
+            total = result.get("total", 0)
+
+            lines = ["🔄 **Skills Reloaded**\n"]
+            if not added and not removed:
+                lines.append("No new skills detected.")
+                lines.append(f"\n📚 {total} skill(s) available")
+                return "\n".join(lines)
+
+            def _fmt_line(item: dict) -> str:
+                nm = item.get("name", "")
+                desc = item.get("description", "")
+                return f"    - {nm}: {desc}" if desc else f"    - {nm}"
+
+            if added:
+                lines.append("➕ **Added Skills:**")
+                for item in added:
+                    lines.append(_fmt_line(item))
+            if removed:
+                lines.append("➖ **Removed Skills:**")
+                for item in removed:
+                    lines.append(_fmt_line(item))
+            lines.append(f"\n📚 {total} skill(s) available")
+
+            # Queue the one-shot note for the next user turn in this session.
+            # Format matches how the system prompt renders pre-existing
+            # skills (``    - name: description``) so the model reads the
+            # diff in the same shape as its original skill catalog.
+            sections = ["[USER INITIATED SKILLS RELOAD:"]
+            if added:
+                sections.append("")
+                sections.append("Added Skills:")
+                for item in added:
+                    sections.append(_fmt_line(item))
+            if removed:
+                sections.append("")
+                sections.append("Removed Skills:")
+                for item in removed:
+                    sections.append(_fmt_line(item))
+            sections.append("")
+            sections.append("Use skills_list to see the updated catalog.]")
+            note = "\n".join(sections)
+
+            session_key = self._session_key_for_source(event.source)
+            if not hasattr(self, "_pending_skills_reload_notes"):
+                self._pending_skills_reload_notes = {}
+            if session_key:
+                self._pending_skills_reload_notes[session_key] = note
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.warning("Skills reload failed: %s", e)
+            return f"❌ Skills reload failed: {e}"
+
+    # ------------------------------------------------------------------
+    # Slash-command confirmation primitive (generic)
+    # ------------------------------------------------------------------
+    # Used by slash commands that have a non-destructive but expensive
+    # side effect worth an explicit user confirmation (currently only
+    # /reload-mcp, which invalidates the prompt cache).  Two delivery
+    # paths:
+    #   1. Button UI — adapters that override ``send_slash_confirm``
+    #      (Telegram, Discord, Slack, Matrix, Feishu) render three
+    #      inline buttons.  The adapter routes the button click back via
+    #      ``tools.slash_confirm.resolve(session_key, confirm_id, choice)``.
+    #   2. Text fallback — adapters that don't override the hook get a
+    #      plain text prompt.  Users reply with /approve, /always, or
+    #      /cancel; the early intercept in ``_handle_message`` matches
+    #      those replies against ``tools.slash_confirm.get_pending()``.
+
+    async def _request_slash_confirm(
+        self,
+        *,
+        event: MessageEvent,
+        command: str,
+        title: str,
+        message: str,
+        handler,
+    ) -> Optional[str]:
+        """Ask the user to confirm an expensive slash command.
+
+        ``handler`` is an async callable ``handler(choice: str) -> str``
+        where ``choice`` is ``"once"``, ``"always"``, or ``"cancel"``.
+        The handler runs on the event loop when the user responds; its
+        return value is sent back as a gateway message.
+
+        Returns a short acknowledgment string to send immediately (before
+        the user's response).  If buttons rendered successfully the ack
+        is ``None`` (buttons are self-explanatory); if we fell back to
+        text the message itself IS the ack.
+        """
+        from tools import slash_confirm as _slash_confirm_mod
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        confirm_id = f"{next(self._slash_confirm_counter)}"
+
+        # Register the pending confirm FIRST so a super-fast button click
+        # cannot race the send_slash_confirm return.
+        _slash_confirm_mod.register(session_key, confirm_id, command, handler)
+
+        adapter = self.adapters.get(source.platform)
+        metadata = self._thread_metadata_for_source(source)
+
+        used_buttons = False
+        if adapter is not None:
+            try:
+                button_result = await adapter.send_slash_confirm(
+                    chat_id=source.chat_id,
+                    title=title,
+                    message=message,
+                    session_key=session_key,
+                    confirm_id=confirm_id,
+                    metadata=metadata,
+                )
+                if button_result and getattr(button_result, "success", False):
+                    used_buttons = True
+            except Exception as exc:
+                logger.debug(
+                    "send_slash_confirm failed for %s on %s: %s",
+                    command, source.platform, exc,
+                )
+
+        if used_buttons:
+            # Buttons rendered — no redundant text ack.
+            return None
+        # Text fallback — return the prompt message as the direct reply.
+        return message
+
+    def _read_user_config(self) -> Dict[str, Any]:
+        """Read the user's raw config.yaml (cached) for gate lookups.
+
+        Used by slash-confirm gates that must reflect on-disk state changes
+        (e.g. a prior "Always Approve" click) without a gateway restart.
+        """
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            return cfg if isinstance(cfg, dict) else {}
+        except Exception:
+            return {}
+
+    def _thread_metadata_for_source(self, source) -> Optional[Dict[str, Any]]:
+        """Build the metadata dict platforms need for thread-aware replies."""
+        thread_id = getattr(source, "thread_id", None)
+        if thread_id is None:
+            return None
+        return {"thread_id": thread_id}
+
 
     # ------------------------------------------------------------------
     # /approve & /deny — explicit dangerous-command approval
@@ -8342,8 +8826,16 @@ class GatewayRunner:
 
         # Block non-messaging platforms (API server, webhooks, ACP)
         platform = event.source.platform
-        if platform not in self._UPDATE_ALLOWED_PLATFORMS:
-            return "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."
+        _allowed = self._UPDATE_ALLOWED_PLATFORMS
+        # Plugin platforms with allow_update_command=True are also allowed
+        if platform not in _allowed:
+            try:
+                from gateway.platform_registry import platform_registry
+                entry = platform_registry.get(platform.value)
+                if not entry or not entry.allow_update_command:
+                    return "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."
+            except Exception:
+                return "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."
 
         if is_managed():
             return f"✗ {format_managed_message('update Hermes Agent')}"
@@ -9003,6 +9495,16 @@ class GatewayRunner:
 
         try:
             platform = Platform(platform_name)
+            # Reject arbitrary strings that create dynamic pseudo-members.
+            # Built-in platforms are always valid; plugin platforms must be
+            # registered in the platform registry.
+            if platform.value not in _BUILTIN_PLATFORM_VALUES:
+                try:
+                    from gateway.platform_registry import platform_registry
+                    if not platform_registry.is_registered(platform.value):
+                        raise ValueError(platform_name)
+                except Exception:
+                    raise ValueError(platform_name)
         except Exception:
             logger.warning(
                 "Synthetic process event has invalid platform metadata: %r",
@@ -9230,11 +9732,17 @@ class GatewayRunner:
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
-        """Pull the subset of config values that must bust the agent cache.
+        """Pull values that must bust the cached agent.
 
-        Returns a flat dict keyed by 'section.key'.  Missing keys and
-        non-dict sections yield None values, which still contribute to
-        the signature (so 'absent' vs 'present-and-null' differ).
+        Returns a flat dict keyed by 'section.key'.  Missing config keys and
+        non-dict sections yield None values, which still contribute to the
+        signature (so 'absent' vs 'present-and-null' differ).
+
+        The live tool registry generation is included too.  MCP reloads and
+        dynamic MCP tool-list changes mutate the registry without necessarily
+        changing config.yaml.  Cached AIAgent instances freeze their tool
+        schemas at construction time, so a registry generation change must
+        rebuild the agent before the next turn.
         """
         out: Dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
@@ -9244,6 +9752,12 @@ class GatewayRunner:
                 out[f"{section}.{key}"] = section_val.get(key)
             else:
                 out[f"{section}.{key}"] = None
+        try:
+            from tools.registry import registry
+
+            out["tools.registry_generation"] = getattr(registry, "_generation", None)
+        except Exception:
+            out["tools.registry_generation"] = None
         return out
 
     @staticmethod
@@ -10017,10 +10531,26 @@ class GatewayRunner:
 
         # Tool progress mode — resolved per-platform with env var fallback
         _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
+        _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
+        _display_cfg = display_config if isinstance(display_config, dict) else {}
+        _platforms_cfg = _display_cfg.get("platforms") or {}
+        _platform_cfg = _platforms_cfg.get(platform_key) or {}
+        _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
+        _tool_progress_configured = (
+            "tool_progress" in _display_cfg
+            or (
+                isinstance(_platform_cfg, dict)
+                and "tool_progress" in _platform_cfg
+            )
+            or (
+                isinstance(_legacy_tp_overrides, dict)
+                and platform_key in _legacy_tp_overrides
+            )
+        )
         progress_mode = (
-            _resolved_tp
-            or os.getenv("HERMES_TOOL_PROGRESS_MODE")
-            or "all"
+            _env_tp
+            if _env_tp and not _tool_progress_configured
+            else (_resolved_tp or _env_tp or "all")
         )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
@@ -10069,7 +10599,7 @@ class GatewayRunner:
                             tool_progress_hint_gateway,
                         )
                         _cfg = _load_gateway_config()
-                        gate_on = bool(_cfg.get("display", {}).get("tool_progress_command", False))
+                        gate_on = bool(cfg_get(_cfg, "display", "tool_progress_command", default=False))
                         if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
                             long_tool_hint_fired[0] = True
                             progress_queue.put(tool_progress_hint_gateway())
@@ -10077,6 +10607,7 @@ class GatewayRunner:
                 except Exception as _hint_err:
                     logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
                 return
+
 
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
             if event_type not in ("tool.started",):
@@ -10927,6 +11458,17 @@ class GatewayRunner:
                     "user's new message below.]\n\n"
                     + message
                 )
+
+            # Consume one-shot /reload-skills note (if the user ran
+            # /reload-skills since their last turn in this session). Same
+            # queue pattern as CLI: prepend to the NEXT user message, then
+            # clear. Nothing was written to the transcript out-of-band, so
+            # message alternation stays intact.
+            _pending_notes = getattr(self, "_pending_skills_reload_notes", None)
+            if _pending_notes and session_key and session_key in _pending_notes:
+                _srn = _pending_notes.pop(session_key, None)
+                if _srn:
+                    message = _srn + "\n\n" + message
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)

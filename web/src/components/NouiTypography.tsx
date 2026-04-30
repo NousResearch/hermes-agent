@@ -14,7 +14,7 @@ type TypographyProps = HTMLAttributes<HTMLElement> & {
 };
 
 const variantClasses: Record<NonNullable<TypographyProps["variant"]>, string> = {
-  sm: "leading-1.4 text-[.9375rem] tracking-[0.1875rem]",
+  sm: "leading-[1.4] text-[.9375rem] tracking-[0.1875rem]",
   md: "text-[2.625rem] leading-[1] tracking-[0.0525rem]",
   lg: "text-[2.625rem] leading-[1] tracking-[0.0525rem]",
   xl: "text-[4.5rem] leading-[1] tracking-[0.135rem]",

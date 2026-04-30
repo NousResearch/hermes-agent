@@ -1,14 +1,14 @@
 ---
-title: "Godmode"
+title: "Godmode — Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN"
 sidebar_label: "Godmode"
-description: "Jailbreak API-served LLMs using G0DM0D3 techniques — Parseltongue input obfuscation (33 techniques), GODMODE CLASSIC system prompt templates, ULTRAPLINIAN mu..."
+description: "Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Godmode
 
-Jailbreak API-served LLMs using G0DM0D3 techniques — Parseltongue input obfuscation (33 techniques), GODMODE CLASSIC system prompt templates, ULTRAPLINIAN multi-model racing, encoding escalation, and Hermes-native prefill/system prompt integration. Use when a user wants to bypass safety filters, jailbreak a model, or red-team model robustness.
+Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN.
 
 ## Skill metadata
 

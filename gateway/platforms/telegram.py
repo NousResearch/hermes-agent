@@ -237,14 +237,14 @@ def _wrap_markdown_tables(text: str) -> str:
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
-    
+
     Handles:
     - Receiving messages from users and groups
     - Sending responses with Telegram markdown
     - Forum topics (thread_id support)
     - Media messages
     """
-    
+
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
     # Threshold for detecting Telegram client-side message splits.
@@ -252,7 +252,7 @@ class TelegramAdapter(BasePlatformAdapter):
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     _GENERAL_TOPIC_THREAD_ID = "1"
-    
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
@@ -286,6 +286,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
+        # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
+        self._slash_confirm_state: Dict[str, str] = {}
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -994,7 +997,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self._set_fatal_error("telegram_connect_error", message, retryable=True)
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, e, exc_info=True)
             return False
-    
+
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
         pending_media_group_tasks = list(self._media_group_tasks.values())
@@ -1411,6 +1414,48 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_slash_confirm(
+        self, chat_id: str, title: str, message: str, session_key: str,
+        confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a three-button slash-command confirmation prompt."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            # Message body: render as plain text (message already contains
+            # markdown formatting from the gateway primitive).
+            preview = message if len(message) <= 3800 else message[:3800] + "..."
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
+                    InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}"),
+                ],
+                [
+                    InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}"),
+                ],
+            ])
+
+            thread_id = self._metadata_thread_id(metadata)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": preview,
+                "parse_mode": ParseMode.MARKDOWN,
+                "reply_markup": keyboard,
+                **self._link_preview_kwargs(),
+            }
+            message_thread_id = self._message_thread_id_for_send(thread_id)
+            if message_thread_id is not None:
+                kwargs["message_thread_id"] = message_thread_id
+
+            msg = await self._bot.send_message(**kwargs)
+            self._slash_confirm_state[confirm_id] = session_key
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_slash_confirm failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -1779,6 +1824,68 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
             return
 
+        # --- Slash-confirm callbacks (sc:choice:confirm_id) ---
+        if data.startswith("sc:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                choice = parts[1]  # once, always, cancel
+                confirm_id = parts[2]
+
+                caller_id = str(getattr(query.from_user, "id", "")) 
+                if not self._is_callback_user_authorized(caller_id):
+                    await query.answer(text="⛔ You are not authorized to answer this prompt.")
+                    return
+
+                session_key = self._slash_confirm_state.pop(confirm_id, None)
+                if not session_key:
+                    await query.answer(text="This prompt has already been resolved.")
+                    return
+
+                label_map = {
+                    "once": "✅ Approved once",
+                    "always": "🔒 Always approve",
+                    "cancel": "❌ Cancelled",
+                }
+                user_display = getattr(query.from_user, "first_name", "User")
+                label = label_map.get(choice, "Resolved")
+
+                await query.answer(text=label)
+
+                try:
+                    await query.edit_message_text(
+                        text=f"{label} by {user_display}",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+
+                # Resolve via the module-level primitive.  The runner stored
+                # a handler keyed by session_key; we run it on the event
+                # loop and (if it returns a string) send it as a follow-up
+                # message in the same chat.
+                try:
+                    from tools import slash_confirm as _slash_confirm_mod
+                    result_text = await _slash_confirm_mod.resolve(
+                        session_key, confirm_id, choice,
+                    )
+                    if result_text and query.message:
+                        # Inherit the prompt message's thread so the reply
+                        # lands in the same supergroup topic / reply chain.
+                        thread_id = getattr(query.message, "message_thread_id", None)
+                        send_kwargs: Dict[str, Any] = {
+                            "chat_id": int(query.message.chat_id),
+                            "text": result_text,
+                            "parse_mode": ParseMode.MARKDOWN,
+                            **self._link_preview_kwargs(),
+                        }
+                        if thread_id is not None:
+                            send_kwargs["message_thread_id"] = thread_id
+                        await self._bot.send_message(**send_kwargs)
+                except Exception as exc:
+                    logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return
@@ -1844,8 +1951,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
             
             with open(audio_path, "rb") as audio_file:
-                # .ogg files -> send as voice (round playable bubble)
-                if audio_path.endswith((".ogg", ".opus")):
+                ext = os.path.splitext(audio_path)[1].lower()
+                # .ogg / .opus files -> send as voice (round playable bubble)
+                if ext in (".ogg", ".opus"):
                     _voice_thread = self._metadata_thread_id(metadata)
                     msg = await self._bot.send_voice(
                         chat_id=int(chat_id),
@@ -1854,8 +1962,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=int(reply_to) if reply_to else None,
                         message_thread_id=self._message_thread_id_for_send(_voice_thread),
                     )
-                else:
-                    # .mp3 and others -> send as audio file
+                elif ext in (".mp3", ".m4a"):
+                    # Telegram's Bot API sendAudio only accepts MP3 / M4A.
                     _audio_thread = self._metadata_thread_id(metadata)
                     msg = await self._bot.send_audio(
                         chat_id=int(chat_id),
@@ -1863,6 +1971,16 @@ class TelegramAdapter(BasePlatformAdapter):
                         caption=caption[:1024] if caption else None,
                         reply_to_message_id=int(reply_to) if reply_to else None,
                         message_thread_id=self._message_thread_id_for_send(_audio_thread),
+                    )
+                else:
+                    # Formats Telegram can't play natively (.wav, .flac, ...)
+                    # — fall back to document delivery instead of raising.
+                    return await self.send_document(
+                        chat_id=chat_id,
+                        file_path=audio_path,
+                        caption=caption,
+                        reply_to=reply_to,
+                        metadata=metadata,
                     )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -1873,7 +1991,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return await super().send_voice(chat_id, audio_path, caption, reply_to)
-    
+
     async def send_image_file(
         self,
         chat_id: str,
@@ -2040,7 +2158,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 # Final fallback: send URL as text
                 return await super().send_image(chat_id, image_url, caption, reply_to)
-    
+
     async def send_animation(
         self,
         chat_id: str,
@@ -2102,7 +2220,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
-    
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
         if not self._bot:
@@ -2136,7 +2254,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
-    
+
     def format_message(self, content: str) -> str:
         """
         Convert standard markdown to Telegram MarkdownV2 format.
@@ -2308,7 +2426,7 @@ class TelegramAdapter(BasePlatformAdapter):
         text = ''.join(_safe_parts)
 
         return text
-    
+
     # ── Group mention gating ──────────────────────────────────────────────
 
     def _telegram_require_mention(self) -> bool:
@@ -2523,7 +2641,7 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
-    
+
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
         if not update.message or not update.message.text:
@@ -2533,7 +2651,7 @@ class TelegramAdapter(BasePlatformAdapter):
         
         event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)
         await self.handle_message(event)
-    
+
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
         if not update.message:
@@ -2891,7 +3009,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         await self.handle_message(event)
-    
+
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
         """Buffer Telegram media-group items so albums arrive as one logical event.
 

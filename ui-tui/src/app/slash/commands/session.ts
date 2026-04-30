@@ -154,6 +154,22 @@ export const sessionCommands: SlashCommand[] = [
               patchUiState(state => ({ ...state, usage: { ...state.usage, ...r.usage } }))
             }
 
+            if (r.summary?.headline) {
+              const prefix = r.summary.noop ? '' : '✓ '
+
+              ctx.transcript.sys(`${prefix}${r.summary.headline}`)
+
+              if (r.summary.token_line) {
+                ctx.transcript.sys(`  ${r.summary.token_line}`)
+              }
+
+              if (r.summary.note) {
+                ctx.transcript.sys(`  ${r.summary.note}`)
+              }
+
+              return
+            }
+
             if ((r.removed ?? 0) <= 0) {
               return ctx.transcript.sys('nothing to compress')
             }
@@ -163,6 +179,7 @@ export const sessionCommands: SlashCommand[] = [
             )
           })
         )
+        .catch(ctx.guardedErr)
     }
   },
 
@@ -332,7 +349,29 @@ export const sessionCommands: SlashCommand[] = [
 
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'reasoning', session_id: ctx.sid, value: arg })
-        .then(ctx.guarded<ConfigSetResponse>(r => r.value && ctx.transcript.sys(`reasoning: ${r.value}`)))
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (!r.value) {
+              return
+            }
+
+            if (r.value === 'hide') {
+              patchUiState(state => ({
+                ...state,
+                sections: { ...state.sections, thinking: 'hidden' },
+                showReasoning: false
+              }))
+            } else if (r.value === 'show') {
+              patchUiState(state => ({
+                ...state,
+                sections: { ...state.sections, thinking: 'expanded' },
+                showReasoning: true
+              }))
+            }
+
+            ctx.transcript.sys(`reasoning: ${r.value}`)
+          })
+        )
     }
   },
 

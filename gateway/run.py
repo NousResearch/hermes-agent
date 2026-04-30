@@ -4844,6 +4844,10 @@ class GatewayRunner:
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         if getattr(session_entry, "was_auto_reset", False):
+            # Auto-reset creates a fresh conversation under the same
+            # session_key, so all session-scoped approval/control state must
+            # be cleared before the new turn starts.
+            self._clear_session_boundary_security_state(session_key)
             # Treat auto-reset as a full conversation boundary — drop every
             # session-scoped transient state so the fresh session does not
             # inherit the previous conversation's model/reasoning overrides

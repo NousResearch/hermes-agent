@@ -1,7 +1,7 @@
 """Regression tests for approval-state cleanup on session boundaries."""
 
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -214,3 +214,81 @@ def test_clear_session_boundary_security_state_is_scoped():
     runner._clear_session_boundary_security_state("")
     assert is_approved(other_key, "recursive delete") is True
     assert other_key in runner._update_prompt_pending
+
+
+@pytest.mark.asyncio
+async def test_auto_reset_clears_session_scoped_approval_and_yolo_state(monkeypatch):
+    from gateway.run import GatewayRunner
+    import gateway.run as gateway_run
+
+    source = _make_source()
+    session_key = build_session_key(source)
+    other_key = "agent:main:telegram:dm:other-chat"
+    auto_reset_entry = SessionEntry(
+        session_key=session_key,
+        session_id="fresh-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=source.platform,
+        chat_type=source.chat_type,
+        was_auto_reset=True,
+        auto_reset_reason="idle",
+    )
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = {}
+    runner.adapters = {}
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = auto_reset_entry
+    runner._session_model_overrides = {session_key: "model-a", other_key: "model-b"}
+    runner._pending_model_notes = {session_key: "note-a", other_key: "note-b"}
+    runner._pending_approvals = {
+        session_key: {"command": "rm -rf /tmp/demo"},
+        other_key: {"command": "rm -rf /tmp/other"},
+    }
+    runner._update_prompt_pending = {session_key: True, other_key: True}
+
+    cleared_reasoning = []
+
+    def _set_reasoning_override(key, value):
+        cleared_reasoning.append((key, value))
+
+    runner._set_session_reasoning_override = _set_reasoning_override
+
+    approve_session(session_key, "recursive delete")
+    approve_session(other_key, "recursive delete")
+    enable_session_yolo(session_key)
+    enable_session_yolo(other_key)
+
+    class _StopAfterAssertion(RuntimeError):
+        pass
+
+    def _assert_cleanup(*_args, **_kwargs):
+        assert is_approved(session_key, "recursive delete") is False
+        assert is_session_yolo_enabled(session_key) is False
+        assert session_key not in runner._pending_approvals
+        assert session_key not in runner._update_prompt_pending
+        assert runner._session_model_overrides.get(session_key) is None
+        assert runner._pending_model_notes.get(session_key) is None
+        assert (session_key, None) in cleared_reasoning
+
+        assert is_approved(other_key, "recursive delete") is True
+        assert is_session_yolo_enabled(other_key) is True
+        assert other_key in runner._pending_approvals
+        assert other_key in runner._update_prompt_pending
+        assert runner._session_model_overrides.get(other_key) == "model-b"
+        assert runner._pending_model_notes.get(other_key) == "note-b"
+        raise _StopAfterAssertion
+
+    monkeypatch.setattr(gateway_run, "build_session_context", _assert_cleanup)
+
+    with pytest.raises(_StopAfterAssertion):
+        await runner._handle_message_with_agent(
+            _make_event("hello"),
+            source,
+            session_key,
+            1,
+        )

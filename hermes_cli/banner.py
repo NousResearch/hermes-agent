@@ -123,6 +123,21 @@ def get_available_skills() -> Dict[str, List[str]]:
 _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 
 
+def _count_commits_behind(repo_dir: Path) -> Optional[int]:
+    """Return how many commits HEAD is behind origin/main using local refs only."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            return int((result.stdout or "").strip() or "0")
+    except Exception:
+        pass
+    return None
+
+
 def check_for_updates() -> Optional[int]:
     """Check how many commits behind origin/main the local repo is.
 
@@ -146,7 +161,16 @@ def check_for_updates() -> Optional[int]:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
             if now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS:
-                return cached.get("behind")
+                cached_behind = cached.get("behind")
+                if isinstance(cached_behind, int) and cached_behind > 0:
+                    actual_behind = _count_commits_behind(repo_dir)
+                    if actual_behind is not None and actual_behind != cached_behind:
+                        try:
+                            cache_file.write_text(json.dumps({"ts": now, "behind": actual_behind}))
+                        except Exception:
+                            pass
+                        return actual_behind
+                return cached_behind
     except Exception:
         pass
 
@@ -161,18 +185,7 @@ def check_for_updates() -> Optional[int]:
         pass  # Offline or timeout — use stale refs, that's fine
 
     # Count commits behind
-    try:
-        result = subprocess.run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"],
-            capture_output=True, text=True, timeout=5,
-            cwd=str(repo_dir),
-        )
-        if result.returncode == 0:
-            behind = int(result.stdout.strip())
-        else:
-            behind = None
-    except Exception:
-        behind = None
+    behind = _count_commits_behind(repo_dir)
 
     # Write cache
     try:

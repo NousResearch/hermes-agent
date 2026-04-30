@@ -66,7 +66,29 @@ class TestBuildAnthropicClient:
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
             assert "fine-grained-tool-streaming-2025-05-14" in betas
+            # Default: 1M-context beta stays IN for OAuth so 1M-capable
+            # subscriptions keep full context. The reactive recovery path
+            # in run_agent.py flips it off only after a subscription
+            # actually rejects the beta.
+            assert "context-1m-2025-08-07" in betas
             assert "api_key" not in kwargs
+
+    def test_oauth_drop_context_1m_beta_strips_only_1m(self):
+        """drop_context_1m_beta=True strips context-1m-2025-08-07 while
+        preserving every other OAuth-relevant beta."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "sk-ant-oat01-" + "x" * 60,
+                drop_context_1m_beta=True,
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" not in betas
+            # Everything else must still be there.
+            assert "oauth-2025-04-20" in betas
+            assert "claude-code-20250219" in betas
+            assert "interleaved-thinking-2025-05-14" in betas
+            assert "fine-grained-tool-streaming-2025-05-14" in betas
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -77,6 +99,7 @@ class TestBuildAnthropicClient:
             # API key auth should still get common betas
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "interleaved-thinking-2025-05-14" in betas
+            assert "context-1m-2025-08-07" in betas
             assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
             assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
 
@@ -962,6 +985,42 @@ class TestBuildAnthropicKwargs:
             reasoning_config=None,
         )
         assert kwargs["model"] == "claude-sonnet-4-20250514"
+
+    def test_fast_mode_oauth_default_keeps_context_1m_beta(self):
+        """Default OAuth fast-mode requests still carry context-1m-2025-08-07."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            fast_mode=True,
+        )
+        betas = kwargs["extra_headers"]["anthropic-beta"]
+        assert "fast-mode-2026-02-01" in betas
+        assert "oauth-2025-04-20" in betas
+        assert "context-1m-2025-08-07" in betas
+
+    def test_fast_mode_oauth_drop_context_1m_beta_strips_only_1m(self):
+        """drop_context_1m_beta=True strips context-1m from fast-mode
+        extra_headers while preserving every other OAuth + fast-mode beta."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            fast_mode=True,
+            drop_context_1m_beta=True,
+        )
+        betas = kwargs["extra_headers"]["anthropic-beta"]
+        assert "context-1m-2025-08-07" not in betas
+        assert "fast-mode-2026-02-01" in betas
+        assert "oauth-2025-04-20" in betas
+        assert "claude-code-20250219" in betas
+        assert "interleaved-thinking-2025-05-14" in betas
 
     def test_reasoning_config_maps_to_manual_thinking_for_pre_4_6_models(self):
         kwargs = build_anthropic_kwargs(

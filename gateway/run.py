@@ -7186,6 +7186,7 @@ class GatewayRunner:
         that the normal _process_message_background path would have caught.
         """
         from pathlib import Path
+        from urllib.parse import quote as _quote
 
         try:
             media_files, _ = adapter.extract_media(response)
@@ -7199,7 +7200,36 @@ class GatewayRunner:
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
+            # Partition out images so they can be sent as a single batch
+            # (e.g. Signal's multi-attachment RPC)
+            image_paths: list = []
+            non_image_media: list = []
             for media_path, is_voice in media_files:
+                ext = Path(media_path).suffix.lower()
+                if ext in _IMAGE_EXTS and not is_voice:
+                    image_paths.append(media_path)
+                else:
+                    non_image_media.append((media_path, is_voice))
+
+            non_image_local: list = []
+            for file_path in local_files:
+                if Path(file_path).suffix.lower() in _IMAGE_EXTS:
+                    image_paths.append(file_path)
+                else:
+                    non_image_local.append(file_path)
+
+            if image_paths:
+                try:
+                    images = [(f"file://{_quote(p)}", "") for p in image_paths]
+                    await adapter.send_multiple_images(
+                        chat_id=event.source.chat_id,
+                        images=images,
+                        metadata=_thread_meta,
+                    )
+                except Exception as e:
+                    logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+
+            for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
@@ -7214,12 +7244,6 @@ class GatewayRunner:
                             video_path=media_path,
                             metadata=_thread_meta,
                         )
-                    elif ext in _IMAGE_EXTS:
-                        await adapter.send_image_file(
-                            chat_id=event.source.chat_id,
-                            image_path=media_path,
-                            metadata=_thread_meta,
-                        )
                     else:
                         await adapter.send_document(
                             chat_id=event.source.chat_id,
@@ -7229,13 +7253,13 @@ class GatewayRunner:
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
-            for file_path in local_files:
+            for file_path in non_image_local:
                 try:
                     ext = Path(file_path).suffix.lower()
-                    if ext in _IMAGE_EXTS:
-                        await adapter.send_image_file(
+                    if ext in _VIDEO_EXTS:
+                        await adapter.send_video(
                             chat_id=event.source.chat_id,
-                            image_path=file_path,
+                            video_path=file_path,
                             metadata=_thread_meta,
                         )
                     else:

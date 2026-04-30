@@ -70,12 +70,11 @@ export const midnightTheme: DashboardTheme = {
     fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
     fontUrl:
       "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
-    lineHeight: "1.6",
     letterSpacing: "-0.005em",
   },
   layout: {
+    ...DEFAULT_LAYOUT,
     radius: "0.75rem",
-    density: "comfortable",
   },
 };
 
@@ -96,12 +95,10 @@ export const emberTheme: DashboardTheme = {
     fontMono: `"IBM Plex Mono", ${SYSTEM_MONO}`,
     fontUrl:
       "https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap",
-    lineHeight: "1.6",
-    letterSpacing: "0",
   },
   layout: {
+    ...DEFAULT_LAYOUT,
     radius: "0.25rem",
-    density: "comfortable",
   },
   colorOverrides: {
     destructive: "#c92d0f",
@@ -126,12 +123,10 @@ export const monoTheme: DashboardTheme = {
     fontMono: `"IBM Plex Mono", ${SYSTEM_MONO}`,
     fontUrl:
       "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap",
-    lineHeight: "1.5",
-    letterSpacing: "0",
   },
   layout: {
+    ...DEFAULT_LAYOUT,
     radius: "0",
-    density: "comfortable",
   },
 };
 
@@ -152,12 +147,10 @@ export const cyberpunkTheme: DashboardTheme = {
     fontMono: `"Share Tech Mono", "JetBrains Mono", ${SYSTEM_MONO}`,
     fontUrl:
       "https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;700&display=swap",
-    lineHeight: "1.5",
-    letterSpacing: "0",
   },
   layout: {
+    ...DEFAULT_LAYOUT,
     radius: "0",
-    density: "comfortable",
   },
   colorOverrides: {
     success: "#00ff88",
@@ -183,11 +176,10 @@ export const roseTheme: DashboardTheme = {
     fontMono: `"DM Mono", ${SYSTEM_MONO}`,
     fontUrl:
       "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=DM+Mono:wght@400;500&display=swap",
-    letterSpacing: "0",
   },
   layout: {
+    ...DEFAULT_LAYOUT,
     radius: "1rem",
-    density: "comfortable",
   },
 };
 

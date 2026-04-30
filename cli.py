@@ -2794,7 +2794,14 @@ class HermesCLI:
 
         def _expand_ref(match):
             path = Path(match.group(1))
-            return path.read_text(encoding="utf-8") if path.exists() else match.group(0)
+            # Use try/except instead of path.exists() to avoid TOCTOU race:
+            # the paste file may be deleted between check and read, causing
+            # the input to be silently dropped (#17666).
+            try:
+                return path.read_text(encoding="utf-8")
+            except (OSError, IOError):
+                logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
+                return match.group(0)
 
         return paste_ref_re.sub(_expand_ref, text)
 
@@ -11144,10 +11151,9 @@ class HermesCLI:
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
                     # Regular chat - run agent
-                    self._agent_running = True
-                    app.invalidate()  # Refresh status line
-
                     try:
+                        self._agent_running = True
+                        app.invalidate()  # Refresh status line
                         self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
@@ -11157,6 +11163,18 @@ class HermesCLI:
                         self._last_scrollback_tool = ""
 
                         app.invalidate()  # Refresh status line
+
+                        # Drain any messages that arrived in the interrupt queue while
+                        # the agent was running.  Re-queue them to _pending_input so
+                        # they are processed as next-turn messages on the next loop
+                        # iteration (issue #17666).
+                        try:
+                            while not self._interrupt_queue.empty():
+                                _stray = self._interrupt_queue.get_nowait()
+                                if _stray:
+                                    self._pending_input.put(_stray)
+                        except Exception:
+                            pass  # Non-fatal — never break the main loop
 
                         # Continuous voice: auto-restart recording after agent responds.
                         # Dispatch to a daemon thread so play_beep (sd.wait) and
@@ -11191,7 +11209,7 @@ class HermesCLI:
                             pass  # Non-fatal — don't break the main loop
 
                 except Exception as e:
-                    print(f"Error: {e}")
+                    logger.warning("process_loop unhandled error (msg may be lost): %s", e)
         
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)

@@ -13,6 +13,7 @@ History:
 
 from __future__ import annotations
 
+import importlib
 import os
 import sys
 from unittest.mock import patch, MagicMock, call
@@ -24,6 +25,38 @@ from hermes_cli.main import (
     _kill_stale_dashboard_processes,
     _warn_stale_dashboard_processes,  # back-compat alias
 )
+
+
+@pytest.fixture(autouse=True)
+def _refresh_bindings_against_live_module():
+    """Rebind module-level names to the *current* ``hermes_cli.main``.
+
+    Other tests in the suite (notably ``test_env_loader.py`` and
+    ``test_skills_subparser.py``) reload or delete ``hermes_cli.main`` from
+    ``sys.modules``.  When that happens on the same xdist worker before we
+    run, our top-of-file ``from hermes_cli.main import ...`` bindings end
+    up pointing at the *old* module object.  ``patch(\"hermes_cli.main.X\")``
+    then patches the *new* module, but the function we call still resolves
+    ``_find_stale_dashboard_pids`` via its stale ``__globals__``, so every
+    patch becomes a no-op and the kill path silently returns early.
+
+    Refreshing the bindings (and the patch target) to the live module
+    object — and keeping them consistent — makes the tests immune to
+    ordering within the worker.  The fix lives in the test module because
+    the two pollutants above are load-bearing for their own tests.
+    """
+    global _find_stale_dashboard_pids
+    global _kill_stale_dashboard_processes
+    global _warn_stale_dashboard_processes
+
+    live = sys.modules.get("hermes_cli.main")
+    if live is None:
+        live = importlib.import_module("hermes_cli.main")
+
+    _find_stale_dashboard_pids = live._find_stale_dashboard_pids
+    _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
+    _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
+    yield
 
 
 def _ps_line(pid: int, cmd: str) -> str:

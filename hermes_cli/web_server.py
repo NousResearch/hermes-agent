@@ -3780,12 +3780,22 @@ async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallB
             detail=result.get("error") or "Install failed.",
         )
     _get_dashboard_plugins(force_rescan=True)
+    # Strip internal paths from the response
+    result.pop("after_install_path", None)
     return result
+
+
+def _validate_plugin_name(name: str) -> str:
+    """Reject path-traversal attempts in plugin name URL parameters."""
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Invalid plugin name.")
+    return name
 
 
 @app.post("/api/dashboard/agent-plugins/{name}/enable")
 async def post_agent_plugin_enable(request: Request, name: str):
     _require_token(request)
+    name = _validate_plugin_name(name)
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
 
     result = dashboard_set_agent_plugin_enabled(name, enabled=True)
@@ -3797,6 +3807,7 @@ async def post_agent_plugin_enable(request: Request, name: str):
 @app.post("/api/dashboard/agent-plugins/{name}/disable")
 async def post_agent_plugin_disable(request: Request, name: str):
     _require_token(request)
+    name = _validate_plugin_name(name)
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
 
     result = dashboard_set_agent_plugin_enabled(name, enabled=False)
@@ -3808,6 +3819,7 @@ async def post_agent_plugin_disable(request: Request, name: str):
 @app.post("/api/dashboard/agent-plugins/{name}/update")
 async def post_agent_plugin_update(request: Request, name: str):
     _require_token(request)
+    name = _validate_plugin_name(name)
     from hermes_cli.plugins_cmd import dashboard_update_user_plugin
 
     result = dashboard_update_user_plugin(name)
@@ -3820,6 +3832,7 @@ async def post_agent_plugin_update(request: Request, name: str):
 @app.delete("/api/dashboard/agent-plugins/{name}")
 async def delete_agent_plugin(request: Request, name: str):
     _require_token(request)
+    name = _validate_plugin_name(name)
     from hermes_cli.plugins_cmd import dashboard_remove_user_plugin
 
     result = dashboard_remove_user_plugin(name)

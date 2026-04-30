@@ -265,8 +265,11 @@ ALIASES: Dict[str, str] = {
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
     "kimi-coding": "kimi-for-coding",
-    "kimi-coding-cn": "kimi-for-coding",
     "moonshot": "kimi-for-coding",
+    # kimi-coding-cn must NOT alias to kimi-for-coding — it has its own
+    # ProviderConfig with KIMI_CN_API_KEY and a different base_url (issue #17739)
+    "kimi-cn": "kimi-coding-cn",
+    "moonshot-cn": "kimi-coding-cn",
 
     # stepfun
     "step": "stepfun",

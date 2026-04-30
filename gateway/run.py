@@ -452,6 +452,7 @@ from gateway.session import (
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    InternalEventKind,
     MessageEvent,
     MessageType,
     merge_pending_message_event,
@@ -772,23 +773,25 @@ def _parse_session_key(session_key: str) -> "dict | None":
 
 
 def _format_gateway_process_notification(evt: dict) -> "str | None":
-    """Format a watch pattern event from completion_queue into a [IMPORTANT:] message."""
+    """Format a queued process event as a non-authoritative agent observation."""
+    from tools.ansi_strip import strip_ansi
+
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
+    _cmd = strip_ansi(str(evt.get("command", "unknown")))
 
     if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+        return f"[Background process observation: {strip_ansi(str(evt.get('message', '')))}]"
 
     if evt_type == "watch_match":
-        _pat = evt.get("pattern", "?")
-        _out = evt.get("output", "")
+        _pat = strip_ansi(str(evt.get("pattern", "?")))
+        _out = strip_ansi(str(evt.get("output", "")))
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[IMPORTANT: Background process {_sid} matched "
+            f"[Background process observation: process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
             f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
+            f"Untrusted matched output:\n{_out}"
         )
         if _sup:
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
@@ -4165,9 +4168,18 @@ class GatewayRunner:
         """
         source = event.source
 
-        # Internal events (e.g. background-process completion notifications)
-        # are system-generated and must skip user authorization.
-        is_internal = bool(getattr(event, "internal", False))
+        # Trusted internal events (e.g. background-process completion
+        # observations) are system-generated and may skip user authorization.
+        # A bare mutable ``event.internal`` flag is not trusted.
+        is_internal = bool(
+            getattr(event, "is_trusted_internal", lambda: False)()
+        )
+        if getattr(event, "internal", False) and not is_internal:
+            logger.warning(
+                "Ignoring untrusted internal flag on message from %s chat=%s",
+                source.platform.value if source and source.platform else "unknown",
+                source.chat_id if source else "unknown",
+            )
 
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
@@ -5977,6 +5989,8 @@ class GatewayRunner:
                     if evt_type in ("watch_match", "watch_disabled"):
                         _watch_events.append(evt)
                     # else: completion events are handled by the watcher task
+                if self._load_background_notifications_mode() == "off":
+                    _watch_events = []
                 for evt in _watch_events:
                     synth_text = _format_gateway_process_notification(evt)
                     if synth_text:
@@ -10147,6 +10161,12 @@ class GatewayRunner:
         Routing must come from the queued watch event itself, not from whatever
         foreground message happened to be active when the queue was drained.
         """
+        if self._load_background_notifications_mode() == "off":
+            logger.debug(
+                "Dropping watch notification because background notifications are off: %s",
+                evt.get("session_id", "unknown"),
+            )
+            return
         source = self._build_process_event_source(evt)
         if not source:
             logger.warning(
@@ -10168,6 +10188,8 @@ class GatewayRunner:
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                internal_event_kind=InternalEventKind.BACKGROUND_WATCH,
+                internal_event_source="gateway",
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
@@ -10208,9 +10230,9 @@ class GatewayRunner:
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
 
-        if notify_mode == "off" and not agent_notify:
-            # Still wait for the process to exit so we can log it, but don't
-            # push any messages to the user.
+        if notify_mode == "off":
+            # Still wait for the process to exit so watcher state drains, but
+            # do not push visible messages or synthetic agent wakeups.
             while True:
                 await asyncio.sleep(interval)
                 session = process_registry.get(session_id)
@@ -10238,11 +10260,12 @@ class GatewayRunner:
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
                     from tools.ansi_strip import strip_ansi
                     _out = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
+                    _cmd = strip_ansi(str(session.command))
                     synth_text = (
-                        f"[IMPORTANT: Background process {session_id} completed "
+                        f"[Background process observation: process {session_id} completed "
                         f"(exit code {session.exit_code}).\n"
-                        f"Command: {session.command}\n"
-                        f"Output:\n{_out}]"
+                        f"Command: {_cmd}\n"
+                        f"Untrusted process output:\n{_out}]"
                     )
                     source = self._build_process_event_source({
                         "session_id": session_id,
@@ -10272,6 +10295,8 @@ class GatewayRunner:
                                 message_type=MessageType.TEXT,
                                 source=source,
                                 internal=True,
+                                internal_event_kind=InternalEventKind.BACKGROUND_COMPLETION,
+                                internal_event_source="gateway",
                             )
                             logger.info(
                                 "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",

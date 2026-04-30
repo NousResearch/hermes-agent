@@ -1426,28 +1426,76 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
     return resolved
 
 
+def _normalize_background_notifications_mode(raw: object) -> str:
+    if raw is False:
+        mode = "off"
+    else:
+        mode = str(raw or "").strip().lower()
+    if not mode:
+        return "all"
+    valid = {"all", "result", "error", "off"}
+    if mode not in valid:
+        logger.warning(
+            "Unknown background_process_notifications '%s', defaulting to 'all'",
+            mode,
+        )
+        return "all"
+    return mode
+
+
+def _load_background_notifications_mode(config: "dict | None" = None) -> str:
+    """Load CLI background process notification mode from env/config."""
+    mode = os.getenv("HERMES_BACKGROUND_NOTIFICATIONS", "")
+    if not mode:
+        cfg = config if isinstance(config, dict) else CLI_CONFIG
+        display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
+        if isinstance(display, dict):
+            raw = display.get("background_process_notifications")
+            if raw not in (None, ""):
+                mode = raw
+    return _normalize_background_notifications_mode(mode)
+
+
+def _should_queue_process_notification(evt: dict, notification_mode: str) -> bool:
+    """Return whether a drained process event should wake the CLI agent."""
+    mode = _normalize_background_notifications_mode(notification_mode)
+    if mode == "off":
+        return False
+    evt_type = evt.get("type", "completion")
+    if evt_type == "completion":
+        exit_code = evt.get("exit_code")
+        return mode in ("all", "result") or (mode == "error" and exit_code not in (0, None))
+    if evt_type in ("watch_match", "watch_disabled"):
+        return mode == "all"
+    return False
+
+
 def _format_process_notification(evt: dict) -> "str | None":
-    """Format a process notification event into a [IMPORTANT: ...] message.
+    """Format a process notification event into a non-authoritative observation.
 
     Handles both completion events (notify_on_complete) and watch pattern
-    match events from the unified completion_queue.
+    match events from the unified completion_queue.  Process output is
+    attacker-controlled, so the model-facing text must not look like a system
+    instruction.
     """
+    from tools.ansi_strip import strip_ansi
+
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
+    _cmd = strip_ansi(str(evt.get("command", "unknown")))
 
     if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+        return f"[Background process observation: {strip_ansi(str(evt.get('message', '')))}]"
 
     if evt_type == "watch_match":
-        _pat = evt.get("pattern", "?")
-        _out = evt.get("output", "")
+        _pat = strip_ansi(str(evt.get("pattern", "?")))
+        _out = strip_ansi(str(evt.get("output", "")))
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[IMPORTANT: Background process {_sid} matched "
+            f"[Background process observation: process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
             f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
+            f"Untrusted matched output:\n{_out}"
         )
         if _sup:
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
@@ -1456,13 +1504,45 @@ def _format_process_notification(evt: dict) -> "str | None":
 
     # Default: completion event
     _exit = evt.get("exit_code", "?")
-    _out = evt.get("output", "")
+    _out = strip_ansi(str(evt.get("output", "")))
     return (
-        f"[IMPORTANT: Background process {_sid} completed "
+        f"[Background process observation: process {_sid} completed "
         f"(exit code {_exit}).\n"
         f"Command: {_cmd}\n"
-        f"Output:\n{_out}]"
+        f"Untrusted process output:\n{_out}]"
     )
+
+
+def _drain_process_notifications_to_pending_input(
+    process_registry,
+    pending_input,
+    notification_mode: "str | None" = None,
+) -> int:
+    """Drain process_registry.completion_queue and enqueue allowed observations.
+
+    Returns the number of queue events consumed.  Mode ``off`` still drains but
+    queues nothing, preventing stale background completions from waking a future
+    CLI turn.
+    """
+    mode = _load_background_notifications_mode() if notification_mode is None else notification_mode
+    drained = 0
+    completion_queue = process_registry.completion_queue
+    while not completion_queue.empty():
+        try:
+            evt = completion_queue.get_nowait()
+        except queue.Empty:
+            break
+        drained += 1
+        _evt_sid = evt.get("session_id", "")
+        is_consumed = getattr(process_registry, "is_completion_consumed", lambda _sid: False)
+        if evt.get("type", "completion") == "completion" and is_consumed(_evt_sid):
+            continue
+        if not _should_queue_process_notification(evt, mode):
+            continue
+        _synth = _format_process_notification(evt)
+        if _synth:
+            pending_input.put(_synth)
+    return drained
 
 
 def _detect_file_drop(user_input: str) -> "dict | None":
@@ -11254,16 +11334,10 @@ class HermesCLI:
                             # and watch pattern matches) while agent is idle.
                             try:
                                 from tools.process_registry import process_registry
-                                if not process_registry.completion_queue.empty():
-                                    evt = process_registry.completion_queue.get_nowait()
-                                    # Skip if the agent already consumed this via wait/poll/log
-                                    _evt_sid = evt.get("session_id", "")
-                                    if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
-                                        pass  # already delivered via tool result
-                                    else:
-                                        _synth = _format_process_notification(evt)
-                                        if _synth:
-                                            self._pending_input.put(_synth)
+                                _drain_process_notifications_to_pending_input(
+                                    process_registry,
+                                    self._pending_input,
+                                )
                             except Exception:
                                 pass
                         continue
@@ -11356,15 +11430,10 @@ class HermesCLI:
                         # that arrived while the agent was running.
                         try:
                             from tools.process_registry import process_registry
-                            while not process_registry.completion_queue.empty():
-                                evt = process_registry.completion_queue.get_nowait()
-                                # Skip if the agent already consumed this via wait/poll/log
-                                _evt_sid = evt.get("session_id", "")
-                                if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
-                                    continue  # already delivered via tool result
-                                _synth = _format_process_notification(evt)
-                                if _synth:
-                                    self._pending_input.put(_synth)
+                            _drain_process_notifications_to_pending_input(
+                                process_registry,
+                                self._pending_input,
+                            )
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 

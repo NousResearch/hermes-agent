@@ -866,6 +866,33 @@ class ProcessingOutcome(Enum):
     CANCELLED = "cancelled"
 
 
+class InternalEventKind(Enum):
+    """Trusted gateway-internal event categories.
+
+    These values identify system-generated observations/control messages.  The
+    plain ``MessageEvent.internal`` boolean is intentionally not sufficient for
+    trust decisions because it is mutable and can be set on arbitrary events.
+    """
+
+    BACKGROUND_COMPLETION = "background_completion"
+    BACKGROUND_WATCH = "background_watch"
+    MESSAGE_RECALL = "message_recall"
+
+
+_TRUSTED_INTERNAL_EVENT_SOURCES = frozenset({"gateway", "platform_adapter"})
+_TRUSTED_INTERNAL_EVENT_KINDS = frozenset(kind.value for kind in InternalEventKind)
+
+
+def normalize_internal_event_kind(kind: Any) -> Optional[str]:
+    """Return a canonical internal-event kind string, or None if unknown."""
+    if isinstance(kind, InternalEventKind):
+        return kind.value
+    value = str(kind or "").strip()
+    if value in _TRUSTED_INTERNAL_EVENT_KINDS:
+        return value
+    return None
+
+
 @dataclass
 class MessageEvent:
     """
@@ -910,13 +937,29 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
     
-    # Internal flag — set for synthetic events (e.g. background process
-    # completion notifications) that must bypass user authorization checks.
+    # Legacy internal marker.  Bypass decisions must use
+    # ``is_trusted_internal()``, not this mutable boolean alone.
     internal: bool = False
+    internal_event_kind: Optional[str] = None
+    internal_event_source: Optional[str] = None
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
-    
+
+    def __post_init__(self) -> None:
+        self.internal_event_kind = normalize_internal_event_kind(self.internal_event_kind)
+        if self.internal_event_source is not None:
+            self.internal_event_source = str(self.internal_event_source).strip()
+
+    def is_trusted_internal(self) -> bool:
+        """Return True only for typed, trusted, system-created internal events."""
+        if not self.internal:
+            return False
+        if normalize_internal_event_kind(self.internal_event_kind) is None:
+            return False
+        source = str(self.internal_event_source or "").strip()
+        return source in _TRUSTED_INTERNAL_EVENT_SOURCES
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
         return self.text.startswith("/")

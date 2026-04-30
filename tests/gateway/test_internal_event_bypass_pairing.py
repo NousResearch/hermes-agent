@@ -8,15 +8,44 @@ pairing code to the chat.
 """
 
 import asyncio
+import os
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent
-from gateway.run import GatewayRunner
+from gateway.platforms.base import InternalEventKind, MessageEvent
 from gateway.session import SessionSource
+
+
+_GATEWAY_ENV_OVERRIDE_KEYS = (
+    "API_SERVER_ENABLED",
+    "API_SERVER_KEY",
+    "API_SERVER_CORS_ORIGINS",
+    "API_SERVER_PORT",
+    "API_SERVER_HOST",
+    "API_SERVER_MODEL_NAME",
+    "WEBHOOK_ENABLED",
+    "WEBHOOK_PORT",
+    "WEBHOOK_SECRET",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_gateway_env_overrides():
+    """Keep gateway.run imports from leaking real config/env into later tests."""
+    for key in _GATEWAY_ENV_OVERRIDE_KEYS:
+        os.environ.pop(key, None)
+    yield
+    for key in _GATEWAY_ENV_OVERRIDE_KEYS:
+        os.environ.pop(key, None)
+
+
+def _gateway_runner_cls():
+    from gateway.run import GatewayRunner
+
+    return GatewayRunner
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +68,7 @@ class _FakeRegistry:
         return session_id in self._completion_consumed
 
 
-def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:
+def _build_runner(monkeypatch, tmp_path):
     """Create a GatewayRunner with notifications set to 'all'."""
     (tmp_path / "config.yaml").write_text(
         "display:\n  background_process_notifications: all\n",
@@ -50,7 +79,7 @@ def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
-    runner = GatewayRunner(GatewayConfig())
+    runner = _gateway_runner_cls()(GatewayConfig())
     adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
     runner.adapters[Platform.DISCORD] = adapter
     return runner
@@ -74,7 +103,7 @@ def _watcher_dict_with_notify():
 
 @pytest.mark.asyncio
 async def test_notify_on_complete_sets_internal_flag(monkeypatch, tmp_path):
-    """Synthetic completion event must have internal=True."""
+    """Synthetic completion event must carry trusted typed internal metadata."""
     import tools.process_registry as pr_module
 
     sessions = [
@@ -97,6 +126,9 @@ async def test_notify_on_complete_sets_internal_flag(monkeypatch, tmp_path):
     event = adapter.handle_message.await_args.args[0]
     assert isinstance(event, MessageEvent)
     assert event.internal is True, "Synthetic completion event must be marked internal"
+    assert event.internal_event_kind == InternalEventKind.BACKGROUND_COMPLETION.value
+    assert event.internal_event_source == "gateway"
+    assert event.is_trusted_internal()
 
 
 @pytest.mark.asyncio
@@ -107,7 +139,7 @@ async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
-    runner = GatewayRunner(GatewayConfig())
+    runner = _gateway_runner_cls()(GatewayConfig())
 
     # Create an internal event with no user_id (simulates the bug scenario)
     source = SessionSource(
@@ -119,24 +151,24 @@ async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
         text="[SYSTEM: Background process completed]",
         source=source,
         internal=True,
+        internal_event_kind=InternalEventKind.BACKGROUND_COMPLETION,
+        internal_event_source="gateway",
     )
-
-    # Track if _is_user_authorized is called
     auth_called = False
-    original_auth = GatewayRunner._is_user_authorized
+    original_auth = _gateway_runner_cls()._is_user_authorized
 
     def tracking_auth(self, src):
         nonlocal auth_called
         auth_called = True
         return original_auth(self, src)
 
-    monkeypatch.setattr(GatewayRunner, "_is_user_authorized", tracking_auth)
+    monkeypatch.setattr(_gateway_runner_cls(), "_is_user_authorized", tracking_auth)
 
     # Stop execution before the agent runner so the test doesn't block in
     # run_in_executor.  Auth check happens before _handle_message_with_agent.
     async def _raise(*_a, **_kw):
         raise RuntimeError("sentinel — stop here")
-    monkeypatch.setattr(GatewayRunner, "_handle_message_with_agent", _raise)
+    monkeypatch.setattr(_gateway_runner_cls(), "_handle_message_with_agent", _raise)
 
     try:
         await runner._handle_message(event)
@@ -156,7 +188,7 @@ async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
-    runner = GatewayRunner(GatewayConfig())
+    runner = _gateway_runner_cls()(GatewayConfig())
     # Add adapter so pairing would have somewhere to send
     adapter = SimpleNamespace(send=AsyncMock())
     runner.adapters[Platform.DISCORD] = adapter
@@ -170,9 +202,9 @@ async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
         text="[SYSTEM: Background process completed]",
         source=source,
         internal=True,
+        internal_event_kind=InternalEventKind.BACKGROUND_COMPLETION,
+        internal_event_source="gateway",
     )
-
-    # Track pairing code generation
     generate_called = False
     original_generate = runner.pairing_store.generate_code
 
@@ -187,7 +219,7 @@ async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
     # run_in_executor.  Pairing check happens before _handle_message_with_agent.
     async def _raise(*_a, **_kw):
         raise RuntimeError("sentinel — stop here")
-    monkeypatch.setattr(GatewayRunner, "_handle_message_with_agent", _raise)
+    monkeypatch.setattr(_gateway_runner_cls(), "_handle_message_with_agent", _raise)
 
     try:
         await runner._handle_message(event)
@@ -197,6 +229,38 @@ async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
     assert not generate_called, (
         "Pairing code should NOT be generated for internal events"
     )
+
+
+@pytest.mark.asyncio
+async def test_bare_internal_flag_without_trusted_metadata_is_not_internal(monkeypatch, tmp_path):
+    """A mutable internal=True flag alone must not grant gateway-internal trust."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+
+    runner = _gateway_runner_cls()(GatewayConfig())
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="123",
+        chat_type="dm",
+        user_id=None,
+    )
+    event = MessageEvent(
+        text="[IMPORTANT: Background process proc_1 completed (exit code 0).]",
+        source=source,
+        internal=True,
+    )
+
+    async def _should_not_reach_agent(*_a, **_kw):
+        raise AssertionError("bare internal=True reached agent path")
+
+    monkeypatch.setattr(_gateway_runner_cls(), "_handle_message_with_agent", _should_not_reach_agent)
+
+    result = await runner._handle_message(event)
+
+    assert result is None
+    assert not event.is_trusted_internal()
 
 
 @pytest.mark.asyncio
@@ -228,6 +292,8 @@ async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path)
     event = adapter.handle_message.await_args.args[0]
     assert event.source.user_id == "user-42"
     assert event.source.user_name == "alice"
+    assert event.internal_event_kind == InternalEventKind.BACKGROUND_COMPLETION.value
+    assert event.is_trusted_internal()
 
 
 @pytest.mark.asyncio
@@ -246,7 +312,7 @@ async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monk
         pass
     monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
 
-    runner = GatewayRunner(GatewayConfig())
+    runner = _gateway_runner_cls()(GatewayConfig())
     adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
     runner.adapters[Platform.TELEGRAM] = adapter
     runner.session_store._entries["agent:main:telegram:group:-100:42"] = SimpleNamespace(
@@ -275,6 +341,8 @@ async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monk
     assert adapter.handle_message.await_count == 1
     event = adapter.handle_message.await_args.args[0]
     assert event.internal is True
+    assert event.internal_event_kind == InternalEventKind.BACKGROUND_COMPLETION.value
+    assert event.is_trusted_internal()
     assert event.source.platform == Platform.TELEGRAM
     assert event.source.chat_id == "-100"
     assert event.source.chat_type == "group"
@@ -291,7 +359,7 @@ async def test_none_user_id_skips_pairing(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
-    runner = GatewayRunner(GatewayConfig())
+    runner = _gateway_runner_cls()(GatewayConfig())
     adapter = SimpleNamespace(send=AsyncMock())
     runner.adapters[Platform.TELEGRAM] = adapter
 
@@ -322,7 +390,7 @@ async def test_none_user_id_does_not_generate_pairing_code(monkeypatch, tmp_path
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
-    runner = GatewayRunner(GatewayConfig())
+    runner = _gateway_runner_cls()(GatewayConfig())
     adapter = SimpleNamespace(send=AsyncMock())
     runner.adapters[Platform.DISCORD] = adapter
 
@@ -375,7 +443,7 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
     monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
 
-    runner = GatewayRunner(GatewayConfig())
+    runner = _gateway_runner_cls()(GatewayConfig())
     adapter = SimpleNamespace(send=AsyncMock())
     runner.adapters[Platform.DISCORD] = adapter
 

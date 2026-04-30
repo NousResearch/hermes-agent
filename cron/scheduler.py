@@ -1327,7 +1327,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                mark_job_run(
+                    job["id"],
+                    success,
+                    error,
+                    delivery_error=delivery_error,
+                    preserve_next_run_at=job.get("manual_trigger_original_next_run_at"),
+                )
                 return True
 
             except Exception as e:

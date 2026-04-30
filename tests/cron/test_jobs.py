@@ -19,6 +19,7 @@ from cron.jobs import (
     pause_job,
     resume_job,
     remove_job,
+    trigger_job,
     mark_job_run,
     advance_next_run,
     get_due_jobs,
@@ -300,6 +301,26 @@ class TestPauseResumeJob:
         assert resumed["paused_reason"] is None
 
 
+class TestTriggerJob:
+    def test_recurring_manual_trigger_preserves_original_future_cadence(self, tmp_cron_dir):
+        job = create_job(prompt="Recurring", schedule="every 1h")
+        original_next_run_at = get_job(job["id"])["next_run_at"]
+
+        triggered = trigger_job(job["id"])
+
+        assert triggered is not None
+        assert triggered["next_run_at"] != original_next_run_at
+        assert triggered["manual_trigger_original_next_run_at"] == original_next_run_at
+
+    def test_oneshot_manual_trigger_does_not_set_recurring_cadence_metadata(self, tmp_cron_dir):
+        job = create_job(prompt="Run once", schedule="30m")
+
+        triggered = trigger_job(job["id"])
+
+        assert triggered is not None
+        assert triggered.get("manual_trigger_original_next_run_at") is None
+
+
 class TestMarkJobRun:
     def test_increments_completed(self, tmp_cron_dir):
         job = create_job(prompt="Test", schedule="every 1h")
@@ -313,6 +334,21 @@ class TestMarkJobRun:
         mark_job_run(job["id"], success=True)
         # Job should be removed after hitting repeat limit
         assert get_job(job["id"]) is None
+
+    def test_preserve_next_run_at_keeps_recurring_manual_run_cadence(self, tmp_cron_dir):
+        job = create_job(prompt="Recurring", schedule="every 1h")
+        original_next_run_at = get_job(job["id"])["next_run_at"]
+
+        trigger_job(job["id"])
+        mark_job_run(
+            job["id"],
+            success=True,
+            preserve_next_run_at=original_next_run_at,
+        )
+
+        updated = get_job(job["id"])
+        assert updated["next_run_at"] == original_next_run_at
+        assert updated.get("manual_trigger_original_next_run_at") is None
 
     def test_repeat_negative_one_is_infinite(self, tmp_cron_dir):
         # LLMs often pass repeat=-1 to mean "infinite/forever".

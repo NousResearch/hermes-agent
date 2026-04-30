@@ -648,20 +648,36 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Schedule a job to run on the next scheduler tick."""
+    """Schedule a job to run on the next scheduler tick.
+
+    For recurring jobs, a manual trigger is an *extra* run for testing/debugging
+    and must not permanently shift the existing cadence. Preserve the current
+    future ``next_run_at`` in sidecar metadata so ``tick()`` / ``mark_job_run()``
+    can execute once immediately while restoring the original schedule.
+    """
     job = get_job(job_id)
     if not job:
         return None
-    return update_job(
-        job_id,
-        {
-            "enabled": True,
-            "state": "scheduled",
-            "paused_at": None,
-            "paused_reason": None,
-            "next_run_at": _hermes_now().isoformat(),
-        },
-    )
+
+    now = _hermes_now().isoformat()
+    updates: Dict[str, Any] = {
+        "enabled": True,
+        "state": "scheduled",
+        "paused_at": None,
+        "paused_reason": None,
+        "next_run_at": now,
+    }
+
+    kind = job.get("schedule", {}).get("kind")
+    original_next_run_at = job.get("next_run_at")
+    if kind in ("cron", "interval") and original_next_run_at:
+        try:
+            if _ensure_aware(datetime.fromisoformat(original_next_run_at)) > _hermes_now():
+                updates["manual_trigger_original_next_run_at"] = original_next_run_at
+        except Exception:
+            pass
+
+    return update_job(job_id, updates)
 
 
 def remove_job(job_id: str) -> bool:
@@ -676,7 +692,8 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 preserve_next_run_at: Optional[str] = None):
     """
     Mark a job as having been run.
     
@@ -710,8 +727,15 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         save_jobs(jobs)
                         return
                 
-                # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+                # Manual runs of recurring jobs can preserve the pre-existing
+                # cadence instead of re-anchoring the schedule to "now".
+                if preserve_next_run_at:
+                    job["next_run_at"] = preserve_next_run_at
+                else:
+                    job["next_run_at"] = compute_next_run(job["schedule"], now)
+
+                # Clear transient manual-trigger metadata once consumed.
+                job.pop("manual_trigger_original_next_run_at", None)
 
                 # If no next run, decide whether this is terminal completion
                 # (one-shot) or a transient failure (recurring schedule couldn't

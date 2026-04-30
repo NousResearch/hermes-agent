@@ -1844,6 +1844,33 @@ class TestParallelTick:
         assert seen["tg-job"] == {"platform": "telegram", "chat_id": "111"}
         assert seen["dc-job"] == {"platform": "discord", "chat_id": "222"}
 
+    def test_manual_triggered_recurring_job_runs_once_without_shifting_cadence(self, tmp_path):
+        from cron.jobs import create_job, get_job, trigger_job
+        from cron.scheduler import tick
+
+        cron_dir = tmp_path / "cron"
+        cron_dir.mkdir(exist_ok=True)
+
+        with patch("cron.jobs.CRON_DIR", cron_dir), \
+             patch("cron.jobs.JOBS_FILE", cron_dir / "jobs.json"), \
+             patch("cron.jobs.OUTPUT_DIR", cron_dir / "output"), \
+             patch("cron.scheduler._LOCK_DIR", cron_dir), \
+             patch("cron.scheduler._LOCK_FILE", cron_dir / ".tick.lock"), \
+             patch("cron.scheduler.run_job", return_value=(True, "doc", "final", None)) as mock_run_job, \
+             patch("cron.scheduler.save_job_output", return_value=cron_dir / "output" / "x.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None):
+            job = create_job(prompt="Recurring", schedule="every 1h")
+            original_next_run_at = get_job(job["id"])["next_run_at"]
+
+            trigger_job(job["id"])
+            executed = tick(verbose=False)
+
+            assert executed == 1
+            mock_run_job.assert_called_once()
+            updated = get_job(job["id"])
+            assert updated["next_run_at"] == original_next_run_at
+            assert updated.get("manual_trigger_original_next_run_at") is None
+
     def test_max_parallel_env_var(self, monkeypatch):
         """HERMES_CRON_MAX_PARALLEL=1 should restore serial behaviour."""
         monkeypatch.setenv("HERMES_CRON_MAX_PARALLEL", "1")

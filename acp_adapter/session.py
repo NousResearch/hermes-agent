@@ -145,6 +145,9 @@ class SessionState:
     model: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
+    is_running: bool = False
+    queued_prompts: List[str] = field(default_factory=list)
+    runtime_lock: Any = field(default_factory=Lock)
 
 
 class SessionManager:

@@ -263,6 +263,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
         #       replies still land in the right visual thread without
         #       re-coupling sessions to threads.
         self._last_inbound_thread: Dict[str, str] = {}
+        # Inbound message count per (chat_id, thread_name). Used to
+        # distinguish "main flow" messages (Chat auto-creates a fresh
+        # thread per top-level message in DMs — first-time threads share
+        # session by chat_id) from "side threads" (user explicitly clicked
+        # 'Reply in thread' on an existing thread — second+ messages in
+        # the same thread get an isolated session by chat_id+thread_id).
+        # Without this, either DMs lose context across messages or threads
+        # leak context into each other. See _build_message_event for the
+        # session_thread_id heuristic.
+        self._thread_msg_counts: Dict[str, Dict[str, int]] = {}
         # In-flight typing-card creates per chat_id. send_typing() reserves
         # an Event here BEFORE starting the API call so concurrent calls
         # from base.py's _keep_typing wait instead of duplicating cards.
@@ -1087,14 +1097,32 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if thread_name and space_name:
             self._last_inbound_thread[space_name] = thread_name
 
-        # In DMs, do NOT propagate thread_id to the session source.
-        # Google Chat DMs spawn a fresh thread per top-level user
-        # message, but that's a UI artifact — the conversation is
-        # logically one stream. Including thread_id in the session key
-        # would make every new top-level message a fresh session with no
-        # memory of prior turns. For groups we keep thread_id (different
-        # threads ARE different conversations there).
-        session_thread_id = None if chat_type == "dm" else thread_name
+        # Increment the inbound count for this thread. The PRE-increment
+        # value (==0 for the very first message in a thread) is what
+        # tells us "main flow" vs "side thread".
+        prev_thread_count = 0
+        if thread_name and space_name:
+            chat_counts = self._thread_msg_counts.setdefault(space_name, {})
+            prev_thread_count = chat_counts.get(thread_name, 0)
+            chat_counts[thread_name] = prev_thread_count + 1
+
+        # Session-thread routing for DMs:
+        # - prev_count == 0  → first message in this thread. Google Chat
+        #   creates a fresh thread per top-level message in the DM input
+        #   box; treat as "main flow" so all top-level messages share
+        #   one DM session and the user keeps continuity.
+        # - prev_count >= 1  → user explicitly engaged a thread that
+        #   already had messages (clicked "Reply in thread" on a prior
+        #   message). Isolate this thread to its own session so it
+        #   doesn't leak context with the main flow.
+        #
+        # For groups, threads ARE meaningful conversational containers
+        # (Telegram forum / Discord thread parity); always isolate.
+        if chat_type == "dm":
+            is_side_thread = prev_thread_count > 0
+            session_thread_id = thread_name if is_side_thread else None
+        else:
+            session_thread_id = thread_name
 
         source = self.build_source(
             chat_id=space_name,

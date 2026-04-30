@@ -541,32 +541,70 @@ class TestOnPubsubMessage:
 
 class TestBuildMessageEvent:
     @pytest.mark.asyncio
-    async def test_dm_drops_thread_id_from_source_for_session_continuity(self, adapter):
-        """Google Chat DMs spawn a new thread per top-level user message.
-        We deliberately DROP thread_id from the source for DMs so the
-        session_key (which includes thread_id when present) stays stable
-        across top-level messages and the agent retains conversation
-        memory. The thread is still cached for outbound reply placement."""
+    async def test_dm_first_message_in_thread_is_main_flow(self, adapter):
+        """Google Chat DMs spawn a fresh thread per top-level user
+        message in the input box. The FIRST message in any new thread
+        is treated as 'main flow' — thread_id is NOT propagated to the
+        source so all top-level messages share one DM session and the
+        agent retains continuity. The thread is still cached for
+        outbound reply placement."""
         env = _make_chat_envelope(text="hola", thread_name="spaces/S/threads/T1")
         msg = env["chat"]["messagePayload"]["message"]
         event = await adapter._build_message_event(msg, env)
         assert event is not None
         assert event.text == "hola"
-        assert event.message_type == MessageType.TEXT
         assert event.source.chat_id == "spaces/S"
-        # DM = thread_id NOT propagated to the source.
+        # First message in this thread → main-flow → no thread_id on source.
         assert event.source.thread_id is None
         assert event.source.user_id_alt == "u@example.com"
         # But the thread IS cached so outbound replies stay connected.
         assert adapter._last_inbound_thread["spaces/S"] == "spaces/S/threads/T1"
+        # Counter populated for next-time decision.
+        assert adapter._thread_msg_counts["spaces/S"]["spaces/S/threads/T1"] == 1
+
+    @pytest.mark.asyncio
+    async def test_dm_second_message_in_same_thread_is_side_thread(self, adapter):
+        """If we've SEEN a thread before (count > 0), the user explicitly
+        re-engaged it (clicked 'Reply in thread' on a prior message).
+        Isolate to its own session so old top-level chatter doesn't
+        leak in.
+
+        Without this isolation the bug Ramón reported reappears: he
+        opens a new thread, says 'Hola!', asks 'dime los mensajes
+        anteriores' and the bot answers with messages from OTHER
+        threads — because all DM threads were sharing one session."""
+        env1 = _make_chat_envelope(text="primera vez", thread_name="spaces/S/threads/T1")
+        msg1 = env1["chat"]["messagePayload"]["message"]
+        event1 = await adapter._build_message_event(msg1, env1)
+        assert event1.source.thread_id is None  # first time = main flow
+
+        env2 = _make_chat_envelope(text="segunda vez", thread_name="spaces/S/threads/T1")
+        msg2 = env2["chat"]["messagePayload"]["message"]
+        event2 = await adapter._build_message_event(msg2, env2)
+        # Second time same thread = user re-engaged → isolated session.
+        assert event2.source.thread_id == "spaces/S/threads/T1"
+
+    @pytest.mark.asyncio
+    async def test_dm_different_top_level_threads_share_session(self, adapter):
+        """Three separate top-level user messages → three different
+        thread.names from Chat. None should appear on source.thread_id
+        so they all share one DM session."""
+        for tid in ("T_a", "T_b", "T_c"):
+            env = _make_chat_envelope(text=f"msg in {tid}",
+                                      thread_name=f"spaces/S/threads/{tid}")
+            msg = env["chat"]["messagePayload"]["message"]
+            event = await adapter._build_message_event(msg, env)
+            assert event.source.thread_id is None, (
+                f"thread {tid} (count=1) should be main-flow, got isolated"
+            )
 
     @pytest.mark.asyncio
     async def test_group_keeps_thread_id_on_source(self, adapter):
         """In group spaces, threads are real conversational containers —
-        keep thread_id on the source so different threads get isolated
-        sessions (Telegram forum / Discord thread parity)."""
+        keep thread_id on the source from the FIRST message so different
+        threads get isolated sessions (Telegram forum / Discord thread
+        parity)."""
         env = _make_chat_envelope(text="ping", thread_name="spaces/G/threads/T1")
-        # Force chat_type=group by making space type a regular SPACE.
         env["chat"]["messagePayload"]["space"]["spaceType"] = "SPACE"
         env["chat"]["messagePayload"]["message"]["space"]["spaceType"] = "SPACE"
         msg = env["chat"]["messagePayload"]["message"]

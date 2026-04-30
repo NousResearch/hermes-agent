@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 from gateway import status
@@ -245,6 +246,27 @@ class TestGatewayPidState:
 
 
 class TestGatewayRuntimeStatus:
+    def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        calls = []
+
+        def _fake_atomic_json_write(path, payload, **kwargs):
+            calls.append((Path(path), payload, kwargs))
+
+        monkeypatch.setattr(status, "atomic_json_write", _fake_atomic_json_write)
+
+        payload = {"gateway_state": "running"}
+        target = tmp_path / "gateway_state.json"
+        status._write_json_file(target, payload)
+
+        assert calls == [
+            (
+                target,
+                payload,
+                {"indent": None, "separators": (",", ":")},
+            )
+        ]
+
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):
         """Regression: setdefault() preserved stale PID from previous process (#1631)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -349,6 +371,35 @@ class TestTerminatePid:
 
 
 class TestScopedLocks:
+    def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
+        lock_path = tmp_path / "gateway.lock"
+        handle = open(lock_path, "a+", encoding="utf-8")
+        fd = handle.fileno()
+        calls = []
+
+        def fake_locking(fd, mode, size):
+            calls.append((fd, mode, size, handle.tell()))
+
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        monkeypatch.setattr(
+            status,
+            "msvcrt",
+            SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2, locking=fake_locking),
+            raising=False,
+        )
+
+        try:
+            assert status._try_acquire_file_lock(handle) is True
+            status._release_file_lock(handle)
+        finally:
+            handle.close()
+
+        assert calls == [
+            (fd, 1, 1, status._WINDOWS_LOCK_OFFSET),
+            (fd, 2, 1, status._WINDOWS_LOCK_OFFSET),
+        ]
+        assert lock_path.read_text(encoding="utf-8") == "\n"
+
     def test_acquire_scoped_lock_rejects_live_other_process(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
         lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"

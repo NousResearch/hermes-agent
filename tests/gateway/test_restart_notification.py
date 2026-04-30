@@ -113,6 +113,36 @@ async def test_restart_command_preserves_thread_id(tmp_path, monkeypatch):
     assert data["thread_id"] == "topic_7"
 
 
+@pytest.mark.asyncio
+async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    calls = []
+
+    def _fake_atomic_json_write(path, payload, **kwargs):
+        calls.append((Path(path).name, payload, kwargs))
+
+    monkeypatch.setattr(gateway_run, "atomic_json_write", _fake_atomic_json_write)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+
+    names = [name for name, _payload, _kwargs in calls]
+    assert names == [".restart_notify.json", ".restart_last_processed.json"]
+    assert calls[0][1]["chat_id"] == "42"
+    assert calls[1][1]["platform"] == "telegram"
+
+
 # ── _send_restart_notification ───────────────────────────────────────────
 
 

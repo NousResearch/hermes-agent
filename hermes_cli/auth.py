@@ -43,7 +43,7 @@ import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import atomic_replace
+from utils import atomic_replace, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -2480,8 +2480,8 @@ def _resolve_verify(
     tls_state = tls_state if isinstance(tls_state, dict) else {}
 
     effective_insecure = (
-        bool(insecure) if insecure is not None
-        else bool(tls_state.get("insecure", False))
+        is_truthy_value(insecure, default=False) if insecure is not None
+        else is_truthy_value(tls_state.get("insecure", False), default=False)
     )
     effective_ca = (
         ca_bundle

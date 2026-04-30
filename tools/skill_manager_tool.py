@@ -42,6 +42,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
 from typing import Dict, Any, Optional, Tuple
 
+from tools.skill_shared_state import mark_skills_changed, shared_skill_write_lock
 from utils import atomic_replace
 from hermes_cli.config import cfg_get
 
@@ -705,42 +706,44 @@ def skill_manage(
 
     Returns JSON string with results.
     """
-    if action == "create":
-        if not content:
-            return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
-        result = _create_skill(name, content, category)
+    with shared_skill_write_lock():
+        if action == "create":
+            if not content:
+                return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
+            result = _create_skill(name, content, category)
 
-    elif action == "edit":
-        if not content:
-            return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
-        result = _edit_skill(name, content)
+        elif action == "edit":
+            if not content:
+                return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
+            result = _edit_skill(name, content)
 
-    elif action == "patch":
-        if not old_string:
-            return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
-        if new_string is None:
-            return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
-        result = _patch_skill(name, old_string, new_string, file_path, replace_all)
+        elif action == "patch":
+            if not old_string:
+                return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
+            if new_string is None:
+                return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
+            result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
-    elif action == "delete":
-        result = _delete_skill(name)
+        elif action == "delete":
+            result = _delete_skill(name)
 
-    elif action == "write_file":
-        if not file_path:
-            return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
-        if file_content is None:
-            return tool_error("file_content is required for 'write_file'.", success=False)
-        result = _write_file(name, file_path, file_content)
+        elif action == "write_file":
+            if not file_path:
+                return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
+            if file_content is None:
+                return tool_error("file_content is required for 'write_file'.", success=False)
+            result = _write_file(name, file_path, file_content)
 
-    elif action == "remove_file":
-        if not file_path:
-            return tool_error("file_path is required for 'remove_file'.", success=False)
-        result = _remove_file(name, file_path)
+        elif action == "remove_file":
+            if not file_path:
+                return tool_error("file_path is required for 'remove_file'.", success=False)
+            result = _remove_file(name, file_path)
 
-    else:
-        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+        else:
+            result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
 
     if result.get("success"):
+        mark_skills_changed()
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)

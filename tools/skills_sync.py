@@ -28,6 +28,7 @@ import shutil
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Tuple
+from tools.skill_shared_state import mark_skills_changed, shared_skill_write_lock
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
@@ -174,7 +175,7 @@ def _dir_hash(directory: Path) -> str:
     return hasher.hexdigest()
 
 
-def sync_skills(quiet: bool = False) -> dict:
+def _sync_skills_unlocked(quiet: bool = False) -> dict:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
 
@@ -318,7 +319,15 @@ def sync_skills(quiet: bool = False) -> dict:
     }
 
 
-def reset_bundled_skill(name: str, restore: bool = False) -> dict:
+def sync_skills(quiet: bool = False) -> dict:
+    """Sync bundled skills while serializing writes across Hermes processes."""
+    with shared_skill_write_lock():
+        result = _sync_skills_unlocked(quiet=quiet)
+        mark_skills_changed()
+        return result
+
+
+def _reset_bundled_skill_unlocked(name: str, restore: bool = False) -> dict:
     """
     Reset a bundled skill's manifest tracking so future syncs work normally.
 
@@ -397,7 +406,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
                 }
 
     # Step 3: run sync to re-baseline (or re-copy if we deleted)
-    synced = sync_skills(quiet=True)
+    synced = _sync_skills_unlocked(quiet=True)
 
     if restore and deleted_user_copy:
         action = "restored"
@@ -414,6 +423,15 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
         )
 
     return {"ok": True, "action": action, "message": message, "synced": synced}
+
+
+def reset_bundled_skill(name: str, restore: bool = False) -> dict:
+    """Reset bundled-skill tracking while serializing skill tree mutations."""
+    with shared_skill_write_lock():
+        result = _reset_bundled_skill_unlocked(name, restore=restore)
+        if result.get("ok"):
+            mark_skills_changed()
+        return result
 
 
 if __name__ == "__main__":

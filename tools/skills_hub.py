@@ -35,6 +35,7 @@ import yaml
 from tools.skills_guard import (
     ScanResult, content_hash, TRUSTED_REPOS,
 )
+from tools.skill_shared_state import mark_skills_changed, shared_skill_write_lock
 
 logger = logging.getLogger(__name__)
 
@@ -2730,71 +2731,75 @@ def install_from_quarantine(
     if not quarantine_resolved.is_relative_to(quarantine_root):
         raise ValueError(f"Unsafe quarantine path: {quarantine_path}")
 
-    if safe_category:
-        install_dir = SKILLS_DIR / safe_category / safe_skill_name
-    else:
-        install_dir = SKILLS_DIR / safe_skill_name
+    with shared_skill_write_lock():
+        if safe_category:
+            install_dir = SKILLS_DIR / safe_category / safe_skill_name
+        else:
+            install_dir = SKILLS_DIR / safe_skill_name
 
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
+        if install_dir.exists():
+            shutil.rmtree(install_dir)
 
-    # Warn (but don't block) if SKILL.md is very large
-    skill_md = quarantine_path / "SKILL.md"
-    if skill_md.exists():
-        try:
-            skill_size = skill_md.stat().st_size
-            if skill_size > 100_000:
-                logger.warning(
-                    "Skill '%s' has a large SKILL.md (%s chars). "
-                    "Large skills consume significant context when loaded. "
-                    "Consider asking the author to split it into smaller files.",
-                    safe_skill_name,
-                    f"{skill_size:,}",
-                )
-        except OSError:
-            pass
+        # Warn (but don't block) if SKILL.md is very large
+        skill_md = quarantine_path / "SKILL.md"
+        if skill_md.exists():
+            try:
+                skill_size = skill_md.stat().st_size
+                if skill_size > 100_000:
+                    logger.warning(
+                        "Skill '%s' has a large SKILL.md (%s chars). "
+                        "Large skills consume significant context when loaded. "
+                        "Consider asking the author to split it into smaller files.",
+                        safe_skill_name,
+                        f"{skill_size:,}",
+                    )
+            except OSError:
+                pass
 
-    install_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(quarantine_path), str(install_dir))
+        install_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(quarantine_path), str(install_dir))
 
-    # Record in lock file
-    lock = HubLockFile()
-    lock.record_install(
-        name=safe_skill_name,
-        source=bundle.source,
-        identifier=bundle.identifier,
-        trust_level=bundle.trust_level,
-        scan_verdict=scan_result.verdict,
-        skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(SKILLS_DIR)),
-        files=list(bundle.files.keys()),
-        metadata=bundle.metadata,
-    )
+        # Record in lock file
+        lock = HubLockFile()
+        lock.record_install(
+            name=safe_skill_name,
+            source=bundle.source,
+            identifier=bundle.identifier,
+            trust_level=bundle.trust_level,
+            scan_verdict=scan_result.verdict,
+            skill_hash=content_hash(install_dir),
+            install_path=str(install_dir.relative_to(SKILLS_DIR)),
+            files=list(bundle.files.keys()),
+            metadata=bundle.metadata,
+        )
 
-    append_audit_log(
-        "INSTALL", safe_skill_name, bundle.source,
-        bundle.trust_level, scan_result.verdict,
-        content_hash(install_dir),
-    )
+        append_audit_log(
+            "INSTALL", safe_skill_name, bundle.source,
+            bundle.trust_level, scan_result.verdict,
+            content_hash(install_dir),
+        )
+        mark_skills_changed()
 
-    return install_dir
+        return install_dir
 
 
 def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     """Remove a hub-installed skill. Refuses to remove builtins."""
-    lock = HubLockFile()
-    entry = lock.get_installed(skill_name)
-    if not entry:
-        return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
+    with shared_skill_write_lock():
+        lock = HubLockFile()
+        entry = lock.get_installed(skill_name)
+        if not entry:
+            return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
 
-    install_path = SKILLS_DIR / entry["install_path"]
-    if install_path.exists():
-        shutil.rmtree(install_path)
+        install_path = SKILLS_DIR / entry["install_path"]
+        if install_path.exists():
+            shutil.rmtree(install_path)
 
-    lock.record_uninstall(skill_name)
-    append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
+        lock.record_uninstall(skill_name)
+        append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
+        mark_skills_changed()
 
-    return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
+        return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
 
 
 def bundle_content_hash(bundle: SkillBundle) -> str:

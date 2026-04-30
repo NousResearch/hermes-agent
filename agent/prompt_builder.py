@@ -24,6 +24,7 @@ from agent.skill_utils import (
     parse_frontmatter,
     skill_matches_platform,
 )
+from tools.skill_shared_state import skills_epoch_value
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -746,6 +747,7 @@ def build_skills_system_prompt(
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
+        skills_epoch_value(),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,

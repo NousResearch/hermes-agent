@@ -53,6 +53,7 @@ AUTHOR_MAP = {
     "angelclaw@AngelMacBook.local": "angel12",
     "charles@cryptoassetrecovery.com": "charles-brooks",
     "heathley@Heathley-MacBook-Air.local": "heathley",
+    "vlad19@gmail.com": "dandaka",
     "adamrummer@gmail.com": "cyclingwithelephants",
     "nbot@liizfq.top": "liizfq",
     "274096618+hermes-agent-dhabibi@users.noreply.github.com": "dhabibi",

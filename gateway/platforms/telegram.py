@@ -1951,8 +1951,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
             
             with open(audio_path, "rb") as audio_file:
-                # .ogg files -> send as voice (round playable bubble)
-                if audio_path.endswith((".ogg", ".opus")):
+                ext = os.path.splitext(audio_path)[1].lower()
+                # .ogg / .opus files -> send as voice (round playable bubble)
+                if ext in (".ogg", ".opus"):
                     _voice_thread = self._metadata_thread_id(metadata)
                     msg = await self._bot.send_voice(
                         chat_id=int(chat_id),
@@ -1961,8 +1962,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=int(reply_to) if reply_to else None,
                         message_thread_id=self._message_thread_id_for_send(_voice_thread),
                     )
-                else:
-                    # .mp3 and others -> send as audio file
+                elif ext in (".mp3", ".m4a"):
+                    # Telegram's Bot API sendAudio only accepts MP3 / M4A.
                     _audio_thread = self._metadata_thread_id(metadata)
                     msg = await self._bot.send_audio(
                         chat_id=int(chat_id),
@@ -1970,6 +1971,16 @@ class TelegramAdapter(BasePlatformAdapter):
                         caption=caption[:1024] if caption else None,
                         reply_to_message_id=int(reply_to) if reply_to else None,
                         message_thread_id=self._message_thread_id_for_send(_audio_thread),
+                    )
+                else:
+                    # Formats Telegram can't play natively (.wav, .flac, ...)
+                    # — fall back to document delivery instead of raising.
+                    return await self.send_document(
+                        chat_id=chat_id,
+                        file_path=audio_path,
+                        caption=caption,
+                        reply_to=reply_to,
+                        metadata=metadata,
                     )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:

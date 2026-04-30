@@ -10,6 +10,7 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 from tools import approval as approval_mod
 from tools.approval import (
+    _ApprovalEntry,
     approve_session,
     enable_session_yolo,
     is_approved,
@@ -214,3 +215,30 @@ def test_clear_session_boundary_security_state_is_scoped():
     runner._clear_session_boundary_security_state("")
     assert is_approved(other_key, "recursive delete") is True
     assert other_key in runner._update_prompt_pending
+
+
+def test_clear_session_boundary_security_state_wakes_blocked_approvals():
+    """Boundary cleanup must cancel blocked approval waiters immediately."""
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._pending_approvals = {}
+    runner._update_prompt_pending = {}
+
+    source = _make_source()
+    session_key = build_session_key(source)
+    other_key = "agent:main:telegram:dm:other-chat"
+
+    target_entry = _ApprovalEntry({"command": "rm -rf /tmp/demo"})
+    other_entry = _ApprovalEntry({"command": "rm -rf /tmp/other"})
+    approval_mod._gateway_queues[session_key] = [target_entry]
+    approval_mod._gateway_queues[other_key] = [other_entry]
+
+    runner._clear_session_boundary_security_state(session_key)
+
+    assert target_entry.event.is_set()
+    assert target_entry.result == "deny"
+    assert other_entry.event.is_set() is False
+    assert other_entry.result is None
+    assert session_key not in approval_mod._gateway_queues
+    assert other_key in approval_mod._gateway_queues

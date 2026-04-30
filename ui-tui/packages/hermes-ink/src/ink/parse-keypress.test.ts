@@ -96,3 +96,41 @@ describe('mouse wheel modifier decoding', () => {
     expect(key).toMatchObject({ name: 'wheelup', meta: true })
   })
 })
+
+describe('fragmented SGR mouse recovery', () => {
+  it('re-synthesizes bracket-only SGR mouse tails as mouse events', () => {
+    const [[mouse]] = parseMultipleKeypresses(INITIAL_STATE, '[<35;159;11M')
+
+    expect(mouse).toMatchObject({ kind: 'mouse', button: 35, col: 159, row: 11, action: 'press' })
+  })
+
+  it('re-synthesizes angle-only SGR mouse tails as mouse events', () => {
+    const [[mouse]] = parseMultipleKeypresses(INITIAL_STATE, '<35;159;11M')
+
+    expect(mouse).toMatchObject({ kind: 'mouse', button: 35, col: 159, row: 11, action: 'press' })
+  })
+
+  it('re-synthesizes degraded SGR mouse bursts without leaking prompt text', () => {
+    const [events] = parseMultipleKeypresses(INITIAL_STATE, '5;142;11M<35;159;11M35;124;26M35;119;26Mtyped')
+
+    expect(events.slice(0, 4)).toEqual([
+      expect.objectContaining({ kind: 'mouse', button: 5, col: 142, row: 11 }),
+      expect.objectContaining({ kind: 'mouse', button: 35, col: 159, row: 11 }),
+      expect.objectContaining({ kind: 'mouse', button: 35, col: 124, row: 26 }),
+      expect.objectContaining({ kind: 'mouse', button: 35, col: 119, row: 26 })
+    ])
+    expect(events[4]).toMatchObject({ kind: 'key', sequence: 'typed' })
+  })
+
+  it('keeps isolated semicolon text that only resembles a prefixless mouse report', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, 'see 1;2;3M for details')
+
+    expect(key).toMatchObject({ kind: 'key', sequence: 'see 1;2;3M for details' })
+  })
+
+  it('does not match prefixless fragments inside longer digit runs', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '1234;56;78M9;10;11M')
+
+    expect(key).toMatchObject({ kind: 'key', sequence: '1234;56;78M9;10;11M' })
+  })
+})

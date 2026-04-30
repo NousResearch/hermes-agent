@@ -583,3 +583,332 @@ class TestInlineShellExpansion:
         # The command's intended stdout never made it through — only the
         # timeout marker (which echoes the command text) survives.
         assert "DYN_MARKER" not in msg.replace("sleep 5 && printf DYN_MARKER", "")
+
+
+class TestExtractSkillConfigVars:
+    """Tests for extract_skill_config_vars() — parsing metadata.hermes.config from frontmatter."""
+
+    def test_extracts_valid_config(self):
+        from agent.skill_utils import extract_skill_config_vars
+
+        frontmatter = {
+            "metadata": {
+                "hermes": {
+                    "config": [
+                        {
+                            "key": "llm-wiki.active_wiki",
+                            "description": "Currently active wiki name",
+                            "default": "default",
+                            "prompt": "Active wiki name",
+                        },
+                        {
+                            "key": "llm-wiki.wikis",
+                            "description": "Wiki registry",
+                            "default": '{"default":{"path":"default","description":"Default wiki"}}',
+                            "prompt": "Wiki registry",
+                        },
+                    ]
+                }
+            }
+        }
+        result = extract_skill_config_vars(frontmatter)
+        assert len(result) == 2
+        assert result[0]["key"] == "llm-wiki.active_wiki"
+        assert result[0]["description"] == "Currently active wiki name"
+        assert result[0]["default"] == "default"
+        assert result[0]["prompt"] == "Active wiki name"
+        assert result[1]["key"] == "llm-wiki.wikis"
+        assert result[1]["prompt"] == "Wiki registry"
+
+    def test_returns_empty_for_missing_metadata(self):
+        from agent.skill_utils import extract_skill_config_vars
+
+        assert extract_skill_config_vars({}) == []
+        assert extract_skill_config_vars({"metadata": {}}) == []
+        assert extract_skill_config_vars({"metadata": {"hermes": {}}}) == []
+        assert extract_skill_config_vars({"metadata": {"hermes": {"config": []}}}) == []
+
+    def test_skips_entries_missing_key(self):
+        from agent.skill_utils import extract_skill_config_vars
+
+        frontmatter = {
+            "metadata": {
+                "hermes": {
+                    "config": [
+                        {"description": "No key provided"},
+                        {"key": "valid.key", "description": "Has key"},
+                    ]
+                }
+            }
+        }
+        result = extract_skill_config_vars(frontmatter)
+        assert len(result) == 1
+        assert result[0]["key"] == "valid.key"
+
+    def test_skips_entries_missing_description(self):
+        from agent.skill_utils import extract_skill_config_vars
+
+        frontmatter = {
+            "metadata": {
+                "hermes": {
+                    "config": [
+                        {"key": "no.desc"},
+                        {"key": "has.desc", "description": "Has description"},
+                    ]
+                }
+            }
+        }
+        result = extract_skill_config_vars(frontmatter)
+        assert len(result) == 1
+        assert result[0]["key"] == "has.desc"
+
+    def test_deduplicates_by_key(self):
+        from agent.skill_utils import extract_skill_config_vars
+
+        frontmatter = {
+            "metadata": {
+                "hermes": {
+                    "config": [
+                        {"key": "dup.key", "description": "First"},
+                        {"key": "dup.key", "description": "Second"},
+                        {"key": "unique.key", "description": "Only one"},
+                    ]
+                }
+            }
+        }
+        result = extract_skill_config_vars(frontmatter)
+        assert len(result) == 2
+        assert result[0]["key"] == "dup.key"
+        assert result[0]["description"] == "First"
+        assert result[1]["key"] == "unique.key"
+
+    def test_prompt_falls_back_to_description(self):
+        from agent.skill_utils import extract_skill_config_vars
+
+        frontmatter = {
+            "metadata": {
+                "hermes": {
+                    "config": [
+                        {
+                            "key": "test.key",
+                            "description": "My description",
+                        },
+                    ]
+                }
+            }
+        }
+        result = extract_skill_config_vars(frontmatter)
+        assert result[0]["prompt"] == "My description"
+
+    def test_handles_dict_instead_of_list(self):
+        """Config can be a single dict instead of a list."""
+        from agent.skill_utils import extract_skill_config_vars
+
+        frontmatter = {
+            "metadata": {
+                "hermes": {
+                    "config": {
+                        "key": "single.key",
+                        "description": "Single entry",
+                        "default": "val",
+                    }
+                }
+            }
+        }
+        result = extract_skill_config_vars(frontmatter)
+        assert len(result) == 1
+        assert result[0]["key"] == "single.key"
+
+
+class TestResolveSkillConfigValues:
+    """Tests for resolve_skill_config_values() — reading values from config.yaml."""
+
+    def test_returns_defaults_when_no_config_file(self, tmp_path, monkeypatch):
+        from agent.skill_utils import resolve_skill_config_values
+
+        config_vars = [
+            {"key": "test.key", "description": "A test key", "default": "default_val"},
+        ]
+        monkeypatch.setattr(
+            "agent.skill_utils.get_config_path",
+            lambda: tmp_path / "nonexistent_config.yaml",
+        )
+        result = resolve_skill_config_values(config_vars)
+        assert result == {"test.key": "default_val"}
+
+    def test_reads_value_from_config_yaml(self, tmp_path, monkeypatch):
+        from agent.skill_utils import resolve_skill_config_values
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "skills:\n"
+            "  config:\n"
+            "    llm-wiki:\n"
+            "      active_wiki: research\n"
+        )
+        monkeypatch.setattr(
+            "agent.skill_utils.get_config_path",
+            lambda: config_file,
+        )
+        config_vars = [
+            {"key": "llm-wiki.active_wiki", "description": "Active wiki", "default": "default"},
+        ]
+        result = resolve_skill_config_values(config_vars)
+        assert result == {"llm-wiki.active_wiki": "research"}
+
+    def test_falls_back_to_default_when_key_missing(self, tmp_path, monkeypatch):
+        from agent.skill_utils import resolve_skill_config_values
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("other: value\n")
+        monkeypatch.setattr(
+            "agent.skill_utils.get_config_path",
+            lambda: config_file,
+        )
+        config_vars = [
+            {"key": "missing.key", "description": "Not in config", "default": "fallback"},
+        ]
+        result = resolve_skill_config_values(config_vars)
+        assert result == {"missing.key": "fallback"}
+
+    def test_expands_tilde_in_path_values(self, tmp_path, monkeypatch):
+        import os
+
+        from agent.skill_utils import resolve_skill_config_values
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "skills:\n  config:\n    wiki:\n      path: ~/my-wiki\n"
+        )
+        monkeypatch.setattr(
+            "agent.skill_utils.get_config_path",
+            lambda: config_file,
+        )
+        config_vars = [
+            {"key": "wiki.path", "description": "Wiki path", "default": "~/default-wiki"},
+        ]
+        result = resolve_skill_config_values(config_vars)
+        home = os.path.expanduser("~")
+        assert result == {"wiki.path": f"{home}/my-wiki"}
+
+    def test_empty_string_value_uses_default(self, tmp_path, monkeypatch):
+        from agent.skill_utils import resolve_skill_config_values
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "skills:\n  config:\n    test:\n      key: \"\"\n"
+        )
+        monkeypatch.setattr(
+            "agent.skill_utils.get_config_path",
+            lambda: config_file,
+        )
+        config_vars = [
+            {"key": "test.key", "description": "A key", "default": "fallback_val"},
+        ]
+        result = resolve_skill_config_values(config_vars)
+        assert result == {"test.key": "fallback_val"}
+
+    def test_multiple_vars_resolved_independently(self, tmp_path, monkeypatch):
+        from agent.skill_utils import resolve_skill_config_values
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "skills:\n"
+            "  config:\n"
+            "    llm-wiki:\n"
+            "      active_wiki: personal\n"
+        )
+        monkeypatch.setattr(
+            "agent.skill_utils.get_config_path",
+            lambda: config_file,
+        )
+        config_vars = [
+            {"key": "llm-wiki.active_wiki", "description": "Active", "default": "default"},
+            {
+                "key": "llm-wiki.wikis",
+                "description": "Registry",
+                "default": '{"default":{"path":"default"}}',
+            },
+        ]
+        result = resolve_skill_config_values(config_vars)
+        assert result["llm-wiki.active_wiki"] == "personal"
+        assert result["llm-wiki.wikis"] == '{"default":{"path":"default"}}'
+
+
+class TestInjectSkillConfig:
+    """Integration tests: config block appears in build_skill_invocation_message."""
+
+    def test_config_injected_in_skill_message(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "skills:\n"
+            "  config:\n"
+            "    wiki:\n"
+            "      path: /custom/wiki\n"
+        )
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "cfg-skill",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    config:\n"
+                    "      - key: wiki.path\n"
+                    "        description: Wiki directory path\n"
+                    "        default: ~/wiki\n"
+                    "        prompt: Wiki path\n"
+                ),
+            )
+            scan_skill_commands()
+            with patch(
+                "agent.skill_utils.get_config_path",
+                lambda: config_file,
+            ):
+                msg = build_skill_invocation_message("/cfg-skill")
+
+        assert msg is not None
+        assert "[Skill config" in msg
+        assert "wiki.path = /custom/wiki" in msg
+
+    def test_config_defaults_used_when_no_config_file(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "default-skill",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    config:\n"
+                    "      - key: test.key\n"
+                    "        description: A test key\n"
+                    "        default: my-default\n"
+                    "        prompt: Test key\n"
+                ),
+            )
+            scan_skill_commands()
+            with patch(
+                "agent.skill_utils.get_config_path",
+                lambda: tmp_path / "does_not_exist.yaml",
+            ):
+                msg = build_skill_invocation_message("/default-skill")
+
+        assert msg is not None
+        assert "[Skill config" in msg
+        assert "test.key = my-default" in msg
+
+    def test_no_config_block_when_skill_has_no_config(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "plain-skill")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/plain-skill")
+
+        assert msg is not None
+        assert "[Skill config" not in msg

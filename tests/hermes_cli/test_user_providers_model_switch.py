@@ -839,3 +839,96 @@ def test_get_named_custom_provider_transport_resolves_via_display_name(monkeypat
     result = rp._get_named_custom_provider("Codex Provider")
     assert result is not None
     assert result["api_mode"] == "codex_responses"
+
+
+# =============================================================================
+# Regression: TUI /model must pass providers: dict (not a list) to switch_model
+# =============================================================================
+
+def test_switch_model_resolves_ollama_local_from_providers_dict(monkeypatch):
+    """Regression for TUI /model 'Unknown provider' error on user-defined providers.
+
+    The TUI gateway previously converted the ``providers:`` dict to a list of
+    ``{"provider": k, **v}`` dicts before calling switch_model().  But
+    resolve_user_provider() expects a plain dict keyed by provider name
+    (user_config.get(name)), so the list format caused an immediate lookup miss
+    and the "Unknown provider 'ollama-local'" error.
+
+    This test simulates the TUI _apply_model_switch() path by calling switch_model()
+    directly with the correct dict format and asserts that ollama-local resolves.
+    """
+    user_providers = {
+        "ollama-local": {
+            "name": "Ollama Local",
+            "base_url": "http://192.168.2.162:11434/v1",
+            "api_mode": "chat_completions",
+            "model": "qwen3.6:27b",
+            "models": {
+                "qwen3.6:27b": {},
+                "gemma4:31b": {},
+            },
+        }
+    }
+
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {
+            "provider": "ollama-local",
+            "api_key": "no-key-required",
+            "base_url": "http://192.168.2.162:11434/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    result = switch_model(
+        raw_input="qwen3.6:27b",
+        current_provider="ollama-local",
+        current_model="qwen3.6:27b",
+        current_base_url="http://192.168.2.162:11434/v1",
+        explicit_provider="ollama-local",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    assert result.success is True, f"Expected success but got error: {result.error_message}"
+    assert "Unknown provider" not in (result.error_message or "")
+    assert result.target_provider == "ollama-local"
+
+
+def test_switch_model_list_format_user_providers_fails_to_resolve(monkeypatch):
+    """Narrower unit regression: the old TUI list format fails to resolve user providers.
+
+    The old TUI code passed user_providers as a list of ``{"provider": k, **v}``
+    dicts.  resolve_user_provider() calls ``user_config.get(name)`` which expects
+    a dict — iterating a list gives keys (strings), so the lookup returns None and
+    provider resolution fails.
+
+    This test documents that the old shape (list) is broken while the correct
+    shape (dict) succeeds, so a regression back to the list format is caught.
+    """
+    from hermes_cli.providers import resolve_user_provider
+
+    provider_entry = {
+        "name": "Ollama Local",
+        "base_url": "http://192.168.2.162:11434/v1",
+        "api_mode": "chat_completions",
+        "model": "qwen3.6:27b",
+        "models": {"qwen3.6:27b": {}, "gemma4:31b": {}},
+    }
+
+    # Bad shape (old TUI bug): list of {"provider": slug, ...} dicts
+    bad_shape = [{"provider": "ollama-local", **provider_entry}]
+    assert resolve_user_provider("ollama-local", bad_shape) is None, (
+        "list format must NOT resolve — it is the broken shape from the TUI bug"
+    )
+
+    # Correct shape: plain dict keyed by provider slug
+    good_shape = {"ollama-local": provider_entry}
+    result = resolve_user_provider("ollama-local", good_shape)
+    assert result is not None, "dict format must resolve correctly"
+    assert result.id == "ollama-local"
+    assert result.base_url == "http://192.168.2.162:11434/v1"

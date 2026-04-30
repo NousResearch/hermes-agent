@@ -890,15 +890,16 @@ def switch_model(
     # API /v1/models may not list cloud/aliased models even though the server supports them.
     if not validation.get("accepted"):
         override = False
-        if user_providers:
-            for up in user_providers:
-                if isinstance(up, dict) and up.get("provider") == target_provider:
-                    cfg_models = up.get("models", [])
-                    if new_model in cfg_models or any(
+        if user_providers and isinstance(user_providers, dict):
+            ep_cfg = user_providers.get(target_provider)
+            if isinstance(ep_cfg, dict):
+                cfg_models = ep_cfg.get("models", {})
+                if isinstance(cfg_models, dict):
+                    override = new_model in cfg_models
+                elif isinstance(cfg_models, list):
+                    override = new_model in cfg_models or any(
                         m.get("name") == new_model for m in cfg_models if isinstance(m, dict)
-                    ):
-                        override = True
-                        break
+                    )
         if override:
             validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
         else:

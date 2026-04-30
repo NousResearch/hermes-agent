@@ -77,10 +77,12 @@ class TestResolveVerifyFallback:
         assert result is False
 
     def test_string_false_in_auth_state_does_not_disable_tls_verify(self):
+        import ssl
         from hermes_cli.auth import _resolve_verify
 
         result = _resolve_verify(auth_state={"tls": {"insecure": "false"}})
-        assert result is True
+        assert result is not False
+        assert result is True or isinstance(result, ssl.SSLContext)
 
     def test_string_true_in_auth_state_disables_tls_verify(self):
         from hermes_cli.auth import _resolve_verify

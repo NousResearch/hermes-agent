@@ -121,3 +121,29 @@ def test_symlink_to_auth_json_blocked(fake_home, tmp_path):
     err = get_read_block_error(str(link))
     assert err is not None
     assert "credential store" in err
+
+
+def test_read_file_tool_blocks_relative_path_under_terminal_cwd(
+    fake_home, tmp_path, monkeypatch
+):
+    """Bypass guard: a relative path like ``"auth.json"`` resolved by
+    ``read_file_tool`` against ``TERMINAL_CWD == HERMES_HOME`` must still
+    be blocked, even though ``get_read_block_error``'s own ``resolve()``
+    is anchored at the (different) Python process cwd.
+    """
+    import json
+
+    import tools.file_tools as ft
+
+    _create(fake_home, "auth.json")
+    # Force the file_tools resolver to anchor relative paths at HERMES_HOME
+    # while the Python process cwd remains tmp_path (a different directory).
+    monkeypatch.setenv("TERMINAL_CWD", str(fake_home))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        ft, "_get_live_tracking_cwd", lambda task_id="default": None
+    )
+
+    out = json.loads(ft.read_file_tool("auth.json"))
+    assert "error" in out
+    assert "credential store" in out["error"]

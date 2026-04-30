@@ -319,6 +319,16 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
 )
 
 
+# Commands handled by external services/webhooks (e.g. FIXiq's Telegram
+# webhook handles /fixiq directly). The gateway must NOT reply with
+# "Unknown command" for these — that produces noise in shared chats.
+EXTERNALLY_HANDLED_COMMANDS: frozenset[str] = frozenset(
+    {
+        "fixiq",
+    }
+)
+
+
 def should_bypass_active_session(command_name: str | None) -> bool:
     """Return True for any resolvable slash command.
 

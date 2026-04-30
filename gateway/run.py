@@ -4564,6 +4564,16 @@ class GatewayRunner:
                     # built-ins (command may be an alias target set by the
                     # quick-command block above, so _cmd_def can be stale).
                     if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
+                        # Suppress the unknown-command notice for slash
+                        # commands handled by an external service (e.g.
+                        # FIXiq's Telegram webhook handles /fixiq itself).
+                        from hermes_cli.commands import EXTERNALLY_HANDLED_COMMANDS as _EXT_CMDS
+                        if command.lower() in _EXT_CMDS:
+                            logger.debug(
+                                "Slash command /%s is externally handled — silently ignoring",
+                                command,
+                            )
+                            return None
                         logger.warning(
                             "Unrecognized slash command /%s from %s — "
                             "replying with unknown-command notice",

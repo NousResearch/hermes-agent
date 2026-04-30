@@ -315,6 +315,41 @@ def test_restore_skill_moves_back(skills_home):
     assert get_record("temp-skill")["state"] == "active"
 
 
+def test_restore_skill_finds_nested_archive_subdir(skills_home):
+    """Skills archived under nested category subdirs (e.g.
+    .archive/<category>/<skill>/) — left behind by older archive layouts or
+    external imports — must still be restorable by name."""
+    from tools.skill_usage import restore_skill, get_record
+    skills_dir = skills_home / "skills"
+    nested = skills_dir / ".archive" / "openclaw-imports" / "nested-skill"
+    nested.mkdir(parents=True)
+    (nested / "SKILL.md").write_text(
+        "---\nname: nested-skill\ndescription: x\n---\n", encoding="utf-8",
+    )
+
+    ok, msg = restore_skill("nested-skill")
+    assert ok, msg
+    assert (skills_dir / "nested-skill" / "SKILL.md").exists()
+    assert not nested.exists()
+    assert get_record("nested-skill")["state"] == "active"
+
+
+def test_restore_skill_finds_nested_timestamped_prefix(skills_home):
+    """Prefix-match path (timestamped dupes) must also descend into nested
+    archive subdirs, not just .archive/ top-level."""
+    from tools.skill_usage import restore_skill
+    skills_dir = skills_home / "skills"
+    nested = skills_dir / ".archive" / "imports" / "dup-skill-20260101000000"
+    nested.mkdir(parents=True)
+    (nested / "SKILL.md").write_text(
+        "---\nname: dup-skill\ndescription: x\n---\n", encoding="utf-8",
+    )
+
+    ok, msg = restore_skill("dup-skill")
+    assert ok, msg
+    assert (skills_dir / "dup-skill" / "SKILL.md").exists()
+
+
 def test_archive_collision_gets_suffix(skills_home):
     from tools.skill_usage import archive_skill
     skills_dir = skills_home / "skills"

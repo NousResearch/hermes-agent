@@ -134,7 +134,7 @@ export default function PluginsPage() {
     <div className="flex flex-col gap-4">
       <PluginSlot name="plugins:top" />
 
-      <div className={cn("mx-auto flex w-full max-w-5xl flex-col gap-8")}>
+      <div className={cn("flex w-full flex-col gap-8")}>
 
 
         <div className="flex flex-wrap items-start justify-between gap-4">

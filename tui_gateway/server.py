@@ -2112,11 +2112,16 @@ def _(rid, params: dict) -> dict:
         return _db_unavailable_error(rid, code=5036)
     # Block deletion of any session currently bound to a live TUI session
     # in this process.  The picker hides the active session anyway, but a
-    # racing caller could still target it.
+    # racing caller could still target it.  Snapshot via ``list(...)``
+    # because ``_sessions`` is mutated by concurrent RPCs on the thread
+    # pool — iterating the dict directly can raise ``RuntimeError:
+    # dictionary changed size during iteration``.  If even the snapshot
+    # raises, fail closed (refuse the delete) rather than fail open.
     try:
-        active = {s.get("session_key") for s in _sessions.values() if s.get("session_key")}
-    except Exception:
-        active = set()
+        snapshot = list(_sessions.values())
+    except Exception as e:
+        return _err(rid, 5036, f"could not enumerate active sessions: {e}")
+    active = {s.get("session_key") for s in snapshot if s.get("session_key")}
     if target in active:
         return _err(rid, 4023, "cannot delete an active session")
     sessions_dir = get_hermes_home() / "sessions"

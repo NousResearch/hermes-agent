@@ -167,9 +167,19 @@ export interface SessionUsageResponse {
 }
 
 export interface SessionCompressResponse {
+  after_messages?: number
+  after_tokens?: number
+  before_messages?: number
+  before_tokens?: number
   info?: SessionInfo
   messages?: GatewayTranscriptMessage[]
   removed?: number
+  summary?: {
+    headline?: string
+    noop?: boolean
+    note?: null | string
+    token_line?: string
+  }
   usage?: Usage
 }
 

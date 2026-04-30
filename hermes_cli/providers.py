@@ -199,7 +199,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
-    # Xfyun/iFLYTEK MaaS (讯飞星辰MaaS) - OpenAI-compatible API
+    # Xfyun/iFLYTEK MaaS - OpenAI-compatible API
     "xfyun": HermesOverlay(
         transport="openai_chat",
         auth_type="api_key",
@@ -351,7 +351,7 @@ ALIASES: Dict[str, str] = {
     "llama.cpp": "local",
     "llama-cpp": "local",
 
-    # xfyun / iFLYTEK (科大讯飞)
+    # xfyun / iFLYTEK
     "xfyun": "xfyun",
     "astron": "xfyun",
     "flytek": "xfyun",
@@ -375,7 +375,6 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
-    # xfyun / iFLYTEK (科大讯飞)
     "xfyun": "iFLYTEK Xfyun MaaS",
 }
 

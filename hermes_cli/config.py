@@ -93,8 +93,6 @@ _EXTRA_ENV_KEYS = frozenset({
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
     "LANGFUSE_BASE_URL",
-
-    # xfyun / iFLYTEK (科大讯飞)
     "XFYUN_API_KEY",
     "XFYUN_API_BASE_URL",
 })

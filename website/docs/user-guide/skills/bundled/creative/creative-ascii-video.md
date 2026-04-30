@@ -1,14 +1,14 @@
 ---
-title: "Ascii Video — Production pipeline for ASCII art video — any format"
+title: "Ascii Video — ASCII video: convert video/audio to colored ASCII MP4/GIF"
 sidebar_label: "Ascii Video"
-description: "Production pipeline for ASCII art video — any format"
+description: "ASCII video: convert video/audio to colored ASCII MP4/GIF"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Ascii Video
 
-Production pipeline for ASCII art video — any format. Converts video/audio/images/generative input into colored ASCII character video output (MP4, GIF, image sequence). Covers: video-to-ASCII conversion, audio-reactive music visualizers, generative ASCII art animations, hybrid video+audio reactive, text/lyrics overlays, real-time terminal rendering. Use when users request: ASCII video, text art video, terminal-style video, character art animation, retro text visualization, audio visualizer in ASCII, converting video to ASCII art, matrix-style effects, or any animated ASCII output.
+ASCII video: convert video/audio to colored ASCII MP4/GIF.
 
 ## Skill metadata
 
@@ -24,6 +24,14 @@ The following is the complete skill definition that Hermes loads when this skill
 :::
 
 # ASCII Video Production Pipeline
+
+## When to use
+
+Use when users request: ASCII video, text art video, terminal-style video, character art animation, retro text visualization, audio visualizer in ASCII, converting video to ASCII art, matrix-style effects, or any animated ASCII output.
+
+## What's inside
+
+Production pipeline for ASCII art video — any format. Converts video/audio/images/generative input into colored ASCII character video output (MP4, GIF, image sequence). Covers: video-to-ASCII conversion, audio-reactive music visualizers, generative ASCII art animations, hybrid video+audio reactive, text/lyrics overlays, real-time terminal rendering.
 
 ## Creative Standard
 

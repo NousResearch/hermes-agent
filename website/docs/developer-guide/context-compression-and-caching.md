@@ -345,14 +345,4 @@ The CLI shows caching status at startup:
 
 ## Context Pressure Warnings
 
-The agent emits context pressure warnings at 85% of the compression threshold
-(not 85% of context — 85% of the threshold which is itself 50% of context):
-
-```
-⚠️  Context is 85% to compaction threshold (42,500/50,000 tokens)
-```
-
-After compression, if usage drops below 85% of threshold, the warning state
-is cleared. If compression fails to reduce below the warning level (the
-conversation is too dense), the warning persists but compression won't
-re-trigger until the threshold is exceeded again.
+Intermediate context-pressure warnings have been removed (see the iteration-budget block in `run_agent.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 50%) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.

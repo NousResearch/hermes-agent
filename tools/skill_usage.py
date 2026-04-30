@@ -385,11 +385,13 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     if not archive_root.exists():
         return False, "no archive directory"
 
-    # Try exact name match first, then any prefix match (for timestamped dupes)
-    candidates = [p for p in archive_root.iterdir() if p.is_dir() and p.name == skill_name]
+    # Try exact name match first, then any prefix match (for timestamped dupes).
+    # Recursive walk handles nested archive layouts (e.g. .archive/<category>/<skill>/)
+    # left behind by older archive paths or external imports.
+    candidates = [p for p in archive_root.rglob("*") if p.is_dir() and p.name == skill_name]
     if not candidates:
         candidates = sorted(
-            [p for p in archive_root.iterdir()
+            [p for p in archive_root.rglob("*")
              if p.is_dir() and p.name.startswith(f"{skill_name}-")],
             reverse=True,
         )

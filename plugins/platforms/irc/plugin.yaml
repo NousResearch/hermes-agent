@@ -1,4 +1,5 @@
 name: irc-platform
+kind: platform
 version: 1.0.0
 description: >
   IRC gateway adapter for Hermes Agent.

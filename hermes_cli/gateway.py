@@ -2761,105 +2761,26 @@ _PLATFORMS = [
         ],
     },
 ]
-
-
-def _load_bundled_platform_plugins_for_enumeration() -> set[str]:
-    """Force-load bundled platform plugins so they appear in setup menus.
-
-    Platform plugins under ``plugins/platforms/`` are opt-in via
-    ``plugins.enabled`` like every other plugin, but we want them listed in
-    ``hermes gateway setup`` even when disabled so users can discover and
-    enable them inline.  ``register()`` on a platform plugin only populates
-    the registry — no adapters run, no network I/O — so loading it here is
-    side-effect-free for the short-lived setup process.
-
-    **Contract:** Platform plugin ``register()`` functions MUST NOT register
-    tools, hooks, or start background threads. They should only call
-    ``ctx.register_platform()`` to populate the platform registry. Violating
-    this contract will cause side effects (tool registration, hook firing)
-    during setup menu rendering even when the plugin is disabled.
-
-    Returns the set of plugin names that were force-loaded (i.e. plugins
-    not in ``plugins.enabled``), so the caller can display a hint and
-    auto-enable them on selection.
-    """
-    try:
-        import yaml as _yaml
-    except ImportError:
-        return set()
-
-    from hermes_cli.plugins import (
-        get_bundled_plugins_dir,
-        get_plugin_manager,
-        PluginManifest,
-    )
-
-    manager = get_plugin_manager()
-    platforms_dir = get_bundled_plugins_dir() / "platforms"
-    if not platforms_dir.is_dir():
-        return set()
-
-    disabled_plugin_names: set[str] = set()
-    for child in sorted(platforms_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        manifest_file = child / "plugin.yaml"
-        if not manifest_file.exists():
-            manifest_file = child / "plugin.yml"
-        if not manifest_file.exists():
-            continue
-
-        try:
-            data = _yaml.safe_load(manifest_file.read_text()) or {}
-        except Exception as e:
-            logger.debug("failed to parse %s: %s", manifest_file, e)
-            continue
-        plugin_name = data.get("name", child.name)
-
-        existing = manager._plugins.get(plugin_name)
-        if existing is not None and existing.enabled:
-            continue  # already loaded by normal discovery
-
-        manifest = PluginManifest(
-            name=plugin_name,
-            version=str(data.get("version", "")),
-            description=data.get("description", ""),
-            author=data.get("author", ""),
-            requires_env=data.get("requires_env", []),
-            provides_tools=data.get("provides_tools", []),
-            provides_hooks=data.get("provides_hooks", []),
-            source="bundled",
-            path=str(child),
-        )
-        try:
-            manager._load_plugin(manifest)
-        except Exception as e:
-            logger.debug("failed to force-load %s: %s", plugin_name, e)
-            continue
-        disabled_plugin_names.add(plugin_name)
-
-    return disabled_plugin_names
-
-
 def _all_platforms() -> list[dict]:
     """Return the full list of platforms for setup menus.
 
     Combines the built-in ``_PLATFORMS`` with plugin platforms registered via
-    ``platform_registry``. Plugins are discovered on first call so platforms
-    like IRC appear in ``hermes setup gateway`` without needing the gateway
-    to be running. Built-ins keep their dict shape; plugin entries are
-    adapted to the same shape with ``_registry_entry`` holding the source.
+    ``platform_registry``. Plugins are discovered on first call so bundled
+    platforms (like IRC, which auto-load via ``kind: platform``) appear in
+    ``hermes setup gateway`` without needing the gateway to be running.
+    Built-ins keep their dict shape; plugin entries are adapted to the same
+    shape with ``_registry_entry`` holding the source.
     """
     # Populate the registry so plugin platforms are visible. Idempotent.
+    # Bundled platform plugins (``kind: platform``) auto-load unconditionally,
+    # so every shipped messaging channel appears in the setup menu by default.
+    # User-installed platform plugins under ~/.hermes/plugins/ still require
+    # opt-in via ``plugins.enabled`` (untrusted code).
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
     except Exception as e:
         logger.debug("plugin discovery failed during platform enumeration: %s", e)
-
-    # Also surface bundled platform plugins that aren't in `plugins.enabled`
-    # so the setup menu can offer to enable them.
-    disabled_plugin_names = _load_bundled_platform_plugins_for_enumeration()
 
     platforms = [dict(p) for p in _PLATFORMS]
     by_key = {p["key"]: p for p in platforms}
@@ -2872,7 +2793,6 @@ def _all_platforms() -> list[dict]:
     for entry in platform_registry.all_entries():
         if entry.name in by_key:
             continue  # built-in already covers it
-        needs_enable = bool(entry.plugin_name) and entry.plugin_name in disabled_plugin_names
         platforms.append({
             "key": entry.name,
             "label": entry.label,
@@ -2880,7 +2800,6 @@ def _all_platforms() -> list[dict]:
             "token_var": entry.required_env[0] if entry.required_env else "",
             "install_hint": entry.install_hint,
             "_registry_entry": entry,
-            "needs_enable": needs_enable,
         })
     return platforms
 
@@ -2908,8 +2827,6 @@ def _platform_status(platform: dict) -> str:
                 configured = bool(entry.check_fn())
             except Exception:
                 configured = False
-        if platform.get("needs_enable") and not configured:
-            return "plugin disabled — select to enable"
         return "configured" if configured else "not configured"
 
     token_var = platform.get("token_var", "")
@@ -3895,27 +3812,6 @@ def _builtin_setup_fn(key: str):
         "wecom": _setup_wecom,
         "qqbot": _setup_qqbot,
     }.get(key)
-
-
-def _enable_plugin_for_platform(plugin_name: str, platform_label: str) -> None:
-    """Add *plugin_name* to ``plugins.enabled`` so it loads on next run."""
-    try:
-        from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
-    except Exception as e:
-        logger.debug("cannot enable plugin %s: %s", plugin_name, e)
-        return
-    enabled = _get_enabled_set()
-    if plugin_name in enabled:
-        return
-    enabled.add(plugin_name)
-    _save_enabled_set(enabled)
-    print()
-    print_success(
-        f"Enabled plugin '{plugin_name}' for {platform_label}. "
-        "Takes effect on next session."
-    )
-
-
 def _configure_platform(platform: dict) -> None:
     """Run the interactive setup flow for a single platform.
 
@@ -3925,12 +3821,11 @@ def _configure_platform(platform: dict) -> None:
       3. ``_setup_standard_platform`` when the entry has a ``vars`` schema.
       4. Env-var hint fallback for plugins that offer no setup helper.
 
-    If the platform is owned by a plugin that isn't in ``plugins.enabled``,
-    the plugin is added to the allow-list before setup runs.
+    Bundled platform plugins (e.g. IRC) auto-load, so no plugin enable step
+    is needed here. User-installed platform plugins under ~/.hermes/plugins/
+    must already be in ``plugins.enabled`` before they appear in this menu.
     """
     entry = platform.get("_registry_entry")
-    if platform.get("needs_enable") and entry is not None and entry.plugin_name:
-        _enable_plugin_for_platform(entry.plugin_name, entry.label)
 
     if entry is not None and entry.setup_fn is not None:
         entry.setup_fn()

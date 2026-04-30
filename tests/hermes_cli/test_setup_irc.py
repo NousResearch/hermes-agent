@@ -17,7 +17,6 @@ def _register_irc_platform(**overrides):
     Tests run outside the normal plugin-discovery path, so we inject the entry
     directly into the singleton registry and yield its dict shape.
     """
-    needs_enable = overrides.pop("needs_enable", False)
     defaults = dict(
         name="irc",
         label="IRC",
@@ -47,7 +46,6 @@ def _register_irc_platform(**overrides):
         "token_var": entry.required_env[0] if entry.required_env else "",
         "install_hint": entry.install_hint,
         "_registry_entry": entry,
-        "needs_enable": needs_enable,
     }
 
 
@@ -126,42 +124,6 @@ class TestIRCFreshInstallDiscovery:
             _unregister_irc_platform()
 
 
-# ── Plugin-disabled flow ────────────────────────────────────────────────────
-
-
-class TestIRCPluginDisabledFlow:
-    """When the IRC plugin is disabled, setup offers to enable it."""
-
-    def test_disabled_plugin_shows_enable_prompt(self, monkeypatch):
-        """A disabled plugin platform surfaces 'plugin disabled — select to enable'."""
-        import hermes_cli.gateway as gateway_mod
-
-        plat = _register_irc_platform(needs_enable=True)
-        try:
-            for key in ("IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"):
-                monkeypatch.delenv(key, raising=False)
-
-            status = gateway_mod._platform_status(plat)
-            assert "plugin disabled" in status.lower()
-            assert "select to enable" in status.lower()
-        finally:
-            _unregister_irc_platform()
-
-    def test_disabled_but_already_configured_shows_configured(self, monkeypatch):
-        """If the plugin is disabled but env vars are already present, show 'configured'."""
-        import hermes_cli.gateway as gateway_mod
-
-        plat = _register_irc_platform(needs_enable=True)
-        try:
-            monkeypatch.setenv("IRC_SERVER", "irc.libera.chat")
-            monkeypatch.setenv("IRC_CHANNEL", "#hermes")
-
-            status = gateway_mod._platform_status(plat)
-            assert status == "configured"
-        finally:
-            _unregister_irc_platform()
-
-
 # ── Interactive setup dispatch ──────────────────────────────────────────────
 
 
@@ -188,32 +150,6 @@ class TestIRCInteractiveSetup:
         out = capsys.readouterr().out
         assert "IRC setup complete!" in out
 
-    def test_configure_platform_enables_disabled_plugin_first(self, monkeypatch, capsys, tmp_path):
-        """If the plugin is disabled, _configure_platform enables it before running setup."""
-        import hermes_cli.gateway as gateway_mod
-        from hermes_cli.config import save_config, load_config
-
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        # Ensure plugins.enabled exists but does NOT include irc_platform
-        cfg = load_config()
-        cfg.setdefault("plugins", {})["enabled"] = ["some_other_plugin"]
-        save_config(cfg)
-
-        calls = []
-
-        def fake_setup():
-            calls.append("setup_called")
-
-        plat = _register_irc_platform(setup_fn=fake_setup, needs_enable=True)
-        try:
-            gateway_mod._configure_platform(plat)
-        finally:
-            _unregister_irc_platform()
-
-        assert "setup_called" in calls
-        # Plugin should now be enabled
-        reloaded = load_config()
-        assert "irc_platform" in reloaded.get("plugins", {}).get("enabled", [])
 
     def test_configure_platform_fallback_when_no_setup_fn(self, monkeypatch, capsys):
         """A plugin with no setup_fn falls back to env-var instructions."""

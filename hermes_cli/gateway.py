@@ -3295,12 +3295,6 @@ def _setup_yuanbao():
     _setup_standard_platform(yuanbao_platform)
 
 
-def _setup_yuanbao():
-    """Configure Yuanbao via the standard platform setup."""
-    yuanbao_platform = next(p for p in _PLATFORMS if p["key"] == "yuanbao")
-    _setup_standard_platform(yuanbao_platform)
-
-
 def _is_service_installed() -> bool:
     """Check if the gateway is installed as a system service."""
     if supports_systemd_services():

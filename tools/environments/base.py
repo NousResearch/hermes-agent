@@ -781,5 +781,19 @@ class BaseEnvironment(ABC):
         """Transform sudo commands if SUDO_PASSWORD is available."""
         from tools.terminal_tool import _transform_sudo_command
 
+        # RTK command rewrite (config-gated, graceful fallback)
+        try:
+            from tools.rtk_manager import rewrite_command
+            from hermes_cli.config import load_config
+
+            cfg = load_config().get("terminal", {})
+            if cfg.get("rtk_integration", False):
+                auto_download = cfg.get("rtk_auto_download", True)
+                rewritten = rewrite_command(command, auto_download=auto_download)
+                if rewritten:
+                    command = rewritten
+        except Exception:
+            pass  # RTK unavailable or misconfigured — fall through unchanged
+
         return _transform_sudo_command(command)
 

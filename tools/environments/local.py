@@ -341,6 +341,12 @@ class LocalEnvironment(BaseEnvironment):
 
         return "/tmp"
 
+    def _prepare_command(self, command: str) -> tuple[str, str | None]:
+        """Local environment delegates to base RTK + sudo preparation."""
+        from tools.environments.base import BaseEnvironment
+
+        return BaseEnvironment._prepare_command(self, command)
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:

@@ -537,6 +537,11 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # RTK integration — transparently rewrite shell commands through RTK
+        # to reduce LLM token consumption by 60-90%.
+        "rtk_integration": False,
+        # Automatically download RTK from GitHub Releases if not found on PATH.
+        "rtk_auto_download": True,
     },
     
     "browser": {
@@ -4605,6 +4610,8 @@ def set_config_value(key: str, value: str):
         "terminal.container_memory": "TERMINAL_CONTAINER_MEMORY",
         "terminal.container_disk": "TERMINAL_CONTAINER_DISK",
         "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+        "terminal.rtk_integration": "TERMINAL_RTK_INTEGRATION",
+        "terminal.rtk_auto_download": "TERMINAL_RTK_AUTO_DOWNLOAD",
     }
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))

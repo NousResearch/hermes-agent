@@ -152,6 +152,11 @@ terminal:
   lifetime_seconds: 300
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
+  # RTK integration — transparently rewrite shell commands to reduce LLM token usage.
+  # When enabled, Hermes runs commands through RTK (auto-downloaded if missing).
+  # See: https://github.com/rtk-ai/rtk
+  rtk_integration: false
+  rtk_auto_download: true
 
 # -----------------------------------------------------------------------------
 # OPTION 2: SSH remote execution

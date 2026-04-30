@@ -11,6 +11,8 @@ describe('terminal mode reset', () => {
     expect(TERMINAL_MODE_RESET).toContain('\x1b[?1004l')
     expect(TERMINAL_MODE_RESET).toContain('\x1b[?2004l')
     expect(TERMINAL_MODE_RESET).toContain('\x1b[?1049l')
+    expect(TERMINAL_MODE_RESET).toContain('\x1b[<u')
+    expect(TERMINAL_MODE_RESET).toContain('\x1b[>4m')
   })
 
   it('writes reset sequence to TTY streams without fds', () => {

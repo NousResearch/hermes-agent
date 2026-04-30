@@ -65,10 +65,17 @@ class TestDelegateRequirements(unittest.TestCase):
     def test_schema_valid(self):
         self.assertEqual(DELEGATE_TASK_SCHEMA["name"], "delegate_task")
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        task_props = props["tasks"]["items"]["properties"]
         self.assertIn("goal", props)
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("model", props)
+        self.assertIn("provider", props)
+        self.assertIn("base_url", props)
+        self.assertIn("model", task_props)
+        self.assertIn("provider", task_props)
+        self.assertIn("base_url", task_props)
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -1146,6 +1153,44 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             # But provider/base_url/api_key should inherit from parent
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
+
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_call_model_override(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 45}
+
+        def _resolve(cfg, _parent_agent):
+            return {
+                "model": cfg.get("model"),
+                "provider": cfg.get("provider"),
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "***",
+                "api_mode": "chat_completions",
+            }
+
+        mock_creds.side_effect = _resolve
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="hello",
+                model="custom-model",
+                provider="openrouter",
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "custom-model")
+            self.assertEqual(kwargs["provider"], "openrouter")
 
 
 class TestChildCredentialPoolResolution(unittest.TestCase):

@@ -1818,6 +1818,10 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1886,10 +1890,15 @@ def delegate_task(
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
+    effective_cfg = dict(cfg)
+    if model is not None:
+        effective_cfg["model"] = model
+    if provider is not None:
+        effective_cfg["provider"] = provider
+    if base_url is not None:
+        effective_cfg["base_url"] = base_url
+    if api_key is not None:
+        effective_cfg["api_key"] = api_key
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -1905,8 +1914,24 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+            }
         ]
+        # Merge non-None overrides into the task dict so _build_child_agent
+        # picks them up via t.get("model") etc.  Skip None values to avoid
+        # clearing the configured delegation model when no override is given.
+        if model is not None:
+            task_list[0]["model"] = model
+        if provider is not None:
+            task_list[0]["provider"] = provider
+        if base_url is not None:
+            task_list[0]["base_url"] = base_url
+        if api_key is not None:
+            task_list[0]["api_key"] = api_key
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -1939,6 +1964,20 @@ def delegate_task(
     try:
         for i, t in enumerate(task_list):
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
+            # Per-child credential resolution: merge per-task overrides on top of effective_cfg
+            task_cfg = dict(effective_cfg)
+            if t.get("model") is not None:
+                task_cfg["model"] = t.get("model")
+            if t.get("provider") is not None:
+                task_cfg["provider"] = t.get("provider")
+            if t.get("base_url") is not None:
+                task_cfg["base_url"] = t.get("base_url")
+            if t.get("api_key") is not None:
+                task_cfg["api_key"] = t.get("api_key")
+            try:
+                creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
@@ -2431,6 +2470,18 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": "Override model for the child agent(s). When set, all children use this model instead of delegation.model or parent's model.",
+            },
+            "provider": {
+                "type": "string",
+                "description": "Override provider for the child agent(s). When set, credentials are resolved via the runtime provider system.",
+            },
+            "base_url": {
+                "type": "string",
+                "description": "Override base URL for the child agent(s).",
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -2445,6 +2496,18 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Override model for this specific child agent.",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Override provider for this specific child agent.",
+                        },
+                        "base_url": {
+                            "type": "string",
+                            "description": "Override base URL for this specific child agent.",
                         },
                         "acp_command": {
                             "type": "string",
@@ -2524,6 +2587,10 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
+        provider=args.get("provider"),
+        base_url=args.get("base_url"),
+        api_key=args.get("api_key"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

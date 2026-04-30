@@ -8212,50 +8212,74 @@ class GatewayRunner:
             return f"❌ MCP reload failed: {e}"
 
     async def _handle_reload_skills_command(self, event: MessageEvent) -> str:
-        """Handle /reload-skills — re-scan skills dir and clear prompt cache."""
+        """Handle /reload-skills — rescan skills dir, queue a note for next turn.
+
+        Skills don't need to be in the system prompt for the model to use
+        them (they're invoked via ``/skill-name``, ``skills_list``, or
+        ``skill_view`` at runtime), so this does NOT clear the prompt cache
+        — prefix caching stays intact.
+
+        If any skills were added or removed, a one-shot note is queued on
+        ``self._pending_skills_reload_notes[session_key]``. The gateway
+        prepends it to the NEXT user message in this session (see the
+        consumer at ~L11025 in ``_run_agent_turn``), then clears it. Nothing
+        is written to the session transcript out-of-band, so message
+        alternation is preserved.
+        """
         loop = asyncio.get_running_loop()
         try:
             from agent.skill_commands import reload_skills
 
             result = await loop.run_in_executor(None, reload_skills)
-            added = result.get("added", [])
-            removed = result.get("removed", [])
+            added = result.get("added", [])      # [{"name", "description"}, ...]
+            removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)
 
             lines = ["🔄 **Skills Reloaded**\n"]
-            if added:
-                lines.append(f"➕ Added: {', '.join(added)}")
-            if removed:
-                lines.append(f"➖ Removed: {', '.join(removed)}")
             if not added and not removed:
-                lines.append("No changes detected.")
+                lines.append("No new skills detected.")
+                lines.append(f"\n📚 {total} skill(s) available")
+                return "\n".join(lines)
+
+            def _fmt_line(item: dict) -> str:
+                nm = item.get("name", "")
+                desc = item.get("description", "")
+                return f"    - {nm}: {desc}" if desc else f"    - {nm}"
+
+            if added:
+                lines.append("➕ **Added Skills:**")
+                for item in added:
+                    lines.append(_fmt_line(item))
+            if removed:
+                lines.append("➖ **Removed Skills:**")
+                for item in removed:
+                    lines.append(_fmt_line(item))
             lines.append(f"\n📚 {total} skill(s) available")
 
-            # Inject a session-history note so the model sees the new skill
-            # list on its next turn. Appended after all existing messages
-            # to preserve prompt-cache for the prefix.
-            change_parts = []
+            # Queue the one-shot note for the next user turn in this session.
+            # Format matches how the system prompt renders pre-existing
+            # skills (``    - name: description``) so the model reads the
+            # diff in the same shape as its original skill catalog.
+            sections = ["[USER INITIATED SKILLS RELOAD:"]
             if added:
-                change_parts.append(f"Added skills: {', '.join(added)}")
+                sections.append("")
+                sections.append("Added Skills:")
+                for item in added:
+                    sections.append(_fmt_line(item))
             if removed:
-                change_parts.append(f"Removed skills: {', '.join(removed)}")
-            if change_parts:
-                change_detail = ". ".join(change_parts) + ". "
-                reload_msg = {
-                    "role": "user",
-                    "content": (
-                        f"[IMPORTANT: Skills have been reloaded. {change_detail}"
-                        f"{total} skill(s) now available. Use skills_list to "
-                        f"see the updated catalog.]"
-                    ),
-                }
-                try:
-                    session_entry = self.session_store.get_or_create_session(event.source)
-                    self.session_store.append_to_transcript(
-                        session_entry.session_id, reload_msg
-                    )
-                except Exception:
-                    pass  # Best-effort; don't fail the reload over a transcript write
+                sections.append("")
+                sections.append("Removed Skills:")
+                for item in removed:
+                    sections.append(_fmt_line(item))
+            sections.append("")
+            sections.append("Use skills_list to see the updated catalog.]")
+            note = "\n".join(sections)
+
+            session_key = self._session_key_for_source(event.source)
+            if not hasattr(self, "_pending_skills_reload_notes"):
+                self._pending_skills_reload_notes = {}
+            if session_key:
+                self._pending_skills_reload_notes[session_key] = note
 
             return "\n".join(lines)
 
@@ -11021,6 +11045,17 @@ class GatewayRunner:
                     "user's new message below.]\n\n"
                     + message
                 )
+
+            # Consume one-shot /reload-skills note (if the user ran
+            # /reload-skills since their last turn in this session). Same
+            # queue pattern as CLI: prepend to the NEXT user message, then
+            # clear. Nothing was written to the transcript out-of-band, so
+            # message alternation stays intact.
+            _pending_notes = getattr(self, "_pending_skills_reload_notes", None)
+            if _pending_notes and session_key and session_key in _pending_notes:
+                _srn = _pending_notes.pop(session_key, None)
+                if _srn:
+                    message = _srn + "\n\n" + message
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)

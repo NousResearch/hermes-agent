@@ -57,6 +57,7 @@ CONFIGURABLE_TOOLSETS = [
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
+    ("video_gen",       "🎬 Video Generation",          "video_generate"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -322,6 +323,29 @@ TOOL_CATEGORIES = {
                     {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
                 ],
                 "imagegen_backend": "fal",
+            },
+        ],
+    },
+    "video_gen": {
+        "name": "Video Generation",
+        "icon": "🎬",
+        "providers": [
+            {
+                "name": "Nous Subscription",
+                "badge": "subscription",
+                "tag": "Managed FAL video generation billed to your subscription",
+                "env_vars": [],
+                "requires_nous_auth": True,
+                "managed_nous_feature": "image_gen",
+                "override_env_vars": ["FAL_KEY"],
+            },
+            {
+                "name": "FAL.ai",
+                "badge": "paid",
+                "tag": "Text-to-video and image-to-video via FAL-compatible endpoints",
+                "env_vars": [
+                    {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
+                ],
             },
         ],
     },

@@ -197,6 +197,11 @@ class TestToolsetConsistency:
             for inc in ts["includes"]:
                 assert inc in TOOLSETS, f"{name} includes unknown toolset '{inc}'"
 
+    def test_video_toolset_includes_video_generate(self):
+        assert "video_gen" in TOOLSETS
+        assert "video_generate" in resolve_toolset("video_gen")
+        assert "video_generate" in resolve_toolset("hermes-cli")
+
     def test_hermes_platforms_share_core_tools(self):
         """All hermes-* platform toolsets share the same core tools.
 

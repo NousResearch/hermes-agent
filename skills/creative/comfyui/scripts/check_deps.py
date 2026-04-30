@@ -42,19 +42,20 @@ from _common import (  # noqa: E402
 # recognize, suggesting the right `comfy node install ...` makes the difference
 # between a working agent and a stuck one.
 NODE_TO_PACKAGE: dict[str, str] = {
-    # rgthree
+    # rgthree (Reroute is JS-only and doesn't appear in /object_info)
     "Power Lora Loader (rgthree)": "rgthree-comfy",
     "Image Comparer (rgthree)": "rgthree-comfy",
     "Seed (rgthree)": "rgthree-comfy",
-    "Reroute (rgthree)": "rgthree-comfy",
     "Display Any (rgthree)": "rgthree-comfy",
+    "Display Int (rgthree)": "rgthree-comfy",
     # Impact pack
     "FaceDetailer": "comfyui-impact-pack",
     "DetailerForEach": "comfyui-impact-pack",
-    "UltralyticsDetectorProvider": "comfyui-impact-pack",
     "BboxDetectorSEGS": "comfyui-impact-pack",
     "SAMLoader": "comfyui-impact-pack",
     "ImpactWildcardProcessor": "comfyui-impact-pack",
+    # Impact subpack (separate package)
+    "UltralyticsDetectorProvider": "comfyui-impact-subpack",
     # Was Node Suite
     "Image Save": "was-node-suite-comfyui",
     "Number Counter": "was-node-suite-comfyui",
@@ -73,11 +74,13 @@ NODE_TO_PACKAGE: dict[str, str] = {
     "ADE_AnimateDiffLoaderWithContext": "comfyui-animatediff-evolved",
     "ADE_AnimateDiffLoaderGen1": "comfyui-animatediff-evolved",
     "ADE_LoadAnimateDiffModel": "comfyui-animatediff-evolved",
-    # ControlNet aux
-    "Canny": "comfyui_controlnet_aux",
+    # ControlNet aux preprocessors (full class names)
+    "CannyEdgePreprocessor": "comfyui_controlnet_aux",
     "DWPreprocessor": "comfyui_controlnet_aux",
     "OpenposePreprocessor": "comfyui_controlnet_aux",
     "DepthAnythingPreprocessor": "comfyui_controlnet_aux",
+    "Zoe_DepthAnythingPreprocessor": "comfyui_controlnet_aux",
+    "AnimalPosePreprocessor": "comfyui_controlnet_aux",
     # IPAdapter Plus
     "IPAdapterAdvanced": "comfyui_ipadapter_plus",
     "IPAdapterUnifiedLoader": "comfyui_ipadapter_plus",
@@ -86,29 +89,34 @@ NODE_TO_PACKAGE: dict[str, str] = {
     # InstantID
     "InstantIDModelLoader": "comfyui_instantid",
     "ApplyInstantID": "comfyui_instantid",
-    # Comfy essentials
-    "GetImageSize+": "comfyui-essentials",
-    "ImageBatchMultiple+": "comfyui-essentials",
+    # Comfy essentials (note: registry slug uses underscore, not hyphen)
+    "GetImageSize+": "comfyui_essentials",
+    "ImageBatchMultiple+": "comfyui_essentials",
     # pysssss
     "ShowText|pysssss": "comfyui-custom-scripts",
     "PreviewImage|pysssss": "comfyui-custom-scripts",
     # SUPIR
     "SUPIR_Upscale": "comfyui-supir",
     "SUPIR_first_stage": "comfyui-supir",
-    # GGUF
-    "UNETLoaderGGUF": "comfyui-gguf",
-    "DualCLIPLoaderGGUF": "comfyui-gguf",
+    # GGUF (case-sensitive registry slug)
+    "UNETLoaderGGUF": "ComfyUI-GGUF",
+    "DualCLIPLoaderGGUF": "ComfyUI-GGUF",
     # Florence2
     "Florence2Run": "comfyui-florence2",
     # WAS
     "Image Filter Adjustments": "was-node-suite-comfyui",
-    # Photomaker
-    "PhotoMakerLoader": "comfyui-photomaker-plus",
-    # Wan / Hunyuan video
-    "WanVideoSampler": "comfyui-wanvideowrapper",
-    "WanVideoModelLoader": "comfyui-wanvideowrapper",
-    "HunyuanVideoSampler": "comfyui-hunyuanvideowrapper",
-    "HunyuanVideoModelLoader": "comfyui-hunyuanvideowrapper",
+    # Photomaker (case-sensitive)
+    "PhotoMakerLoader": "ComfyUI-PhotoMaker-Plus",
+    # Wan video (case-sensitive)
+    "WanVideoSampler": "ComfyUI-WanVideoWrapper",
+    "WanVideoModelLoader": "ComfyUI-WanVideoWrapper",
+}
+
+# Nodes whose package isn't on the comfy registry — need git-URL install via
+# ComfyUI-Manager. We surface a helpful hint instead of an unrunnable command.
+NODE_TO_GIT_URL: dict[str, str] = {
+    "HunyuanVideoSampler": "https://github.com/kijai/ComfyUI-HunyuanVideoWrapper",
+    "HunyuanVideoModelLoader": "https://github.com/kijai/ComfyUI-HunyuanVideoWrapper",
 }
 
 
@@ -250,6 +258,12 @@ def suggest_install_command(node_class: str) -> str | None:
     return None
 
 
+def suggest_git_url(node_class: str) -> str | None:
+    """For nodes not on the registry, return a git URL the user can hand to
+    ComfyUI-Manager's `/manager/queue/install` endpoint."""
+    return NODE_TO_GIT_URL.get(node_class)
+
+
 def check_deps(
     workflow: dict, host: str, *, api_key: str | None = None,
 ) -> dict:
@@ -278,8 +292,14 @@ def check_deps(
             if cls not in installed_nodes:
                 entry = {"class_type": cls}
                 cmd = suggest_install_command(cls)
+                git_url = suggest_git_url(cls)
                 if cmd:
                     entry["fix_command"] = cmd
+                elif git_url:
+                    entry["fix_git_url"] = git_url
+                    entry["fix_hint"] = (
+                        f"Not on registry. Install via Manager with this git URL: {git_url}"
+                    )
                 else:
                     entry["fix_hint"] = (
                         "Search https://registry.comfy.org or "

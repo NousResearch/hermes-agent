@@ -105,6 +105,7 @@ AUTHOR_MAP = {
     "82637225+kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "keifergu@tencent.com": "keifergu",
     "kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
+    "SHL0MS@users.noreply.github.com": "SHL0MS",
     "abner.the.foreman@agentmail.to": "Abnertheforeman",
     "adam.manning@pro-serveinc.com": "amanning3390",
     "thomasgeorgevii09@gmail.com": "tochukwuada",

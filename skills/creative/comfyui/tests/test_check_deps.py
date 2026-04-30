@@ -59,7 +59,10 @@ class TestNodePackageMap:
         keys = list(NODE_TO_PACKAGE.keys())
         assert len(keys) == len(set(keys))
 
-    def test_all_lowercase_packages(self):
-        # Convention: package names are lowercase with hyphens/underscores
+    def test_packages_are_safe_for_shell(self):
+        # Registry slugs must be alphanumerics + hyphens/underscores only
+        # (passed straight to `comfy node install <pkg>`).
+        import re
+        safe = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]*$")
         for pkg in NODE_TO_PACKAGE.values():
-            assert pkg.lower() == pkg, f"Package name should be lowercase: {pkg}"
+            assert safe.match(pkg), f"Unsafe package slug: {pkg!r}"

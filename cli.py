@@ -1540,13 +1540,14 @@ def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:
 # that appears when the ESC byte was stripped by a prior filter.
 _DSR_CPR_ESC_RE = re.compile(r"\x1b\[\d+;\d+R")
 _DSR_CPR_VISIBLE_RE = re.compile(r"\^\[\[\d+;\d+R")
-_SGR_MOUSE_ESC_RE = re.compile(r"\x1b\[<\d{1,3};\d{1,4};\d{1,4}[Mm]")
-_SGR_MOUSE_VISIBLE_RE = re.compile(r"\^\[\[<\d{1,3};\d{1,4};\d{1,4}[Mm]")
+_SGR_MOUSE_ESC_RE = re.compile(r"\x1b\[<\d+;\d+;\d+[Mm]")
+_SGR_MOUSE_VISIBLE_RE = re.compile(r"\^\[\[<\d+;\d+;\d+[Mm]")
 # Some terminals/filters can drop ESC and literal "^[[", leaving only
 # "<btn;col;rowM" fragments in the buffer. Keep this broad on purpose:
 # these fragments are extremely unlikely to be intentional user input, and
 # stripping them is better than sending corrupted prompts.
-_SGR_MOUSE_BARE_RE = re.compile(r"<\d{1,3};\d{1,4};\d{1,4}[Mm]")
+_SGR_MOUSE_BARE_RE = re.compile(r"<\d+;\d+;\d+[Mm]")
+_TERMINAL_RESPONSE_SENTINELS = ("\x1b[", "^[", "<")
 _TERMINAL_INPUT_MODE_RESET_SEQ = (
     "\x1b[?1006l"  # disable SGR mouse
     "\x1b[?1003l"  # disable any-motion tracking
@@ -1577,16 +1578,25 @@ def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
     """
     if not text:
         return text, False
-    had_mouse_reports = bool(
-        _SGR_MOUSE_ESC_RE.search(text)
-        or _SGR_MOUSE_VISIBLE_RE.search(text)
-        or _SGR_MOUSE_BARE_RE.search(text)
-    )
-    text = _DSR_CPR_ESC_RE.sub("", text)
-    text = _DSR_CPR_VISIBLE_RE.sub("", text)
-    text = _SGR_MOUSE_ESC_RE.sub("", text)
-    text = _SGR_MOUSE_VISIBLE_RE.sub("", text)
-    text = _SGR_MOUSE_BARE_RE.sub("", text)
+    if not any(marker in text for marker in _TERMINAL_RESPONSE_SENTINELS):
+        return text, False
+
+    had_mouse_reports = False
+
+    if "\x1b[" in text:
+        text = _DSR_CPR_ESC_RE.sub("", text)
+        text, count = _SGR_MOUSE_ESC_RE.subn("", text)
+        had_mouse_reports = had_mouse_reports or count > 0
+
+    if "^[" in text:
+        text = _DSR_CPR_VISIBLE_RE.sub("", text)
+        text, count = _SGR_MOUSE_VISIBLE_RE.subn("", text)
+        had_mouse_reports = had_mouse_reports or count > 0
+
+    if "<" in text:
+        text, count = _SGR_MOUSE_BARE_RE.subn("", text)
+        had_mouse_reports = had_mouse_reports or count > 0
+
     return text, had_mouse_reports
 
 

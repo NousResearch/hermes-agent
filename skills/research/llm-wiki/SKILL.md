@@ -1,7 +1,7 @@
 ---
 name: llm-wiki
 description: "Karpathy's LLM Wiki: build/query interlinked markdown KB."
-version: 2.1.0
+version: 2.2.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -9,6 +9,15 @@ metadata:
     tags: [wiki, knowledge-base, research, notes, markdown, rag-alternative]
     category: research
     related_skills: [obsidian, arxiv]
+    config:
+      - key: llm-wiki.active_wiki
+        description: Currently active wiki name
+        default: "default"
+        prompt: Active wiki name
+      - key: llm-wiki.wikis
+        description: Wiki registry (JSON object mapping wiki names to {path, description})
+        default: '{"default":{"path":"default","description":"Default wiki"}}'
+        prompt: Wiki registry
 ---
 
 # Karpathy's LLM Wiki

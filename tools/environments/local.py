@@ -1,6 +1,7 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import os
+import logging
 import platform
 import shutil
 import signal
@@ -9,9 +10,11 @@ import tempfile
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
-_IS_WINDOWS = platform.system() == "Windows"
+_IS_WINDOWS: bool = platform.system() == "Windows"
 
+logger = logging.getLogger(__name__)
 
+# --------------------------------------------------------------------------
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
@@ -352,6 +355,18 @@ class LocalEnvironment(BaseEnvironment):
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
+
+        # Guard: if the session's CWD was deleted (e.g. user ran `rm -rf` on
+        # the project dir from a previous command), subprocess.Popen fails
+        # with FileNotFoundError before the shell even starts, rendering the
+        # terminal tool permanently broken for the rest of the session.
+        # Fall back to $HOME so the agent can recover without a restart.
+        if not os.path.isdir(self.cwd):
+            fallback = os.path.expanduser("~")
+            logger.warning(
+                "CWD no longer exists: %s — falling back to %s", self.cwd, fallback
+            )
+            self.cwd = fallback
 
         proc = subprocess.Popen(
             args,

@@ -22,6 +22,7 @@ import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } 
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
+import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
@@ -241,6 +242,8 @@ const ComposerPane = memo(function ComposerPane({
           onPickerSelect={actions.resumeById}
           pagerPageSize={composer.pagerPageSize}
         />
+
+        {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
 
         {!isBlocked && (
           <>

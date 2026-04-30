@@ -3200,17 +3200,29 @@ class AIAgent:
         Used to decide whether to strip image content parts from API-bound
         messages (for non-vision models) or let the provider adapter handle
         them natively (for vision-capable models).
+
+        Resolution order:
+          1. ``model.supports_vision`` (top-level, single-model shortcut)
+          2. ``providers.<provider>.models.<model>.supports_vision``
+          3. models.dev capability lookup
+        Custom/local models absent from models.dev would otherwise be
+        misclassified as non-vision and have their images stripped.
         """
         try:
-            from agent.models_dev import get_model_capabilities
+            from hermes_cli.config import cfg_get, load_config
+            cfg = load_config()
             provider = (getattr(self, "provider", "") or "").strip()
             model = (getattr(self, "model", "") or "").strip()
+            for keys in (("model", "supports_vision"),
+                         ("providers", provider, "models", model, "supports_vision")):
+                override = cfg_get(cfg, *keys)
+                if override is not None:
+                    return bool(override)
+            from agent.models_dev import get_model_capabilities
             if not provider or not model:
                 return False
             caps = get_model_capabilities(provider, model)
-            if caps is None:
-                return False
-            return bool(caps.supports_vision)
+            return bool(caps and caps.supports_vision)
         except Exception:
             return False
 

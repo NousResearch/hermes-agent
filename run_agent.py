@@ -8077,7 +8077,13 @@ class AIAgent:
         the hyphenated form with
         ``HTTP 400 The provided model identifier is invalid``.
         Regression for #11976; mirrors the opencode-go fix for #5211
-        (commit f77be22c), which extended this same allowlist."""
+        (commit f77be22c), which extended this same allowlist.
+
+        Users running local Anthropic-compatible proxies (CCS, cliproxy, etc.)
+        whose host won't match this hardcoded allowlist can opt in by setting
+        ``preserve_model_dots: true`` on their ``custom_providers`` entry.
+        See #17452.
+        """
         if (getattr(self, "provider", "") or "").lower() in {
             "alibaba", "minimax", "minimax-cn",
             "opencode-go", "opencode-zen",
@@ -8085,7 +8091,7 @@ class AIAgent:
         }:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
-        return (
+        if (
             "dashscope" in base
             or "aliyuncs" in base
             or "minimax" in base
@@ -8094,7 +8100,34 @@ class AIAgent:
             # AWS Bedrock runtime endpoints — defense-in-depth when
             # ``provider`` is unset but ``base_url`` still names Bedrock.
             or "bedrock-runtime." in base
-        )
+        ):
+            return True
+        # Opt-in via ``custom_providers[*].preserve_model_dots: true``.
+        # Cached on the instance because base_url and provider are stable
+        # between switch_model() calls (which clear the cache via
+        # _invalidate_preserve_dots_cache()).
+        cached = getattr(self, "_preserve_dots_cached", None)
+        cache_key = (base, (getattr(self, "provider", "") or "").lower())
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+        result = False
+        if base:
+            try:
+                from hermes_cli.config import (
+                    get_custom_provider_preserve_model_dots,
+                )
+                result = bool(
+                    get_custom_provider_preserve_model_dots(
+                        base_url=getattr(self, "base_url", "") or "",
+                    )
+                )
+            except Exception:
+                result = False
+        try:
+            object.__setattr__(self, "_preserve_dots_cached", (cache_key, result))
+        except Exception:
+            pass
+        return result
 
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""

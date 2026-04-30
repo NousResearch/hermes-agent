@@ -2395,6 +2395,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
+        "preserve_model_dots",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -2484,6 +2485,14 @@ def _normalize_custom_provider_entry(
     rate_limit_delay = entry.get("rate_limit_delay")
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
+
+    # Opt-in flag for users running local proxies (CCS, cliproxy, etc.) that
+    # speak the Anthropic Messages wire format but expect dotted model names
+    # (e.g. ``gpt-5.4``, ``glm-4.6``) passed through verbatim. Defaults to
+    # False so existing behavior is unchanged. See #17452.
+    preserve_dots_flag = entry.get("preserve_model_dots")
+    if isinstance(preserve_dots_flag, bool):
+        normalized["preserve_model_dots"] = preserve_dots_flag
 
     return normalized
 
@@ -2615,6 +2624,47 @@ def get_custom_provider_context_length(
         if ctx > 0:
             return ctx
     return None
+
+
+def get_custom_provider_preserve_model_dots(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return ``True`` if the ``custom_providers`` entry matching ``base_url``
+    has ``preserve_model_dots: true`` set.
+
+    Used by the Anthropic adapter to keep dots in model names (e.g.
+    ``gpt-5.4``, ``glm-4.6``) for users running local Anthropic-compatible
+    proxies whose host won't match the built-in dot-preserving allowlist
+    (DashScope, MiniMax, OpenCode Zen, ZAI, Bedrock, etc.). See #17452.
+    """
+    if not base_url:
+        return False
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            if config is None:
+                return False
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+    if not isinstance(custom_providers, list):
+        return False
+
+    target_url = (base_url or "").rstrip("/").lower()
+    if not target_url:
+        return False
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/").lower()
+        if not entry_url or entry_url != target_url:
+            continue
+        if entry.get("preserve_model_dots") is True:
+            return True
+    return False
 
 
 def check_config_version() -> Tuple[int, int]:

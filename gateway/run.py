@@ -38,6 +38,7 @@ from typing import Dict, Optional, Any, List
 # gateway is a long-running daemon, so its boot cost matters less than
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from agent.context_compressor import LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX
 from hermes_cli.config import cfg_get
 
 # --- Agent cache tuning ---------------------------------------------------
@@ -175,6 +176,136 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
         return None
     return None
 
+
+_COMPACTION_CONTINUATION_MARKERS = (
+    "[your active task list was preserved across context compression]",
+    "continue",
+    "resume",
+    "keep going",
+    "proceed",
+    "carry on",
+)
+
+_COMPACTION_TASK_SECTIONS = {
+    "active task",
+    "in progress",
+    "pending user asks",
+    "remaining work",
+}
+
+_COMPACTION_STOPWORDS = {
+    "about", "above", "across", "active", "after", "again", "also", "and",
+    "are", "before", "being", "below", "between", "can", "context", "current",
+    "from", "have", "into", "latest", "message", "only", "pending", "please",
+    "preserved", "respond", "resume", "section", "summary", "task", "that", "the",
+    "this", "turn", "user", "when", "with", "work", "your",
+}
+
+
+def _compaction_text(content: Any) -> str:
+    """Return a plain-text view of text or multimodal message content."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return str(content)
+
+
+def _is_compaction_summary(content: Any) -> bool:
+    text = _compaction_text(content).lstrip()
+    return text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX)
+
+
+def _compaction_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{2,}", text.lower())
+        if token not in _COMPACTION_STOPWORDS
+    }
+
+
+def _extract_compaction_section(text: str, heading: str) -> str:
+    pattern = re.compile(
+        rf"(?ims)^##\s+{re.escape(heading)}\s*$\n(?P<body>.*?)(?=^##\s+|\Z)"
+    )
+    match = pattern.search(text)
+    return match.group("body").strip() if match else ""
+
+
+def _compaction_summary_matches_current_turn(summary: str, current_message: Any) -> bool:
+    """Heuristic semantic guard for compacted active-task handoffs.
+
+    Compacted summaries are useful for same-session continuation, but dangerous
+    when a stale/cross-chat transcript is accidentally loaded.  Keep task-like
+    sections only when the current turn explicitly says the task list was
+    preserved, uses a continuation cue, or overlaps with the summary's active
+    task vocabulary.  Otherwise the summary remains factual background only.
+    """
+    current_text = _compaction_text(current_message).lower()
+    if any(marker in current_text for marker in _COMPACTION_CONTINUATION_MARKERS):
+        return True
+
+    active_task = _extract_compaction_section(summary, "Active Task")
+    if not active_task:
+        return False
+
+    task_tokens = _compaction_tokens(active_task)
+    current_tokens = _compaction_tokens(current_text)
+    if not task_tokens or not current_tokens:
+        return False
+
+    overlap = task_tokens & current_tokens
+    return len(overlap) >= 2 or (len(overlap) / max(len(task_tokens), 1)) >= 0.25
+
+
+def _strip_compaction_task_sections(summary: str) -> str:
+    lines = summary.splitlines()
+    kept: list[str] = []
+    skipping = False
+    for line in lines:
+        heading_match = re.match(r"^##\s+(.+?)\s*$", line)
+        if heading_match:
+            heading = heading_match.group(1).strip().lower()
+            skipping = heading in _COMPACTION_TASK_SECTIONS
+            if skipping:
+                continue
+        if not skipping:
+            kept.append(line)
+    sanitized = "\n".join(kept).strip()
+    sanitized = sanitized.replace(
+        "Your current task is identified in the '## Active Task' section of the summary — resume exactly from there. ",
+        "Use this summary as background only unless it matches the latest user request. ",
+    )
+    sanitized = sanitized.replace(
+        "Your current task is identified in the '## Active Task' section of the summary — resume exactly from there.",
+        "Use this summary as background only unless it matches the latest user request.",
+    )
+    return sanitized
+
+
+def _sanitize_compaction_summary_for_current_turn(content: Any, current_message: Any) -> Any:
+    """Prevent stale compacted task directives from overriding a new turn."""
+    if not _is_compaction_summary(content):
+        return content
+    summary = _compaction_text(content)
+    if _compaction_summary_matches_current_turn(summary, current_message):
+        return content
+    sanitized = _strip_compaction_task_sections(summary)
+    if isinstance(content, str):
+        return sanitized
+    # Preserve multimodal shape only when needed; compaction summaries are
+    # normally plain text, but this keeps the helper safe for future callers.
+    return sanitized
 
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
@@ -11272,6 +11403,17 @@ class GatewayRunner:
                     # Simple text message - just need role and content
                     content = msg.get("content")
                     if content:
+                        # Compaction summaries are persisted in transcript history
+                        # as regular messages.  Before handing history back to the
+                        # model, remove stale task-directive sections unless the
+                        # current user turn semantically matches the handoff.  This
+                        # keeps useful background context while preventing cross-chat
+                        # stale "Active Task" blocks from outranking the latest user
+                        # request.
+                        content = _sanitize_compaction_summary_for_current_turn(
+                            content,
+                            message,
+                        )
                         # Tag cross-platform mirror messages so the agent knows their origin
                         if msg.get("mirror"):
                             mirror_src = msg.get("mirror_source", "another session")

@@ -391,6 +391,98 @@ class TestAutoVoiceReply:
         }]
         assert self._call(runner, "all", MessageType.TEXT, agent_messages=messages) is False
 
+    def test_current_turn_slice_excludes_historical_tts_tool_calls(self, runner):
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "text_to_speech", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
+            {"role": "user", "content": "Next message"},
+            {"role": "assistant", "content": "Fresh text reply"},
+        ]
+        current_turn_messages = runner._messages_from_current_user_turn(
+            messages,
+            current_user_content="Next message",
+            fallback_offset=0,
+        )
+        assert self._call(
+            runner,
+            "all",
+            MessageType.TEXT,
+            agent_messages=current_turn_messages,
+        ) is True
+
+    def test_current_turn_slice_ignores_compression_offset_reset(self, runner):
+        messages = [
+            {"role": "assistant", "content": "Compressed summary"},
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "old_call",
+                    "type": "function",
+                    "function": {"name": "text_to_speech", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "old_call", "content": "{}"},
+            {"role": "user", "content": "Current message"},
+            {"role": "assistant", "content": "Fresh text reply"},
+        ]
+        current_turn_messages = runner._messages_from_current_user_turn(
+            messages,
+            current_user_content="Current message",
+            fallback_offset=0,
+        )
+        assert current_turn_messages == messages[3:]
+        assert self._call(
+            runner,
+            "all",
+            MessageType.TEXT,
+            agent_messages=current_turn_messages,
+        ) is True
+
+    def test_current_turn_tts_tool_call_still_suppresses_with_history(self, runner):
+        messages = [
+            {"role": "user", "content": "Earlier message"},
+            {"role": "assistant", "content": "Earlier reply"},
+            {"role": "user", "content": "Current message"},
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "text_to_speech", "arguments": "{}"},
+                }],
+            },
+        ]
+        current_turn_messages = messages[2:]
+        assert self._call(
+            runner,
+            "all",
+            MessageType.TEXT,
+            agent_messages=current_turn_messages,
+        ) is False
+
+    def test_current_turn_tts_tool_call_suppresses_after_synthetic_user_message(self, runner):
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "text_to_speech", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "{}"},
+            {"role": "user", "content": "Continue the response"},
+            {"role": "assistant", "content": "Fresh text reply"},
+        ]
+        assert self._call(runner, "all", MessageType.TEXT, agent_messages=messages) is False
+
     def test_no_dedup_for_other_tools(self, runner):
         messages = [{
             "role": "assistant",

@@ -276,6 +276,84 @@ def test_telegram_group_chat_allowlist_authorizes_group_chat_without_user_allowl
     assert runner._is_user_authorized(source) is True
 
 
+def test_telegram_group_users_legacy_chat_ids_still_authorize(monkeypatch):
+    """Backward-compat: PR #15027 shipped TELEGRAM_GROUP_ALLOWED_USERS as a
+    chat-ID allowlist. PR #17686 renamed it to sender IDs and added
+    TELEGRAM_GROUP_ALLOWED_CHATS. Users on the old guidance must keep working:
+    chat-ID-shaped values (starting with "-") in the _USERS var are honored as
+    chat IDs with a deprecation warning.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "-1001878443972")
+
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="999",
+        chat_id="-1001878443972",
+        user_name="tester",
+        chat_type="forum",
+    )
+
+    assert runner._is_user_authorized(source) is True
+
+
+def test_telegram_group_users_legacy_does_not_cross_chats(monkeypatch):
+    """Legacy chat-ID value only authorizes the listed chat, not any group."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "-1001878443972")
+
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="999",
+        chat_id="-1009999999999",
+        user_name="tester",
+        chat_type="group",
+    )
+
+    assert runner._is_user_authorized(source) is False
+
+
+def test_telegram_group_users_mixed_sender_and_legacy_chat(monkeypatch):
+    """Mixed values: positive user ID gates senders; negative chat ID gates chat."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "999,-1001878443972")
+
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+
+    # Legacy chat ID path: any sender in the listed chat is authorized
+    legacy_chat_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="123",
+        chat_id="-1001878443972",
+        user_name="tester",
+        chat_type="group",
+    )
+    assert runner._is_user_authorized(legacy_chat_source) is True
+
+    # Sender path: listed sender user ID authorized in any group
+    sender_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="999",
+        chat_id="-1009999999999",
+        user_name="tester",
+        chat_type="group",
+    )
+    assert runner._is_user_authorized(sender_source) is True
+
+
 @pytest.mark.asyncio
 async def test_unauthorized_dm_pairs_by_default(monkeypatch):
     _clear_auth_env(monkeypatch)

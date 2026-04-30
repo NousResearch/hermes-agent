@@ -4115,11 +4115,15 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"type": "alias", "target": qc.get("target", "")})
 
     try:
-        from hermes_cli.plugins import get_plugin_command_handler
+        from hermes_cli.plugins import (
+            get_plugin_command_handler,
+            resolve_plugin_command_result,
+        )
 
         handler = get_plugin_command_handler(name)
         if handler:
-            return _ok(rid, {"type": "plugin", "output": str(handler(arg) or "")})
+            result = resolve_plugin_command_result(handler(arg))
+            return _ok(rid, {"type": "plugin", "output": str(result or "")})
     except Exception:
         pass
 

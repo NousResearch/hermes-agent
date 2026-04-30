@@ -129,6 +129,35 @@ class TestGetTimezone:
         tz = hermes_time.get_timezone()
         assert tz is None
 
+    def test_config_yaml_read_as_utf8(self, tmp_path, monkeypatch):
+        """UTF-8 config files should load even when locale defaults differ."""
+        import builtins
+
+        os.environ.pop("HERMES_TIMEZONE", None)
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "# 用户配置\nnote: café\ntimezone: Asia/Shanghai\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(hermes_time, "get_config_path", lambda: config_path)
+
+        real_open = builtins.open
+
+        def ascii_default_open(file, mode="r", *args, **kwargs):
+            if (
+                str(file) == str(config_path)
+                and "b" not in mode
+                and "encoding" not in kwargs
+            ):
+                kwargs["encoding"] = "ascii"
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", ascii_default_open)
+
+        tz = hermes_time.get_timezone()
+        assert isinstance(tz, ZoneInfo)
+        assert str(tz) == "Asia/Shanghai"
+
 
 
 # =========================================================================

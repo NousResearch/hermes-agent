@@ -629,6 +629,21 @@ AUTHOR_MAP = {
     "164839249+Joseph19820124@users.noreply.github.com": "Joseph19820124",
     "rugved@lmstudio.ai": "rugvedS07",
     "44333070+Heltman@users.noreply.github.com": "Heltman",
+    # v0.12.0 additions
+    "ching@kachingappz.com": "ching-kaching",
+    "codezhujr@gmail.com": "Zjianru",  # salvage chain: code by codez, PR #15749 author @Zjianru
+    "daimon@noreply.github.com": "Siddharth Balyan",  # co-author only
+    "i@zkl2333.com": "zkl2333",
+    "isaachuang@Isaacs-MacBook-Pro.local": "isaachuangGMICLOUD",
+    "isaachuang@Mac.localdomain": "isaachuangGMICLOUD",  # salvage of PR #11955 → #16663
+    "liyuan851277048@icloud.com": "Octopus",  # co-author only
+    "me+github7604@versun.org": "Versun",  # co-author only
+    "my.vesper.nine@gmail.com": "kevin-ho",  # salvage: PR #15488 author @kevin-ho
+    "noreply@paperclip.ing": "Paperclip",  # co-author only
+    "teknium@hermes-agent": "teknium1",
+    "web3blind@gmail.com": "web3blind",
+    "ztzheng@163.com": "chengoak",  # PR #17467
+    "24110240104@m.fudan.edu.cn": "YuShu",  # co-author only
 }
 
 

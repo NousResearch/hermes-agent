@@ -2697,9 +2697,15 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
+        # Feishu topic messages: root_id is the topic root message ID.
+        # When a user replies within a topic, thread_id may be empty
+        # but root_id is always present — use it as fallback for both
+        # thread_id (topic routing) and reply_to_message_id (reply anchor).
+        _raw_root_id = getattr(message, "root_id", None) or None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
+            or _raw_root_id
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
@@ -2723,7 +2729,7 @@ class FeishuAdapter(BasePlatformAdapter):
             chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
-            thread_id=getattr(message, "thread_id", None) or None,
+            thread_id=getattr(message, "thread_id", None) or _raw_root_id or None,
             user_id_alt=sender_profile["user_id_alt"],
         )
         normalized = MessageEvent(
@@ -3907,7 +3913,8 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        thread_id = (metadata or {}).get("thread_id")
+        reply_in_thread = bool(thread_id)
         if reply_to:
             body = self._build_reply_message_body(
                 content=payload,
@@ -3918,13 +3925,39 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
+        # When reply_to is absent (progress/status/approval messages),
+        # send via the create API. If thread_id is present in metadata,
+        # target the topic/thread directly so the message lands inside
+        # the existing thread instead of creating a new one.
+        #
+        # Feishu has two ID prefixes:
+        #   om_  → message ID (valid as reply_to for im.v1.message.reply)
+        #   omt_ → topic/thread ID (NOT valid as reply_to — API error 99992354;
+        #         but valid as receive_id with receive_id_type="thread_id")
+        #
+        # For om_ thread_id: prefer using it as reply_to (reply API keeps
+        # the message in-thread more reliably than create).
+        if thread_id and isinstance(thread_id, str) and thread_id.startswith("om_"):
+            body = self._build_reply_message_body(
+                content=payload,
+                msg_type=msg_type,
+                reply_in_thread=True,
+                uuid_value=str(uuid.uuid4()),
+            )
+            request = self._build_reply_message_request(thread_id, body)
+            return await asyncio.to_thread(self._client.im.v1.message.reply, request)
+
+        # For omt_ thread_id or chat_id fallback: use create API
+        # with receive_id_type="thread_id" when thread_id is an omt_ ID.
+        receive_id = str(thread_id) if thread_id else chat_id
+        receive_id_type = "thread_id" if thread_id else "chat_id"
         body = self._build_create_message_body(
-            receive_id=chat_id,
+            receive_id=receive_id,
             msg_type=msg_type,
             content=payload,
             uuid_value=str(uuid.uuid4()),
         )
-        request = self._build_create_message_request("chat_id", body)
+        request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
     @staticmethod
@@ -4063,22 +4096,34 @@ class FeishuAdapter(BasePlatformAdapter):
                 )
                 # If replying to a message failed because it was withdrawn or not found,
                 # fall back to posting a new message directly to the chat.
+                # However, when we are inside a Feishu topic thread (metadata has thread_id),
+                # falling back to create with reply_to=None would spawn a new topic.
+                # Instead, try to stay inside the thread:
+                #   1. If thread_id is an om_ message ID, use it as reply_to
+                #   2. If thread_id is an omt_ topic ID, let _send_raw_message's
+                #      create path use receive_id_type="thread_id" to target the thread
                 if active_reply_to and not self._response_succeeded(response):
                     code = getattr(response, "code", None)
                     if code in _FEISHU_REPLY_FALLBACK_CODES:
+                        thread_id = (metadata or {}).get("thread_id")
                         logger.warning(
                             "[Feishu] Reply to %s failed (code %s — message withdrawn/missing); "
-                            "falling back to new message in chat %s",
+                            "falling back in chat %s (thread_id=%s)",
                             active_reply_to,
                             code,
                             chat_id,
+                            thread_id,
                         )
-                        active_reply_to = None
+                        # If thread_id is an om_ ID, try replying to it directly
+                        if thread_id and isinstance(thread_id, str) and thread_id.startswith("om_"):
+                            active_reply_to = thread_id
+                        else:
+                            active_reply_to = None
                         response = await self._send_raw_message(
                             chat_id=chat_id,
                             msg_type=msg_type,
                             payload=payload,
-                            reply_to=None,
+                            reply_to=active_reply_to,
                             metadata=metadata,
                         )
                 return response

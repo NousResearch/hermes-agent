@@ -77,3 +77,13 @@ patches:
           - "self_correct"
     original_commits: [a56394a5e]
     note: This patch survived the upstream sync (it was on the main branch, not security/enhancements)
+
+# Reference branches — DO NOT PRUNE these. They contain the original patch code
+# that was used to manually re-apply after the April 2026 upstream merge incident.
+# If they're accidentally deleted, patches can still be re-implemented from the
+# declarative specs in patches/*.yaml, but having the original code is faster.
+reference_branches:
+  - fork/security/enhancements
+  - fork/feat/cron-header-meta
+  - origin/security/enhancements
+  - origin/feat/cron-header-meta

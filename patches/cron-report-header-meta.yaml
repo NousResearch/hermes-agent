@@ -1,0 +1,50 @@
+# Patch Spec: Cron Report Header Meta
+# Behavioral specification for cron delivery report enrichment.
+
+name: cron-report-header-meta
+version: 2
+status: applied
+original_commits: [42df69a28, 6f9863694]
+restored_commit: dc815e64c
+
+intent: |
+  Cron job delivery reports should include metadata about the model that
+  generated the response and how long it took. This:
+  1. Helps diagnose which models produce better cron reports
+  2. Provides timing data for model performance comparison
+  3. Makes it easy to identify which provider/model handled a scheduled task
+
+behavior:
+  - trigger: Cron job completes and _deliver_result() formats the delivery message
+    action: |
+      Prepend a header block to the message containing:
+      - "Run Time: <ISO timestamp>" — when the response was generated
+      - "Model: <provider>/<model_name> | <elapsed_seconds>s" — which model and how long
+
+  - trigger: run_job() starts executing a cron job
+    action: Record _job_start_time = time.time() on the job dict
+
+  - trigger: run_job() completes (success or error)
+    action: |
+      Compute _elapsed_seconds = time.time() - _job_start_time
+      Store on the job dict for use by _deliver_result()
+
+integration_points:
+  - file: cron/scheduler.py
+    changes:
+      - Add `import time` at top of file
+      - In run_job(): add _job_start_time = time.time() at start of execution
+      - In run_job() success path: add job["_elapsed_seconds"] = time.time() - job["_job_start_time"]
+      - In run_job() error path: add job["_elapsed_seconds"] = time.time() - job["_job_start_time"]
+      - In _deliver_result(): extract model, provider from job config
+      - In _deliver_result(): compute model_info string (e.g., "nvidia/deepseek-v4-pro")
+      - In _deliver_result(): compute timing string (e.g., "45.2s")
+      - In _deliver_result(): prepend header lines to message text
+
+verification_markers:
+  cron/scheduler.py:
+    - "_elapsed_seconds"
+    - "_job_start_time"
+    - "model_info"
+    - "Run Time:"
+    - "Model: {model_info}"

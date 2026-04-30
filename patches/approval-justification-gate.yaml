@@ -1,0 +1,104 @@
+# Patch Spec: Approval Justification Gate
+# This is a BEHAVIORAL specification — it describes WHAT the patch does, not HOW.
+# If the upstream codebase refactors, an agent should be able to re-implement
+# from this spec without needing the original diffs.
+
+name: approval-justification-gate
+version: 2
+status: applied
+original_commits: [e682e3f0c, 56ecda022]
+restored_commit: dc815e64c
+
+intent: |
+  Before escalating a flagged command to user approval, require the AI agent
+  to provide a text justification for why the command is necessary. This:
+  1. Reduces approval fatigue (users see reasoning, not just raw commands)
+  2. Creates an audit trail of agent intent
+  3. Gives the agent one chance to self-correct before bothering the user
+  4. Prevents trivial approvals by requiring the model to "think before asking"
+
+behavior:
+  - trigger: "check_all_command_guards() flags a command as dangerous AND no justification is provided"
+    action: 'return status="justification_required" with a hint message asking the model to retry with justification'
+  - trigger: "The agent retries WITH a justification string"
+    action: 'include the justification in approval_data as {"justification": effective_justification}'
+  - trigger: "The agent fails to provide justification after max_attempts (default: 3)"
+    action: 'return status="justification_denied" — the command is blocked entirely'
+  - trigger: "The justification is present and valid"
+    action: "proceed to Phase 3 (user approval) with justification included in the approval UI"
+
+effective_justification_logic: |
+  Priority order for determining the justification to use:
+  1. Explicit `justification` parameter passed to check_all_command_guards()
+  2. Pending justification from _pending_justifications[(session_key, cmd_hash)]
+  3. If neither: return justification_required status
+
+phase_position: |
+  Phase 2.8 — inserted between:
+  - Phase 2.7: Self-correction guard (model gets one retry with safer alternative)
+  - Phase 3: User approval (command is escalated to human)
+  This means: self-correction runs FIRST. If the model can't self-correct,
+  THEN justification is required before bothering the user.
+
+integration_points:
+  - file: tools/approval.py
+    changes:
+      - 'Add `justification: str = None` parameter to check_all_command_guards()'
+      - "Add Phase 2.8 justification gate after Phase 2.7 self-correction"
+      - "Add _pending_justifications dict (parallel to _pending_approvals)"
+      - "Return justification_required / justification_denied statuses"
+      - 'Include "justification": effective_justification in approval_data'
+  - file: tools/terminal_tool.py
+    changes:
+      - 'Add `justification: Optional[str] = None` parameter to terminal_tool()'
+      - "Pass justification to _check_all_guards()"
+      - "Handle justification_required status: return hint for model to retry with justification"
+      - "Handle justification_denied status: return error indicating max retries exceeded"
+  - file: gateway/run.py
+    changes:
+      - 'Extract justification from approval_data: justification = approval_data.get("justification")'
+      - "Pass justification=justification to send_exec_approval() call"
+      - "In text fallback approval message: include justification if present"
+  - file: gateway/platforms/telegram.py
+    changes:
+      - 'Add justification: Optional[str] = None parameter to send_exec_approval()'
+  - file: gateway/platforms/discord.py
+    changes:
+      - 'Add justification: Optional[str] = None parameter to send_exec_approval()'
+      - 'Add embed field: embed.add_field(name="Agent Justification", value=justification) when justification is present'
+  - file: gateway/platforms/slack.py
+    changes:
+      - 'Add justification: Optional[str] = None parameter to send_exec_approval()'
+  - file: gateway/platforms/matrix.py
+    changes:
+      - 'Add justification: Optional[str] = None parameter to send_exec_approval()'
+  - file: gateway/platforms/feishu.py
+    changes:
+      - 'Add justification: Optional[str] = None parameter to send_exec_approval()'
+
+verification_markers:
+  tools/approval.py:
+    - "justification: str = None"
+    - "Phase 2.8"
+    - "justification_required"
+    - '"justification": effective_justification'
+    - "_pending_approvals"
+    - "_pending_justifications"
+  tools/terminal_tool.py:
+    - "justification: Optional[str]"
+    - "justification_required"
+    - "justification_denied"
+  gateway/run.py:
+    - "justification = approval_data.get"
+    - "justification=justification,"
+  gateway/platforms/telegram.py:
+    - "justification: Optional[str]"
+  gateway/platforms/discord.py:
+    - "justification: Optional[str]"
+    - "Agent Justification"
+  gateway/platforms/slack.py:
+    - "justification: Optional[str]"
+  gateway/platforms/matrix.py:
+    - "justification: Optional[str]"
+  gateway/platforms/feishu.py:
+    - "justification: Optional[str]"

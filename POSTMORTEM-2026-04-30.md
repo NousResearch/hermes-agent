@@ -195,7 +195,7 @@ patches:
 
 ### 🟡 Medium: Better Patching Tools
 
-**A4. Install `ast-grep` for AST-aware Python code modification.**
+**A4. Install `ast-grep` for AST-aware Python code modification.** ✅ Done — `ast-grep` 0.42.1 installed at `~/.local/bin/ast-grep`
 
 [`ast-grep`](https://github.com/ast-grep/ast-grep) (aka `sg`) operates on the syntax tree, not raw text. It:
 - Preserves indentation automatically
@@ -210,7 +210,7 @@ For our use case, `ast-grep` would handle "add a parameter to a function" as a s
 
 **Alternative: LibCST** (Instagram/Meta's Python codemod framework). More powerful for complex multi-file refactors, but heavier setup. `ast-grep` is simpler for one-off patches.
 
-**A5. Build a reusable `patch_python.py` utility script** that:
+**A5. Build a reusable `patch_python.py` utility script** ✅ Done — `scripts/patch_python.py` with insert-after, replace-between, add-param commands
 - Takes a file path, a line range or function name, and replacement code
 - Reads the target file's actual indentation (detecting tabs vs spaces, indent width)
 - Applies the change with correct indentation
@@ -221,7 +221,7 @@ This replaces the 20 one-off scripts with a single general-purpose tool.
 
 ### 🟡 Medium: Patch Specifications
 
-**A6. Write declarative patch specs instead of relying on old code.**
+**A6. Write declarative patch specs instead of relying on old code.** ✅ Done — `patches/approval-justification-gate.yaml` and `patches/cron-report-header-meta.yaml`
 
 Instead of "here's the diff from commit X," maintain specifications like:
 
@@ -253,9 +253,9 @@ This way, even if the original code is lost and the upstream has refactored ever
 
 ### 🟢 Cleanup
 
-**A7. Clean up `/home/ubuntu/*.py` temp scripts.** (20 files, ~100KB total)
+**A7. Clean up `/home/ubuntu/*.py` temp scripts.** ✅ Done — 17 stale scripts removed. 4 intentional scripts remain (benchmark_e2e, route_proxy, route_proxy_test, tls_mitm_proxy).
 
-**A8. Don't prune orphaned branches** — `security/enhancements` and `feat/cron-header-meta` are useful references even though they can't be cherry-picked.
+**A8. Don't prune orphaned branches** — `security/enhancements` and `feat/cron-header-meta` are useful references even though they can't be cherry-picked. ✅ Verified present on fork + origin remotes. Documented in PATCHES.yaml reference_branches.
 
 ---
 

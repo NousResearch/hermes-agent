@@ -5290,6 +5290,15 @@ def _run_npm_install_deterministic(
     )
 
 
+def _web_dist_ready(web_dist: Path) -> bool:
+    """Return True when a built web UI distribution is available."""
+    web_dist = web_dist.resolve()
+    return (
+        (web_dist / "index.html").is_file()
+        and (web_dist / "assets").is_dir()
+    )
+
+
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """Build the web UI frontend if npm is available.
 
@@ -5310,9 +5319,9 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     if not npm:
         if fatal:
             print("Web UI frontend not built and npm is not available.")
-            print("Install Node.js, then run:  cd web && npm install && npm run build")
+            print(f"Install Node.js, then run:  cd {web_dir} && npm install && npm run build")
         return not fatal
-    print("→ Building web UI...")
+    print(f"→ Building web UI from {web_dir}...")
     r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
     if r1.returncode != 0:
         print(
@@ -7887,9 +7896,25 @@ def cmd_dashboard(args):
         print(f"Import error: {e}")
         sys.exit(1)
 
-    if "HERMES_WEB_DIST" not in os.environ:
+    web_dist_env = os.environ.get("HERMES_WEB_DIST")
+    if web_dist_env:
+        web_dist = Path(web_dist_env).expanduser().resolve()
+        if not _web_dist_ready(web_dist):
+            print(f"Web UI distribution not found or incomplete: {web_dist}")
+            print("Unset HERMES_WEB_DIST to build and use the default web UI distribution.")
+            sys.exit(1)
+        os.environ["HERMES_WEB_DIST"] = str(web_dist)
+    else:
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)
+
+        web_dist = (PROJECT_ROOT / "hermes_cli" / "web_dist").resolve()
+        if not _web_dist_ready(web_dist):
+            print(f"Web UI build completed, but built assets were not found in {web_dist}")
+            sys.exit(1)
+
+        # Make the resolved default explicit for the web server.
+        os.environ["HERMES_WEB_DIST"] = str(web_dist)
 
     from hermes_cli.web_server import start_server
 

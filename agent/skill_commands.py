@@ -285,59 +285,60 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
 
 
 def reload_skills() -> Dict[str, Any]:
-    """Re-scan the skills directory and invalidate every in-process skill cache.
+    """Re-scan the skills directory and return a diff of what changed.
 
-    Mirrors the ``/reload-mcp`` shape: clears state, rebuilds it, returns a
-    diff summary that the caller (CLI, gateway, or agent tool) can render
-    for the user / model.
+    Rescans ``~/.hermes/skills/`` and any ``skills.external_dirs`` so the
+    slash-command map (``agent.skill_commands._skill_commands``) reflects
+    skills added or removed on disk.
 
-    What this clears:
-      * ``agent.skill_commands._skill_commands`` (slash-command map)
-      * ``agent.prompt_builder._SKILLS_PROMPT_CACHE`` (in-process LRU)
-      * ``.skills_prompt_snapshot.json`` on disk (cross-process snapshot)
-
-    What gets re-read on the next prompt build:
-      * ``~/.hermes/skills/`` and any ``skills.external_dirs``
-      * Plugin-provided skills
-      * ``skills.disabled`` / ``skills.platform_disabled`` from config.yaml
+    This does NOT invalidate the skills system-prompt cache. Skills are
+    called by name via ``/skill-name``, ``skills_list``, or ``skill_view``
+    — they don't need to be in the system prompt for the model to use them.
+    Keeping the prompt cache intact preserves prefix caching across the
+    reload, so a user invoking ``/reload-skills`` pays no cache-reset cost.
 
     Returns:
         Dict with keys::
 
             {
-              "added":      [skill names newly visible],
-              "removed":    [skill names no longer visible],
+              "added":      [{"name": str, "description": str}, ...],
+              "removed":    [{"name": str, "description": str}, ...],
               "unchanged":  [skill names present before and after],
               "total":      total skill count after rescan,
               "commands":   total /slash-skill count after rescan,
             }
-    """
-    # Snapshot pre-reload state from the cache (what the agent had been
-    # advertising). Comparing this to the post-rescan disk state shows
-    # the user/agent which skills actually appeared / disappeared.
-    before = set(_skill_commands.keys())  # /slash-form keys, e.g. "/demo"
 
-    # Clear the slash-command cache. ``scan_skill_commands`` already
-    # resets ``_skill_commands = {}`` internally, but we call the public
-    # rescan path so the result is observable to ``get_skill_commands``.
+        ``description`` is the skill's full SKILL.md frontmatter
+        ``description:`` field — the same string the system prompt renders
+        as ``    - name: description`` for pre-existing skills.
+    """
+    # Snapshot pre-reload state (name -> description) from the current
+    # slash-command cache. Using dicts lets the post-rescan diff carry
+    # descriptions for newly-visible or just-removed skills without a
+    # second disk walk.
+    def _snapshot(cmds: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+        out: Dict[str, str] = {}
+        for slash_key, info in cmds.items():
+            bare = slash_key.lstrip("/")
+            out[bare] = (info or {}).get("description") or ""
+        return out
+
+    before = _snapshot(_skill_commands)
+
+    # Rescan the skills dir. ``scan_skill_commands`` resets
+    # ``_skill_commands = {}`` internally and repopulates it.
     new_commands = scan_skill_commands()
 
-    # Clear the system-prompt cache (in-process LRU + on-disk snapshot)
-    # so the next prompt build re-walks the skills dir.
-    try:
-        from agent.prompt_builder import clear_skills_system_prompt_cache
-        clear_skills_system_prompt_cache(clear_snapshot=True)
-    except Exception as e:  # pragma: no cover — best-effort
-        logger.debug("Could not clear skills prompt cache: %s", e)
+    after = _snapshot(new_commands)
 
-    after = set(new_commands.keys())
-    # Strip leading slash for display: callers compare bare skill names.
-    def _strip(s: set) -> set:
-        return {k.lstrip("/") for k in s}
+    added_names = sorted(set(after) - set(before))
+    removed_names = sorted(set(before) - set(after))
+    unchanged = sorted(set(after) & set(before))
 
-    added = sorted(_strip(after - before))
-    removed = sorted(_strip(before - after))
-    unchanged = sorted(_strip(after & before))
+    added = [{"name": n, "description": after[n]} for n in added_names]
+    # For removed skills, use the description we had cached pre-rescan
+    # (the skill file is gone so we can't re-read it).
+    removed = [{"name": n, "description": before[n]} for n in removed_names]
 
     return {
         "added": added,

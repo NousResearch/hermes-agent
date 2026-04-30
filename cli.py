@@ -7503,11 +7503,17 @@ class HermesCLI:
             print(f"  ❌ MCP reload failed: {e}")
 
     def _reload_skills(self) -> None:
-        """Reload skills: rescan ~/.hermes/skills/, clear prompt cache.
+        """Reload skills: rescan ~/.hermes/skills/ and queue a note for the
+        next user turn.
 
-        Mirrors the ``/reload-mcp`` UX. After rescanning, the system prompt
-        for the next turn is rebuilt with the fresh skill list and any
-        ``/skill-name`` slash commands are picked up immediately.
+        Skills don't need to live in the system prompt for the model to use
+        them (they're invoked via ``/skill-name``, ``skills_list``, or
+        ``skill_view`` at runtime), so this does NOT clear the prompt cache.
+        It rescans the slash-command map, prints the diff for the user, and
+        — if any skills were added or removed — queues a one-shot note that
+        gets prepended to the next user message. This preserves message
+        alternation (no phantom user turn injected out of band) and keeps
+        prompt caching intact.
         """
         try:
             from agent.skill_commands import reload_skills
@@ -7516,49 +7522,54 @@ class HermesCLI:
                 print("🔄 Reloading skills...")
 
             result = reload_skills()
-            added = result.get("added", [])
-            removed = result.get("removed", [])
+            added = result.get("added", [])      # [{"name", "description"}, ...]
+            removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)
 
-            if added:
-                print(f"  ➕ Added: {', '.join(added)}")
-            if removed:
-                print(f"  ➖ Removed: {', '.join(removed)}")
             if not added and not removed:
-                print("  No changes detected.")
+                print("  No new skills detected.")
+                print(f"  📚 {total} skill(s) available")
+                return
+
+            def _fmt_line(item: dict) -> str:
+                nm = item.get("name", "")
+                desc = item.get("description", "")
+                return f"    - {nm}: {desc}" if desc else f"    - {nm}"
+
+            if added:
+                print("  ➕ Added Skills:")
+                for item in added:
+                    print(f"  {_fmt_line(item)}")
+            if removed:
+                print("  ➖ Removed Skills:")
+                for item in removed:
+                    print(f"  {_fmt_line(item)}")
             print(f"  📚 {total} skill(s) available")
 
-            # Inject a system-style note so the model sees the new skill
-            # list on its next turn. Appended at the end of history to
-            # preserve prompt-cache for the prefix.
-            change_parts = []
+            # Queue a one-shot note for the NEXT user turn. The CLI's agent
+            # loop prepends ``_pending_skills_reload_note`` (if set) to the
+            # API-call-local message at ~L8770, then clears it — same
+            # pattern as ``_pending_model_switch_note``. Nothing is written
+            # to conversation_history here, so message alternation stays
+            # intact and no out-of-band user turn is persisted.
+            #
+            # Format matches how the system prompt renders pre-existing
+            # skills (``    - name: description``) so the model reads the
+            # diff in the same shape as its original skill catalog.
+            sections = ["[USER INITIATED SKILLS RELOAD:"]
             if added:
-                change_parts.append(f"Added skills: {', '.join(added)}")
+                sections.append("")
+                sections.append("Added Skills:")
+                for item in added:
+                    sections.append(_fmt_line(item))
             if removed:
-                change_parts.append(f"Removed skills: {', '.join(removed)}")
-            if change_parts:
-                change_detail = ". ".join(change_parts) + ". "
-                self.conversation_history.append({
-                    "role": "user",
-                    "content": (
-                        f"[IMPORTANT: Skills have been reloaded. {change_detail}"
-                        f"{total} skill(s) now available. Use skills_list to "
-                        f"see the updated catalog.]"
-                    ),
-                })
-
-                # Persist immediately so the session log reflects the
-                # reload event.
-                if self.agent is not None:
-                    try:
-                        self.agent._persist_session(
-                            self.conversation_history,
-                            self.conversation_history,
-                        )
-                    except Exception:
-                        pass  # Best-effort
-
-            print(f"  ✅ Skill cache cleared")
+                sections.append("")
+                sections.append("Removed Skills:")
+                for item in removed:
+                    sections.append(_fmt_line(item))
+            sections.append("")
+            sections.append("Use skills_list to see the updated catalog.]")
+            self._pending_skills_reload_note = "\n".join(sections)
 
         except Exception as e:
             print(f"  ❌ Skills reload failed: {e}")
@@ -8771,6 +8782,13 @@ class HermesCLI:
                 if _msn:
                     agent_message = _msn + "\n\n" + agent_message
                     self._pending_model_switch_note = None
+                # Prepend pending /reload-skills note so the model sees which
+                # skills were added/removed before handling this turn. Same
+                # one-shot queue pattern as the model-switch note above.
+                _srn = getattr(self, '_pending_skills_reload_note', None)
+                if _srn:
+                    agent_message = _srn + "\n\n" + agent_message
+                    self._pending_skills_reload_note = None
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,

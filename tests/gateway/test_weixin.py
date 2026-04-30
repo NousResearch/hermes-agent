@@ -883,3 +883,108 @@ class TestWeixinContentDedup:
         assert adapter.handle_message.await_count == 0
         # is_duplicate should only be called for message_id, never for content
         assert all("content:" not in str(call) for call in adapter._dedup.is_duplicate.call_args_list)
+
+
+class TestWeixinQrLoginVerifyCode:
+    """Regression tests for the 6-digit pairing-code flow added for
+    upstream issue #17706. WeChat shows a confirmation number after
+    scan; the polling loop must prompt for it and replay it on the
+    next get_qrcode_status request."""
+
+    def _run_qr_login(self, status_sequence, prompt_inputs):
+        captured_endpoints = []
+
+        async def fake_api_get(_session, *, base_url, endpoint, timeout_ms):
+            captured_endpoints.append(endpoint)
+            if endpoint.startswith(weixin.EP_GET_BOT_QR):
+                return {
+                    "qrcode": "TESTQR",
+                    "qrcode_img_content": "https://liteapp.weixin.qq.com/q/TEST",
+                }
+            return status_sequence.pop(0)
+
+        prompt_iter = iter(prompt_inputs)
+
+        def fake_input(_prompt):
+            return next(prompt_iter)
+
+        async def no_sleep(_seconds):
+            return None
+
+        with patch.object(weixin, "_api_get", side_effect=fake_api_get), \
+             patch("builtins.input", side_effect=fake_input), \
+             patch.object(weixin.asyncio, "sleep", side_effect=no_sleep), \
+             patch.object(weixin, "save_weixin_account"):
+            result = asyncio.run(
+                weixin.qr_login("/tmp/hermes-test-home", timeout_seconds=10)
+            )
+        return result, captured_endpoints
+
+    def test_need_verifycode_prompts_and_replays_code(self):
+        result, endpoints = self._run_qr_login(
+            status_sequence=[
+                {"status": "wait"},
+                {"status": "need_verifycode"},
+                {"status": "scaned"},
+                {
+                    "status": "confirmed",
+                    "ilink_bot_id": "bot-1",
+                    "bot_token": "tok-1",
+                    "baseurl": "https://ilinkai.weixin.qq.com",
+                    "ilink_user_id": "user-1",
+                },
+            ],
+            prompt_inputs=["123456"],
+        )
+        assert result is not None
+        assert result["account_id"] == "bot-1"
+        assert result["token"] == "tok-1"
+        verify_polls = [e for e in endpoints if "verify_code=" in e]
+        assert verify_polls, f"no poll carried verify_code; endpoints={endpoints}"
+        assert "verify_code=123456" in verify_polls[0]
+
+    def test_wrong_code_is_reprompted_then_accepted(self):
+        result, _endpoints = self._run_qr_login(
+            status_sequence=[
+                {"status": "need_verifycode"},
+                {"status": "need_verifycode"},
+                {"status": "scaned"},
+                {
+                    "status": "confirmed",
+                    "ilink_bot_id": "bot-2",
+                    "bot_token": "tok-2",
+                    "baseurl": "https://ilinkai.weixin.qq.com",
+                    "ilink_user_id": "u-2",
+                },
+            ],
+            prompt_inputs=["000000", "654321"],
+        )
+        assert result is not None
+        assert result["account_id"] == "bot-2"
+
+    def test_verify_code_blocked_refreshes_qr(self):
+        result, endpoints = self._run_qr_login(
+            status_sequence=[
+                {"status": "need_verifycode"},
+                {"status": "verify_code_blocked"},
+                {"status": "wait"},
+                {
+                    "status": "confirmed",
+                    "ilink_bot_id": "bot-3",
+                    "bot_token": "tok-3",
+                    "baseurl": "https://ilinkai.weixin.qq.com",
+                    "ilink_user_id": "u-3",
+                },
+            ],
+            prompt_inputs=["111111"],
+        )
+        assert result is not None
+        qr_fetches = [e for e in endpoints if e.startswith(weixin.EP_GET_BOT_QR)]
+        assert len(qr_fetches) >= 2, f"QR was not refreshed; endpoints={endpoints}"
+
+    def test_binded_redirect_short_circuits(self):
+        result, _ = self._run_qr_login(
+            status_sequence=[{"status": "binded_redirect"}],
+            prompt_inputs=[],
+        )
+        assert result is None

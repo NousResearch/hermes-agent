@@ -81,6 +81,8 @@ import shutil
 import sys
 import threading
 import time
+import base64
+import tempfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -915,12 +917,11 @@ class MCPServerTask:
         except Exception:
             logger.exception("MCP server '%s': dynamic tool refresh failed", self.name)
 
-    def _schedule_tools_refresh(self) -> asyncio.Task:
+    def _schedule_tools_refresh(self) -> None:
         """Schedule a background tool refresh and keep it strongly referenced."""
         task = asyncio.create_task(self._refresh_tools_task())
         self._pending_refresh_tasks.add(task)
         task.add_done_callback(self._pending_refresh_tasks.discard)
-        return task
 
     def _make_message_handler(self):
         """Build a ``message_handler`` callback for ``ClientSession``.
@@ -951,10 +952,6 @@ class MCPServerTask:
                             # a separate task and let the handler return
                             # promptly.
                             self._schedule_tools_refresh()
-                            # Yield one loop tick so tests and short-lived
-                            # notification contexts can observe the scheduled
-                            # refresh without awaiting the full server RPC.
-                            await asyncio.sleep(0)
                         case PromptListChangedNotification():
                             logger.debug("MCP server '%s': prompts/list_changed (ignored)", self.name)
                         case ResourceListChangedNotification():
@@ -1967,6 +1964,34 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
+
+def _mime_to_ext(mime_type: str) -> str:
+    mime_map = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/bmp": ".bmp",
+        "image/svg+xml": ".svg",
+        "image/tiff": ".tiff",
+        "audio/wav": ".wav",
+        "audio/mpeg": ".mp3",
+        "audio/ogg": ".ogg",
+        "audio/mp4": ".m4a",
+        "audio/webm": ".weba",
+    }
+    return mime_map.get(mime_type, ".bin")
+
+
+def _format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KiB"
+    else:
+        return f"{size_bytes / (1024 * 1024):.1f} MiB"
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -2024,12 +2049,34 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     )
                 }, ensure_ascii=False)
 
-            # Collect text from content blocks
+            # Collect text from content blocks, and extract binary media blocks.
             parts: List[str] = []
+            media_files: List[str] = []
             for block in (result.content or []):
                 if hasattr(block, "text"):
                     parts.append(block.text)
+                elif hasattr(block, "type") and getattr(block, "data", None):
+                    blk_type = block.type
+                    try:
+                        ext = _mime_to_ext(getattr(block, "mimeType", "application/octet-stream"))
+                        fd, path = tempfile.mkstemp(
+                            suffix=f"_{blk_type}{ext}",
+                            prefix=f"mcp_{blk_type}_",
+                        )
+                        with os.fdopen(fd, "wb") as fh:
+                            fh.write(base64.b64decode(block.data))
+                        size = os.path.getsize(path)
+                        media_files.append(
+                            f"{blk_type} saved: {path} "
+                            f"({getattr(block, 'mimeType', '?')}, {_format_size(size)})"
+                        )
+                    except Exception as e:
+                        media_files.append(f"[{blk_type} decode/save failed: {e}]")
             text_result = "\n".join(parts) if parts else ""
+
+            if media_files:
+                media_summary = "Media saved:\n" + "\n".join(f"  - {entry}" for entry in media_files)
+                text_result = f"{text_result}\n\n{media_summary}" if text_result else media_summary
 
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent

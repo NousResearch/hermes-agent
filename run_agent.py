@@ -10521,6 +10521,23 @@ class AIAgent:
             except Exception:
                 pass
 
+        # Context engine prefetch: lets a pluggable engine inject domain-specific
+        # operating context into the current user turn without mutating the
+        # cached system prompt or waiting for compression to fire.
+        _context_engine_prefetch_cache = ""
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            try:
+                _query = original_user_message if isinstance(original_user_message, str) else ""
+                _context_engine_prefetch_cache = self.context_compressor.prefetch(
+                    _query,
+                    session_id=self.session_id,
+                    conversation_history=list(messages),
+                    model=self.model,
+                    platform=getattr(self, "platform", None) or "",
+                ) or ""
+            except Exception as exc:
+                logger.debug("Context engine prefetch failed: %s", exc)
+
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
@@ -10665,6 +10682,8 @@ class AIAgent:
                         _fenced = build_memory_context_block(_ext_prefetch_cache)
                         if _fenced:
                             _injections.append(_fenced)
+                    if _context_engine_prefetch_cache:
+                        _injections.append(_context_engine_prefetch_cache)
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
                     if _injections:

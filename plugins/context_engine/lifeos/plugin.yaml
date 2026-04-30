@@ -1,0 +1,3 @@
+name: lifeos
+description: LifeOS-aware context engine that injects operational context from Tony's Obsidian vault while preserving the built-in compressor fallback.
+version: 0.1.0

@@ -146,6 +146,19 @@ class ContextEngine(ABC):
         self.last_total_tokens = 0
         self.compression_count = 0
 
+    # -- Optional: per-turn context recall ---------------------------------
+
+    def prefetch(self, query: str, **kwargs) -> str:
+        """Return ephemeral context to inject into the current user turn.
+
+        This is called once per user turn before the tool-calling loop.
+        The returned text is injected at API-call time only and is NOT
+        persisted to the session transcript. Engines can use this to surface
+        domain-specific operating context without mutating the stable system
+        prompt or waiting for compression to fire.
+        """
+        return ""
+
     # -- Optional: tools ---------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:

@@ -2159,7 +2159,16 @@ class HermesCLI:
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
-        
+
+        # Terminal tab title: "<Persona>: <session title>" + OSC 7 cwd.
+        # Safe no-op on non-TTY / TERM=dumb / HERMES_DISABLE_TAB_TITLE=1.
+        try:
+            from hermes_cli.terminal_title import set_cwd, update_for_session
+            set_cwd()
+            update_for_session(self.session_id)
+        except Exception:
+            pass
+
         # History file for persistent input recall across sessions
         self._history_file = _hermes_home / ".hermes_history"
         self._last_invalidate: float = 0.0  # throttle UI repaints
@@ -3558,6 +3567,11 @@ class HermesCLI:
                 except (ValueError, Exception) as e:
                     _cprint(f"  Could not apply pending title: {e}")
                     self._pending_title = None
+            try:
+                from hermes_cli.terminal_title import update_for_session
+                update_for_session(self.session_id)
+            except Exception:
+                pass
             return True
         except Exception as e:
             ChatConsole().print(f"[bold red]Failed to initialize agent: {e}[/]")
@@ -6296,6 +6310,11 @@ class HermesCLI:
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     _cprint(f"  Session title set: {new_title}")
+                                    try:
+                                        from hermes_cli.terminal_title import update_for_session
+                                        update_for_session(self.session_id)
+                                    except Exception:
+                                        pass
                                 else:
                                     _cprint("  Session not found in database.")
                             except ValueError as e:

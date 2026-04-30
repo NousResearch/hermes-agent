@@ -121,6 +121,16 @@ def auto_title_session(
         logger.debug("Auto-generated session title: %s", title)
     except Exception as e:
         logger.debug("Failed to set auto-generated title: %s", e)
+        return
+
+    # Refresh the terminal tab title so the new auto-generated title shows up
+    # immediately. No-op in non-CLI contexts (gateway, ACP, etc.) per the
+    # module's TTY / env guards.
+    try:
+        from hermes_cli.terminal_title import update_for_session
+        update_for_session(session_id)
+    except Exception:
+        pass
 
 
 def maybe_auto_title(

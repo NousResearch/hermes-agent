@@ -3593,11 +3593,15 @@ class AIAgent:
 
                 if actions:
                     summary = " · ".join(dict.fromkeys(actions))
-                    self._safe_print(f"  💾 {summary}")
+                    self._safe_print(
+                        f"  💾 Self-improvement review: {summary}"
+                    )
                     _bg_cb = self.background_review_callback
                     if _bg_cb:
                         try:
-                            _bg_cb(f"💾 {summary}")
+                            _bg_cb(
+                                f"💾 Self-improvement review: {summary}"
+                            )
                         except Exception:
                             pass
 

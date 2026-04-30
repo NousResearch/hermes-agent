@@ -1505,7 +1505,64 @@ class BasePlatformAdapter(ABC):
         Default is a no-op for platforms with one-shot typing indicators.
         """
         pass
-    
+
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images.
+
+        Accepts ``http(s)://``, ``file://`` URIs in the first tuple
+        element.
+
+        Default implementation sends each item individually,
+        routing animated GIFs through ``send_animation`` and local
+        files through ``send_image_file``.
+
+        Override in subclasses to bundle into a single native API call
+        (e.g. Signal's multi-attachment RPC)
+        """
+        from urllib.parse import unquote as _unquote
+
+        for image_url, alt_text in images:
+            if human_delay > 0:
+                await asyncio.sleep(human_delay)
+            try:
+                logger.info(
+                    "[%s] Sending image: %s (alt=%s)",
+                    self.name,
+                    safe_url_for_log(image_url),
+                    alt_text[:30] if alt_text else "",
+                )
+                if image_url.startswith("file://"):
+                    img_result = await self.send_image_file(
+                        chat_id=chat_id,
+                        image_path=_unquote(image_url[7:]),
+                        caption=alt_text if alt_text else None,
+                        metadata=metadata,
+                    )
+                elif self._is_animation_url(image_url):
+                    img_result = await self.send_animation(
+                        chat_id=chat_id,
+                        animation_url=image_url,
+                        caption=alt_text if alt_text else None,
+                        metadata=metadata,
+                    )
+                else:
+                    img_result = await self.send_image(
+                        chat_id=chat_id,
+                        image_url=image_url,
+                        caption=alt_text if alt_text else None,
+                        metadata=metadata,
+                    )
+                if not img_result.success:
+                    logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+            except Exception as img_err:
+                logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+
     async def send_image(
         self,
         chat_id: str,
@@ -2587,41 +2644,52 @@ class BasePlatformAdapter(ABC):
                 # Send extracted images as native attachments
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-                for image_url, alt_text in images:
-                    if human_delay > 0:
-                        await asyncio.sleep(human_delay)
                     try:
-                        logger.info(
-                            "[%s] Sending image: %s (alt=%s)",
-                            self.name,
-                            safe_url_for_log(image_url),
-                            alt_text[:30] if alt_text else "",
+                        await self.send_multiple_images(
+                            chat_id=event.source.chat_id,
+                            images=images,
+                            metadata=_thread_metadata,
+                            human_delay=human_delay,
                         )
-                        # Route animated GIFs through send_animation for proper playback
-                        if self._is_animation_url(image_url):
-                            img_result = await self.send_animation(
-                                chat_id=event.source.chat_id,
-                                animation_url=image_url,
-                                caption=alt_text if alt_text else None,
-                                metadata=_thread_metadata,
-                            )
-                        else:
-                            img_result = await self.send_image(
-                                chat_id=event.source.chat_id,
-                                image_url=image_url,
-                                caption=alt_text if alt_text else None,
-                                metadata=_thread_metadata,
-                            )
-                        if not img_result.success:
-                            logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
-                    except Exception as img_err:
-                        logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                    except Exception as batch_err:
+                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+
 
                 # Send extracted media files — route by file type
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
+                # Partition images out of media_files + local_files so they
+                # can be sent as a single batch (Signal RPC)
+                from urllib.parse import quote as _quote
+                _image_paths: list = []
+                _non_image_media: list = []
                 for media_path, is_voice in media_files:
+                    _ext = Path(media_path).suffix.lower()
+                    if _ext in _IMAGE_EXTS and not is_voice:
+                        _image_paths.append(media_path)
+                    else:
+                        _non_image_media.append((media_path, is_voice))
+                _non_image_local: list = []
+                for file_path in local_files:
+                    if Path(file_path).suffix.lower() in _IMAGE_EXTS:
+                        _image_paths.append(file_path)
+                    else:
+                        _non_image_local.append(file_path)
+
+                if _image_paths:
+                    try:
+                        _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
+                        await self.send_multiple_images(
+                            chat_id=event.source.chat_id,
+                            images=_batch,
+                            metadata=_thread_metadata,
+                            human_delay=human_delay,
+                        )
+                    except Exception as batch_err:
+                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+
+                for media_path, is_voice in _non_image_media:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
@@ -2638,12 +2706,6 @@ class BasePlatformAdapter(ABC):
                                 video_path=media_path,
                                 metadata=_thread_metadata,
                             )
-                        elif ext in _IMAGE_EXTS:
-                            media_result = await self.send_image_file(
-                                chat_id=event.source.chat_id,
-                                image_path=media_path,
-                                metadata=_thread_metadata,
-                            )
                         else:
                             media_result = await self.send_document(
                                 chat_id=event.source.chat_id,
@@ -2656,19 +2718,13 @@ class BasePlatformAdapter(ABC):
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
-                # Send auto-detected local files as native attachments
-                for file_path in local_files:
+                # Send auto-detected local non-image files as native attachments
+                for file_path in _non_image_local:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
                         ext = Path(file_path).suffix.lower()
-                        if ext in _IMAGE_EXTS:
-                            await self.send_image_file(
-                                chat_id=event.source.chat_id,
-                                image_path=file_path,
-                                metadata=_thread_metadata,
-                            )
-                        elif ext in _VIDEO_EXTS:
+                        if ext in _VIDEO_EXTS:
                             await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
@@ -2708,9 +2764,27 @@ class BasePlatformAdapter(ABC):
                 if _active is not None:
                     _active.clear()
                 await _stop_typing_task()
-                # Process pending message in new background task
-                await self._process_message_background(pending_event, session_key)
-                return  # Already cleaned up
+                # Spawn a fresh task for the pending message instead of
+                # recursing.  Issue #17758: `await
+                # self._process_message_background(...)` here grew the
+                # call stack one frame per chained follow-up, and under
+                # sustained pending-queue activity the C stack would
+                # exhaust at ~2000 frames and SIGSEGV the process.
+                # Mirror the late-arrival drain pattern below: hand off
+                # to a new task and return so this frame can unwind.
+                drain_task = asyncio.create_task(
+                    self._process_message_background(pending_event, session_key)
+                )
+                # Hand ownership of the session to the drain task so
+                # stale-lock detection keeps working while it runs.
+                self._session_tasks[session_key] = drain_task
+                try:
+                    self._background_tasks.add(drain_task)
+                    drain_task.add_done_callback(self._background_tasks.discard)
+                except TypeError:
+                    # Tests stub create_task() with non-hashable sentinels; tolerate.
+                    pass
+                return  # Drain task owns the session now.
                 
         except asyncio.CancelledError:
             current_task = asyncio.current_task()
@@ -2772,25 +2846,41 @@ class BasePlatformAdapter(ABC):
             # dropped (user never gets a reply).
             late_pending = self._pending_messages.pop(session_key, None)
             if late_pending is not None:
-                logger.debug(
-                    "[%s] Late-arrival pending message during cleanup — spawning drain task",
-                    self.name,
-                )
-                _active = self._active_sessions.get(session_key)
-                if _active is not None:
-                    _active.clear()
-                drain_task = asyncio.create_task(
-                    self._process_message_background(late_pending, session_key)
-                )
-                # Hand ownership of the session to the drain task so stale-lock
-                # detection keeps working while it runs.
-                self._session_tasks[session_key] = drain_task
-                try:
-                    self._background_tasks.add(drain_task)
-                    drain_task.add_done_callback(self._background_tasks.discard)
-                except TypeError:
-                    # Tests stub create_task() with non-hashable sentinels; tolerate.
-                    pass
+                current_task = asyncio.current_task()
+                existing_task = self._session_tasks.get(session_key)
+                if (
+                    existing_task is not None
+                    and existing_task is not current_task
+                ):
+                    # The in-band drain (or an earlier late-arrival drain)
+                    # already spawned a follow-up task that owns this
+                    # session.  Re-queue the late-arrival event so that
+                    # task picks it up — avoids spawning two concurrent
+                    # _process_message_background tasks for the same key
+                    # (#17758 follow-up: prevents the create_task path
+                    # from racing with itself across the in-band/finally
+                    # boundary).
+                    self._pending_messages[session_key] = late_pending
+                else:
+                    logger.debug(
+                        "[%s] Late-arrival pending message during cleanup — spawning drain task",
+                        self.name,
+                    )
+                    _active = self._active_sessions.get(session_key)
+                    if _active is not None:
+                        _active.clear()
+                    drain_task = asyncio.create_task(
+                        self._process_message_background(late_pending, session_key)
+                    )
+                    # Hand ownership of the session to the drain task so stale-lock
+                    # detection keeps working while it runs.
+                    self._session_tasks[session_key] = drain_task
+                    try:
+                        self._background_tasks.add(drain_task)
+                        drain_task.add_done_callback(self._background_tasks.discard)
+                    except TypeError:
+                        # Tests stub create_task() with non-hashable sentinels; tolerate.
+                        pass
                 # Leave _active_sessions[session_key] populated — the drain
                 # task's own lifecycle will clean it up.
             else:
@@ -2798,10 +2888,23 @@ class BasePlatformAdapter(ABC):
                 # reset-like command that already swapped in its own
                 # command_guard (and cancelled us) can't be accidentally
                 # cleared by our unwind.  The command owns the session now.
+                #
+                # The owner-check also covers the in-band drain handoff
+                # above: when we spawned a drain_task and transferred
+                # ownership via ``_session_tasks[session_key] = drain_task``,
+                # ``_session_tasks.get(session_key) is current_task`` is
+                # False, so we leave _active_sessions populated.  Without
+                # this guard, the drain task picks up the same
+                # interrupt_event in its own _process_message_background
+                # entry, _release_session_guard's guard-match succeeds,
+                # and we'd delete the entry while the drain task is still
+                # running — letting a concurrent inbound message pass
+                # the Level-1 guard and spawn a second handler for the
+                # same session.
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     del self._session_tasks[session_key]
-                self._release_session_guard(session_key, guard=interrupt_event)
+                    self._release_session_guard(session_key, guard=interrupt_event)
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.

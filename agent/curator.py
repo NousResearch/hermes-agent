@@ -365,8 +365,19 @@ def _reports_root() -> Path:
     alongside ``agent.log`` and ``gateway.log`` so it's found by anyone
     looking for operational telemetry, not mixed in with the user's
     authored skill data in ``~/.hermes/skills/``.
+
+    ``ensure_hermes_home()`` pre-creates this dir on every CLI launch and
+    the v22→v23 migration backfills it for existing profiles, but we
+    still mkdir here as a belt-and-suspenders so the curator works even
+    from an odd entry path (e.g. gateway-only install, bare library use)
+    that bypasses both.
     """
-    return get_hermes_home() / "logs" / "curator"
+    root = get_hermes_home() / "logs" / "curator"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.debug("Curator reports dir create failed: %s", e)
+    return root
 
 
 def _write_run_report(

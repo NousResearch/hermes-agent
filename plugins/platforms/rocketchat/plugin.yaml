@@ -1,0 +1,13 @@
+name: rocketchat-platform
+kind: platform
+version: 1.0.0
+description: >
+  Rocket.Chat gateway adapter for Hermes Agent.
+  Connects to a self-hosted or cloud Rocket.Chat instance via its REST API
+  and WebSocket (DDP/Meteor real-time API) for receiving messages.
+  No external Rocket.Chat library required — uses aiohttp.
+author: Hermes Contributors
+requires_env:
+  - ROCKETCHAT_URL
+  - ROCKETCHAT_USERNAME
+  - ROCKETCHAT_PASSWORD

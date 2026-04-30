@@ -1,4 +1,4 @@
-"""Rocket.Chat gateway adapter.
+"""Rocket.Chat gateway adapter — plugin edition.
 
 Connects to a self-hosted (or cloud) Rocket.Chat instance via its REST API
 (v1) and WebSocket (DDP / Meteor real-time API) for receiving messages.
@@ -90,11 +90,11 @@ def _balance_marker(text: str, marker: str) -> str:
     parts = text.split(marker)
     if len(parts) % 2 == 0:  # odd number of markers → unbalanced
         last = text.rfind(marker)
-        return text[:last] + text[last + len(marker):]
+        return text[:last] + text[last + len(marker) :]
     return text
 
 
-def check_rocketchat_requirements() -> bool:
+def check_requirements() -> bool:
     """Return True if the Rocket.Chat adapter can be used."""
     url = os.getenv("ROCKETCHAT_URL", "")
     if not url:
@@ -105,9 +105,7 @@ def check_rocketchat_requirements() -> bool:
     has_userpass = bool(
         os.getenv("ROCKETCHAT_USERNAME") and os.getenv("ROCKETCHAT_PASSWORD")
     )
-    has_pat = bool(
-        os.getenv("ROCKETCHAT_TOKEN") and os.getenv("ROCKETCHAT_USER_ID")
-    )
+    has_pat = bool(os.getenv("ROCKETCHAT_TOKEN") and os.getenv("ROCKETCHAT_USER_ID"))
     if not has_userpass and not has_pat:
         logger.debug(
             "Rocket.Chat: set ROCKETCHAT_USERNAME + ROCKETCHAT_PASSWORD "
@@ -117,31 +115,55 @@ def check_rocketchat_requirements() -> bool:
 
     try:
         import aiohttp  # noqa: F401
+
         return True
     except ImportError:
         logger.warning("Rocket.Chat: aiohttp not installed")
         return False
 
 
+# Keep the old name as an alias so existing code/tests don't break.
+check_rocketchat_requirements = check_requirements
+
+
+def validate_config(config) -> bool:
+    """Return True when the config has the minimum required credentials."""
+    extra = getattr(config, "extra", {}) or {}
+    url = os.getenv("ROCKETCHAT_URL") or extra.get("url", "")
+    if not url:
+        return False
+    has_userpass = bool(
+        (os.getenv("ROCKETCHAT_USERNAME") or extra.get("username", ""))
+        and (os.getenv("ROCKETCHAT_PASSWORD") or extra.get("password", ""))
+    )
+    has_pat = bool(
+        (os.getenv("ROCKETCHAT_TOKEN") or config.token or extra.get("token", ""))
+        and (os.getenv("ROCKETCHAT_USER_ID") or extra.get("user_id", ""))
+    )
+    return has_userpass or has_pat
+
+
+def is_connected(config) -> bool:
+    """Check whether Rocket.Chat is configured (env or config.yaml)."""
+    return validate_config(config)
+
+
 class RocketChatAdapter(BasePlatformAdapter):
     """Gateway adapter for Rocket.Chat (self-hosted or cloud)."""
 
     def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.ROCKETCHAT)
+        super().__init__(config, Platform("rocketchat"))
 
         self._base_url: str = (
-            config.extra.get("url", "")
-            or os.getenv("ROCKETCHAT_URL", "")
+            config.extra.get("url", "") or os.getenv("ROCKETCHAT_URL", "")
         ).rstrip("/")
 
         # Credentials — username/password takes priority over PAT.
-        self._username: str = (
-            config.extra.get("username", "")
-            or os.getenv("ROCKETCHAT_USERNAME", "")
+        self._username: str = config.extra.get("username", "") or os.getenv(
+            "ROCKETCHAT_USERNAME", ""
         )
-        self._password: str = (
-            config.extra.get("password", "")
-            or os.getenv("ROCKETCHAT_PASSWORD", "")
+        self._password: str = config.extra.get("password", "") or os.getenv(
+            "ROCKETCHAT_PASSWORD", ""
         )
 
         # PAT fallback — populated from env or set during login.
@@ -150,17 +172,16 @@ class RocketChatAdapter(BasePlatformAdapter):
             or config.extra.get("token", "")
             or os.getenv("ROCKETCHAT_TOKEN", "")
         )
-        self._user_id: str = (
-            config.extra.get("user_id", "")
-            or os.getenv("ROCKETCHAT_USER_ID", "")
+        self._user_id: str = config.extra.get("user_id", "") or os.getenv(
+            "ROCKETCHAT_USER_ID", ""
         )
 
         # Resolved at connect() time.
         self._bot_username: str = ""
 
         # aiohttp session + websocket handle.
-        self._session: Any = None   # aiohttp.ClientSession
-        self._ws: Any = None        # aiohttp.ClientWebSocketResponse
+        self._session: Any = None  # aiohttp.ClientSession
+        self._ws: Any = None  # aiohttp.ClientWebSocketResponse
         self._ws_task: Optional[asyncio.Task] = None
         self._closing = False
 
@@ -265,35 +286,43 @@ class RocketChatAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """GET /api/v1/{path}."""
         import aiohttp
+
         url = f"{self._base_url}/api/v1/{path.lstrip('/')}"
         try:
             async with self._session.get(
-                url, headers=self._headers(), params=params,
-                timeout=aiohttp.ClientTimeout(total=30)
+                url,
+                headers=self._headers(),
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
-                    logger.error("RC API GET %s → %s: %s", path, resp.status, body[:200])
+                    logger.error(
+                        "RC API GET %s → %s: %s", path, resp.status, body[:200]
+                    )
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
             logger.error("RC API GET %s network error: %s", path, exc)
             return {}
 
-    async def _api_post(
-        self, path: str, payload: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    async def _api_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """POST /api/v1/{path} with JSON body."""
         import aiohttp
+
         url = f"{self._base_url}/api/v1/{path.lstrip('/')}"
         try:
             async with self._session.post(
-                url, headers=self._headers(), json=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
+                url,
+                headers=self._headers(),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
-                    logger.error("RC API POST %s → %s: %s", path, resp.status, body[:200])
+                    logger.error(
+                        "RC API POST %s → %s: %s", path, resp.status, body[:200]
+                    )
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
@@ -323,8 +352,7 @@ class RocketChatAdapter(BasePlatformAdapter):
         }
         try:
             async with self._session.post(
-                url, headers=headers, data=form,
-                timeout=aiohttp.ClientTimeout(total=60)
+                url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
@@ -348,9 +376,7 @@ class RocketChatAdapter(BasePlatformAdapter):
             logger.error("Rocket.Chat: ROCKETCHAT_URL not configured")
             return False
 
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
-        )
+        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
         self._closing = False
 
         # Step 1 — authenticate (username/password or PAT).
@@ -452,12 +478,14 @@ class RocketChatAdapter(BasePlatformAdapter):
         if self._ws and not self._ws.closed:
             self._ddp_seq += 1
             try:
-                await self._ws.send_json({
-                    "msg": "method",
-                    "method": "stream-notify-room",
-                    "id": str(self._ddp_seq),
-                    "params": [f"{chat_id}/typing", self._bot_username, True],
-                })
+                await self._ws.send_json(
+                    {
+                        "msg": "method",
+                        "method": "stream-notify-room",
+                        "id": str(self._ddp_seq),
+                        "params": [f"{chat_id}/typing", self._bot_username, True],
+                    }
+                )
             except Exception:
                 pass
 
@@ -466,12 +494,14 @@ class RocketChatAdapter(BasePlatformAdapter):
         if self._ws and not self._ws.closed:
             self._ddp_seq += 1
             try:
-                await self._ws.send_json({
-                    "msg": "method",
-                    "method": "stream-notify-room",
-                    "id": str(self._ddp_seq),
-                    "params": [f"{chat_id}/typing", self._bot_username, False],
-                })
+                await self._ws.send_json(
+                    {
+                        "msg": "method",
+                        "method": "stream-notify-room",
+                        "id": str(self._ddp_seq),
+                        "params": [f"{chat_id}/typing", self._bot_username, False],
+                    }
+                )
             except Exception:
                 pass
 
@@ -479,7 +509,9 @@ class RocketChatAdapter(BasePlatformAdapter):
     # Reactions
     # ------------------------------------------------------------------
 
-    async def _set_reaction(self, message_id: str, emoji: str, should_react: bool) -> bool:
+    async def _set_reaction(
+        self, message_id: str, emoji: str, should_react: bool
+    ) -> bool:
         """Add or remove an emoji reaction on a message.
 
         ``emoji`` should be a plain name without colons, e.g. ``"eyes"``.
@@ -488,7 +520,11 @@ class RocketChatAdapter(BasePlatformAdapter):
         emoji_with_colons = f":{emoji}:"
         data = await self._api_post(
             "chat.react",
-            {"messageId": message_id, "emoji": emoji_with_colons, "shouldReact": should_react},
+            {
+                "messageId": message_id,
+                "emoji": emoji_with_colons,
+                "shouldReact": should_react,
+            },
         )
         return bool(data and data.get("success"))
 
@@ -511,11 +547,15 @@ class RocketChatAdapter(BasePlatformAdapter):
         if self._reactions_active(event):
             await self._add_reaction(event.message_id, "eyes")
 
-    async def on_processing_complete(self, event: "MessageEvent", success: bool) -> None:
+    async def on_processing_complete(
+        self, event: "MessageEvent", success: bool
+    ) -> None:
         """Replace 👀 with ✅ or ❌ when processing is done."""
         if self._reactions_active(event):
             await self._remove_reaction(event.message_id, "eyes")
-            await self._add_reaction(event.message_id, "white_check_mark" if success else "x")
+            await self._add_reaction(
+                event.message_id, "white_check_mark" if success else "x"
+            )
 
     async def edit_message(
         self, chat_id: str, message_id: str, content: str
@@ -523,7 +563,11 @@ class RocketChatAdapter(BasePlatformAdapter):
         """Edit an existing message."""
         data = await self._api_post(
             "chat.update",
-            {"roomId": chat_id, "msgId": message_id, "text": self.format_message(content)},
+            {
+                "roomId": chat_id,
+                "msgId": message_id,
+                "text": self.format_message(content),
+            },
         )
         if not data or not data.get("success"):
             return SendResult(success=False, error="Failed to edit message")
@@ -558,7 +602,9 @@ class RocketChatAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._send_local_file(chat_id, file_path, caption, reply_to, file_name)
+        return await self._send_local_file(
+            chat_id, file_path, caption, reply_to, file_name
+        )
 
     async def send_voice(
         self,
@@ -639,17 +685,13 @@ class RocketChatAdapter(BasePlatformAdapter):
                 )
 
         if not file_data:
-            return await self.send(
-                room_id, f"{caption or ''}\n{url}".strip(), reply_to
-            )
+            return await self.send(room_id, f"{caption or ''}\n{url}".strip(), reply_to)
 
         msg_id = await self._upload_file(
             room_id, file_data, fname, ct, description=caption or ""
         )
         if not msg_id:
-            return await self.send(
-                room_id, f"{caption or ''}\n{url}".strip(), reply_to
-            )
+            return await self.send(room_id, f"{caption or ''}\n{url}".strip(), reply_to)
         return SendResult(success=True, message_id=msg_id)
 
     async def _send_local_file(
@@ -704,6 +746,7 @@ class RocketChatAdapter(BasePlatformAdapter):
                 return
 
             import random
+
             jitter = delay * _RECONNECT_JITTER * random.random()
             await asyncio.sleep(delay + jitter)
             delay = min(delay * 2, _RECONNECT_MAX_DELAY)
@@ -718,11 +761,13 @@ class RocketChatAdapter(BasePlatformAdapter):
         self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0)
 
         # DDP connect handshake.
-        await self._ws.send_json({
-            "msg": "connect",
-            "version": "1",
-            "support": ["1"],
-        })
+        await self._ws.send_json(
+            {
+                "msg": "connect",
+                "version": "1",
+                "support": ["1"],
+            }
+        )
         connected = await self._ddp_wait_for({"msg": "connected"}, timeout=15)
         if not connected:
             raise RuntimeError("DDP connect ack not received")
@@ -731,12 +776,14 @@ class RocketChatAdapter(BasePlatformAdapter):
         # `resume` works for both PAT and session tokens.
         self._ddp_seq += 1
         login_seq = str(self._ddp_seq)
-        await self._ws.send_json({
-            "msg": "method",
-            "method": "login",
-            "id": login_seq,
-            "params": [{"resume": self._auth_token}],
-        })
+        await self._ws.send_json(
+            {
+                "msg": "method",
+                "method": "login",
+                "id": login_seq,
+                "params": [{"resume": self._auth_token}],
+            }
+        )
         login_result = await self._ddp_wait_for(
             {"msg": "result", "id": login_seq}, timeout=15
         )
@@ -750,12 +797,14 @@ class RocketChatAdapter(BasePlatformAdapter):
 
         # Subscribe to all messages the bot user can receive.
         self._ddp_seq += 1
-        await self._ws.send_json({
-            "msg": "sub",
-            "id": _SUBSCRIPTION_ID,
-            "name": "stream-room-messages",
-            "params": ["__my_messages__", False],
-        })
+        await self._ws.send_json(
+            {
+                "msg": "sub",
+                "id": _SUBSCRIPTION_ID,
+                "name": "stream-room-messages",
+                "params": ["__my_messages__", False],
+            }
+        )
 
         # Main event loop.
         async for raw_msg in self._ws:
@@ -881,7 +930,9 @@ class RocketChatAdapter(BasePlatformAdapter):
         sender_name = sender.get("username", "") or sender_id
         thread_id = message.get("tmid") or None
 
-        msg_type_enum = MessageType.COMMAND if message_text.startswith("/") else MessageType.TEXT
+        msg_type_enum = (
+            MessageType.COMMAND if message_text.startswith("/") else MessageType.TEXT
+        )
 
         media_urls: List[str] = []
         media_types: List[str] = []
@@ -889,10 +940,13 @@ class RocketChatAdapter(BasePlatformAdapter):
         if file_info:
             await self._cache_file_attachment(file_info, media_urls, media_types)
         for att in message.get("attachments") or []:
-            image_url = att.get("image_url") or att.get("title_link") or att.get("thumb_url")
+            image_url = (
+                att.get("image_url") or att.get("title_link") or att.get("thumb_url")
+            )
             if image_url:
                 full_url = (
-                    image_url if image_url.startswith("http")
+                    image_url
+                    if image_url.startswith("http")
                     else f"{self._base_url}{image_url}"
                 )
                 await self._cache_attachment_url(full_url, att, media_urls, media_types)
@@ -917,15 +971,17 @@ class RocketChatAdapter(BasePlatformAdapter):
             thread_id=thread_id,
         )
 
-        await self.handle_message(MessageEvent(
-            text=message_text,
-            message_type=msg_type_enum,
-            source=source,
-            raw_message=message,
-            message_id=msg_id,
-            media_urls=media_urls or None,
-            media_types=media_types or None,
-        ))
+        await self.handle_message(
+            MessageEvent(
+                text=message_text,
+                message_type=msg_type_enum,
+                source=source,
+                raw_message=message,
+                message_id=msg_id,
+                media_urls=media_urls or None,
+                media_types=media_types or None,
+            )
+        )
 
     async def _cache_file_attachment(
         self,
@@ -953,7 +1009,9 @@ class RocketChatAdapter(BasePlatformAdapter):
             ) as resp:
                 if resp.status >= 400:
                     logger.warning(
-                        "Rocket.Chat: failed to download file %s: HTTP %s", file_id, resp.status
+                        "Rocket.Chat: failed to download file %s: HTTP %s",
+                        file_id,
+                        resp.status,
                     )
                     return
                 data = await resp.read()
@@ -963,6 +1021,7 @@ class RocketChatAdapter(BasePlatformAdapter):
                 cache_audio_from_bytes,
                 cache_document_from_bytes,
             )
+
             if mime.startswith("image/"):
                 local_path = cache_image_from_bytes(data, ext or ".png")
             elif mime.startswith("audio/"):
@@ -1000,6 +1059,7 @@ class RocketChatAdapter(BasePlatformAdapter):
                 mime = resp.content_type or mime
 
             from gateway.platforms.base import cache_image_from_bytes
+
             media_urls.append(cache_image_from_bytes(data, ext))
             media_types.append(mime)
         except Exception as exc:
@@ -1044,3 +1104,95 @@ class RocketChatAdapter(BasePlatformAdapter):
         self._seen_msgs = {
             mid: ts for mid, ts in self._seen_msgs.items() if now - ts < self._SEEN_TTL
         }
+
+
+def interactive_setup() -> None:
+    """Interactive setup wizard for Rocket.Chat credentials."""
+    print("\n🚀 Rocket.Chat Setup")
+    print("=" * 40)
+    print("You'll need:")
+    print("  • Server URL (e.g. https://chat.example.com)")
+    print("  • Bot account username + password  (recommended)")
+    print("  • OR Personal Access Token + User ID  (fallback)\n")
+
+    url = input("Rocket.Chat server URL: ").strip().rstrip("/")
+    if not url:
+        print("❌ URL is required.")
+        return
+
+    print("\nAuthentication method:")
+    print("  1) Username + password (recommended)")
+    print("  2) Personal Access Token")
+    choice = input("Choice [1]: ").strip() or "1"
+
+    env_lines = [f"ROCKETCHAT_URL={url}"]
+
+    if choice == "2":
+        token = input("Personal Access Token: ").strip()
+        user_id = input("User ID: ").strip()
+        if token and user_id:
+            env_lines += [
+                f"ROCKETCHAT_TOKEN={token}",
+                f"ROCKETCHAT_USER_ID={user_id}",
+            ]
+        else:
+            print("❌ Token and User ID are both required for PAT auth.")
+            return
+    else:
+        username = input("Bot username: ").strip()
+        password = input("Bot password: ").strip()
+        if username and password:
+            env_lines += [
+                f"ROCKETCHAT_USERNAME={username}",
+                f"ROCKETCHAT_PASSWORD={password}",
+            ]
+        else:
+            print("❌ Username and password are both required.")
+            return
+
+    print("\nOptional settings (press Enter to skip):")
+    home_channel = input("Home channel room ID (for notifications): ").strip()
+    if home_channel:
+        env_lines.append(f"ROCKETCHAT_HOME_CHANNEL={home_channel}")
+
+    allowed_users = input(
+        "Allowed user IDs (comma-separated, empty = allow all): "
+    ).strip()
+    if allowed_users:
+        env_lines.append(f"ROCKETCHAT_ALLOWED_USERS={allowed_users}")
+    else:
+        env_lines.append("ROCKETCHAT_ALLOW_ALL_USERS=true")
+
+    print("\nAdd the following to your ~/.hermes/.env:\n")
+    for line in env_lines:
+        print(f"  {line}")
+    print()
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="rocketchat",
+        label="Rocket.Chat",
+        adapter_factory=lambda cfg: RocketChatAdapter(cfg),
+        check_fn=check_requirements,
+        validate_config=validate_config,
+        is_connected=is_connected,
+        required_env=["ROCKETCHAT_URL", "ROCKETCHAT_USERNAME", "ROCKETCHAT_PASSWORD"],
+        install_hint="aiohttp is bundled with Hermes — no extra install needed",
+        setup_fn=interactive_setup,
+        # Auth env vars for _is_user_authorized() integration
+        allowed_users_env="ROCKETCHAT_ALLOWED_USERS",
+        allow_all_env="ROCKETCHAT_ALLOW_ALL_USERS",
+        # Rocket.Chat default message size limit
+        max_message_length=MAX_MESSAGE_LENGTH,
+        # Display
+        emoji="🚀",
+        allow_update_command=True,
+        # LLM guidance
+        platform_hint=(
+            "You are chatting via Rocket.Chat. Use *bold* (single asterisks) for "
+            "bold text — double asterisks (**) are not supported. Avoid using ~ "
+            "as a prefix since Rocket.Chat renders ~text~ as strikethrough."
+        ),
+    )

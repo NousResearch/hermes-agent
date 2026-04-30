@@ -1,131 +1,229 @@
-"""Tests for Rocket.Chat platform adapter."""
+"""Tests for Rocket.Chat platform adapter plugin."""
+
 import time
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
+from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+
+
+_rc_mod = load_plugin_adapter("rocketchat")
+
+RocketChatAdapter = _rc_mod.RocketChatAdapter
+check_requirements = _rc_mod.check_requirements
+check_rocketchat_requirements = _rc_mod.check_rocketchat_requirements
+validate_config = _rc_mod.validate_config
+is_connected = _rc_mod.is_connected
+register = _rc_mod.register
 
 
 # ---------------------------------------------------------------------------
-# Platform & Config
+# Platform enum
 # ---------------------------------------------------------------------------
+
 
 class TestRocketChatPlatformEnum:
-    def test_enum_exists(self):
-        assert Platform.ROCKETCHAT.value == "rocketchat"
+    def test_dynamic_member_value(self):
+        assert Platform("rocketchat").value == "rocketchat"
 
-    def test_in_platform_list(self):
-        assert "rocketchat" in [p.value for p in Platform]
+    def test_identity_stable(self):
+        assert Platform("rocketchat") is Platform("rocketchat")
 
 
-class TestRocketChatConfigLoading:
-    def test_userpass_credentials(self, monkeypatch):
+# ---------------------------------------------------------------------------
+# Requirements & config validation
+# ---------------------------------------------------------------------------
+
+
+class TestRequirementsCheck:
+    def test_fails_without_url(self, monkeypatch):
+        monkeypatch.delenv("ROCKETCHAT_URL", raising=False)
+        assert check_requirements() is False
+
+    def test_fails_without_credentials(self, monkeypatch):
+        monkeypatch.setenv("ROCKETCHAT_URL", "https://rc.example.com")
+        monkeypatch.delenv("ROCKETCHAT_USERNAME", raising=False)
+        monkeypatch.delenv("ROCKETCHAT_PASSWORD", raising=False)
+        monkeypatch.delenv("ROCKETCHAT_TOKEN", raising=False)
+        monkeypatch.delenv("ROCKETCHAT_USER_ID", raising=False)
+        assert check_requirements() is False
+
+    def test_passes_with_userpass_and_aiohttp(self, monkeypatch):
         monkeypatch.setenv("ROCKETCHAT_URL", "https://rc.example.com")
         monkeypatch.setenv("ROCKETCHAT_USERNAME", "bot")
         monkeypatch.setenv("ROCKETCHAT_PASSWORD", "s3cr3t")
-        monkeypatch.delenv("ROCKETCHAT_TOKEN", raising=False)
-        monkeypatch.delenv("ROCKETCHAT_USER_ID", raising=False)
+        assert check_requirements() is True
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        assert Platform.ROCKETCHAT in config.platforms
-        rc = config.platforms[Platform.ROCKETCHAT]
-        assert rc.enabled is True
-        assert rc.extra["url"] == "https://rc.example.com"
-        assert rc.extra["username"] == "bot"
-        assert rc.extra["password"] == "s3cr3t"
-
-    def test_pat_fallback_credentials(self, monkeypatch):
+    def test_passes_with_pat_and_aiohttp(self, monkeypatch):
         monkeypatch.setenv("ROCKETCHAT_URL", "https://rc.example.com")
         monkeypatch.setenv("ROCKETCHAT_TOKEN", "my-pat")
         monkeypatch.setenv("ROCKETCHAT_USER_ID", "uid123")
         monkeypatch.delenv("ROCKETCHAT_USERNAME", raising=False)
         monkeypatch.delenv("ROCKETCHAT_PASSWORD", raising=False)
+        assert check_requirements() is True
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        assert Platform.ROCKETCHAT in config.platforms
-        rc = config.platforms[Platform.ROCKETCHAT]
-        assert rc.token == "my-pat"
-        assert rc.extra["user_id"] == "uid123"
-
-    def test_not_loaded_without_url(self, monkeypatch):
-        monkeypatch.delenv("ROCKETCHAT_URL", raising=False)
+    def test_alias_matches(self, monkeypatch):
+        monkeypatch.setenv("ROCKETCHAT_URL", "https://rc.example.com")
         monkeypatch.setenv("ROCKETCHAT_USERNAME", "bot")
         monkeypatch.setenv("ROCKETCHAT_PASSWORD", "s3cr3t")
+        assert check_rocketchat_requirements() is True
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
 
-        assert Platform.ROCKETCHAT not in config.platforms
+class TestValidateConfig:
+    def _cfg(self, **extra):
+        return PlatformConfig(enabled=True, extra=extra)
 
-    def test_not_loaded_without_credentials(self, monkeypatch):
+    def test_passes_with_userpass_env(self, monkeypatch):
+        monkeypatch.setenv("ROCKETCHAT_URL", "https://rc.example.com")
+        monkeypatch.setenv("ROCKETCHAT_USERNAME", "bot")
+        monkeypatch.setenv("ROCKETCHAT_PASSWORD", "s3cr3t")
+        assert validate_config(self._cfg()) is True
+
+    def test_passes_with_pat_env(self, monkeypatch):
+        monkeypatch.setenv("ROCKETCHAT_URL", "https://rc.example.com")
+        monkeypatch.setenv("ROCKETCHAT_TOKEN", "my-pat")
+        monkeypatch.setenv("ROCKETCHAT_USER_ID", "uid123")
+        monkeypatch.delenv("ROCKETCHAT_USERNAME", raising=False)
+        monkeypatch.delenv("ROCKETCHAT_PASSWORD", raising=False)
+        assert validate_config(self._cfg()) is True
+
+    def test_passes_with_extra_fields(self, monkeypatch):
+        monkeypatch.delenv("ROCKETCHAT_URL", raising=False)
+        monkeypatch.delenv("ROCKETCHAT_USERNAME", raising=False)
+        monkeypatch.delenv("ROCKETCHAT_PASSWORD", raising=False)
+        cfg = self._cfg(url="https://rc.example.com", username="bot", password="s3cr3t")
+        assert validate_config(cfg) is True
+
+    def test_fails_without_url(self, monkeypatch):
+        monkeypatch.delenv("ROCKETCHAT_URL", raising=False)
+        assert validate_config(self._cfg(username="bot", password="s3cr3t")) is False
+
+    def test_fails_without_credentials(self, monkeypatch):
         monkeypatch.setenv("ROCKETCHAT_URL", "https://rc.example.com")
         monkeypatch.delenv("ROCKETCHAT_USERNAME", raising=False)
         monkeypatch.delenv("ROCKETCHAT_PASSWORD", raising=False)
         monkeypatch.delenv("ROCKETCHAT_TOKEN", raising=False)
         monkeypatch.delenv("ROCKETCHAT_USER_ID", raising=False)
+        assert validate_config(self._cfg()) is False
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-
-        assert Platform.ROCKETCHAT not in config.platforms
-
-    def test_connected_platforms_includes_rocketchat(self, monkeypatch):
+    def test_is_connected_delegates_to_validate_config(self, monkeypatch):
         monkeypatch.setenv("ROCKETCHAT_URL", "https://rc.example.com")
         monkeypatch.setenv("ROCKETCHAT_USERNAME", "bot")
         monkeypatch.setenv("ROCKETCHAT_PASSWORD", "s3cr3t")
+        cfg = self._cfg()
+        assert is_connected(cfg) == validate_config(cfg)
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
 
-        assert Platform.ROCKETCHAT in config.get_connected_platforms()
+# ---------------------------------------------------------------------------
+# Plugin registration
+# ---------------------------------------------------------------------------
 
-    def test_home_channel(self, monkeypatch):
-        monkeypatch.setenv("ROCKETCHAT_URL", "https://rc.example.com")
-        monkeypatch.setenv("ROCKETCHAT_USERNAME", "bot")
-        monkeypatch.setenv("ROCKETCHAT_PASSWORD", "s3cr3t")
-        monkeypatch.setenv("ROCKETCHAT_HOME_CHANNEL", "GENERAL")
-        monkeypatch.setenv("ROCKETCHAT_HOME_CHANNEL_NAME", "General")
 
-        from gateway.config import GatewayConfig, _apply_env_overrides
-        config = GatewayConfig()
-        _apply_env_overrides(config)
+class TestPluginRegistration:
+    def test_register_calls_ctx(self):
+        ctx = MagicMock()
+        register(ctx)
+        ctx.register_platform.assert_called_once()
 
-        home = config.get_home_channel(Platform.ROCKETCHAT)
-        assert home is not None
-        assert home.chat_id == "GENERAL"
-        assert home.name == "General"
+    def test_register_name(self):
+        ctx = MagicMock()
+        register(ctx)
+        kwargs = ctx.register_platform.call_args[1]
+        assert kwargs["name"] == "rocketchat"
+
+    def test_register_auth_env_vars(self):
+        ctx = MagicMock()
+        register(ctx)
+        kwargs = ctx.register_platform.call_args[1]
+        assert kwargs["allowed_users_env"] == "ROCKETCHAT_ALLOWED_USERS"
+        assert kwargs["allow_all_env"] == "ROCKETCHAT_ALLOW_ALL_USERS"
+
+    def test_register_has_setup_fn(self):
+        ctx = MagicMock()
+        register(ctx)
+        kwargs = ctx.register_platform.call_args[1]
+        assert callable(kwargs.get("setup_fn"))
+
+    def test_register_has_platform_hint(self):
+        ctx = MagicMock()
+        register(ctx)
+        kwargs = ctx.register_platform.call_args[1]
+        assert kwargs.get("platform_hint")
 
 
 # ---------------------------------------------------------------------------
 # Adapter helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_adapter(extra=None):
-    from gateway.platforms.rocketchat import RocketChatAdapter
     config = PlatformConfig(
         enabled=True,
         extra={"url": "https://rc.example.com", **(extra or {})},
     )
     adapter = RocketChatAdapter(config)
-    adapter._user_id = "bot_uid"
+    if not adapter._user_id:
+        adapter._user_id = "bot_uid"
     adapter._bot_username = "hermesbot"
     return adapter
 
 
 # ---------------------------------------------------------------------------
+# Adapter init
+# ---------------------------------------------------------------------------
+
+
+class TestAdapterInit:
+    def test_reads_url_from_extra(self):
+        adapter = _make_adapter()
+        assert adapter._base_url == "https://rc.example.com"
+
+    def test_reads_credentials_from_extra(self):
+        adapter = _make_adapter({"username": "bot", "password": "s3cr3t"})
+        assert adapter._username == "bot"
+        assert adapter._password == "s3cr3t"
+
+    def test_reads_credentials_from_env(self, monkeypatch):
+        monkeypatch.setenv("ROCKETCHAT_USERNAME", "envbot")
+        monkeypatch.setenv("ROCKETCHAT_PASSWORD", "envpass")
+        adapter = _make_adapter()
+        assert adapter._username == "envbot"
+
+    def test_reads_pat_from_env(self, monkeypatch):
+        monkeypatch.setenv("ROCKETCHAT_TOKEN", "my-pat")
+        monkeypatch.setenv("ROCKETCHAT_USER_ID", "uid123")
+        adapter = _make_adapter()
+        assert adapter._auth_token == "my-pat"
+        assert adapter._user_id == "uid123"
+
+    def test_platform_value(self):
+        adapter = _make_adapter()
+        assert adapter.platform.value == "rocketchat"
+
+    def test_reply_in_thread_default_false(self):
+        adapter = _make_adapter()
+        assert adapter._reply_in_thread is False
+
+    def test_reply_in_thread_from_extra(self):
+        adapter = _make_adapter({"reply_in_thread": "true"})
+        assert adapter._reply_in_thread is True
+
+    def test_reactions_enabled_default_true(self):
+        adapter = _make_adapter()
+        assert adapter._reactions_enabled is True
+
+    def test_reactions_disabled_from_extra(self):
+        adapter = _make_adapter({"reactions": "false"})
+        assert adapter._reactions_enabled is False
+
+
+# ---------------------------------------------------------------------------
 # format_message
 # ---------------------------------------------------------------------------
+
 
 class TestFormatMessage:
     def setup_method(self):
@@ -140,7 +238,6 @@ class TestFormatMessage:
         assert result == "*hello*"
 
     def test_tilde_replaced_with_unicode(self):
-        # ASCII ~ must become U+223C so RC does not render ~word~ as strikethrough.
         result = self.adapter.format_message("~8.3°C and ~17.7°C")
         assert "~" not in result
         assert "\u223c" in result
@@ -155,7 +252,6 @@ class TestFormatMessage:
         assert result == "*bold*"
 
     def test_unbalanced_bold_marker_dropped(self):
-        # An odd number of * markers would confuse RC's renderer.
         result = self.adapter.format_message("hello * world")
         assert result.count("*") % 2 == 0 or "*" not in result
 
@@ -164,12 +260,13 @@ class TestFormatMessage:
 # Reactions
 # ---------------------------------------------------------------------------
 
+
 def _make_event(chat_type: str) -> MessageEvent:
     return MessageEvent(
         text="hi",
         message_type=MessageType.TEXT,
         source=SessionSource(
-            platform=Platform.ROCKETCHAT,
+            platform=Platform("rocketchat"),
             chat_id="room1",
             chat_type=chat_type,
             user_id="u1",
@@ -231,6 +328,7 @@ class TestReactions:
 # Thread replies
 # ---------------------------------------------------------------------------
 
+
 class TestThreadReplies:
     @pytest.mark.asyncio
     async def test_tmid_set_for_channel(self):
@@ -266,6 +364,7 @@ class TestThreadReplies:
 # ---------------------------------------------------------------------------
 # Deferred attachment buffer
 # ---------------------------------------------------------------------------
+
 
 class TestAttachmentBuffer:
     def setup_method(self):
@@ -308,6 +407,7 @@ class TestAttachmentBuffer:
 # Room-type cache
 # ---------------------------------------------------------------------------
 
+
 class TestRoomTypeCache:
     @pytest.mark.asyncio
     async def test_cached_result_not_refetched(self):
@@ -331,7 +431,9 @@ class TestRoomTypeCache:
     @pytest.mark.asyncio
     async def test_channel_room_detected(self):
         adapter = _make_adapter()
-        adapter._api_get = AsyncMock(return_value={"room": {"t": "c", "name": "general"}})
+        adapter._api_get = AsyncMock(
+            return_value={"room": {"t": "c", "name": "general"}}
+        )
 
         result = await adapter._get_room_type("GENERAL")
         assert result == "c"
@@ -343,40 +445,3 @@ class TestRoomTypeCache:
 
         result = await adapter._get_room_type("unknown")
         assert result == "c"
-
-
-# ---------------------------------------------------------------------------
-# check_rocketchat_requirements
-# ---------------------------------------------------------------------------
-
-class TestRequirementsCheck:
-    def test_fails_without_url(self, monkeypatch):
-        monkeypatch.delenv("ROCKETCHAT_URL", raising=False)
-        from gateway.platforms.rocketchat import check_rocketchat_requirements
-        assert check_rocketchat_requirements() is False
-
-    def test_fails_without_credentials(self, monkeypatch):
-        monkeypatch.setenv("ROCKETCHAT_URL", "https://rc.example.com")
-        monkeypatch.delenv("ROCKETCHAT_USERNAME", raising=False)
-        monkeypatch.delenv("ROCKETCHAT_PASSWORD", raising=False)
-        monkeypatch.delenv("ROCKETCHAT_TOKEN", raising=False)
-        monkeypatch.delenv("ROCKETCHAT_USER_ID", raising=False)
-        from gateway.platforms.rocketchat import check_rocketchat_requirements
-        assert check_rocketchat_requirements() is False
-
-    def test_passes_with_userpass_and_aiohttp(self, monkeypatch):
-        monkeypatch.setenv("ROCKETCHAT_URL", "https://rc.example.com")
-        monkeypatch.setenv("ROCKETCHAT_USERNAME", "bot")
-        monkeypatch.setenv("ROCKETCHAT_PASSWORD", "s3cr3t")
-        from gateway.platforms.rocketchat import check_rocketchat_requirements
-        # aiohttp is a Hermes dependency, so it should be available
-        assert check_rocketchat_requirements() is True
-
-    def test_passes_with_pat_and_aiohttp(self, monkeypatch):
-        monkeypatch.setenv("ROCKETCHAT_URL", "https://rc.example.com")
-        monkeypatch.setenv("ROCKETCHAT_TOKEN", "my-pat")
-        monkeypatch.setenv("ROCKETCHAT_USER_ID", "uid123")
-        monkeypatch.delenv("ROCKETCHAT_USERNAME", raising=False)
-        monkeypatch.delenv("ROCKETCHAT_PASSWORD", raising=False)
-        from gateway.platforms.rocketchat import check_rocketchat_requirements
-        assert check_rocketchat_requirements() is True

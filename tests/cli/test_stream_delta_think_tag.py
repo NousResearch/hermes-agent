@@ -17,6 +17,7 @@ def _make_cli_stub():
     cli._stream_box_opened = False
     cli._stream_prefilt = ""
     cli._in_reasoning_block = False
+    cli._reasoning_block_opened_by_tag = False
     cli._reasoning_stream_started = False
     cli._reasoning_box_opened = False
     cli._reasoning_buf = ""
@@ -90,6 +91,25 @@ class TestRealReasoningBlock:
         full = "".join(cli._emitted)
         assert "Here is my answer" in full
         assert "I need to analyze" not in full  # reasoning was suppressed
+
+    def test_unterminated_think_at_stream_end_is_suppressed(self):
+        """Unclosed reasoning blocks should not leak during final stream flush."""
+        cli = _make_cli_stub()
+        cli._close_reasoning_box = lambda: None
+        cli._stream_delta("<think>")
+        cli._stream_delta("MiniMax scratchpad that never closes")
+
+        from unittest.mock import patch
+        import shutil
+        with patch.object(shutil, "get_terminal_size", return_value=os.terminal_size((80, 24))):
+            with patch("cli._cprint"):
+                cli._flush_stream()
+
+        full = "".join(cli._emitted)
+        assert "MiniMax" not in full
+        assert "scratchpad" not in full
+        assert "never closes" not in full
+        assert not cli._in_reasoning_block
 
     def test_think_after_newline(self):
         """'text\\n<think>' should trigger reasoning block."""

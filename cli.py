@@ -2946,6 +2946,7 @@ class HermesCLI:
                             self._emit_stream_text(preceding)
                             self._stream_last_was_newline = preceding.endswith("\n")
                         self._in_reasoning_block = True
+                        self._reasoning_block_opened_by_tag = True
                         self._stream_prefilt = self._stream_prefilt[idx + len(tag):]
                         break
                     # Not a block boundary — keep searching after this occurrence
@@ -2976,6 +2977,7 @@ class HermesCLI:
                 idx = self._stream_prefilt.find(tag)
                 if idx != -1:
                     self._in_reasoning_block = False
+                    self._reasoning_block_opened_by_tag = False
                     # When show_reasoning is on, route inner content to
                     # the reasoning display box instead of discarding.
                     if self.show_reasoning:
@@ -3056,12 +3058,20 @@ class HermesCLI:
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
-        # If we're still inside a "reasoning block" at end-of-stream, it was
-        # a false positive — the model mentioned a tag like <think> in prose
-        # but never closed it.  Recover the buffered content as regular text.
+        # If a model started a block-boundary reasoning tag and never closed
+        # it, discard the buffered tail. Models such as MiniMax can stream
+        # scratchpads through content and drop the closing tag; recovering that
+        # buffer would leak hidden reasoning into the CLI at final flush.  Keep
+        # the old recovery behavior for manually seeded/legacy false-positive
+        # states where we cannot prove a real opening tag was seen.
         if getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
             self._in_reasoning_block = False
-            self._emit_stream_text(self._stream_prefilt)
+            if getattr(self, "_reasoning_block_opened_by_tag", False):
+                if self.show_reasoning:
+                    self._stream_reasoning_delta(self._stream_prefilt)
+            else:
+                self._emit_stream_text(self._stream_prefilt)
+            self._reasoning_block_opened_by_tag = False
             self._stream_prefilt = ""
 
         # Close reasoning box if still open (in case no content tokens arrived)
@@ -3086,6 +3096,7 @@ class HermesCLI:
         self._stream_text_ansi = ""
         self._stream_prefilt = ""
         self._in_reasoning_block = False
+        self._reasoning_block_opened_by_tag = False
         self._stream_last_was_newline = True
         self._reasoning_box_opened = False
         self._reasoning_buf = ""

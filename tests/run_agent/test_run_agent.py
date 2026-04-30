@@ -903,6 +903,10 @@ class TestBuildSystemPrompt:
         # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
 
+    def test_excludes_turn_level_live_time_marker(self, agent):
+        prompt = agent._build_system_prompt()
+        assert "Current time:" not in prompt
+
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
         prompt = agent._build_system_prompt()
@@ -2181,6 +2185,25 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert "reasoning" not in kwargs.get("extra_body", {})
 
+    def test_summary_injects_turn_level_live_time_context(self, agent, monkeypatch):
+        resp = _mock_response(content="Summary")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+        monkeypatch.setattr(
+            run_agent,
+            "_build_live_time_context",
+            lambda: "Current time: 2026-04-16 09:30 (Asia/Shanghai)",
+        )
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert kwargs["messages"][0]["role"] == "system"
+        assert "You are helpful." in kwargs["messages"][0]["content"]
+        assert "Current time: 2026-04-16 09:30 (Asia/Shanghai)" in kwargs["messages"][0]["content"]
+
 
 class TestRunConversation:
     """Tests for the main run_conversation method.
@@ -2209,6 +2232,35 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_injects_turn_level_live_time_context_into_system_prompt(self, agent, monkeypatch):
+        self._setup_agent(agent)
+        captured = {}
+        monkeypatch.setattr(
+            run_agent,
+            "_build_live_time_context",
+            lambda: "Current time: 2026-04-16 09:30 (Asia/Shanghai)",
+        )
+
+        def _capture_api_call(api_kwargs):
+            captured["api_kwargs"] = api_kwargs
+            return _mock_response(content="Final answer", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_capture_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Final answer"
+        system_message = captured["api_kwargs"]["messages"][0]
+        assert system_message["role"] == "system"
+        assert "You are helpful." in system_message["content"]
+        assert "Current time: 2026-04-16 09:30 (Asia/Shanghai)" in system_message["content"]
+        assert "Current time:" not in agent._cached_system_prompt
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)

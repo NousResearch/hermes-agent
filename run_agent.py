@@ -260,6 +260,15 @@ def _install_safe_stdio() -> None:
             setattr(sys, stream_name, _SafeWriter(stream))
 
 
+def _build_live_time_context() -> str:
+    """Return turn-scoped live wall-clock context for the current API call."""
+    from hermes_time import now as _hermes_now, get_timezone as _get_tz
+
+    turn_now = _hermes_now()
+    tz_name = str(_get_tz() or "server-local")
+    return f"Current time: {turn_now.strftime('%Y-%m-%d %H:%M')} ({tz_name})"
+
+
 class IterationBudget:
     """Thread-safe iteration counter for an agent.
 
@@ -4968,6 +4977,18 @@ class AIAgent:
                 pass
 
         return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
+
+    def _build_turn_scoped_system_prompt(self, base_system_prompt: Optional[str]) -> str:
+        """Build the non-persistent system prompt used for a single API call.
+
+        Live time belongs here instead of ``_build_system_prompt()`` so the
+        session-cached prompt stays stable for prefix caching and history reuse
+        while each turn still gets an accurate sense of "now".
+        """
+        effective_system = (base_system_prompt or "").strip()
+        if self.ephemeral_system_prompt:
+            effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+        return (effective_system + "\n\n" + _build_live_time_context()).strip()
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
@@ -9996,9 +10017,7 @@ class AIAgent:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
-            effective_system = self._cached_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            effective_system = self._build_turn_scoped_system_prompt(self._cached_system_prompt)
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             if self.prefill_messages:
@@ -10699,9 +10718,7 @@ class AIAgent:
             # Ephemeral additions are API-call-time only (not persisted to session DB).
             # External recall context is injected into the user message, not the system
             # prompt, so the stable cache prefix remains unchanged.
-            effective_system = active_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+            effective_system = self._build_turn_scoped_system_prompt(active_system_prompt)
             # NOTE: Plugin context from pre_llm_call hooks is injected into the
             # user message (see injection block above), NOT the system prompt.
             # This is intentional — system prompt modifications break the prompt

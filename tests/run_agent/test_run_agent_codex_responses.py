@@ -497,6 +497,30 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["messages"][-1]["content"] == "OK"
 
 
+def test_run_conversation_codex_injects_turn_level_live_time_context(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent._cached_system_prompt = "You are Hermes."
+    captured = {}
+    monkeypatch.setattr(
+        run_agent,
+        "_build_live_time_context",
+        lambda: "Current time: 2026-04-16 09:30 (Asia/Shanghai)",
+    )
+
+    def _capture_api_call(api_kwargs):
+        captured["api_kwargs"] = api_kwargs
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Say OK")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "OK"
+    assert "You are Hermes." in captured["api_kwargs"]["instructions"]
+    assert "Current time: 2026-04-16 09:30 (Asia/Shanghai)" in captured["api_kwargs"]["instructions"]
+
+
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
     """Regression: empty response.output + valid output_text should succeed,
     not trigger retry/fallback. The validation stage must defer to

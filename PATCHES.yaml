@@ -1,0 +1,79 @@
+# Hermes-Agent Fork Custom Patches
+# Machine-readable registry for automated verification after upstream syncs.
+# Run: python3 scripts/verify_fork_patches.py
+
+patches:
+  - name: approval-justification-gate
+    description: >
+      Model must justify before user escalation. Phase 2.8 gate between
+      self-correction (2.7) and user approval (3). Returns justification_required
+      if no justification, justification_denied after max retries.
+    files:
+      - path: tools/approval.py
+        markers:
+          - "justification: str = None"
+          - "Phase 2.8"
+          - "justification_required"
+          - '"justification": effective_justification'
+          - "_pending_approvals"
+          - "_pending_justifications"
+      - path: tools/terminal_tool.py
+        markers:
+          - "justification: Optional[str]"
+          - "justification_required"
+          - "justification_denied"
+      - path: gateway/run.py
+        markers:
+          - "justification = approval_data.get"
+          - "justification=justification,"
+      - path: gateway/platforms/telegram.py
+        markers:
+          - "justification: Optional[str]"
+      - path: gateway/platforms/discord.py
+        markers:
+          - "justification: Optional[str]"
+          - "Agent Justification"
+      - path: gateway/platforms/slack.py
+        markers:
+          - "justification: Optional[str]"
+      - path: gateway/platforms/matrix.py
+        markers:
+          - "justification: Optional[str]"
+      - path: gateway/platforms/feishu.py
+        markers:
+          - "justification: Optional[str]"
+    original_commits: [e682e3f0c, 56ecda022]
+    restored_commit: dc815e64c
+
+  - name: cron-report-header-meta
+    description: >
+      Cron delivery reports show provider/model, elapsed time, and run timestamp
+      in header. Adds _job_start_time capture and _elapsed_seconds computation.
+    files:
+      - path: cron/scheduler.py
+        markers:
+          - "_elapsed_seconds"
+          - "_job_start_time"
+          - "model_info"
+          - "Run Time:"
+          - "Model: {model_info}"
+      - path: cron/scheduler.py
+        markers:
+          - "import time"
+    original_commits: [42df69a28, 6f9863694]
+    restored_commit: dc815e64c
+
+  - name: self-correction-guard
+    description: >
+      Phase 2.7: Before escalating flagged commands to user approval, the model
+      gets one retry with a safer-alternative hint. Reduces approval fatigue.
+    files:
+      - path: tools/approval.py
+        markers:
+          - "Phase 2.7"
+          - "self_correct"
+      - path: tools/terminal_tool.py
+        markers:
+          - "self_correct"
+    original_commits: [a56394a5e]
+    note: This patch survived the upstream sync (it was on the main branch, not security/enhancements)

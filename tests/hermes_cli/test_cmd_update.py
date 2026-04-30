@@ -1,12 +1,13 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import cmd_update, PROJECT_ROOT
+from hermes_cli.main import cmd_update, PROJECT_ROOT, _build_uv_update_env
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -163,3 +164,21 @@ class TestCmdUpdateBranchFallback:
             mock_input.assert_not_called()
             captured = capsys.readouterr()
             assert "Non-interactive session" in captured.out
+
+
+def test_uv_update_env_inherits_index_url_from_pip_conf(tmp_path, monkeypatch):
+    """uv does not read pip.conf, so update mirrors it into UV_INDEX_URL."""
+    home = tmp_path / "home"
+    pip_dir = home / ".pip"
+    pip_dir.mkdir(parents=True)
+    (pip_dir / "pip.conf").write_text(
+        "[global]\nindex-url = https://mirrors.aliyun.com/pypi/simple\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.delenv("UV_INDEX_URL", raising=False)
+
+    env = _build_uv_update_env({"PATH": "/usr/bin"})
+
+    assert env["VIRTUAL_ENV"] == str(PROJECT_ROOT / "venv")
+    assert env["UV_INDEX_URL"] == "https://mirrors.aliyun.com/pypi/simple"

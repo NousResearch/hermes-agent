@@ -44,6 +44,7 @@ Usage:
 """
 
 import argparse
+import configparser
 import json
 import os
 import shutil
@@ -5515,7 +5516,7 @@ def _update_via_zip(args):
 
     uv_bin = shutil.which("uv")
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = _build_uv_update_env(os.environ)
         _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
@@ -6051,6 +6052,43 @@ def _load_installable_optional_extras() -> list[str]:
                 referenced.append(name)
 
     return referenced
+
+
+def _pip_config_candidates(env: dict[str, str]) -> list[Path]:
+    """Return pip config files in the same precedence order pip documents."""
+    candidates: list[Path] = []
+    explicit = env.get("PIP_CONFIG_FILE")
+    if explicit:
+        return [Path(explicit)]
+
+    candidates.append(Path("/etc/pip.conf"))
+    candidates.append(Path.home() / ".config" / "pip" / "pip.conf")
+    candidates.append(Path.home() / ".pip" / "pip.conf")
+    return candidates
+
+
+def _pip_conf_index_url(env: dict[str, str]) -> str | None:
+    """Read pip's configured index-url so uv can use the same mirror."""
+    parser = configparser.ConfigParser()
+    found = parser.read([str(path) for path in _pip_config_candidates(env)])
+    if not found or not parser.has_section("global"):
+        return None
+    value = parser.get("global", "index-url", fallback="").strip()
+    return value or None
+
+
+def _build_uv_update_env(base_env: dict[str, str]) -> dict[str, str]:
+    """Build the env for uv-based dependency updates.
+
+    uv does not read pip.conf, so mirror pip's configured index-url into
+    UV_INDEX_URL unless the user already configured uv explicitly.
+    """
+    env = {**base_env, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+    if not env.get("UV_INDEX_URL"):
+        pip_index_url = _pip_conf_index_url(env)
+        if pip_index_url:
+            env["UV_INDEX_URL"] = pip_index_url
+    return env
 
 
 def _install_python_dependencies_with_optional_fallback(

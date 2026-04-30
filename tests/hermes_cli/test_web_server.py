@@ -29,7 +29,7 @@ class TestReloadEnv:
         """reload_env() adds vars from .env that are not in os.environ."""
         env_file = tmp_path / ".env"
         env_file.write_text("TEST_RELOAD_VAR=hello123\n")
-        with patch("hermes_cli.config.get_env_path", return_value=env_file):
+        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
             os.environ.pop("TEST_RELOAD_VAR", None)
             count = reload_env()
             assert count >= 1
@@ -40,7 +40,7 @@ class TestReloadEnv:
         """reload_env() updates vars whose value changed on disk."""
         env_file = tmp_path / ".env"
         env_file.write_text("TEST_RELOAD_VAR=old_value\n")
-        with patch("hermes_cli.config.get_env_path", return_value=env_file):
+        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
             os.environ["TEST_RELOAD_VAR"] = "old_value"
             # Now change the file
             env_file.write_text("TEST_RELOAD_VAR=new_value\n")
@@ -55,7 +55,7 @@ class TestReloadEnv:
         env_file.write_text("")  # empty .env
         # Pick a known key from OPTIONAL_ENV_VARS
         known_key = next(iter(OPTIONAL_ENV_VARS.keys()))
-        with patch("hermes_cli.config.get_env_path", return_value=env_file):
+        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
             os.environ[known_key] = "stale_value"
             count = reload_env()
             assert known_key not in os.environ
@@ -65,7 +65,7 @@ class TestReloadEnv:
         """reload_env() preserves non-Hermes env vars even when absent from .env."""
         env_file = tmp_path / ".env"
         env_file.write_text("")
-        with patch("hermes_cli.config.get_env_path", return_value=env_file):
+        with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
             os.environ["MY_CUSTOM_UNRELATED_VAR"] = "keep_me"
             reload_env()
             assert os.environ.get("MY_CUSTOM_UNRELATED_VAR") == "keep_me"
@@ -1851,14 +1851,24 @@ class TestPtyWebSocket:
             assert b"round-trip-payload" in buf
 
     def test_resize_escape_is_forwarded(self, monkeypatch):
-        # Resize escape gets intercepted and applied via TIOCSWINSZ,
-        # then ``tput cols/lines`` reports the new dimensions back.
+        # Resize escape gets intercepted and applied via TIOCSWINSZ, then the
+        # child reads the TTY ioctl directly. Avoid tput because CI may not set
+        # TERM for non-interactive shells.
+        import sys
+
+        winsize_script = (
+            "import fcntl, struct, termios, time; "
+            "time.sleep(0.15); "
+            "rows, cols, *_ = struct.unpack('HHHH', "
+            "fcntl.ioctl(0, termios.TIOCGWINSZ, b'\\0' * 8)); "
+            "print(cols); print(rows)"
+        )
         monkeypatch.setattr(
             self.ws_module,
             "_resolve_chat_argv",
-            # sleep gives the test time to push the resize before tput runs
+            # sleep gives the test time to push the resize before the child reads the ioctl.
             lambda resume=None, sidecar_url=None: (
-                ["/bin/sh", "-c", "sleep 0.15; tput cols; tput lines"],
+                [sys.executable, "-c", winsize_script],
                 None,
                 None,
             ),

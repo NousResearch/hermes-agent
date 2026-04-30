@@ -82,7 +82,7 @@ export const opsCommands: SlashCommand[] = [
       // Parse arg: `now` / `always` skip the confirmation gate.
       // `always` additionally persists approvals.mcp_reload_confirm=false.
       const a = (arg || '').trim().toLowerCase()
-      const params: { session_id: string; confirm?: boolean; always?: boolean } = {
+      const params: { session_id: string | null; confirm?: boolean; always?: boolean } = {
         session_id: ctx.sid
       }
       if (a === 'now' || a === 'approve' || a === 'once' || a === 'yes') {

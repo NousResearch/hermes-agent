@@ -28,12 +28,14 @@ import hashlib
 import hmac
 import json
 import logging
+import mimetypes
 import os
 import socket as _socket
 import re
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -57,6 +59,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
+MAX_ARTIFACT_BYTES = 50_000_000  # 50 MB cap for API-server artifact downloads
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
@@ -685,6 +688,153 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
+        )
+
+    # ------------------------------------------------------------------
+    # Artifact registry helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _artifact_root() -> Path:
+        """Return the API-server artifact storage root under the active Hermes home."""
+        try:
+            from hermes_constants import get_hermes_home
+            return get_hermes_home() / "artifacts" / "api_server"
+        except Exception:
+            return Path.home() / ".hermes" / "artifacts" / "api_server"
+
+    @classmethod
+    def _artifact_registry_path(cls) -> Path:
+        return cls._artifact_root() / "registry.json"
+
+    @staticmethod
+    def _sanitize_artifact_name(name: Any) -> str:
+        candidate = str(name or "artifact").strip()
+        if not candidate or "/" in candidate or "\\" in candidate or candidate in {".", ".."}:
+            raise ValueError("invalid_artifact_name")
+        return candidate[:180]
+
+    @classmethod
+    def _load_artifact_registry(cls) -> Dict[str, Any]:
+        path = cls._artifact_registry_path()
+        if not path.exists():
+            return {"artifacts": []}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("artifacts"), list):
+                return data
+        except Exception:
+            logger.debug("[api_server] artifact registry unreadable; starting empty", exc_info=True)
+        return {"artifacts": []}
+
+    @classmethod
+    def _save_artifact_registry(cls, data: Dict[str, Any]) -> None:
+        root = cls._artifact_root()
+        root.mkdir(parents=True, exist_ok=True)
+        cls._artifact_registry_path().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _public_artifact_metadata(item: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "id": item["id"],
+            "object": "artifact",
+            "name": item["name"],
+            "mime_type": item["mime_type"],
+            "size": item["size"],
+            "sha256": item["sha256"],
+            "created_at": item["created_at"],
+            "download_url": f"/api/artifacts/{item['id']}",
+        }
+
+    def register_artifact_bytes(self, *, name: str, content: bytes, mime_type: Optional[str] = None) -> Dict[str, Any]:
+        """Register bytes as an API-server artifact and return public metadata."""
+        safe_name = self._sanitize_artifact_name(name)
+        if len(content) > MAX_ARTIFACT_BYTES:
+            raise ValueError("artifact_too_large")
+        artifact_id = f"art_{uuid.uuid4().hex[:16]}"
+        root = self._artifact_root()
+        files_dir = root / "files"
+        files_dir.mkdir(parents=True, exist_ok=True)
+        stored_path = files_dir / f"{artifact_id}-{safe_name}"
+        stored_path.write_bytes(content)
+        item = {
+            "id": artifact_id,
+            "name": safe_name,
+            "mime_type": mime_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream",
+            "size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "created_at": int(time.time()),
+            "stored_path": str(stored_path),
+        }
+        registry = self._load_artifact_registry()
+        registry.setdefault("artifacts", []).append(item)
+        self._save_artifact_registry(registry)
+        return self._public_artifact_metadata(item)
+
+    def _find_artifact(self, artifact_id: str) -> Optional[Dict[str, Any]]:
+        if not re.fullmatch(r"art_[0-9a-f]{16}", artifact_id or ""):
+            return None
+        for item in self._load_artifact_registry().get("artifacts", []):
+            if item.get("id") == artifact_id:
+                return item
+        return None
+
+    async def _handle_list_artifacts(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        artifacts = [self._public_artifact_metadata(item) for item in self._load_artifact_registry().get("artifacts", [])]
+        return web.json_response({"object": "list", "data": artifacts})
+
+    async def _handle_register_artifact(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON body", code="invalid_json"), status=400)
+        if not isinstance(body, dict):
+            return web.json_response(_openai_error("Body must be a JSON object", code="invalid_request"), status=400)
+        name = body.get("name") or "artifact.txt"
+        content = body.get("content")
+        if not isinstance(content, str):
+            return web.json_response(_openai_error("content must be a string", code="invalid_artifact_content"), status=400)
+        try:
+            metadata = self.register_artifact_bytes(
+                name=name,
+                content=content.encode("utf-8"),
+                mime_type=body.get("mime_type") or None,
+            )
+        except ValueError as exc:
+            code = str(exc) or "invalid_artifact"
+            status = 413 if code == "artifact_too_large" else 400
+            return web.json_response(_openai_error("Invalid artifact", code=code), status=status)
+        return web.json_response(metadata, status=201)
+
+    async def _handle_get_artifact(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        item = self._find_artifact(request.match_info.get("artifact_id", ""))
+        if not item:
+            return web.json_response(_openai_error("Artifact not found", code="artifact_not_found"), status=404)
+        stored_path = Path(str(item.get("stored_path", "")))
+        try:
+            root = (self._artifact_root() / "files").resolve()
+            resolved = stored_path.resolve()
+            resolved.relative_to(root)
+        except Exception:
+            return web.json_response(_openai_error("Artifact path is invalid", code="artifact_not_found"), status=404)
+        if not resolved.exists() or not resolved.is_file():
+            return web.json_response(_openai_error("Artifact file missing", code="artifact_gone"), status=410)
+        return web.Response(
+            body=resolved.read_bytes(),
+            content_type=item.get("mime_type") or "application/octet-stream",
+            headers={
+                "Content-Disposition": f"inline; filename=\"{item.get('name', 'artifact')}\"",
+                "X-Hermes-Artifact-Id": item["id"],
+            },
         )
 
     # ------------------------------------------------------------------
@@ -2784,6 +2934,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            self._app.router.add_get("/api/artifacts", self._handle_list_artifacts)
+            self._app.router.add_post("/api/artifacts", self._handle_register_artifact)
+            self._app.router.add_get("/api/artifacts/{artifact_id}", self._handle_get_artifact)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

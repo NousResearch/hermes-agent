@@ -183,7 +183,12 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_REDACT_SECRETS",
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
+    "HERMES_CRON_SESSION",
+    "HERMES_GATEWAY_BUSY_INPUT_MODE",
     "HERMES_HOME_MODE",
+    "API_SERVER_CORS_ORIGINS",
+    "API_SERVER_HOST",
+    "API_SERVER_PORT",
     "BROWSER_CDP_URL",
     "CAMOFOX_URL",
     # Platform allowlists — not credentials, but if set from any source

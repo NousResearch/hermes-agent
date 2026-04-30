@@ -319,6 +319,9 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_get("/api/artifacts", adapter._handle_list_artifacts)
+    app.router.add_post("/api/artifacts", adapter._handle_register_artifact)
+    app.router.add_get("/api/artifacts/{artifact_id}", adapter._handle_get_artifact)
     return app
 
 
@@ -420,6 +423,70 @@ class TestHealthDetailedEndpoint:
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
+
+
+# ---------------------------------------------------------------------------
+# /api/artifacts endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactsEndpoint:
+    @pytest.mark.asyncio
+    async def test_register_text_artifact_returns_download_url_without_local_paths(self, adapter, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/artifacts", json={
+                "name": "report.md",
+                "content": "# hello\n",
+                "mime_type": "text/markdown",
+            })
+            assert resp.status == 201
+            data = await resp.json()
+            assert data["name"] == "report.md"
+            assert data["mime_type"] == "text/markdown"
+            assert data["download_url"].startswith("/api/artifacts/")
+            assert "stored_path" not in data
+            assert "source_path" not in data
+            assert str(tmp_path) not in json.dumps(data)
+
+    @pytest.mark.asyncio
+    async def test_download_registered_artifact_returns_bytes_and_mime(self, adapter, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        artifact = adapter.register_artifact_bytes(
+            name="hello.txt",
+            content=b"hello from artifact",
+            mime_type="text/plain",
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(artifact["download_url"])
+            assert resp.status == 200
+            assert resp.headers["Content-Type"].startswith("text/plain")
+            assert await resp.text() == "hello from artifact"
+
+    @pytest.mark.asyncio
+    async def test_download_missing_artifact_returns_404(self, adapter, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/artifacts/missing-id")
+            assert resp.status == 404
+            data = await resp.json()
+            assert data["error"]["code"] == "artifact_not_found"
+
+    @pytest.mark.asyncio
+    async def test_artifact_registration_rejects_path_separators_in_name(self, adapter, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/artifacts", json={
+                "name": "../secret.txt",
+                "content": "nope",
+            })
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"]["code"] == "invalid_artifact_name"
 
 
 # ---------------------------------------------------------------------------

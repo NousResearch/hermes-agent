@@ -218,7 +218,14 @@ class TestRunAsyncWithRunningLoop:
         async def _never_finishes():
             await asyncio.sleep(999)
 
-        dummy_loop = object()
+        class DummyLoop:
+            def is_closed(self):
+                return False
+
+            def call_soon_threadsafe(self, callback, *args):
+                callback(*args)
+
+        dummy_loop = DummyLoop()
 
         def fake_run_coroutine_threadsafe(coro, loop):
             assert loop is dummy_loop
@@ -333,6 +340,107 @@ class TestRunAsyncWithRunningLoop:
                 and not stuck_loop.is_closed()
             ):
                 stuck_loop.close()
+
+    def test_timeout_does_not_stop_healthy_bridge_submission(self, monkeypatch):
+        """A timed-out call must not stop another in-flight bridge submission."""
+        import concurrent.futures as _cf
+        import model_tools
+
+        from model_tools import _run_async, shutdown_async_bridge_loop
+
+        real_result = _cf.Future.result
+        thread_timeouts = threading.local()
+
+        def per_thread_result(self, timeout=None):
+            return real_result(
+                self,
+                timeout=getattr(thread_timeouts, "timeout", timeout),
+            )
+
+        monkeypatch.setattr(_cf.Future, "result", per_thread_result)
+
+        slow_started = threading.Event()
+        healthy_started = threading.Event()
+        slow_done = threading.Event()
+        healthy_done = threading.Event()
+        results = {}
+        bridge_loop = None
+        bridge_thread = None
+
+        async def _slow():
+            slow_started.set()
+            await asyncio.sleep(60)
+
+        async def _healthy():
+            healthy_started.set()
+            await asyncio.sleep(0.2)
+            return "healthy-ok"
+
+        def _run_in_async_context(name, coro_factory, timeout):
+            thread_timeouts.timeout = timeout
+
+            async def _call_run_async():
+                return _run_async(coro_factory())
+
+            try:
+                results[name] = asyncio.run(_call_run_async())
+            except BaseException as exc:
+                results[name] = exc
+            finally:
+                if name == "slow":
+                    slow_done.set()
+                else:
+                    healthy_done.set()
+
+        slow_thread = threading.Thread(
+            target=_run_in_async_context,
+            args=("slow", _slow, 0.05),
+            daemon=True,
+            name="test-slow-bridge-caller",
+        )
+        healthy_thread = threading.Thread(
+            target=_run_in_async_context,
+            args=("healthy", _healthy, 0.4),
+            daemon=True,
+            name="test-healthy-bridge-caller",
+        )
+
+        try:
+            slow_thread.start()
+            assert slow_started.wait(timeout=1)
+
+            healthy_thread.start()
+            assert healthy_started.wait(timeout=1)
+            bridge_loop = model_tools._async_bridge_loop
+            bridge_thread = model_tools._async_bridge_thread
+
+            assert slow_done.wait(timeout=1)
+            assert isinstance(results["slow"], _cf.TimeoutError)
+
+            assert healthy_done.wait(timeout=1)
+            assert results["healthy"] == "healthy-ok"
+        finally:
+            slow_thread.join(timeout=1)
+            healthy_thread.join(timeout=1)
+            shutdown_async_bridge_loop(timeout=1)
+            if (
+                bridge_loop is not None
+                and bridge_loop is not model_tools._async_bridge_loop
+                and not bridge_loop.is_closed()
+            ):
+                try:
+                    bridge_loop.call_soon_threadsafe(bridge_loop.stop)
+                except RuntimeError:
+                    pass
+            if bridge_thread is not None:
+                bridge_thread.join(timeout=1)
+            if (
+                bridge_thread is not None
+                and not bridge_thread.is_alive()
+                and bridge_loop is not None
+                and not bridge_loop.is_closed()
+            ):
+                bridge_loop.close()
 
     @pytest.mark.asyncio
     async def test_async_context_reuses_persistent_bridge_loop(self):

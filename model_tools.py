@@ -50,6 +50,7 @@ _async_bridge_loop = None
 _async_bridge_thread = None
 _async_bridge_lock = threading.Lock()
 _ASYNC_BRIDGE_TIMEOUT = 300
+_ASYNC_BRIDGE_HEALTH_PROBE_TIMEOUT = 0.2
 
 
 def _get_tool_loop():
@@ -153,6 +154,24 @@ def _retire_async_bridge_loop(loop: asyncio.AbstractEventLoop) -> None:
         loop.close()
     except RuntimeError as exc:
         logger.debug("Async bridge retire close failed: %s", exc)
+
+
+def _async_bridge_loop_is_responsive(
+    loop: asyncio.AbstractEventLoop,
+    timeout: float = _ASYNC_BRIDGE_HEALTH_PROBE_TIMEOUT,
+) -> bool:
+    """Return whether the bridge loop can still process callbacks promptly."""
+    if loop.is_closed():
+        return False
+
+    probe_ran = threading.Event()
+    try:
+        loop.call_soon_threadsafe(probe_ran.set)
+    except RuntimeError as exc:
+        logger.debug("Async bridge health probe scheduling failed: %s", exc)
+        return False
+
+    return probe_ran.wait(timeout=timeout)
 
 
 async def _shutdown_bridge_loop_tasks() -> None:
@@ -297,7 +316,8 @@ def _run_async(coro):
             return future.result(timeout=_ASYNC_BRIDGE_TIMEOUT)
         except TimeoutError:
             future.cancel()
-            _retire_async_bridge_loop(bridge_loop)
+            if not _async_bridge_loop_is_responsive(bridge_loop):
+                _retire_async_bridge_loop(bridge_loop)
             raise
 
     # If we're on a worker thread (e.g., parallel tool execution in

@@ -182,7 +182,11 @@ class SSHEnvironment(BaseEnvironment):
 
             tar_cmd = ["tar", "-chf", "-", "-C", staging, "."]
             ssh_cmd = self._build_ssh_command()
-            ssh_cmd.append("tar xf - -C /")
+            # --no-overwrite-dir prevents tar from overwriting the mode of
+            # existing directories (e.g. /home/<user>) with the staging
+            # directory's mode.  Without this, a umask 002 produces 0775
+            # dirs which breaks sshd StrictModes (refuses authorized_keys).
+            ssh_cmd.append("tar xf - --no-overwrite-dir -C /")
 
             tar_proc = subprocess.Popen(
                 tar_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE

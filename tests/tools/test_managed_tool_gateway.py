@@ -97,3 +97,29 @@ def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkey
     )
 
     assert managed_tool_gateway.read_nous_access_token() == "fresh-token"
+
+
+def test_read_nous_access_token_fails_closed_when_refresh_fails(tmp_path, monkeypatch):
+    monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    expires_at = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    (tmp_path / "auth.json").write_text(json.dumps({
+        "providers": {
+            "nous": {
+                "access_token": "stale-token",
+                "refresh_token": "revoked-refresh-token",
+                "expires_at": expires_at,
+            }
+        }
+    }))
+
+    def fail_refresh(refresh_skew_seconds=120):
+        raise RuntimeError("Refresh session has been revoked")
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", fail_refresh)
+
+    assert managed_tool_gateway.read_nous_access_token() is None
+    assert managed_tool_gateway.is_managed_tool_gateway_ready(
+        "firecrawl",
+        token_reader=managed_tool_gateway.read_nous_access_token,
+    ) is False

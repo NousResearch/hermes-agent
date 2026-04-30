@@ -82,6 +82,9 @@ def read_nous_access_token() -> Optional[str]:
     access_token = nous_provider.get("access_token")
     cached_token = access_token.strip() if isinstance(access_token, str) and access_token.strip() else None
 
+    if cached_token and not nous_provider.get("expires_at"):
+        return cached_token
+
     if cached_token and not _access_token_is_expiring(
         nous_provider.get("expires_at"),
         _NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -98,8 +101,9 @@ def read_nous_access_token() -> Optional[str]:
             return refreshed_token.strip()
     except Exception as exc:
         logger.debug("Nous access token refresh failed: %s", exc)
+        return None
 
-    return cached_token
+    return None
 
 
 def get_tool_gateway_scheme() -> str:

@@ -488,28 +488,56 @@ gateway:
 
 When enabled, Hermes attaches Telegram's `LinkPreviewOptions(is_disabled=True)` to every outgoing message and falls back to the legacy `disable_web_page_preview` parameter on older `python-telegram-bot` versions.
 
-## Group Allowlisting by Chat ID
+## Group Allowlisting
 
-In addition to per-user access control via `TELEGRAM_ALLOWED_USERS`, you can allowlist entire group chats (and forum topics) by their numeric chat ID. Useful for team/support bots where any group member should be able to chat, but only in certain groups or topics.
+Telegram groups and forum chats have two orthogonal gates you can configure:
+
+- **Sender user IDs** (`group_allow_from` / `TELEGRAM_GROUP_ALLOWED_USERS`) — sender-scoped allowlist that applies only to group/forum messages. Use this when you want specific users to be able to invoke the bot in groups without adding them to `TELEGRAM_ALLOWED_USERS` (which would also give them DM access).
+- **Chat IDs** (`group_allowed_chats` / `TELEGRAM_GROUP_ALLOWED_CHATS`) — chat-scoped allowlist. Any member of these groups/forums can interact with the bot. Useful for team/support bots where group membership itself is the access signal.
 
 ```yaml
 gateway:
   platforms:
     telegram:
       extra:
+        # Global access (DMs + groups). Users here can always invoke the bot.
+        allow_from:
+          - "123456789"
+        # Sender IDs allowed in groups/forums only. Does NOT grant DM access.
+        group_allow_from:
+          - "987654321"
+        # Entire groups/forums — any member is authorized.
         group_allowed_chats:
-          - -1001234567890          # supergroup — all members allowed
-          - -1001234567891/42       # supergroup + forum thread_id 42 only
+          - "-1001234567890"
 ```
 
-Equivalent env var: `TELEGRAM_GROUP_ALLOWED_USERS="-1001234567890,-1001234567891/42"` (comma-separated; the `/<thread_id>` suffix is optional).
+Equivalent env vars:
+
+```bash
+TELEGRAM_ALLOWED_USERS="123456789"
+TELEGRAM_GROUP_ALLOWED_USERS="987654321"
+TELEGRAM_GROUP_ALLOWED_CHATS="-1001234567890"
+```
 
 Behavior:
 
-- A chat that appears in `group_allowed_chats` bypasses `TELEGRAM_ALLOWED_USERS` for its members — anyone in the group can interact with the bot.
-- Omit the `/<thread_id>` suffix to allow the whole group; include it to allow just that forum topic.
-- DMs still require the user ID to be in `TELEGRAM_ALLOWED_USERS`.
-- This layers cleanly on top of `group_topics` (for topic-scoped skill binding) and `ignored_threads` (for silencing specific topics).
+- `TELEGRAM_ALLOWED_USERS` covers all chat types (DMs, groups, forums).
+- `TELEGRAM_GROUP_ALLOWED_USERS` only authorizes the listed senders in groups/forums. They still can't DM the bot unless listed in `TELEGRAM_ALLOWED_USERS`.
+- A chat in `TELEGRAM_GROUP_ALLOWED_CHATS` authorizes every member of that chat, regardless of sender.
+- Use `*` in any of these to allow any sender/chat.
+- This layers on top of existing mention/pattern triggers and on top of `group_topics` + `ignored_threads`.
+
+### Migration from before PR #17686
+
+Prior to this split, `TELEGRAM_GROUP_ALLOWED_USERS` was the only knob and users put **chat IDs** in it. For backward compatibility, chat-ID-shaped values (starting with `-`) in `TELEGRAM_GROUP_ALLOWED_USERS` are still honored as chat IDs and a deprecation warning is logged once. Migration:
+
+```bash
+# Old (still works, but deprecated)
+TELEGRAM_GROUP_ALLOWED_USERS="-1001234567890"
+
+# New
+TELEGRAM_GROUP_ALLOWED_CHATS="-1001234567890"
+```
 
 ## Interactive Model Picker
 

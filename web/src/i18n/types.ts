@@ -74,6 +74,7 @@ export interface Translations {
       documentation: string;
       keys: string;
       logs: string;
+      models: string;
       profiles: string;
       sessions: string;
       skills: string;
@@ -173,6 +174,19 @@ export interface Translations {
     perDayAvg: string;
     acrossModels: string;
     inOut: string;
+  };
+
+  // ── Models page ──
+  models: {
+    modelsUsed: string;
+    estimatedCost: string;
+    tokens: string;
+    sessions: string;
+    avgPerSession: string;
+    apiCalls: string;
+    toolCalls: string;
+    noModelsData: string;
+    startSession: string;
   };
 
   // ── Logs page ──

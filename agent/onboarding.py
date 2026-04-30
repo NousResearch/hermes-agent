@@ -98,17 +98,19 @@ def tool_progress_hint_cli() -> str:
 def openclaw_residue_hint_cli() -> str:
     """Banner shown the first time Hermes starts and finds ``~/.openclaw/``.
 
-    OpenClaw-era config, memory, and skill paths in ``~/.openclaw/`` will
-    otherwise attract the agent (memory entries like ``~/.openclaw/config.yaml``
-    get carried forward and the agent dutifully reads them). ``hermes claw
-    cleanup`` renames the directory so the agent stops finding it.
+    Points users at ``hermes claw migrate`` (non-destructive port of config,
+    memory, and skills) first. ``hermes claw cleanup`` is mentioned as the
+    follow-up step for users who have already migrated and want to archive
+    the old directory — with a warning that archiving breaks OpenClaw.
     """
     return (
-        "Heads up — an OpenClaw workspace was detected at ~/.openclaw/.\n"
-        "After migrating, the agent can still get confused and read that "
-        "directory's config/memory instead of Hermes's.\n"
-        "Run `hermes claw cleanup` to archive it (rename → .openclaw.pre-migration). "
-        "This tip only shows once; rerun it any time with `hermes claw cleanup`."
+        "A legacy OpenClaw directory was detected at ~/.openclaw/.\n"
+        "To port your config, memory, and skills over to Hermes, run "
+        "`hermes claw migrate`.\n"
+        "If you've already migrated and want to archive the old directory, "
+        "run `hermes claw cleanup` (renames it to ~/.openclaw.pre-migration — "
+        "OpenClaw will stop working after this).\n"
+        "This tip only shows once."
     )
 
 

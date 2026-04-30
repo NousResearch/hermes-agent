@@ -1,9 +1,31 @@
 import { Box, Text, useStdout } from '@hermes/ink'
+import { useEffect, useState } from 'react'
+import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
+
+const LOADER_TICK_MS = 120
+
+function InlineLoader({ label, t }: { label: string; t: Theme }) {
+  const [tick, setTick] = useState(0)
+  const spinner = unicodeSpinners.braille
+  const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
+
+  useEffect(() => {
+    const id = setInterval(() => setTick(n => n + 1), Math.max(LOADER_TICK_MS, spinner.interval))
+
+    return () => clearInterval(id)
+  }, [spinner.interval])
+
+  return (
+    <Text color={t.color.muted} wrap="truncate">
+      <Text color={t.color.accent}>{frame}</Text> {label}
+    </Text>
+  )
+}
 
 export function ArtLines({ lines }: { lines: [string, string][] }) {
   return (
@@ -67,6 +89,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
     const entries = Object.entries(data).sort()
     const shown = entries.slice(0, max)
     const overflow = entries.length - max
+    const skeleton = info.lazy && entries.length === 0
 
     return (
       <Box flexDirection="column" marginTop={1}>
@@ -74,12 +97,16 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
           Available {title}
         </Text>
 
-        {shown.map(([k, vs]) => (
-          <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
-          </Text>
-        ))}
+        {skeleton ? (
+          <InlineLoader label={title === 'Tools' ? 'discovering tools' : 'scanning skills'} t={t} />
+        ) : (
+          shown.map(([k, vs]) => (
+            <Text key={k} wrap="truncate">
+              <Text color={t.color.muted}>{strip(k)}: </Text>
+              <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+            </Text>
+          ))
+        )}
 
         {overflow > 0 && (
           <Text color={t.color.muted}>

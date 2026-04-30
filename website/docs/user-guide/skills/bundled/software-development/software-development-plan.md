@@ -1,14 +1,14 @@
 ---
-title: "Plan — Plan mode for Hermes — inspect context, write a markdown plan into the active workspace's `"
+title: "Plan — Plan mode: write markdown plan to"
 sidebar_label: "Plan"
-description: "Plan mode for Hermes — inspect context, write a markdown plan into the active workspace's `"
+description: "Plan mode: write markdown plan to"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Plan
 
-Plan mode for Hermes — inspect context, write a markdown plan into the active workspace's `.hermes/plans/` directory, and do not execute the work.
+Plan mode: write markdown plan to .hermes/plans/, no exec.
 
 ## Skill metadata
 

@@ -12,8 +12,12 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     canonical_whatsapp_identifier,
-    normalize_whatsapp_identifier,
 )
+
+# Legacy name preserved for these tests; product renamed the function to
+# canonical_whatsapp_identifier.  Keep the tests referencing the old name
+# working without duplicating the suite.
+normalize_whatsapp_identifier = canonical_whatsapp_identifier
 
 
 class TestSessionSourceRoundtrip:
@@ -85,8 +89,13 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_topic is None
         assert restored.chat_type == "dm"
 
-    def test_invalid_platform_raises(self):
-        with pytest.raises((ValueError, KeyError)):
+    def test_unknown_platform_rejected_for_bad_names(self):
+        """Arbitrary platform names are rejected (no accidental enum pollution).
+
+        Only bundled platform plugins (discovered under ``plugins/platforms/``)
+        and runtime-registered plugins get dynamic enum members.
+        """
+        with pytest.raises(ValueError):
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
 
 

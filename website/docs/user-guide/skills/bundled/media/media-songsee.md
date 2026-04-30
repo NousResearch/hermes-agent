@@ -1,14 +1,14 @@
 ---
-title: "Songsee — Generate spectrograms and audio feature visualizations (mel, chroma, MFCC, tempogram, etc"
+title: "Songsee — Audio spectrograms/features (mel, chroma, MFCC) via CLI"
 sidebar_label: "Songsee"
-description: "Generate spectrograms and audio feature visualizations (mel, chroma, MFCC, tempogram, etc"
+description: "Audio spectrograms/features (mel, chroma, MFCC) via CLI"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Songsee
 
-Generate spectrograms and audio feature visualizations (mel, chroma, MFCC, tempogram, etc.) from audio files via CLI. Useful for audio analysis, music production debugging, and visual documentation.
+Audio spectrograms/features (mel, chroma, MFCC) via CLI.
 
 ## Skill metadata
 

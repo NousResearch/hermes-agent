@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import shutil
+import importlib.util
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -30,6 +31,7 @@ load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _HERMES_USER_AGENT
+from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
@@ -74,6 +76,14 @@ def _system_package_install_cmd(pkg: str) -> str:
     if sys.platform == "darwin":
         return f"brew install {pkg}"
     return f"sudo apt install {pkg}"
+
+
+def _safe_which(cmd: str) -> str | None:
+    """shutil.which wrapper resilient to platform monkeypatching in tests."""
+    try:
+        return shutil.which(cmd)
+    except Exception:
+        return None
 
 
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
@@ -537,6 +547,7 @@ def run_doctor(args):
             get_nous_auth_status,
             get_codex_auth_status,
             get_gemini_oauth_auth_status,
+            get_minimax_oauth_auth_status,
         )
 
         nous_status = get_nous_auth_status()
@@ -566,10 +577,17 @@ def run_doctor(args):
             check_ok("Google Gemini OAuth", f"(logged in{suffix})")
         else:
             check_warn("Google Gemini OAuth", "(not logged in)")
+
+        minimax_status = get_minimax_oauth_auth_status()
+        if minimax_status.get("logged_in"):
+            region = minimax_status.get("region", "global")
+            check_ok("MiniMax OAuth", f"(logged in, region={region})")
+        else:
+            check_warn("MiniMax OAuth", "(not logged in)")
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 
-    if shutil.which("codex"):
+    if _safe_which("codex"):
         check_ok("codex CLI")
     else:
         # Native OAuth uses Hermes' own device-code flow — the Codex CLI is
@@ -787,13 +805,13 @@ def run_doctor(args):
     print(color("◆ External Tools", Colors.CYAN, Colors.BOLD))
     
     # Git
-    if shutil.which("git"):
+    if _safe_which("git"):
         check_ok("git")
     else:
         check_warn("git not found", "(optional)")
     
     # ripgrep (optional, for faster file search)
-    if shutil.which("rg"):
+    if _safe_which("rg"):
         check_ok("ripgrep (rg)", "(faster file search)")
     else:
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
@@ -802,7 +820,7 @@ def run_doctor(args):
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     if terminal_env == "docker":
-        if shutil.which("docker"):
+        if _safe_which("docker"):
             # Check if docker daemon is running
             try:
                 result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
@@ -817,7 +835,7 @@ def run_doctor(args):
             check_fail("docker not found", "(required for TERMINAL_ENV=docker)")
             issues.append("Install Docker or change TERMINAL_ENV")
     else:
-        if shutil.which("docker"):
+        if _safe_which("docker"):
             check_ok("docker", "(optional)")
         else:
             if _is_termux():
@@ -863,8 +881,52 @@ def run_doctor(args):
             check_fail("daytona SDK not installed", "(pip install daytona)")
             issues.append("Install daytona SDK: pip install daytona")
 
+    # Vercel Sandbox (if using vercel_sandbox backend)
+    if terminal_env == "vercel_sandbox":
+        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
+        from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
+        if runtime in _SUPPORTED_VERCEL_RUNTIMES:
+            check_ok("Vercel runtime", f"({runtime})")
+        else:
+            supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
+            check_fail("Vercel runtime unsupported", f"({runtime}; use {supported})")
+            issues.append(f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}")
+
+        disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
+        if disk in ("", "0", "51200"):
+            check_ok("Vercel disk setting", "(uses platform default)")
+        else:
+            check_fail("Vercel custom disk unsupported", "(reset terminal.container_disk to 51200)")
+            issues.append("Vercel Sandbox does not support custom container_disk; use the shared default 51200")
+
+        if importlib.util.find_spec("vercel") is not None:
+            check_ok("vercel SDK", "(installed)")
+        else:
+            check_fail("vercel SDK not installed", "(pip install 'hermes-agent[vercel]')")
+            issues.append("Install the Vercel optional dependency: pip install 'hermes-agent[vercel]'")
+
+        auth_status = describe_vercel_auth()
+        if auth_status.ok:
+            check_ok("Vercel auth", f"({auth_status.label})")
+        elif auth_status.label.startswith("partial"):
+            check_fail("Vercel auth incomplete", f"({auth_status.label})")
+            issues.append("Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together")
+        else:
+            check_fail("Vercel auth not configured", f"({auth_status.label})")
+            issues.append(
+                "Configure Vercel Sandbox auth with VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID"
+            )
+        for line in auth_status.detail_lines:
+            check_info(f"Vercel auth {line}")
+
+        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("1", "true", "yes", "on")
+        if persistent:
+            check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
+        else:
+            check_info("Vercel persistence: ephemeral filesystem")
+
     # Node.js + agent-browser (for browser automation tools)
-    if shutil.which("node"):
+    if _safe_which("node"):
         check_ok("Node.js")
         # Check if agent-browser is installed
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
@@ -890,7 +952,7 @@ def run_doctor(args):
             check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
-    if shutil.which("npm"):
+    if _safe_which("npm"):
         npm_dirs = [
             (PROJECT_ROOT, "Browser tools (agent-browser)"),
             (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
@@ -969,10 +1031,16 @@ def run_doctor(args):
         print("  Checking Anthropic API...", end="", flush=True)
         try:
             import httpx
-            from agent.anthropic_adapter import _is_oauth_token, _COMMON_BETAS, _OAUTH_ONLY_BETAS
+            from agent.anthropic_adapter import (
+                _is_oauth_token,
+                _COMMON_BETAS,
+                _OAUTH_ONLY_BETAS,
+                _CONTEXT_1M_BETA,
+            )
 
             headers = {"anthropic-version": "2023-06-01"}
-            if _is_oauth_token(anthropic_key):
+            is_oauth = _is_oauth_token(anthropic_key)
+            if is_oauth:
                 headers["Authorization"] = f"Bearer {anthropic_key}"
                 headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
             else:
@@ -982,6 +1050,25 @@ def run_doctor(args):
                 headers=headers,
                 timeout=10
             )
+            # Reactive recovery: OAuth subscriptions that don't include 1M
+            # context reject the request with 400 "long context beta is not
+            # yet available for this subscription". Retry once with that
+            # beta stripped so the doctor check doesn't falsely report the
+            # Anthropic API as unreachable for those users.
+            if (
+                is_oauth
+                and response.status_code == 400
+                and "long context beta" in response.text.lower()
+                and "not yet available" in response.text.lower()
+            ):
+                headers["anthropic-beta"] = ",".join(
+                    [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS)
+                )
+                response = httpx.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers=headers,
+                    timeout=10,
+                )
             if response.status_code == 200:
                 print(f"\r  {color('✓', Colors.GREEN)} Anthropic API                           ")
             elif response.status_code == 401:

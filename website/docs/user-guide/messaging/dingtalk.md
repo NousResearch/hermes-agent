@@ -123,15 +123,38 @@ DINGTALK_ALLOWED_USERS=user-id-1
 
 # Multiple allowed users (comma-separated)
 # DINGTALK_ALLOWED_USERS=user-id-1,user-id-2
+
+# Optional: group-chat gating (mirrors Slack/Telegram/Discord/WhatsApp)
+# DINGTALK_REQUIRE_MENTION=true
+# DINGTALK_FREE_RESPONSE_CHATS=cidABC==,cidDEF==
+# DINGTALK_MENTION_PATTERNS=^小马
+# DINGTALK_HOME_CHANNEL=cidXXXX==
+# DINGTALK_ALLOW_ALL_USERS=true
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
 
 ```yaml
 group_sessions_per_user: true
+
+gateway:
+  platforms:
+    dingtalk:
+      extra:
+        # Require @mention in groups before the bot replies (parity with Slack/Telegram/Discord).
+        # DMs ignore this — the bot always replies in 1:1 chats.
+        require_mention: true
+
+        # Per-platform allowlist. When set, only these DingTalk user IDs can interact with the bot
+        # (same semantics as DINGTALK_ALLOWED_USERS, but scoped here instead of in .env).
+        allowed_users:
+          - user-id-1
+          - user-id-2
 ```
 
 - `group_sessions_per_user: true` keeps each participant's context isolated inside shared group chats
+- `require_mention: true` prevents the bot from responding to every group message — it only answers when someone @-mentions it
+- `allowed_users` under `dingtalk.extra` is an alternative to `DINGTALK_ALLOWED_USERS`; if both are set, they're merged
 
 ### Start the Gateway
 

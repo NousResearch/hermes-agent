@@ -296,6 +296,30 @@ class TestRootLevelProviderOverride:
         # Root-level "opencode-go" must NOT leak through
         assert cfg["model"]["provider"] != "opencode-go"
 
+    def test_terminal_vercel_runtime_bridged_to_env(self, tmp_path, monkeypatch):
+        """Classic CLI must expose terminal.vercel_runtime to terminal_tool.py."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TERMINAL_VERCEL_RUNTIME", raising=False)
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "terminal": {
+                "backend": "vercel_sandbox",
+                "vercel_runtime": "python3.13",
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["terminal"]["vercel_runtime"] == "python3.13"
+        assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
+
     def test_normalize_root_model_keys_moves_to_model(self):
         """_normalize_root_model_keys migrates root keys into model section."""
         from hermes_cli.config import _normalize_root_model_keys

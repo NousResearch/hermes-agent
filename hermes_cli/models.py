@@ -288,6 +288,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2.1",
         "MiniMax-M2",
     ],
+    "minimax-oauth": [
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
+    ],
     "minimax-cn": [
         "MiniMax-M2.7",
         "MiniMax-M2.5",
@@ -788,6 +792,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Moonshot CN direct API)"),
     ProviderEntry("stepfun",        "StepFun Step Plan",       "StepFun Step Plan (agent/coding models via Step Plan API)"),
     ProviderEntry("minimax",        "MiniMax",                  "MiniMax (global direct API)"),
+    ProviderEntry("minimax-oauth",  "MiniMax (OAuth)",          "MiniMax via OAuth browser login (Coding Plan, minimax.io)"),
     ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (domestic direct API)"),
     ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
@@ -831,6 +836,9 @@ _PROVIDER_ALIASES = {
     "gmicloud": "gmi",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
+    "minimax-portal": "minimax-oauth",
+    "minimax-global": "minimax-oauth",
+    "minimax_oauth": "minimax-oauth",
     "claude": "anthropic",
     "claude-code": "anthropic",
     "deep-seek": "deepseek",
@@ -2026,28 +2034,56 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
         return None
 
     headers: dict[str, str] = {"anthropic-version": "2023-06-01"}
-    if _is_oauth_token(token):
+    is_oauth = _is_oauth_token(token)
+    if is_oauth:
         headers["Authorization"] = f"Bearer {token}"
-        from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS
+        from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _CONTEXT_1M_BETA
         headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
     else:
         headers["x-api-key"] = token
 
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/models",
-        headers=headers,
-    )
-    try:
+    def _do_request(h: dict[str, str]):
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/models",
+            headers=h,
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
-            models = [m["id"] for m in data.get("data", []) if m.get("id")]
-            # Sort: latest/largest first (opus > sonnet > haiku, higher version first)
-            return sorted(models, key=lambda m: (
-                "opus" not in m,      # opus first
-                "sonnet" not in m,    # then sonnet
-                "haiku" not in m,     # then haiku
-                m,                    # alphabetical within tier
-            ))
+            return json.loads(resp.read().decode())
+
+    try:
+        try:
+            data = _do_request(headers)
+        except urllib.error.HTTPError as http_err:
+            # Reactive recovery for OAuth subscriptions that reject the 1M
+            # context beta with 400 "long context beta is not yet available
+            # for this subscription". Retry once without the beta; re-raise
+            # anything else so the outer except logs it.
+            if (
+                is_oauth
+                and http_err.code == 400
+            ):
+                try:
+                    body_text = http_err.read().decode(errors="ignore").lower()
+                except Exception:
+                    body_text = ""
+                if "long context beta" in body_text and "not yet available" in body_text:
+                    headers["anthropic-beta"] = ",".join(
+                        [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
+                        + list(_OAUTH_ONLY_BETAS)
+                    )
+                    data = _do_request(headers)
+                else:
+                    raise
+            else:
+                raise
+        models = [m["id"] for m in data.get("data", []) if m.get("id")]
+        # Sort: latest/largest first (opus > sonnet > haiku, higher version first)
+        return sorted(models, key=lambda m: (
+            "opus" not in m,      # opus first
+            "sonnet" not in m,    # then sonnet
+            "haiku" not in m,     # then haiku
+            m,                    # alphabetical within tier
+        ))
     except Exception as e:
         import logging
         logging.getLogger(__name__).debug("Failed to fetch Anthropic models: %s", e)

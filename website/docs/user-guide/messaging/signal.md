@@ -168,6 +168,16 @@ All outgoing media goes through Signal's standard attachment API. Unlike some pl
 
 Attachment size limit: **100 MB** (both directions).
 
+### Native Formatting, Reply Quotes, and Reactions
+
+Signal messages render with **native formatting** instead of literal markdown characters. The adapter converts markdown (`**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, `||spoiler||`, headings) into Signal `bodyRanges` so the text shows up with real styling on the recipient's client rather than as visible `**` / `` ` `` characters.
+
+**Reply quotes.** When Hermes replies to a specific message, it now posts a native reply that quotes the original — same UI affordance Signal users see when they use "Reply" themselves. This is automatic for replies generated in response to an inbound message.
+
+**Reactions.** The agent can react to messages via the standard reaction API; reactions surface in Signal as emoji reactions on the referenced message rather than as extra text.
+
+None of this requires additional config — it ships on by default in recent signal-cli builds. If your `signal-cli` version is too old, Hermes falls back to plaintext delivery and logs a one-time warning.
+
 ### Typing Indicators
 
 The bot sends typing indicators while processing messages, refreshing every 8 seconds.

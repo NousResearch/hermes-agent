@@ -1,14 +1,14 @@
 ---
-title: "Serving Llms Vllm — Serves LLMs with high throughput using vLLM's PagedAttention and continuous batching"
+title: "Serving Llms Vllm — vLLM: high-throughput LLM serving, OpenAI API, quantization"
 sidebar_label: "Serving Llms Vllm"
-description: "Serves LLMs with high throughput using vLLM's PagedAttention and continuous batching"
+description: "vLLM: high-throughput LLM serving, OpenAI API, quantization"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Serving Llms Vllm
 
-Serves LLMs with high throughput using vLLM's PagedAttention and continuous batching. Use when deploying production LLM APIs, optimizing inference latency/throughput, or serving models with limited GPU memory. Supports OpenAI-compatible endpoints, quantization (GPTQ/AWQ/FP8), and tensor parallelism.
+vLLM: high-throughput LLM serving, OpenAI API, quantization.
 
 ## Skill metadata
 
@@ -29,6 +29,10 @@ The following is the complete skill definition that Hermes loads when this skill
 :::
 
 # vLLM - High-Performance LLM Serving
+
+## When to use
+
+Use when deploying production LLM APIs, optimizing inference latency/throughput, or serving models with limited GPU memory. Supports OpenAI-compatible endpoints, quantization (GPTQ/AWQ/FP8), and tensor parallelism.
 
 ## Quick start
 

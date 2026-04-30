@@ -128,11 +128,13 @@ _cfg_path = None
 _SLASH_WORKER_TIMEOUT_S = max(
     5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45)
 )
+_DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
+_DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
 # to minutes (slash.exec, cli.exec, shell.exec, session.resume,
-# session.branch, skills.manage).  While they're running, inbound RPCs —
+# session.branch, session.compress, skills.manage).  While they're running, inbound RPCs —
 # notably approval.respond and session.interrupt — sit unread in the
 # stdin pipe.  We route only those slow handlers onto a small thread pool;
 # everything else stays on the main thread so ordering stays sane for the
@@ -143,6 +145,7 @@ _LONG_HANDLERS = frozenset(
         "browser.manage",
         "cli.exec",
         "session.branch",
+        "session.compress",
         "session.resume",
         "shell.exec",
         "skills.manage",
@@ -465,6 +468,119 @@ def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     return _err(rid, 5032, err) if err else None
 
 
+def _start_agent_build(sid: str, session: dict) -> None:
+    """Start building the real AIAgent for a TUI session, once.
+
+    Classic `hermes` shows the prompt before constructing AIAgent; the TUI used
+    to eagerly build it during session.create, making startup feel blocked on
+    tool discovery/model metadata even though the composer was visible.  Keep
+    the shell responsive by deferring this work until the first prompt (or any
+    command that actually needs the agent), while retaining the same ready/error
+    event contract for the frontend.
+    """
+    ready = session.get("agent_ready")
+    if ready is None:
+        return
+    lock = session.setdefault("agent_build_lock", threading.Lock())
+    with lock:
+        if ready.is_set() or session.get("agent_build_started"):
+            return
+        session["agent_build_started"] = True
+    key = session["session_key"]
+
+    def _build() -> None:
+        current = _sessions.get(sid)
+        if current is None:
+            ready.set()
+            return
+
+        worker = None
+        notify_registered = False
+        try:
+            tokens = _set_session_context(key)
+            try:
+                agent = _make_agent(sid, key)
+            finally:
+                _clear_session_context(tokens)
+
+            db = _get_db()
+            if db is not None:
+                db.create_session(key, source="tui", model=_resolve_model())
+                pending_title = (current.get("pending_title") or "").strip()
+                if pending_title:
+                    try:
+                        title_applied = db.set_session_title(key, pending_title)
+                        if title_applied:
+                            current["pending_title"] = None
+                        else:
+                            existing_row = db.get_session(key)
+                            existing_title = ((existing_row or {}).get("title") or "").strip()
+                            if existing_title == pending_title:
+                                current["pending_title"] = None
+                            else:
+                                logger.info(
+                                    "Pending title still queued for session %s (wanted=%r, current=%r)",
+                                    sid,
+                                    pending_title,
+                                    existing_title,
+                                )
+                    except ValueError as e:
+                        current["pending_title"] = None
+                        logger.info("Dropping pending title for session %s: %s", sid, e)
+                    except Exception:
+                        logger.warning("Failed to apply pending title for session %s", sid, exc_info=True)
+            current["agent"] = agent
+
+            try:
+                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                current["slash_worker"] = worker
+            except Exception:
+                pass
+
+            try:
+                from tools.approval import (
+                    register_gateway_notify,
+                    load_permanent_allowlist,
+                )
+                register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+                notify_registered = True
+                load_permanent_allowlist()
+            except Exception:
+                pass
+
+            _wire_callbacks(sid)
+            _notify_session_boundary("on_session_reset", key)
+
+            info = _session_info(agent)
+            warn = _probe_credentials(agent)
+            if warn:
+                info["credential_warning"] = warn
+            cfg_warn = _probe_config_health(_load_cfg())
+            if cfg_warn:
+                info["config_warning"] = cfg_warn
+                logger.warning(cfg_warn)
+            _emit("session.info", sid, info)
+        except Exception as e:
+            current["agent_error"] = str(e)
+            _emit("error", sid, {"message": f"agent init failed: {e}"})
+        finally:
+            if _sessions.get(sid) is not current:
+                if worker is not None:
+                    try:
+                        worker.close()
+                    except Exception:
+                        pass
+                if notify_registered:
+                    try:
+                        from tools.approval import unregister_gateway_notify
+                        unregister_gateway_notify(key)
+                    except Exception:
+                        pass
+            ready.set()
+
+    threading.Thread(target=_build, daemon=True).start()
+
+
 def _sess_nowait(params, rid):
     s = _sessions.get(params.get("session_id") or "")
     return (s, None) if s else (None, _err(rid, 4001, "session not found"))
@@ -472,7 +588,10 @@ def _sess_nowait(params, rid):
 
 def _sess(params, rid):
     s, err = _sess_nowait(params, rid)
-    return (None, err) if err else (s, _wait_agent(s, rid))
+    if err:
+        return (None, err)
+    _start_agent_build(params.get("session_id") or "", s)
+    return (s, _wait_agent(s, rid))
 
 
 def _normalize_completion_path(path_part: str) -> str:
@@ -743,9 +862,99 @@ def _load_tool_progress_mode() -> str:
 
 
 def _load_enabled_toolsets() -> list[str] | None:
+    explicit = [
+        item.strip()
+        for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",")
+        if item.strip()
+    ]
+    cfg = None
+    fallback_notice = None
+
+    try:
+        from toolsets import validate_toolset
+    except Exception:
+        validate_toolset = None
+
+    if explicit and validate_toolset is not None:
+        built_in = [name for name in explicit if validate_toolset(name)]
+        unresolved = [name for name in explicit if name not in built_in]
+
+        if unresolved:
+            try:
+                from hermes_cli.plugins import discover_plugins
+
+                discover_plugins()
+                plugin_valid = [name for name in unresolved if validate_toolset(name)]
+            except Exception:
+                plugin_valid = []
+
+            if plugin_valid:
+                built_in.extend(plugin_valid)
+                unresolved = [name for name in unresolved if name not in plugin_valid]
+
+        if any(name in {"all", "*"} for name in built_in):
+            ignored = [name for name in explicit if name not in {"all", "*"}]
+            if ignored:
+                print(
+                    "[tui] HERMES_TUI_TOOLSETS=all enables every toolset; "
+                    f"ignoring additional entries: {', '.join(ignored)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return None
+
+        if not unresolved:
+            return built_in
+
+        mcp_names: set[str] = set()
+        mcp_disabled: set[str] = set()
+        try:
+            from hermes_cli.config import read_raw_config
+            from hermes_cli.tools_config import _parse_enabled_flag
+
+            raw_cfg = read_raw_config()
+            mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
+            for name, server_cfg in mcp_servers.items():
+                if not isinstance(server_cfg, dict):
+                    continue
+                if _parse_enabled_flag(server_cfg.get("enabled", True), default=True):
+                    mcp_names.add(str(name))
+                else:
+                    mcp_disabled.add(str(name))
+        except Exception:
+            mcp_names = set()
+            mcp_disabled = set()
+
+        mcp_valid = [name for name in unresolved if name in mcp_names]
+        disabled = [name for name in unresolved if name in mcp_disabled]
+        unknown = [name for name in unresolved if name not in mcp_names and name not in mcp_disabled]
+        valid = built_in + mcp_valid
+
+        if unknown:
+            print(
+                f"[tui] ignoring unknown HERMES_TUI_TOOLSETS entries: {', '.join(unknown)}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if disabled:
+            print(
+                "[tui] ignoring disabled MCP servers in HERMES_TUI_TOOLSETS "
+                "(set enabled: true in config.yaml to use): "
+                f"{', '.join(disabled)}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        if valid:
+            return valid
+
+        fallback_notice = "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
+
     try:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
+
+        cfg = cfg if cfg is not None else load_config()
 
         # Runtime toolset resolution must include default MCP servers so the
         # agent can actually call them. Passing ``False`` here is the
@@ -754,10 +963,18 @@ def _load_enabled_toolsets() -> list[str] | None:
         # variant at agent creation time makes MCP tools silently missing
         # from the TUI. See PR #3252 for the original design split.
         enabled = sorted(
-            _get_platform_tools(load_config(), "cli", include_default_mcp_servers=True)
+            _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
         )
+        if fallback_notice is not None:
+            print(fallback_notice, file=sys.stderr, flush=True)
         return enabled or None
     except Exception:
+        if fallback_notice is not None:
+            print(
+                "[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets",
+                file=sys.stderr,
+                flush=True,
+            )
         return None
 
 
@@ -885,24 +1102,111 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
 
 
 def _compress_session_history(
-    session: dict, focus_topic: str | None = None
+    session: dict,
+    focus_topic: str | None = None,
+    approx_tokens: int | None = None,
+    before_messages: list | None = None,
+    history_version: int | None = None,
 ) -> tuple[int, dict]:
     from agent.model_metadata import estimate_messages_tokens_rough
 
     agent = session["agent"]
-    history = list(session.get("history", []))
+    # Snapshot history under the lock so the LLM-bound compression call
+    # below does NOT hold history_lock for the duration of the request —
+    # otherwise other handlers acquiring the lock (prompt.submit etc.)
+    # block on the dispatcher loop while compaction runs.
+    if before_messages is None or history_version is None:
+        with session["history_lock"]:
+            before_messages = list(session.get("history", []))
+            history_version = int(session.get("history_version", 0))
+    history = before_messages
     if len(history) < 4:
-        return 0, _get_usage(agent)
-    approx_tokens = estimate_messages_tokens_rough(history)
+        usage = _get_usage(agent)
+        return 0, usage
+    if approx_tokens is None:
+        approx_tokens = estimate_messages_tokens_rough(history)
+    # Pass system_message=None so AIAgent._compress_context rebuilds the
+    # system prompt cleanly via _build_system_prompt(None). Passing the
+    # cached prompt (which already contains the agent identity block)
+    # makes the rebuild append the identity a second time. Mirrors the
+    # CLI's _manual_compress fix for issue #15281.
     compressed, _ = agent._compress_context(
         history,
-        getattr(agent, "_cached_system_prompt", "") or "",
+        None,
         approx_tokens=approx_tokens,
         focus_topic=focus_topic or None,
     )
-    session["history"] = compressed
-    session["history_version"] = int(session.get("history_version", 0)) + 1
-    return len(history) - len(compressed), _get_usage(agent)
+    with session["history_lock"]:
+        if int(session.get("history_version", 0)) != history_version:
+            # External mutation during compaction — drop the compressed
+            # result so we don't clobber concurrent edits.
+            usage = _get_usage(agent)
+            return 0, usage
+        session["history"] = compressed
+        session["history_version"] = history_version + 1
+    usage = _get_usage(agent)
+    return len(history) - len(compressed), usage
+
+
+def _sync_session_key_after_compress(sid: str, session: dict) -> None:
+    """Re-anchor session_key when AIAgent._compress_context rotates session_id.
+
+    AIAgent._compress_context ends the current SessionDB session and creates
+    a new continuation session, rotating ``agent.session_id``.  The TUI
+    gateway keeps the gateway-side ``session_key`` separate (used for
+    approval routing, slash worker init, DB title/history lookups, yolo
+    state).  Without this sync, those operations would target the ended
+    parent session while the agent writes to the new continuation session.
+    Mirrors HermesCLI._manual_compress's session_id sync.
+    """
+    agent = session.get("agent")
+    new_session_id = getattr(agent, "session_id", None) or ""
+    old_key = session.get("session_key", "") or ""
+    if not new_session_id or new_session_id == old_key:
+        return
+
+    try:
+        from tools.approval import (
+            disable_session_yolo,
+            enable_session_yolo,
+            is_session_yolo_enabled,
+            register_gateway_notify,
+            unregister_gateway_notify,
+        )
+
+        try:
+            unregister_gateway_notify(old_key)
+        except Exception:
+            pass
+        session["session_key"] = new_session_id
+        try:
+            yolo_was_on = is_session_yolo_enabled(old_key)
+        except Exception:
+            yolo_was_on = False
+        if yolo_was_on:
+            try:
+                enable_session_yolo(new_session_id)
+                disable_session_yolo(old_key)
+            except Exception:
+                pass
+        try:
+            register_gateway_notify(
+                new_session_id,
+                lambda data: _emit("approval.request", sid, data),
+            )
+        except Exception:
+            pass
+    except Exception:
+        # Even if the approval module fails to import, still anchor the
+        # session_key on the new continuation id so downstream lookups
+        # don't keep targeting the ended row.
+        session["session_key"] = new_session_id
+
+    session["pending_title"] = None
+    try:
+        _restart_slash_worker(session)
+    except Exception:
+        pass
 
 
 def _get_usage(agent) -> dict:
@@ -1627,129 +1931,18 @@ def _(rid, params: dict) -> dict:
         "transport": current_transport() or _stdio_transport,
     }
 
-    def _build() -> None:
+    # Return the lightweight session immediately so Ink can paint the composer
+    # + skeleton panel, then build the real AIAgent just after this response is
+    # flushed.  This keeps startup responsive while still hydrating tools/skills
+    # without requiring the user to submit a first prompt.
+    def _deferred_build() -> None:
         session = _sessions.get(sid)
-        if session is None:
-            # session.close ran before the build thread got scheduled.
-            ready.set()
-            return
+        if session is not None:
+            _start_agent_build(sid, session)
 
-        # Track what we allocate so we can clean up if session.close
-        # races us to the finish line.  session.close pops _sessions[sid]
-        # unconditionally and tries to close the slash_worker it finds;
-        # if _build is still mid-construction when close runs, close
-        # finds slash_worker=None / notify unregistered and returns
-        # cleanly — leaving us, the build thread, to later install the
-        # worker + notify on an orphaned session dict.  The finally
-        # block below detects the orphan and cleans up instead of
-        # leaking a subprocess and a global notify registration.
-        worker = None
-        notify_registered = False
-        try:
-            tokens = _set_session_context(key)
-            try:
-                agent = _make_agent(sid, key)
-            finally:
-                _clear_session_context(tokens)
-
-            db = _get_db()
-            if db is not None:
-                db.create_session(key, source="tui", model=_resolve_model())
-                pending_title = (session.get("pending_title") or "").strip()
-                if pending_title:
-                    try:
-                        title_applied = db.set_session_title(key, pending_title)
-                        if title_applied:
-                            session["pending_title"] = None
-                        else:
-                            existing_row = db.get_session(key)
-                            existing_title = (
-                                (existing_row or {}).get("title") or ""
-                            ).strip()
-                            if existing_title == pending_title:
-                                session["pending_title"] = None
-                            else:
-                                logger.info(
-                                    "Pending title still queued for session %s (wanted=%r, current=%r)",
-                                    sid,
-                                    pending_title,
-                                    existing_title,
-                                )
-                    except ValueError as e:
-                        # Queued title can become invalid/duplicate between queue time
-                        # and DB row creation. Drop the queue and log the reason so
-                        # future /title reads don't surface a stuck pending value.
-                        session["pending_title"] = None
-                        logger.info(
-                            "Dropping pending title for session %s: %s",
-                            sid,
-                            e,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Failed to apply pending title for session %s",
-                            sid,
-                            exc_info=True,
-                        )
-            session["agent"] = agent
-
-            try:
-                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
-                session["slash_worker"] = worker
-            except Exception:
-                pass
-
-            try:
-                from tools.approval import (
-                    register_gateway_notify,
-                    load_permanent_allowlist,
-                )
-
-                register_gateway_notify(
-                    key, lambda data: _emit("approval.request", sid, data)
-                )
-                notify_registered = True
-                load_permanent_allowlist()
-            except Exception:
-                pass
-
-            _wire_callbacks(sid)
-            _notify_session_boundary("on_session_reset", key)
-
-            info = _session_info(agent)
-            warn = _probe_credentials(agent)
-            if warn:
-                info["credential_warning"] = warn
-            cfg_warn = _probe_config_health(_load_cfg())
-            if cfg_warn:
-                info["config_warning"] = cfg_warn
-                logger.warning(cfg_warn)
-            _emit("session.info", sid, info)
-        except Exception as e:
-            session["agent_error"] = str(e)
-            _emit("error", sid, {"message": f"agent init failed: {e}"})
-        finally:
-            # Orphan check: if session.close raced us and popped
-            # _sessions[sid] while we were building, the dict we just
-            # populated is unreachable.  Clean up the subprocess and
-            # the global notify registration ourselves — session.close
-            # couldn't see them at the time it ran.
-            if _sessions.get(sid) is not session:
-                if worker is not None:
-                    try:
-                        worker.close()
-                    except Exception:
-                        pass
-                if notify_registered:
-                    try:
-                        from tools.approval import unregister_gateway_notify
-
-                        unregister_gateway_notify(key)
-                    except Exception:
-                        pass
-            ready.set()
-
-    threading.Thread(target=_build, daemon=True).start()
+    build_timer = threading.Timer(0.05, _deferred_build)
+    build_timer.daemon = True
+    build_timer.start()
 
     return _ok(
         rid,
@@ -1760,6 +1953,7 @@ def _(rid, params: dict) -> dict:
                 "tools": {},
                 "skills": {},
                 "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
+                "lazy": True,
             },
         },
     )
@@ -1899,9 +2093,50 @@ def _(rid, params: dict) -> dict:
     )
 
 
+@method("session.delete")
+def _(rid, params: dict) -> dict:
+    """Delete a stored session and its on-disk transcript files.
+
+    Used by the TUI resume picker (``d`` key) so users can prune old
+    sessions without dropping to the CLI.  Refuses to delete a session
+    that is currently active in this gateway process — those rows are
+    still being written to and removing them out from under the live
+    agent corrupts message ordering and trips FK constraints when the
+    next message append flushes.
+    """
+    target = params.get("session_id", "")
+    if not target:
+        return _err(rid, 4006, "session_id required")
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5036)
+    # Block deletion of any session currently bound to a live TUI session
+    # in this process.  The picker hides the active session anyway, but a
+    # racing caller could still target it.  Snapshot via ``list(...)``
+    # because ``_sessions`` is mutated by concurrent RPCs on the thread
+    # pool — iterating the dict directly can raise ``RuntimeError:
+    # dictionary changed size during iteration``.  If even the snapshot
+    # raises, fail closed (refuse the delete) rather than fail open.
+    try:
+        snapshot = list(_sessions.values())
+    except Exception as e:
+        return _err(rid, 5036, f"could not enumerate active sessions: {e}")
+    active = {s.get("session_key") for s in snapshot if s.get("session_key")}
+    if target in active:
+        return _err(rid, 4023, "cannot delete an active session")
+    sessions_dir = get_hermes_home() / "sessions"
+    try:
+        deleted = db.delete_session(target, sessions_dir=sessions_dir)
+    except Exception as e:
+        return _err(rid, 5036, f"delete failed: {e}")
+    if not deleted:
+        return _err(rid, 4007, "session not found")
+    return _ok(rid, {"deleted": target})
+
+
 @method("session.title")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    session, err = _sess_nowait(params, rid)
     if err:
         return err
     db = _get_db()
@@ -1964,13 +2199,16 @@ def _(rid, params: dict) -> dict:
 
 @method("session.usage")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
-    return err or _ok(rid, _get_usage(session["agent"]))
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    return _ok(rid, _get_usage(agent) if agent is not None else {"calls": 0, "input": 0, "output": 0, "total": 0})
 
 
 @method("session.history")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    session, err = _sess_nowait(params, rid)
     if err:
         return err
     history = list(session.get("history", []))
@@ -2028,24 +2266,70 @@ def _(rid, params: dict) -> dict:
         return _err(
             rid, 4009, "session busy — /interrupt the current turn before /compress"
         )
+    sid = params.get("session_id", "")
+    focus_topic = str(params.get("focus_topic", "") or "").strip()
     try:
+        from agent.manual_compression_feedback import summarize_manual_compression
+        from agent.model_metadata import estimate_messages_tokens_rough
+
         with session["history_lock"]:
-            removed, usage = _compress_session_history(
-                session, str(params.get("focus_topic", "") or "").strip()
-            )
-            messages = list(session.get("history", []))
-        info = _session_info(session["agent"])
-        _emit("session.info", params.get("session_id", ""), info)
-        return _ok(
-            rid,
-            {
-                "status": "compressed",
-                "removed": removed,
-                "usage": usage,
-                "info": info,
-                "messages": messages,
-            },
+            before_messages = list(session.get("history", []))
+            history_version = int(session.get("history_version", 0))
+        before_count = len(before_messages)
+        before_tokens = (
+            estimate_messages_tokens_rough(before_messages) if before_count else 0
         )
+
+        if before_count >= 4:
+            focus_suffix = f', focus: "{focus_topic}"' if focus_topic else ""
+            _status_update(
+                sid,
+                "compressing",
+                f"⠋ compressing {before_count} messages "
+                f"(~{before_tokens:,} tok){focus_suffix}…",
+            )
+
+        try:
+            removed, usage = _compress_session_history(
+                session,
+                focus_topic,
+                approx_tokens=before_tokens,
+                before_messages=before_messages,
+                history_version=history_version,
+            )
+            with session["history_lock"]:
+                messages = list(session.get("history", []))
+            after_count = len(messages)
+            after_tokens = (
+                estimate_messages_tokens_rough(messages) if after_count else 0
+            )
+            agent = session["agent"]
+            _sync_session_key_after_compress(sid, session)
+            summary = summarize_manual_compression(
+                before_messages, messages, before_tokens, after_tokens
+            )
+            info = _session_info(agent)
+            _emit("session.info", sid, info)
+            return _ok(
+                rid,
+                {
+                    "status": "compressed",
+                    "removed": removed,
+                    "before_messages": before_count,
+                    "after_messages": after_count,
+                    "before_tokens": before_tokens,
+                    "after_tokens": after_tokens,
+                    "summary": summary,
+                    "usage": usage,
+                    "info": info,
+                    "messages": messages,
+                },
+            )
+        finally:
+            # Always clear the pinned compressing status so the bar
+            # reverts to neutral whether compaction succeeded, was a
+            # no-op, or raised.
+            _status_update(sid, "ready")
     except Exception as e:
         return _err(rid, 5005, str(e))
 
@@ -2437,13 +2721,31 @@ def _(rid, params: dict) -> dict:
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
-    session, err = _sess(params, rid)
+    session, err = _sess_nowait(params, rid)
     if err:
         return err
     with session["history_lock"]:
         if session.get("running"):
             return _err(rid, 4009, "session busy")
         session["running"] = True
+
+    _start_agent_build(sid, session)
+
+    def run_after_agent_ready() -> None:
+        err = _wait_agent(session, rid)
+        if err:
+            _emit("error", sid, {"message": err.get("error", {}).get("message", "agent initialization failed")})
+            with session["history_lock"]:
+                session["running"] = False
+            return
+        _run_prompt_submit(rid, sid, session, text)
+
+    threading.Thread(target=run_after_agent_ready, daemon=True).start()
+    return _ok(rid, {"status": "streaming"})
+
+
+def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+    with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
@@ -2682,7 +2984,6 @@ def _(rid, params: dict) -> dict:
                 session["running"] = False
 
     threading.Thread(target=run, daemon=True).start()
-    return _ok(rid, {"status": "streaming"})
 
 
 @method("clipboard.paste")
@@ -3079,12 +3380,34 @@ def _(rid, params: dict) -> dict:
 
             arg = str(value or "").strip().lower()
             if arg in ("show", "on"):
-                _write_config_key("display.show_reasoning", True)
+                cfg = _load_cfg()
+                display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                sections = (
+                    display.get("sections")
+                    if isinstance(display.get("sections"), dict)
+                    else {}
+                )
+                display["show_reasoning"] = True
+                sections["thinking"] = "expanded"
+                display["sections"] = sections
+                cfg["display"] = display
+                _save_cfg(cfg)
                 if session:
                     session["show_reasoning"] = True
                 return _ok(rid, {"key": key, "value": "show"})
             if arg in ("hide", "off"):
-                _write_config_key("display.show_reasoning", False)
+                cfg = _load_cfg()
+                display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                sections = (
+                    display.get("sections")
+                    if isinstance(display.get("sections"), dict)
+                    else {}
+                )
+                display["show_reasoning"] = False
+                sections["thinking"] = "hidden"
+                display["sections"] = sections
+                cfg["display"] = display
+                _save_cfg(cfg)
                 if session:
                     session["show_reasoning"] = False
                 return _ok(rid, {"key": key, "value": "hide"})
@@ -3101,19 +3424,26 @@ def _(rid, params: dict) -> dict:
 
     if key == "details_mode":
         nv = str(value or "").strip().lower()
-        allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
-        if nv not in allowed_dm:
+        if nv not in _DETAIL_MODES:
             return _err(rid, 4002, f"unknown details_mode: {value}")
-        _write_config_key("display.details_mode", nv)
+        cfg = _load_cfg()
+        display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+        sections = display.get("sections") if isinstance(display.get("sections"), dict) else {}
+        display["details_mode"] = nv
+        for section in _DETAIL_SECTION_NAMES:
+            sections[section] = nv
+        display["sections"] = sections
+        cfg["display"] = display
+        _save_cfg(cfg)
         return _ok(rid, {"key": key, "value": nv})
 
     if key.startswith("details_mode."):
         # Per-section override: `details_mode.<section>` writes to
-        # `display.sections.<section>`.  Empty value clears the override
-        # and lets the section fall back to the global details_mode.
+        # `display.sections.<section>`. Empty value clears the explicit
+        # override and lets frontend resolution apply built-in section defaults
+        # before the global details_mode.
         section = key.split(".", 1)[1]
-        allowed_sections = frozenset({"thinking", "tools", "subagents", "activity"})
-        if section not in allowed_sections:
+        if section not in _DETAIL_SECTION_NAMES:
             return _err(rid, 4002, f"unknown section: {section}")
 
         cfg = _load_cfg()
@@ -3130,8 +3460,7 @@ def _(rid, params: dict) -> dict:
             _save_cfg(cfg)
             return _ok(rid, {"key": key, "value": ""})
 
-        allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
-        if nv not in allowed_dm:
+        if nv not in _DETAIL_MODES:
             return _err(rid, 4002, f"unknown details_mode: {value}")
 
         sections_cfg[section] = nv
@@ -3415,6 +3744,40 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
     try:
+        # Gate: /reload-mcp invalidates the prompt cache for this session.
+        # Respect the ``approvals.mcp_reload_confirm`` config toggle — if
+        # set (default true) AND the caller did not pass ``confirm=true``
+        # in params, surface a warning to the transcript instead of just
+        # reloading silently.  Users pass confirm=true either by
+        # re-invoking after reading the warning, or by setting the
+        # config key to false permanently.
+        user_confirm = bool(params.get("confirm", False))
+        if not user_confirm:
+            try:
+                from hermes_cli.config import load_config as _load_config
+                _cfg = _load_config()
+                _approvals = _cfg.get("approvals") if isinstance(_cfg, dict) else None
+                _confirm_required = True
+                if isinstance(_approvals, dict):
+                    _confirm_required = bool(_approvals.get("mcp_reload_confirm", True))
+            except Exception:
+                _confirm_required = True
+            if _confirm_required:
+                # Return a structured response the Ink client can surface
+                # as a warning/confirmation without actually reloading yet.
+                # Ink's ops.ts reads ``status`` and prints ``message`` to
+                # the transcript; a follow-up invocation with confirm=true
+                # (or an `always` choice that flips the config) proceeds.
+                return _ok(rid, {
+                    "status": "confirm_required",
+                    "message": (
+                        "⚠️  /reload-mcp invalidates the prompt cache (next "
+                        "message re-sends full input tokens). Reply `/reload-mcp "
+                        "now` to proceed, or `/reload-mcp always` to proceed and "
+                        "silence this prompt permanently."
+                    ),
+                })
+
         from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
 
         shutdown_mcp_servers()
@@ -3424,6 +3787,15 @@ def _(rid, params: dict) -> dict:
             if hasattr(agent, "refresh_tools"):
                 agent.refresh_tools()
             _emit("session.info", params.get("session_id", ""), _session_info(agent))
+
+        # Honor `always=true` by persisting the opt-out to config.
+        if bool(params.get("always", False)):
+            try:
+                from cli import save_config_value as _save_cfg
+                _save_cfg("approvals.mcp_reload_confirm", False)
+            except Exception as _exc:
+                logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
+
         return _ok(rid, {"status": "reloaded"})
     except Exception as e:
         return _err(rid, 5015, str(e))
@@ -4354,8 +4726,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             agent.ephemeral_system_prompt = new_prompt or None
             agent._cached_system_prompt = None
         elif name == "compress" and agent:
-            with session["history_lock"]:
-                _compress_session_history(session, arg)
+            _compress_session_history(session, arg)
+            _sync_session_key_after_compress(sid, session)
             _emit("session.info", sid, _session_info(agent))
         elif name == "fast" and agent:
             mode = arg.lower()

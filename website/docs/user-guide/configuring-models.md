@@ -157,9 +157,12 @@ Inside any `hermes chat` session:
 ```
 /model gpt-5.4 --provider openrouter             # session-only
 /model gpt-5.4 --provider openrouter --global    # also persists to config.yaml
+/model configured                                # picker filtered to configured rows
 ```
 
 `--global` does the same thing the dashboard's **Change** button does, plus it switches the running session in-place.
+
+`/model configured` opens the picker scoped to entries you've explicitly defined in `providers:` and `custom_providers:`, hiding the curated rows for built-in providers. To make this the default for the no-arg picker, set `model.picker_configured_only: true` in `~/.hermes/config.yaml` — see the [Configuration reference](./configuration.md).
 
 ### `hermes model` subcommand
 

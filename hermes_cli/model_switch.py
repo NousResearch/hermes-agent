@@ -987,6 +987,7 @@ def list_authenticated_providers(
     custom_providers: list | None = None,
     max_models: int = 8,
     current_model: str = "",
+    picker_configured_only: bool = False,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1004,6 +1005,14 @@ def list_authenticated_providers(
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
+
+    When ``picker_configured_only=True`` the picker is restricted to rows the
+    user has explicitly defined in config — entries from ``providers:`` and
+    ``custom_providers:``.  Built-in / curated rows (anthropic, openrouter,
+    copilot, …) are hidden even when their credentials are present, and the
+    live ``/v1/models`` override that normally replaces a user-defined
+    endpoint's configured ``models:`` list is skipped so the picker reflects
+    exactly what the user wrote in config.  See #13796.
     """
     import os
     from agent.models_dev import (
@@ -1094,7 +1103,14 @@ def list_authenticated_providers(
         curated["lmstudio"] = live
 
     # --- 1. Check Hermes-mapped providers ---
+    # When picker_configured_only is set, sections 1, 2, and 2b (built-in /
+    # curated rows) are suppressed so only user-defined endpoints from
+    # ``providers:`` and ``custom_providers:`` reach the picker.  We
+    # short-circuit at the loop body rather than wrapping each section so
+    # the existing structure stays readable in diffs.
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
+        if picker_configured_only:
+            break
         # Skip aliases that map to the same models.dev provider (e.g.
         # kimi-coding and kimi-coding-cn both → kimi-for-coding).
         # The first one with valid credentials wins (#10526).
@@ -1169,6 +1185,8 @@ def list_authenticated_providers(
     _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
 
     for pid, overlay in HERMES_OVERLAYS.items():
+        if picker_configured_only:
+            break
         if pid.lower() in seen_slugs:
             continue
 
@@ -1284,6 +1302,8 @@ def list_authenticated_providers(
         _canon_provs = []
 
     for _cp in _canon_provs:
+        if picker_configured_only:
+            break
         if _cp.slug.lower() in seen_slugs:
             continue
 
@@ -1415,11 +1435,15 @@ def list_authenticated_providers(
             # available. This keeps OpenAI-compatible relays (for example CRS)
             # in sync when the server catalog changes without requiring the
             # user to mirror every model into config.yaml.
+            #
+            # picker_configured_only opts out of this override: the user has
+            # asked to see exactly what they wrote in ``models:``, not whatever
+            # the upstream catalog currently exposes.
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
                 api_key = os.environ.get(key_env, "").strip() if key_env else ""
-            if api_url and api_key:
+            if api_url and api_key and not picker_configured_only:
                 try:
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)

@@ -5309,7 +5309,7 @@ class HermesCLI:
             _ask()
         return result[0]
 
-    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
+    def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None, picker_configured_only: bool = False) -> None:
         """Open prompt_toolkit-native /model picker modal."""
         self._capture_modal_input_snapshot()
         default_idx = next((i for i, p in enumerate(providers) if p.get("is_current")), 0)
@@ -5321,6 +5321,7 @@ class HermesCLI:
             "current_provider": current_provider,
             "user_provs": user_provs,
             "custom_provs": custom_provs,
+            "picker_configured_only": picker_configured_only,
         }
         self._invalidate(min_interval=0.0)
 
@@ -5454,8 +5455,12 @@ class HermesCLI:
             # (same lists as `hermes model` and gateway pickers).
             # Only fall back to the live provider catalog when the curated
             # list is empty (e.g. user-defined endpoints with no curated list).
+            #
+            # picker_configured_only also opts out of the live fallback so the
+            # drill-down is faithful to config even when ``models:`` is empty
+            # (the picker just shows nothing for that row).
             model_list = provider_data.get("models", [])
-            if not model_list:
+            if not model_list and not state.get("picker_configured_only"):
                 try:
                     from hermes_cli.models import provider_model_ids
                     live = provider_model_ids(provider_data["slug"])
@@ -5518,19 +5523,34 @@ class HermesCLI:
         parts = cmd_original.split(None, 1)  # split off '/model'
         raw_args = parts[1].strip() if len(parts) > 1 else ""
 
+        # Pseudo-arg: /model configured opens the picker filtered to entries
+        # the user has explicitly defined in providers: / custom_providers:,
+        # regardless of the model.picker_configured_only config setting.
+        configured_only_override = raw_args.lower() == "configured"
+        if configured_only_override:
+            raw_args = ""
+
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
 
         # Load providers for switch_model (picker path needs them below)
         user_provs = None
         custom_provs = None
+        picker_configured_only = False
         try:
             from hermes_cli.config import get_compatible_custom_providers, load_config
             cfg = load_config()
             user_provs = cfg.get("providers")
             custom_provs = get_compatible_custom_providers(cfg)
+            model_cfg = cfg.get("model")
+            if isinstance(model_cfg, dict):
+                picker_configured_only = bool(
+                    model_cfg.get("picker_configured_only", False)
+                )
         except Exception:
             pass
+
+        effective_configured_only = configured_only_override or picker_configured_only
 
         # No args at all: open prompt_toolkit-native picker modal
         if not model_input and not explicit_provider:
@@ -5545,6 +5565,7 @@ class HermesCLI:
                     user_providers=user_provs,
                     custom_providers=custom_provs,
                     max_models=50,
+                    picker_configured_only=effective_configured_only,
                 )
             except Exception:
                 providers = []
@@ -5562,6 +5583,7 @@ class HermesCLI:
                 provider_display,
                 user_provs=user_provs,
                 custom_provs=custom_provs,
+                picker_configured_only=effective_configured_only,
             )
             return
 

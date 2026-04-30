@@ -599,6 +599,186 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# /model configured + model.picker_configured_only threading (#13796)
+# ---------------------------------------------------------------------------
+
+def _stub_model_picker_environment(monkeypatch, cli, shell, model_cfg):
+    """Wire HermesCLI._handle_model_switch to a captured fake picker."""
+    captured: dict = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": model_cfg},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.get_compatible_custom_providers",
+        lambda cfg: [],
+    )
+
+    def _fake_list_authenticated_providers(**kwargs):
+        captured.update(kwargs)
+        return [{"slug": "local-ollama", "name": "Local Ollama", "models": []}]
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        _fake_list_authenticated_providers,
+    )
+    monkeypatch.setattr(
+        shell,
+        "_open_model_picker",
+        lambda *args, **kwargs: captured.setdefault("opened", (args, kwargs)),
+    )
+    return captured
+
+
+def _picker_kwargs(captured):
+    """Extract the kwargs ``_handle_model_switch`` passed to ``_open_model_picker``."""
+    opened = captured.get("opened")
+    assert opened is not None, "picker was never opened"
+    _args, kwargs = opened
+    return kwargs
+
+
+def test_cli_model_picker_forwards_configured_only_from_config(monkeypatch):
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.model = "gpt-5"
+    shell.provider = "openrouter"
+
+    captured = _stub_model_picker_environment(
+        monkeypatch,
+        cli,
+        shell,
+        {
+            "default": "gpt-5",
+            "provider": "openrouter",
+            "picker_configured_only": True,
+        },
+    )
+
+    shell._handle_model_switch("/model")
+
+    # Both the catalog query and the picker modal must see the flag — the
+    # latter so the drill-down skips its live ``provider_model_ids`` fallback.
+    assert captured["picker_configured_only"] is True
+    assert _picker_kwargs(captured)["picker_configured_only"] is True
+
+
+def test_cli_model_configured_pseudo_arg_overrides_config(monkeypatch):
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.model = "gpt-5"
+    shell.provider = "openrouter"
+
+    # Config flag is off, but the user typed `/model configured` — the
+    # pseudo-arg must still flip the picker into configured-only mode.
+    captured = _stub_model_picker_environment(
+        monkeypatch,
+        cli,
+        shell,
+        {"default": "gpt-5", "provider": "openrouter"},
+    )
+
+    shell._handle_model_switch("/model configured")
+
+    assert captured["picker_configured_only"] is True
+    assert _picker_kwargs(captured)["picker_configured_only"] is True
+
+
+def test_cli_model_picker_default_does_not_filter(monkeypatch):
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.model = "gpt-5"
+    shell.provider = "openrouter"
+
+    captured = _stub_model_picker_environment(
+        monkeypatch,
+        cli,
+        shell,
+        {"default": "gpt-5", "provider": "openrouter"},
+    )
+
+    shell._handle_model_switch("/model")
+
+    assert captured["picker_configured_only"] is False
+    assert _picker_kwargs(captured)["picker_configured_only"] is False
+
+
+def test_cli_model_picker_drill_down_skips_live_fallback_when_configured_only(monkeypatch):
+    """When picker_configured_only is on, picking a provider whose ``models``
+    list is empty must NOT fall back to ``provider_model_ids`` — the row
+    stays empty so the picker is faithful to config."""
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.model = "gpt-5"
+    shell.provider = "openrouter"
+
+    fallback_calls: list = []
+
+    def _fake_provider_model_ids(slug, **_kwargs):  # pragma: no cover - asserted via list
+        fallback_calls.append(slug)
+        return ["live-model"]
+
+    monkeypatch.setattr(
+        "hermes_cli.models.provider_model_ids",
+        _fake_provider_model_ids,
+    )
+
+    # Build a picker state directly; the row carries an empty models list.
+    shell._model_picker_state = {
+        "stage": "provider",
+        "providers": [
+            {"slug": "shadow", "name": "Shadow", "models": [], "is_current": True}
+        ],
+        "selected": 0,
+        "current_model": "gpt-5",
+        "current_provider": "openrouter",
+        "user_provs": None,
+        "custom_provs": None,
+        "picker_configured_only": True,
+    }
+    monkeypatch.setattr(shell, "_invalidate", lambda *a, **kw: None)
+
+    shell._handle_model_picker_selection()
+
+    assert fallback_calls == []
+    assert shell._model_picker_state["model_list"] == []
+
+
+def test_cli_model_picker_drill_down_keeps_live_fallback_by_default(monkeypatch):
+    """Regression guard: with the flag off, the existing live fallback path
+    is preserved so users with empty user-defined ``models:`` keep getting
+    catalog-driven completions."""
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell.model = "gpt-5"
+    shell.provider = "openrouter"
+
+    monkeypatch.setattr(
+        "hermes_cli.models.provider_model_ids",
+        lambda slug, **_kwargs: ["live-a", "live-b"],
+    )
+
+    shell._model_picker_state = {
+        "stage": "provider",
+        "providers": [
+            {"slug": "openrouter", "name": "OpenRouter", "models": [], "is_current": True}
+        ],
+        "selected": 0,
+        "current_model": "gpt-5",
+        "current_provider": "openrouter",
+        "user_provs": None,
+        "custom_provs": None,
+        "picker_configured_only": False,
+    }
+    monkeypatch.setattr(shell, "_invalidate", lambda *a, **kw: None)
+
+    shell._handle_model_picker_selection()
+
+    assert shell._model_picker_state["model_list"] == ["live-a", "live-b"]
+
+
+# ---------------------------------------------------------------------------
 # _auto_provider_name — unit tests
 # ---------------------------------------------------------------------------
 

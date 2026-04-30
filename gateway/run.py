@@ -6424,6 +6424,13 @@ class GatewayRunner:
 
         raw_args = event.get_command_args().strip()
 
+        # Pseudo-arg: /model configured opens the picker filtered to entries
+        # the user has explicitly defined in providers: / custom_providers:,
+        # regardless of the model.picker_configured_only config setting.
+        configured_only_override = raw_args.lower() == "configured"
+        if configured_only_override:
+            raw_args = ""
+
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
 
@@ -6434,6 +6441,7 @@ class GatewayRunner:
         current_api_key = ""
         user_provs = None
         custom_provs = None
+        picker_configured_only = False
         config_path = _hermes_home / "config.yaml"
         try:
             cfg = _load_gateway_config()
@@ -6443,6 +6451,9 @@ class GatewayRunner:
                     current_model = model_cfg.get("default", "")
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
+                    picker_configured_only = bool(
+                        model_cfg.get("picker_configured_only", False)
+                    )
                 user_provs = cfg.get("providers")
                 try:
                     from hermes_cli.config import get_compatible_custom_providers
@@ -6451,6 +6462,8 @@ class GatewayRunner:
                     custom_provs = cfg.get("custom_providers")
         except Exception:
             pass
+
+        effective_configured_only = configured_only_override or picker_configured_only
 
         # Check for session override
         source = event.source
@@ -6480,6 +6493,7 @@ class GatewayRunner:
                         user_providers=user_provs,
                         custom_providers=custom_provs,
                         max_models=50,
+                        picker_configured_only=effective_configured_only,
                     )
                 except Exception:
                     providers = []
@@ -6613,6 +6627,7 @@ class GatewayRunner:
                     user_providers=user_provs,
                     custom_providers=custom_provs,
                     max_models=5,
+                    picker_configured_only=effective_configured_only,
                 )
                 for p in providers:
                     tag = " (current)" if p["is_current"] else ""

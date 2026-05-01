@@ -4736,43 +4736,51 @@ def _(rid, params: dict) -> dict:
             max_models=50,
         )
 
-        # Mark authenticated providers and build lookup
-        authed_slugs = set()
+        # Mark authenticated providers and build lookup by slug
+        authed_map: dict = {}
+        authed_extra: list = []  # user-defined/custom not in CANONICAL_PROVIDERS
+        canonical_slugs = {e.slug for e in CANONICAL_PROVIDERS}
         for p in authenticated:
             p["authenticated"] = True
-            authed_slugs.add(p["slug"])
+            authed_map[p["slug"]] = p
+            if p["slug"] not in canonical_slugs:
+                authed_extra.append(p)
 
-        # Add unauthenticated canonical providers so the picker shows all
-        # options (matching `hermes model` behaviour).
+        # Build final list in CANONICAL_PROVIDERS order, merging auth data
         from hermes_cli.auth import PROVIDER_REGISTRY as _auth_reg
+        ordered: list = []
         for entry in CANONICAL_PROVIDERS:
-            if entry.slug in authed_slugs:
-                continue
-            pconfig = _auth_reg.get(entry.slug)
-            auth_type = pconfig.auth_type if pconfig else "api_key"
-            key_env = pconfig.api_key_env_vars[0] if (pconfig and pconfig.api_key_env_vars) else ""
-            if auth_type == "api_key" and key_env:
-                warning = f"paste {key_env} to activate"
+            if entry.slug in authed_map:
+                ordered.append(authed_map[entry.slug])
             else:
-                warning = f"run `hermes model` to configure ({auth_type})"
-            authenticated.append({
-                "slug": entry.slug,
-                "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
-                "is_current": entry.slug == current_provider,
-                "is_user_defined": False,
-                "models": [],
-                "total_models": 0,
-                "source": "built-in",
-                "authenticated": False,
-                "auth_type": auth_type,
-                "key_env": key_env,
-                "warning": warning,
-            })
+                pconfig = _auth_reg.get(entry.slug)
+                auth_type = pconfig.auth_type if pconfig else "api_key"
+                key_env = pconfig.api_key_env_vars[0] if (pconfig and pconfig.api_key_env_vars) else ""
+                if auth_type == "api_key" and key_env:
+                    warning = f"paste {key_env} to activate"
+                else:
+                    warning = f"run `hermes model` to configure ({auth_type})"
+                ordered.append({
+                    "slug": entry.slug,
+                    "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
+                    "is_current": entry.slug == current_provider,
+                    "is_user_defined": False,
+                    "models": [],
+                    "total_models": 0,
+                    "source": "built-in",
+                    "authenticated": False,
+                    "auth_type": auth_type,
+                    "key_env": key_env,
+                    "warning": warning,
+                })
+
+        # Append user-defined/custom providers not in canonical list
+        ordered.extend(authed_extra)
 
         return _ok(
             rid,
             {
-                "providers": authenticated,
+                "providers": ordered,
                 "model": current_model,
                 "provider": current_provider,
             },

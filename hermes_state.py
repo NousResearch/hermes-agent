@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -102,22 +102,26 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 
 FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    content,
-    content=messages,
-    content_rowid=id
+    content
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO messages_fts(rowid, content) VALUES (
+        new.id,
+        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+    DELETE FROM messages_fts WHERE rowid = old.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    DELETE FROM messages_fts WHERE rowid = old.id;
+    INSERT INTO messages_fts(rowid, content) VALUES (
+        new.id,
+        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
 END;
 """
 
@@ -128,22 +132,26 @@ END;
 FTS_TRIGRAM_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,
-    content=messages,
-    content_rowid=id,
     tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts_trigram(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+        new.id,
+        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages BEGIN
-    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content) VALUES('delete', old.id, old.content);
+    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
-    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content) VALUES('delete', old.id, old.content);
-    INSERT INTO messages_fts_trigram(rowid, content) VALUES (new.id, new.content);
+    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+        new.id,
+        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
 END;
 """
 
@@ -428,6 +436,51 @@ class SessionDB:
                         "INSERT INTO messages_fts_trigram(rowid, content) "
                         "SELECT id, content FROM messages WHERE content IS NOT NULL"
                     )
+            if current_version < 11:
+                # v11: re-index FTS5 tables to cover tool_name + tool_calls and
+                # switch from external-content to inline mode. Existing DBs have
+                # old-schema FTS tables and triggers that IF NOT EXISTS won't
+                # overwrite, so we drop them explicitly and let the post-migration
+                # existence checks (below) recreate them from FTS_SQL /
+                # FTS_TRIGRAM_SQL, then backfill every message row. Fixes #16751.
+                for _trig in (
+                    "messages_fts_insert",
+                    "messages_fts_delete",
+                    "messages_fts_update",
+                    "messages_fts_trigram_insert",
+                    "messages_fts_trigram_delete",
+                    "messages_fts_trigram_update",
+                ):
+                    try:
+                        cursor.execute(f"DROP TRIGGER IF EXISTS {_trig}")
+                    except sqlite3.OperationalError:
+                        pass
+                for _tbl in ("messages_fts", "messages_fts_trigram"):
+                    try:
+                        cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
+                    except sqlite3.OperationalError:
+                        pass
+                # Recreate virtual tables + triggers with the new inline-mode
+                # schema that indexes content || tool_name || tool_calls.
+                cursor.executescript(FTS_SQL)
+                cursor.executescript(FTS_TRIGRAM_SQL)
+                # Backfill both indexes from every existing messages row.
+                cursor.execute(
+                    "INSERT INTO messages_fts(rowid, content) "
+                    "SELECT id, "
+                    "COALESCE(content, '') || ' ' || "
+                    "COALESCE(tool_name, '') || ' ' || "
+                    "COALESCE(tool_calls, '') "
+                    "FROM messages"
+                )
+                cursor.execute(
+                    "INSERT INTO messages_fts_trigram(rowid, content) "
+                    "SELECT id, "
+                    "COALESCE(content, '') || ' ' || "
+                    "COALESCE(tool_name, '') || ' ' || "
+                    "COALESCE(tool_calls, '') "
+                    "FROM messages"
+                )
             if current_version < SCHEMA_VERSION:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -1119,6 +1172,85 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Atomically replace every message for a session.
+
+        Used by transcript-rewrite flows such as /retry, /undo, and /compress.
+        The delete + reinsert sequence must commit as one transaction so a
+        mid-rewrite failure does not leave SQLite with a partial transcript.
+        """
+
+        def _do(conn):
+            conn.execute(
+                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
+                (session_id,),
+            )
+
+            now_ts = time.time()
+            total_messages = 0
+            total_tool_calls = 0
+            for msg in messages:
+                role = msg.get("role", "unknown")
+                tool_calls = msg.get("tool_calls")
+                reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
+                codex_reasoning_items = (
+                    msg.get("codex_reasoning_items") if role == "assistant" else None
+                )
+                codex_message_items = (
+                    msg.get("codex_message_items") if role == "assistant" else None
+                )
+
+                reasoning_details_json = (
+                    json.dumps(reasoning_details) if reasoning_details else None
+                )
+                codex_items_json = (
+                    json.dumps(codex_reasoning_items) if codex_reasoning_items else None
+                )
+                codex_message_items_json = (
+                    json.dumps(codex_message_items) if codex_message_items else None
+                )
+                tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+
+                conn.execute(
+                    """INSERT INTO messages (session_id, role, content, tool_call_id,
+                       tool_calls, tool_name, timestamp, token_count, finish_reason,
+                       reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                       codex_message_items)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id,
+                        role,
+                        msg.get("content"),
+                        msg.get("tool_call_id"),
+                        tool_calls_json,
+                        msg.get("tool_name"),
+                        now_ts,
+                        msg.get("token_count"),
+                        msg.get("finish_reason"),
+                        msg.get("reasoning") if role == "assistant" else None,
+                        msg.get("reasoning_content") if role == "assistant" else None,
+                        reasoning_details_json,
+                        codex_items_json,
+                        codex_message_items_json,
+                    ),
+                )
+                total_messages += 1
+                if tool_calls is not None:
+                    total_tool_calls += (
+                        len(tool_calls) if isinstance(tool_calls, list) else 1
+                    )
+                now_ts += 1e-6
+
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (total_messages, total_tool_calls, session_id),
+            )
+
+        self._execute_write(_do)
+
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages for a session, ordered by timestamp."""
         with self._lock:
@@ -1355,9 +1487,9 @@ class SessionDB:
         # quotes.  FTS5's tokenizer splits on dots and hyphens, turning
         # ``chat-send`` into ``chat AND send`` and ``P2.2`` into ``p2 AND 2``.
         # Quoting preserves phrase semantics.  A single pass avoids the
-        # double-quoting bug that would occur if dotted and hyphenated
+        # double-quoting bug that would occur if dotted, hyphenated and underscored
         # patterns were applied sequentially (e.g. ``my-app.config``).
-        sanitized = re.sub(r"\b(\w+(?:[.-]\w+)+)\b", r'"\1"', sanitized)
+        sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)
 
         # Step 6: Restore preserved quoted phrases
         for i, quoted in enumerate(_quoted_parts):
@@ -1534,8 +1666,8 @@ class SessionDB:
                 # Short CJK query (1-2 chars) — trigram needs ≥3 CJK chars.
                 # Fall back to LIKE substring search.
                 escaped = raw_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                like_where = ["m.content LIKE ? ESCAPE '\\'"]
-                like_params: list = [f"%{escaped}%"]
+                like_where = ["(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"]
+                like_params: list = [f"%{escaped}%", f"%{escaped}%", f"%{escaped}%"]
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)

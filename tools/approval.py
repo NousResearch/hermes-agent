@@ -17,6 +17,7 @@ import threading
 import time
 import unicodedata
 from typing import Optional
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,18 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
 ]
 
+# Pre-compiled variant used by the hot-path matcher. Building these at module
+# load eliminates the ~2.6 ms cold-cache re.compile fan-out on the first
+# terminal() call per process (12 HARDLINE + 47 DANGEROUS patterns, each
+# potentially evicted from Python's 512-entry ``re._cache`` by unrelated
+# regex work elsewhere in the agent). DANGEROUS_PATTERNS_COMPILED is built
+# at the end of this module after DANGEROUS_PATTERNS is defined.
+_RE_FLAGS = re.IGNORECASE | re.DOTALL
+HARDLINE_PATTERNS_COMPILED = [
+    (re.compile(pattern, _RE_FLAGS), description)
+    for pattern, description in HARDLINE_PATTERNS
+]
+
 
 def detect_hardline_command(command: str) -> tuple:
     """Check if a command matches the unconditional hardline blocklist.
@@ -172,8 +185,8 @@ def detect_hardline_command(command: str) -> tuple:
         (is_hardline, description) or (False, None)
     """
     normalized = _normalize_command_for_detection(command).lower()
-    for pattern, description in HARDLINE_PATTERNS:
-        if re.search(pattern, normalized, re.IGNORECASE | re.DOTALL):
+    for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+        if pattern_re.search(normalized):
             return (True, description)
     return (False, None)
 
@@ -267,6 +280,13 @@ DANGEROUS_PATTERNS = [
 ]
 
 
+# Pre-compiled variant (same rationale as HARDLINE_PATTERNS_COMPILED above).
+DANGEROUS_PATTERNS_COMPILED = [
+    (re.compile(pattern, _RE_FLAGS), description)
+    for pattern, description in DANGEROUS_PATTERNS
+]
+
+
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
     return pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
@@ -319,8 +339,8 @@ def detect_dangerous_command(command: str) -> tuple:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
     command_lower = _normalize_command_for_detection(command).lower()
-    for pattern, description in DANGEROUS_PATTERNS:
-        if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
+    for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+        if pattern_re.search(command_lower):
             pattern_key = description
             return (True, pattern_key, description)
     return (False, None, None)
@@ -692,7 +712,7 @@ def _get_cron_approval_mode() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        mode = str(config.get("approvals", {}).get("cron_mode", "deny")).lower().strip()
+        mode = str(cfg_get(config, "approvals", "cron_mode", default="deny")).lower().strip()
         if mode in ("approve", "off", "allow", "yes"):
             return "approve"
         return "deny"
@@ -762,7 +782,7 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         return {"approved": True, "message": None}
 
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
@@ -887,7 +907,7 @@ def check_all_command_guards(command: str, env_type: str,
     other was shown to the user.
     """
     # Skip containers for both checks
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands

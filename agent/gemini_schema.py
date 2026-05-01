@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 # Gemini's ``FunctionDeclaration.parameters`` field accepts the ``Schema``
 # object, which is only a subset of OpenAPI 3.0 / JSON Schema.  Strip fields

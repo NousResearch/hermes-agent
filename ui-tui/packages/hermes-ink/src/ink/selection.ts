@@ -800,6 +800,20 @@ export function hasSelection(s: SelectionState): boolean {
 }
 
 /**
+ * Stable fingerprint of the user-visible selection state. Used by Ink
+ * to skip incrementing the mutation counter when notifySelectionChange()
+ * fires without an actual change to anchor/focus/isDragging — protects
+ * version-based subscribers (copy-on-select) from re-running for the
+ * same stable selection.
+ */
+export function selectionSignature(s: SelectionState): string {
+  const a = s.anchor ? `${s.anchor.row},${s.anchor.col}` : 'null'
+  const f = s.focus ? `${s.focus.row},${s.focus.col}` : 'null'
+
+  return `${a}|${f}|${s.isDragging ? 1 : 0}`
+}
+
+/**
  * Normalized selection bounds: start is always before end in reading order.
  * Returns null if no active selection.
  */

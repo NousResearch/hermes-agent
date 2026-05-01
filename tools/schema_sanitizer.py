@@ -17,6 +17,9 @@ The failure modes we've seen in the wild:
   (malformed MCP server output, e.g. ``additionalProperties: "object"``).
 * ``"type": ["string", "null"]`` array types — many converters only accept
   single-string ``type``.
+* ``anyOf`` / ``oneOf`` unions whose only purpose is to permit ``null`` for
+  optional fields (common Pydantic/MCP shape). Anthropic rejects these at
+  the top of ``input_schema``; collapse them to the non-null branch.
 * Unconstrained ``additionalProperties`` on objects with empty properties.
 
 This module walks the final tool schema tree (after MCP-level normalization
@@ -75,7 +78,75 @@ def _sanitize_single_tool(tool: dict) -> dict:
             top["type"] = "object"
         if "properties" not in top or not isinstance(top.get("properties"), dict):
             top["properties"] = {}
+    # Final pass: collapse nullable anyOf/oneOf unions that the recursive
+    # sanitizer above leaves intact (it only handles the array-form
+    # ``type: [X, "null"]``). Keep the ``nullable: true`` hint so runtime
+    # argument coercion (``model_tools._schema_allows_null``) can still
+    # map a model-emitted ``"null"`` string to Python ``None``.
+    fn["parameters"] = strip_nullable_unions(fn["parameters"], keep_nullable_hint=True)
     return out
+
+
+def strip_nullable_unions(
+    schema: Any,
+    *,
+    keep_nullable_hint: bool = True,
+) -> Any:
+    """Collapse ``anyOf`` / ``oneOf`` nullable unions to the non-null branch.
+
+    MCP / Pydantic optional fields commonly arrive as::
+
+        {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null}
+
+    Anthropic's tool input-schema validator rejects the null branch. Tool
+    optionality is already represented by the parent object's ``required``
+    array, so we collapse the union to the single non-null variant.
+
+    Metadata (``title``, ``description``, ``default``, ``examples``) on the
+    outer union node is carried over to the replacement variant.
+
+    Args:
+        schema: JSON-Schema fragment (dict, list, or scalar).
+        keep_nullable_hint: If True, set ``nullable: true`` on the replacement
+            to preserve the "this field may be None" signal for downstream
+            consumers that care (e.g. runtime argument coercion that maps the
+            literal string ``"null"`` to Python ``None``). Anthropic's
+            validator accepts ``nullable: true`` but strict producers may
+            prefer False.
+
+    Returns:
+        The schema with nullable unions collapsed. Non-union nodes are
+        returned unchanged.
+    """
+    if isinstance(schema, list):
+        return [strip_nullable_unions(item, keep_nullable_hint=keep_nullable_hint) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+
+    stripped = {
+        k: strip_nullable_unions(v, keep_nullable_hint=keep_nullable_hint)
+        for k, v in schema.items()
+    }
+    for key in ("anyOf", "oneOf"):
+        variants = stripped.get(key)
+        if not isinstance(variants, list):
+            continue
+        non_null = [
+            item for item in variants
+            if not (isinstance(item, dict) and item.get("type") == "null")
+        ]
+        # Only collapse when we actually dropped a null branch AND exactly
+        # one non-null branch survives (otherwise the union is meaningful
+        # and we leave it alone).
+        if len(non_null) == 1 and len(non_null) != len(variants):
+            replacement = dict(non_null[0]) if isinstance(non_null[0], dict) else {}
+            if keep_nullable_hint:
+                replacement.setdefault("nullable", True)
+            for meta_key in ("title", "description", "default", "examples"):
+                if meta_key in stripped and meta_key not in replacement:
+                    replacement[meta_key] = stripped[meta_key]
+            return strip_nullable_unions(replacement, keep_nullable_hint=keep_nullable_hint)
+    return stripped
 
 
 def _sanitize_node(node: Any, path: str) -> Any:

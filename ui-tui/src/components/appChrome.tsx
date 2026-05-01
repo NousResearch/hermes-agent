@@ -1,9 +1,12 @@
 import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useState } from 'react'
+import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
+import type { IndicatorStyle } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
+import { $uiState } from '../app/uiStore.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
@@ -17,30 +20,103 @@ import type { Msg, Usage } from '../types.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
+// Compact alternates for the `emoji` and `ascii` indicator styles.
+// Each entry is a fixed-width (display-width) glyph.
+const EMOJI_FRAMES = ['⚕ ', '🌀', '🤔', '✨', '🍵', '🔮']
+const ASCII_FRAMES = ['|', '/', '-', '\\']
+
+// Faster tick for spinner-style indicators — they read as motion only
+// at frame rates closer to their authored interval.
+const SPINNER_TICK_MS = 100
+
+interface IndicatorRender {
+  frame: string
+  intervalMs: number
+  // When false, FaceTicker hides the rotating verb and just shows the
+  // glyph + duration.  Lets `unicode` stay minimal while the other
+  // styles keep the verb-rotation flavour users associate with the
+  // running… status.
+  showVerb: boolean
+}
+
+const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
+  if (style === 'kaomoji') {
+    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
+  }
+
+  if (style === 'emoji') {
+    return {
+      frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '⚕ ',
+      intervalMs: SPINNER_TICK_MS * 6,
+      showVerb: true
+    }
+  }
+
+  if (style === 'ascii') {
+    return {
+      frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|',
+      intervalMs: SPINNER_TICK_MS,
+      showVerb: true
+    }
+  }
+
+  // 'unicode' — braille spinner (fixed 1-col).  Authored interval is
+  // ~80ms; honour it but bound below at a safe minimum so React
+  // re-renders stay reasonable.  This style is for users who want
+  // the cleanest possible status, so no verb rotation either.
+  const spinner = unicodeSpinners.braille
+  const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
+
+  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
+}
+
 function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
+  const ui = useStore($uiState)
+  const style = ui.indicatorStyle
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
+  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
 
+  // Pre-compute cadence + verb-visibility for the active style so an
+  // `/indicator` switch re-arms the interval (and skips the verb timer
+  // for verb-less styles like `unicode`) without leaving the previous
+  // timer dangling.
+  const { intervalMs, showVerb } = renderIndicator(style, 0)
+
   useEffect(() => {
-    const face = setInterval(() => setTick(n => n + 1), FACE_TICK_MS)
+    const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
     const clock = setInterval(() => setNow(Date.now()), 1000)
+    // Verb timer is gated on `showVerb` — `unicode` style hides the verb
+    // entirely, so cycling `verbTick` would be an avoidable re-render.
+    const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
 
     return () => {
-      clearInterval(face)
+      clearInterval(glyph)
       clearInterval(clock)
+
+      if (verb !== null) {
+        clearInterval(verb)
+      }
     }
-  }, [])
+  }, [intervalMs, showVerb])
+
+  const { frame } = renderIndicator(style, tick)
+  const verb = VERBS[verbTick % VERBS.length] ?? ''
+  const verbSegment = showVerb ? ` ${verb}…` : ''
+  const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
 
   return (
     <Text color={color}>
-      {FACES[tick % FACES.length]} {VERBS[tick % VERBS.length]}…{startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''}
+      {frame}
+      {verbSegment}
+      {durationSegment}
     </Text>
   )
 }
 
 function ctxBarColor(pct: number | undefined, t: Theme) {
   if (pct == null) {
-    return t.color.dim
+    return t.color.muted
   }
 
   if (pct >= 95) {
@@ -93,7 +169,7 @@ function SpawnHud({ t }: { t: Theme }) {
   const concRatio = maxConc ? widestLevel / maxConc : 0
   const ratio = Math.max(depthRatio, concRatio)
 
-  const color = delegation.paused || ratio >= 1 ? t.color.error : ratio >= 0.66 ? t.color.warn : t.color.dim
+  const color = delegation.paused || ratio >= 1 ? t.color.error : ratio >= 0.66 ? t.color.warn : t.color.muted
 
   const pieces: string[] = []
 
@@ -162,21 +238,21 @@ const modelLabel = (model: string, effort?: string, fast?: boolean) =>
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
-  const [color, setColor] = useState(t.color.amber)
+  const [color, setColor] = useState(t.color.accent)
 
   useEffect(() => {
     if (tick <= 0) {
       return
     }
 
-    const palette = [...HEART_COLORS, t.color.amber]
+    const palette = [t.color.error, t.color.warn, t.color.accent]
     setColor(palette[Math.floor(Math.random() * palette.length)]!)
     setActive(true)
 
     const id = setTimeout(() => setActive(false), 650)
 
     return () => clearTimeout(id)
-  }, [t.color.amber, tick])
+  }, [t.color.accent, tick])
 
   if (!active) {
     return null
@@ -217,23 +293,23 @@ export function StatusRule({
   return (
     <Box height={1}>
       <Box flexShrink={1} width={leftWidth}>
-        <Text color={t.color.bronze} wrap="truncate-end">
+        <Text color={t.color.border} wrap="truncate-end">
           {'─ '}
           {busy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} />
           ) : (
             <Text color={statusColor}>{status}</Text>
           )}
-          <Text color={t.color.dim}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
-          {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
+          <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
+          {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
           {bar ? (
-            <Text color={t.color.dim}>
+            <Text color={t.color.muted}>
               {' │ '}
               <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
             </Text>
           ) : null}
           {sessionStartedAt ? (
-            <Text color={t.color.dim}>
+            <Text color={t.color.muted}>
               {' │ '}
               <SessionDuration startedAt={sessionStartedAt} />
             </Text>
@@ -242,21 +318,21 @@ export function StatusRule({
           {voiceLabel ? (
             <Text
               color={
-                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.dim
+                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
               }
             >
               {' │ '}
               {voiceLabel}
             </Text>
           ) : null}
-          {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
+          {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} bg</Text> : null}
           {showCost && typeof usage.cost_usd === 'number' ? (
-            <Text color={t.color.dim}> │ ${usage.cost_usd.toFixed(4)}</Text>
+            <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
           ) : null}
         </Text>
       </Box>
 
-      <Text color={t.color.bronze}> ─ </Text>
+      <Text color={t.color.border}> ─ </Text>
       <Text color={t.color.label}>{cwdLabel}</Text>
     </Box>
   )
@@ -301,8 +377,8 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
   const thumb = scrollable ? Math.max(1, Math.round((vp * vp) / total)) : vp
   const travel = Math.max(1, vp - thumb)
   const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
-  const thumbColor = grab !== null ? t.color.gold : hover ? t.color.amber : t.color.bronze
-  const trackColor = hover ? t.color.bronze : t.color.dim
+  const thumbColor = grab !== null ? t.color.primary : hover ? t.color.accent : t.color.border
+  const trackColor = hover ? t.color.border : t.color.muted
 
   const jump = (row: number, offset: number) => {
     if (!s || !scrollable) {

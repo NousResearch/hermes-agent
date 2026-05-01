@@ -621,24 +621,25 @@ def build_sidebar_items(entries: list[tuple[dict[str, Any], dict[str, Any]]]) ->
 
 
 def write_sidebar(entries):
-    data = build_sidebar_items(entries)
-    # Render just the "Skills" block TS for inclusion.
-    def render_items(cats: list[dict]) -> str:
-        lines = []
-        for c in cats:
-            lines.append("            {")
-            lines.append("              type: 'category',")
-            lines.append(f"              label: '{c['label']}',")
-            lines.append("              collapsed: true,")
-            lines.append("              items: [")
-            for item in c["items"]:
-                lines.append(f"                '{item}',")
-            lines.append("              ],")
-            lines.append("            },")
-        return "\n".join(lines)
-
-    bundled_block = render_items(data["bundled_categories"])
-    optional_block = render_items(data["optional_categories"])
+    # The per-skill pages (`build_sidebar_items(entries)`) are still generated
+    # as standalone docs under `website/docs/user-guide/skills/{bundled,optional}/`
+    # and reachable via the catalog pages in Reference — but we intentionally
+    # do NOT explode them into the left sidebar. Two hundred-plus skill entries
+    # drown the actual product docs and make the site feel overwhelming to
+    # first-time visitors.
+    #
+    # Sidebar now shows:
+    #   Skills
+    #   ├── Bundled catalog →    (link to reference/skills-catalog)
+    #   └── Optional catalog →   (link to reference/optional-skills-catalog)
+    #
+    # The catalog pages are auto-regenerated tables with a link to every skill.
+    # Individual skill pages (including the two formerly hand-written guides,
+    # godmode and google-workspace) are still reachable at their URLs and are
+    # linked from the catalog tables and from the Skills overview page — they
+    # just aren't promoted in the left sidebar, because there's no principled
+    # rule for which skills would get promoted and which wouldn't.
+    _ = build_sidebar_items(entries)  # still called for any side effects / validation
 
     skills_subtree = (
         "        {\n"
@@ -646,24 +647,8 @@ def write_sidebar(entries):
         "          label: 'Skills',\n"
         "          collapsed: true,\n"
         "          items: [\n"
-        "            'user-guide/skills/godmode',\n"
-        "            'user-guide/skills/google-workspace',\n"
-        "            {\n"
-        "              type: 'category',\n"
-        "              label: 'Bundled (by default)',\n"
-        "              collapsed: true,\n"
-        "              items: [\n"
-        + bundled_block
-        + "\n              ],\n"
-        "            },\n"
-        "            {\n"
-        "              type: 'category',\n"
-        "              label: 'Optional (installable)',\n"
-        "              collapsed: true,\n"
-        "              items: [\n"
-        + optional_block
-        + "\n              ],\n"
-        "            },\n"
+        "            'reference/skills-catalog',\n"
+        "            'reference/optional-skills-catalog',\n"
         "          ],\n"
         "        },\n"
     )

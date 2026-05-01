@@ -9,6 +9,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 """
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -50,6 +51,16 @@ from gateway.platforms.base import (
 
 
 logger = logging.getLogger(__name__)
+
+# ContextVar carrying the user_id of the slash-command invoker.
+# Set in _handle_slash_command, read in send() to match the correct
+# stashed response_url when multiple users issue commands on the same
+# channel concurrently.  ContextVars propagate to child asyncio.Tasks
+# (Python 3.7+), so the value set in _handle_slash_command's task is
+# visible in _process_message_background's child task.
+_slash_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "_slash_user_id", default=None,
+)
 
 
 @dataclass
@@ -388,8 +399,13 @@ class SlackAdapter(BasePlatformAdapter):
         """Return and remove the slash-command context for *chat_id*, if fresh.
 
         Contexts older than ``_SLASH_CTX_TTL`` seconds are silently discarded.
-        Uses a full scan (dict is tiny) so we don't need the user_id in
-        ``send()``, which only receives the channel ID from base.py.
+
+        Uses the ``_slash_user_id`` ContextVar (set in ``_handle_slash_command``)
+        to match the exact ``(channel_id, user_id)`` key.  This prevents a
+        concurrent slash command from a different user on the same channel from
+        stealing another user's ephemeral context.  Falls back to a
+        channel-only scan when the ContextVar is unset (e.g. send() called
+        from a non-slash code path — should not match anything).
         """
         now = time.monotonic()
         # Clean up stale entries on every lookup — dict is small.
@@ -400,7 +416,13 @@ class SlackAdapter(BasePlatformAdapter):
         for k in stale_keys:
             self._slash_command_contexts.pop(k, None)
 
-        # Find the context for this channel (may be keyed under any user).
+        # Precise match: (channel_id, user_id) from ContextVar.
+        uid = _slash_user_id.get()
+        if uid:
+            return self._slash_command_contexts.pop((chat_id, uid), None)
+
+        # Fallback: channel-only scan (only reachable when ContextVar is
+        # unset, i.e. send() called outside a slash-command async context).
         match_key = None
         for key in list(self._slash_command_contexts):
             if key[0] == chat_id:
@@ -427,10 +449,16 @@ class SlackAdapter(BasePlatformAdapter):
         is non-critical.
         """
         formatted = self.format_message(content)
+        # Slack's response_url has the same ~40k char limit as chat_postMessage.
+        # Truncate to MAX_MESSAGE_LENGTH and use only the first chunk — the
+        # response_url replaces a single ephemeral ack, so multi-chunk isn't
+        # possible.  Long responses are rare for command replies.
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        text = chunks[0] if chunks else formatted
         payload = {
             "response_type": "ephemeral",
             "replace_original": True,
-            "text": formatted,
+            "text": text,
         }
         try:
             async with aiohttp.ClientSession() as session:
@@ -536,6 +564,9 @@ class SlackAdapter(BasePlatformAdapter):
             # channel mentions arrive only as app_mention events rather than the
             # generic message event. Forward them into the normal message
             # pipeline so @mentions reliably produce replies.
+            # NOTE: when Slack fires BOTH message and app_mention for the same
+            # @mention, they share the same event ts — the dedup in
+            # _handle_slack_message (MessageDeduplicator) suppresses the second.
             @self._app.event("app_mention")
             async def handle_app_mention(event, say):
                 await self._handle_slack_message(event)
@@ -2680,14 +2711,23 @@ class SlackAdapter(BasePlatformAdapter):
         # Stash the Slack response_url so the first reply for this
         # channel+user can be routed ephemerally (replaces the initial
         # "Running /cmd…" ack shown by handle_hermes_command).
+        # Only stash for COMMAND events (text starts with "/") — free-form
+        # questions via "/hermes <question>" must produce public replies so
+        # the whole channel can see the agent's answer.
         response_url = command.get("response_url", "")
-        if response_url and user_id and channel_id:
+        if response_url and user_id and channel_id and text.startswith("/"):
             self._slash_command_contexts[(channel_id, user_id)] = {
                 "response_url": response_url,
                 "ts": time.monotonic(),
             }
 
-        await self.handle_message(event)
+        # Set the ContextVar so send() can match the correct stashed
+        # response_url even when multiple users slash concurrently.
+        _slash_user_id_token = _slash_user_id.set(user_id or None)
+        try:
+            await self.handle_message(event)
+        finally:
+            _slash_user_id.reset(_slash_user_id_token)
 
     def _has_active_session_for_thread(
         self,

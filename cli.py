@@ -9629,7 +9629,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         show_full = state.get("show_full", False)
 
         title = "⚠️  Dangerous Command"
-        cmd_display = command if show_full or len(command) <= 70 else command[:70] + '...'
+        cmd_display = command
         choice_labels = {
             "once": "Allow once",
             "session": "Allow for this session",
@@ -9653,6 +9653,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Pre-wrap the mandatory content — command + choices must always render.
         cmd_wrapped = _wrap_panel_text(cmd_display, inner_text_width)
+        if not show_full and "view" in choices and len(cmd_wrapped) > 4:
+            cmd_wrapped = cmd_wrapped[:3] + ["… (choose Show full command)"]
 
         # (choice_index, wrapped_line) so we can re-apply selected styling below
         choice_wrapped: list[tuple[int, str]] = []

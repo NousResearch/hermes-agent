@@ -1836,3 +1836,55 @@ class TestResolveMessagesMaxTokens:
         result = _resolve_anthropic_messages_max_tokens(0.5, "claude-opus-4-6")
         assert result > 0
         assert result != 0
+
+
+# ---------------------------------------------------------------------------
+# convert_tools_to_anthropic — tool dedup at API boundary
+# ---------------------------------------------------------------------------
+
+class TestConvertToolsToAnthropicDedup:
+    """convert_tools_to_anthropic must deduplicate tool names.
+
+    Anthropic rejects requests with duplicate tool names.  This guard converts
+    a hard failure into a warning log.  See:
+    https://github.com/NousResearch/hermes-agent/issues/18478
+    """
+
+    def _make_openai_tool(self, name: str) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": f"Tool {name}",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+    def test_unique_tools_pass_through(self):
+        tools = [self._make_openai_tool("alpha"), self._make_openai_tool("beta")]
+        result = convert_tools_to_anthropic(tools)
+        assert len(result) == 2
+        names = [t["name"] for t in result]
+        assert names == ["alpha", "beta"]
+
+    def test_duplicate_tool_names_are_deduplicated(self):
+        """RED test — must fail until dedup guard is added."""
+        tools = [
+            self._make_openai_tool("lcm_grep"),
+            self._make_openai_tool("lcm_describe"),
+            self._make_openai_tool("lcm_grep"),  # duplicate
+            self._make_openai_tool("lcm_expand"),
+            self._make_openai_tool("lcm_describe"),  # duplicate
+        ]
+        result = convert_tools_to_anthropic(tools)
+        names = [t["name"] for t in result]
+        assert len(names) == len(set(names)), (
+            f"Duplicate tool names found: {names}"
+        )
+        assert len(result) == 3  # lcm_grep, lcm_describe, lcm_expand
+
+    def test_empty_tools_returns_empty(self):
+        assert convert_tools_to_anthropic([]) == []
+
+    def test_none_tools_returns_empty(self):
+        assert convert_tools_to_anthropic(None) == []

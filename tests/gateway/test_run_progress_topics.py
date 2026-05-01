@@ -65,6 +65,29 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
+class MediaCaptureAdapter(ProgressCaptureAdapter):
+    async def send_multiple_images(self, chat_id, images, metadata=None, human_delay=0.0):
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": images,
+                "reply_to": None,
+                "metadata": metadata,
+            }
+        )
+
+    async def send_document(self, chat_id, file_path, caption=None, file_name=None, reply_to=None, metadata=None, **kwargs):
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": file_path,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id="doc-1")
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
@@ -301,6 +324,40 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
     assert adapter.sent
     assert adapter.sent[0]["metadata"] is None
     assert all(call["metadata"] is None for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_post_stream_media_includes_reply_message_for_feishu_topic(tmp_path):
+    adapter = MediaCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    image_path = tmp_path / "poster.png"
+    image_path.write_bytes(b"fake image bytes")
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt-thread",
+    )
+    event = MessageEvent(
+        message_id="om_origin",
+        source=source,
+        text=f"MEDIA:{image_path}",
+        message_type=MessageType.TEXT,
+    )
+
+    await runner._deliver_media_from_response(f"done\nMEDIA:{image_path}", event, adapter)
+
+    assert adapter.sent == [
+        {
+            "chat_id": "oc_chat",
+            "content": [(f"file://{image_path}", "")],
+            "reply_to": None,
+            "metadata": {
+                "thread_id": "omt-thread",
+                "reply_to_message_id": "om_origin",
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio

@@ -3,8 +3,13 @@ name: Docker Build and Publish
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+    paths:
+      - '**/*.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Dockerfile'
+      - 'docker/**'
+      - '.github/workflows/docker-publish.yml'
   release:
     types: [published]
 
@@ -49,6 +54,14 @@ jobs:
 
       - name: Test image starts
         run: |
+          # The image runs as the hermes user (UID 10000).  GitHub Actions
+          # creates /tmp/hermes-test root-owned by default, which hermes
+          # can't write to — chown it to match the in-container UID before
+          # bind-mounting.  Real users doing `docker run -v ~/.hermes:...`
+          # with their own UID hit the same issue and have their own
+          # remediations (HERMES_UID env var, or chown locally).
+          mkdir -p /tmp/hermes-test
+          sudo chown -R 10000:10000 /tmp/hermes-test
           docker run --rm \
             -v /tmp/hermes-test:/opt/data \
             --entrypoint /opt/hermes/docker/entrypoint.sh \

@@ -119,7 +119,7 @@ class TestWeComConnect:
 
 class TestWeComReplyMode:
     @pytest.mark.asyncio
-    async def test_send_uses_passive_reply_stream_when_reply_context_exists(self):
+    async def test_send_uses_passive_reply_markdown_when_reply_context_exists(self):
         from gateway.platforms.wecom import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -134,9 +134,10 @@ class TestWeComReplyMode:
         adapter._send_reply_request.assert_awaited_once()
         args = adapter._send_reply_request.await_args.args
         assert args[0] == "req-1"
-        assert args[1]["msgtype"] == "stream"
-        assert args[1]["stream"]["finish"] is True
-        assert args[1]["stream"]["content"] == "hello from reply"
+        # msgtype: stream triggers WeCom errcode 600039 on many mobile clients
+        # (unsupported type). Markdown renders everywhere.
+        assert args[1]["msgtype"] == "markdown"
+        assert args[1]["markdown"]["content"] == "hello from reply"
 
     @pytest.mark.asyncio
     async def test_send_image_file_uses_passive_reply_media_when_reply_context_exists(self):
@@ -594,6 +595,192 @@ class TestInboundMessages:
         adapter.handle_message.assert_not_awaited()
 
 
-class TestPlatformEnum:
-    def test_wecom_in_platform_enum(self):
-        assert Platform.WECOM.value == "wecom"
+class TestWeComZombieSessionFix:
+    """Tests for PR #11572 — device_id, markdown reply, group req_id fallback."""
+
+    def test_adapter_generates_stable_device_id_per_instance(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        assert isinstance(adapter._device_id, str)
+        assert len(adapter._device_id) > 0
+        # Second snapshot on the same adapter must be identical — only a fresh
+        # adapter instance should get a new device_id (one-per-reconnect is the
+        # zombie-session footgun we're fixing).
+        assert adapter._device_id == adapter._device_id
+
+    def test_different_adapter_instances_get_distinct_device_ids(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        a = WeComAdapter(PlatformConfig(enabled=True))
+        b = WeComAdapter(PlatformConfig(enabled=True))
+        assert a._device_id != b._device_id
+
+    @pytest.mark.asyncio
+    async def test_open_connection_includes_device_id_in_subscribe(self):
+        from gateway.platforms.wecom import APP_CMD_SUBSCRIBE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._bot_id = "test-bot"
+        adapter._secret = "test-secret"
+
+        sent_payloads = []
+
+        class _FakeWS:
+            closed = False
+
+            async def send_json(self, payload):
+                sent_payloads.append(payload)
+
+            async def close(self):
+                return None
+
+        class _FakeSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def ws_connect(self, *args, **kwargs):
+                return _FakeWS()
+
+            async def close(self):
+                return None
+
+        async def _fake_cleanup():
+            return None
+
+        async def _fake_handshake(req_id):
+            return {"errcode": 0, "headers": {"req_id": req_id}}
+
+        adapter._cleanup_ws = _fake_cleanup
+        adapter._wait_for_handshake = _fake_handshake
+
+        with patch("gateway.platforms.wecom.aiohttp.ClientSession", _FakeSession):
+            await adapter._open_connection()
+
+        assert len(sent_payloads) == 1
+        subscribe = sent_payloads[0]
+        assert subscribe["cmd"] == APP_CMD_SUBSCRIBE
+        assert subscribe["body"]["bot_id"] == "test-bot"
+        assert subscribe["body"]["secret"] == "test-secret"
+        assert subscribe["body"]["device_id"] == adapter._device_id
+
+    @pytest.mark.asyncio
+    async def test_on_message_caches_last_req_id_per_chat(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        payload = {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-abc"},
+            "body": {
+                "msgid": "msg-1",
+                "chatid": "group-1",
+                "chattype": "group",
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": "hi"},
+            },
+        }
+
+        await adapter._on_message(payload)
+        assert adapter._last_chat_req_ids["group-1"] == "req-abc"
+
+    @pytest.mark.asyncio
+    async def test_on_message_does_not_cache_blocked_sender_req_id(self):
+        """Blocked chats shouldn't populate the proactive-send fallback cache."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-ok"]},
+            )
+        )
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+
+        payload = {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-abc"},
+            "body": {
+                "msgid": "msg-1",
+                "chatid": "group-blocked",
+                "chattype": "group",
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": "hi"},
+            },
+        }
+
+        await adapter._on_message(payload)
+        adapter.handle_message.assert_not_awaited()
+        assert "group-blocked" not in adapter._last_chat_req_ids
+
+    def test_remember_chat_req_id_is_bounded(self):
+        from gateway.platforms.wecom import DEDUP_MAX_SIZE, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        for i in range(DEDUP_MAX_SIZE + 50):
+            adapter._remember_chat_req_id(f"chat-{i}", f"req-{i}")
+        assert len(adapter._last_chat_req_ids) <= DEDUP_MAX_SIZE
+        # The most recently remembered chat must still be present.
+        latest = f"chat-{DEDUP_MAX_SIZE + 49}"
+        assert adapter._last_chat_req_ids[latest] == f"req-{DEDUP_MAX_SIZE + 49}"
+
+    def test_remember_chat_req_id_ignores_empty_values(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._remember_chat_req_id("", "req-1")
+        adapter._remember_chat_req_id("chat-1", "")
+        adapter._remember_chat_req_id("   ", "   ")
+        assert adapter._last_chat_req_ids == {}
+
+    @pytest.mark.asyncio
+    async def test_proactive_group_send_falls_back_to_cached_req_id(self):
+        """Sending into a group without reply_to should use the last cached
+        req_id via APP_CMD_RESPONSE — WeCom AI Bots cannot initiate APP_CMD_SEND
+        in group chats (errcode 600039)."""
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._last_chat_req_ids["group-1"] = "inbound-req-42"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "inbound-req-42"}, "errcode": 0}
+        )
+        adapter._send_request = AsyncMock(
+            return_value={"headers": {"req_id": "new"}, "errcode": 0}
+        )
+
+        result = await adapter.send("group-1", "ping", reply_to=None)
+
+        assert result.success is True
+        # Must route through reply (APP_CMD_RESPONSE), not proactive send.
+        adapter._send_reply_request.assert_awaited_once()
+        adapter._send_request.assert_not_awaited()
+        args = adapter._send_reply_request.await_args.args
+        assert args[0] == "inbound-req-42"
+        assert args[1]["msgtype"] == "markdown"
+        assert args[1]["markdown"]["content"] == "ping"
+
+    @pytest.mark.asyncio
+    async def test_proactive_send_without_cached_req_id_uses_app_cmd_send(self):
+        """When we have no prior req_id (fresh DM target), APP_CMD_SEND is used."""
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_request = AsyncMock(
+            return_value={"headers": {"req_id": "new"}, "errcode": 0}
+        )
+
+        result = await adapter.send("fresh-dm-chat", "ping", reply_to=None)
+
+        assert result.success is True
+        adapter._send_request.assert_awaited_once()
+        cmd = adapter._send_request.await_args.args[0]
+        assert cmd == APP_CMD_SEND
+

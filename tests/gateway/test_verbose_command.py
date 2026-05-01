@@ -86,6 +86,25 @@ class TestVerboseCommand:
         assert saved["display"]["platforms"]["telegram"]["tool_progress"] == "verbose"
 
     @pytest.mark.asyncio
+    async def test_quoted_false_keeps_command_disabled(self, tmp_path, monkeypatch):
+        """Quoted false must not enable the /verbose gateway command."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            'display:\n  tool_progress_command: "false"\n  tool_progress: all\n',
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        result = await runner._handle_verbose_command(_make_event())
+
+        assert "not enabled" in result.lower()
+        assert "tool_progress_command" in result
+
+    @pytest.mark.asyncio
     async def test_cycles_through_all_modes(self, tmp_path, monkeypatch):
         """Calling /verbose repeatedly cycles through all four modes."""
         hermes_home = tmp_path / "hermes"
@@ -134,7 +153,7 @@ class TestVerboseCommand:
         """Cycling /verbose on Telegram doesn't change Slack's setting.
 
         Without a global tool_progress, each platform uses its built-in
-        default: Telegram = 'all' (high tier), Slack = 'new' (medium tier).
+        default: Telegram = 'all' (high tier), Slack = 'off' (quiet Slack default).
         """
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
@@ -161,8 +180,8 @@ class TestVerboseCommand:
         platforms = saved["display"]["platforms"]
         # Telegram: all -> verbose (high tier default = all)
         assert platforms["telegram"]["tool_progress"] == "verbose"
-        # Slack: new -> all (medium tier default = new, cycle to all)
-        assert platforms["slack"]["tool_progress"] == "all"
+        # Slack: off -> new (first /verbose cycle from quiet default)
+        assert platforms["slack"]["tool_progress"] == "new"
 
     @pytest.mark.asyncio
     async def test_no_config_file_returns_disabled(self, tmp_path, monkeypatch):

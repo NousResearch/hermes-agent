@@ -357,11 +357,32 @@ class TestWorkingDirResolution:
         result = mgr.get_working_dir_for_path(str(subdir / "file.py"))
         assert result == str(project)
 
-    def test_falls_back_to_parent(self, tmp_path):
+    def test_falls_back_to_parent(self, tmp_path, monkeypatch):
         mgr = CheckpointManager(enabled=True)
         filepath = tmp_path / "random" / "file.py"
         filepath.parent.mkdir(parents=True)
         filepath.write_text("x\\n")
+
+        # The walk-up scan for project markers (.git, pyproject.toml, etc.)
+        # stops at tmp_path — otherwise stray markers in ``/tmp`` (e.g.
+        # ``/tmp/pyproject.toml`` left by other tools on the host) get
+        # picked up as the project root and this test flakes on shared CI.
+        import pathlib as _pl
+        _real_exists = _pl.Path.exists
+
+        def _guarded_exists(self):
+            s = str(self)
+            stop = str(tmp_path)
+            if not s.startswith(stop) and any(
+                s.endswith("/" + m) or s == "/" + m
+                for m in (".git", "pyproject.toml", "package.json",
+                          "Cargo.toml", "go.mod", "Makefile", "pom.xml",
+                          ".hg", "Gemfile")
+            ):
+                return False
+            return _real_exists(self)
+
+        monkeypatch.setattr(_pl.Path, "exists", _guarded_exists)
 
         result = mgr.get_working_dir_for_path(str(filepath))
         assert result == str(filepath.parent)
@@ -587,3 +608,302 @@ class TestSecurity:
         
         result = mgr.restore(str(work_dir), target_hash, file_path="subdir/test.txt")
         assert result["success"] is True
+
+
+# =========================================================================
+# GPG / global git config isolation
+# =========================================================================
+# Regression tests for the bug where users with ``commit.gpgsign = true``
+# in their global git config got a pinentry popup (or a failed commit)
+# every time the agent took a background snapshot.
+
+import os as _os
+
+
+class TestGpgAndGlobalConfigIsolation:
+    def test_git_env_isolates_global_and_system_config(self, tmp_path):
+        """_git_env must null out GIT_CONFIG_GLOBAL / GIT_CONFIG_SYSTEM so the
+        shadow repo does not inherit user-level gpgsign, hooks, aliases, etc."""
+        env = _git_env(tmp_path / "shadow", str(tmp_path))
+        assert env["GIT_CONFIG_GLOBAL"] == _os.devnull
+        assert env["GIT_CONFIG_SYSTEM"] == _os.devnull
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+
+    def test_init_sets_commit_gpgsign_false(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        shadow = _shadow_repo_path(str(work_dir))
+        _init_shadow_repo(shadow, str(work_dir))
+        # Inspect the shadow's own config directly — the settings must be
+        # written into the repo, not just inherited via env vars.
+        result = subprocess.run(
+            ["git", "config", "--file", str(shadow / "config"), "--get", "commit.gpgsign"],
+            capture_output=True, text=True,
+        )
+        assert result.stdout.strip() == "false"
+
+    def test_init_sets_tag_gpgsign_false(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        shadow = _shadow_repo_path(str(work_dir))
+        _init_shadow_repo(shadow, str(work_dir))
+        result = subprocess.run(
+            ["git", "config", "--file", str(shadow / "config"), "--get", "tag.gpgSign"],
+            capture_output=True, text=True,
+        )
+        assert result.stdout.strip() == "false"
+
+    def test_checkpoint_works_with_global_gpgsign_and_broken_gpg(
+        self, work_dir, checkpoint_base, monkeypatch, tmp_path
+    ):
+        """The real bug scenario: user has global commit.gpgsign=true but GPG
+        is broken or pinentry is unavailable.  Before the fix, every snapshot
+        either failed or spawned a pinentry window.  After the fix, snapshots
+        succeed without ever invoking GPG."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+
+        # Fake HOME with global gpgsign=true and a deliberately broken GPG
+        # binary.  If isolation fails, the commit will try to exec this
+        # nonexistent path and the checkpoint will fail.
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        (fake_home / ".gitconfig").write_text(
+            "[user]\n    email = real@user.com\n    name = Real User\n"
+            "[commit]\n    gpgsign = true\n"
+            "[tag]\n    gpgSign = true\n"
+            "[gpg]\n    program = /nonexistent/fake-gpg-binary\n"
+        )
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.delenv("GPG_TTY", raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)  # block GUI pinentry
+
+        mgr = CheckpointManager(enabled=True)
+        assert mgr.ensure_checkpoint(str(work_dir), reason="with-global-gpgsign") is True
+        assert len(mgr.list_checkpoints(str(work_dir))) == 1
+
+    def test_checkpoint_works_on_prefix_shadow_without_local_gpgsign(
+        self, work_dir, checkpoint_base, monkeypatch, tmp_path
+    ):
+        """Users with shadow repos created before the fix will not have
+        commit.gpgsign=false in their shadow's own config.  The inline
+        ``--no-gpg-sign`` flag on the commit call must cover them."""
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+
+        # Simulate a pre-fix shadow repo: init without commit.gpgsign=false
+        # in its own config.  _init_shadow_repo now writes it, so we must
+        # manually remove it to mimic the pre-fix state.
+        shadow = _shadow_repo_path(str(work_dir))
+        _init_shadow_repo(shadow, str(work_dir))
+        subprocess.run(
+            ["git", "config", "--file", str(shadow / "config"),
+             "--unset", "commit.gpgsign"],
+            capture_output=True, text=True, check=False,
+        )
+        subprocess.run(
+            ["git", "config", "--file", str(shadow / "config"),
+             "--unset", "tag.gpgSign"],
+            capture_output=True, text=True, check=False,
+        )
+
+        # And simulate hostile global config
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        (fake_home / ".gitconfig").write_text(
+            "[commit]\n    gpgsign = true\n"
+            "[gpg]\n    program = /nonexistent/fake-gpg-binary\n"
+        )
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.delenv("GPG_TTY", raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)
+
+        mgr = CheckpointManager(enabled=True)
+        assert mgr.ensure_checkpoint(str(work_dir), reason="prefix-shadow") is True
+        assert len(mgr.list_checkpoints(str(work_dir))) == 1
+
+
+# =========================================================================
+# Auto-maintenance: prune_checkpoints + maybe_auto_prune_checkpoints
+# =========================================================================
+
+class TestPruneCheckpoints:
+    """Sweep orphan/stale shadow repos under CHECKPOINT_BASE (issue #3015 follow-up)."""
+
+    def _seed_shadow_repo(
+        self, base: Path, dir_hash: str, workdir: Path, mtime: float = None
+    ) -> Path:
+        """Create a minimal shadow repo on disk without invoking real git."""
+        import time as _time
+        shadow = base / dir_hash
+        shadow.mkdir(parents=True)
+        (shadow / "HEAD").write_text("ref: refs/heads/main\n")
+        (shadow / "HERMES_WORKDIR").write_text(str(workdir) + "\n")
+        (shadow / "info").mkdir()
+        (shadow / "info" / "exclude").write_text("node_modules/\n")
+        if mtime is not None:
+            for p in shadow.rglob("*"):
+                import os
+                os.utime(p, (mtime, mtime))
+            import os
+            os.utime(shadow, (mtime, mtime))
+        return shadow
+
+    def test_deletes_orphan_when_workdir_missing(self, tmp_path):
+        from tools.checkpoint_manager import prune_checkpoints
+
+        base = tmp_path / "checkpoints"
+        alive_work = tmp_path / "alive"
+        alive_work.mkdir()
+        alive_repo = self._seed_shadow_repo(base, "aaaa" * 4, alive_work)
+        orphan_repo = self._seed_shadow_repo(
+            base, "bbbb" * 4, tmp_path / "was-deleted"
+        )
+
+        result = prune_checkpoints(retention_days=0, checkpoint_base=base)
+
+        assert result["scanned"] == 2
+        assert result["deleted_orphan"] == 1
+        assert result["deleted_stale"] == 0
+        assert alive_repo.exists()
+        assert not orphan_repo.exists()
+
+    def test_deletes_stale_by_mtime_when_workdir_alive(self, tmp_path):
+        from tools.checkpoint_manager import prune_checkpoints
+        import time as _time
+
+        base = tmp_path / "checkpoints"
+        work = tmp_path / "work"
+        work.mkdir()
+
+        fresh_repo = self._seed_shadow_repo(base, "cccc" * 4, work)
+        stale_work = tmp_path / "stale_work"
+        stale_work.mkdir()
+        old = _time.time() - 60 * 86400  # 60 days ago
+        stale_repo = self._seed_shadow_repo(base, "dddd" * 4, stale_work, mtime=old)
+
+        result = prune_checkpoints(
+            retention_days=30, delete_orphans=False, checkpoint_base=base
+        )
+
+        assert result["deleted_orphan"] == 0
+        assert result["deleted_stale"] == 1
+        assert fresh_repo.exists()
+        assert not stale_repo.exists()
+
+    def test_orphan_takes_priority_over_stale(self, tmp_path):
+        """Orphan detection counts first — reason="orphan" even if also stale."""
+        from tools.checkpoint_manager import prune_checkpoints
+        import time as _time
+
+        base = tmp_path / "checkpoints"
+        old = _time.time() - 60 * 86400
+        self._seed_shadow_repo(base, "eeee" * 4, tmp_path / "gone", mtime=old)
+
+        result = prune_checkpoints(retention_days=30, checkpoint_base=base)
+        assert result["deleted_orphan"] == 1
+        assert result["deleted_stale"] == 0
+
+    def test_delete_orphans_disabled_keeps_orphans(self, tmp_path):
+        from tools.checkpoint_manager import prune_checkpoints
+
+        base = tmp_path / "checkpoints"
+        orphan = self._seed_shadow_repo(base, "ffff" * 4, tmp_path / "gone")
+
+        result = prune_checkpoints(
+            retention_days=0, delete_orphans=False, checkpoint_base=base
+        )
+        assert result["deleted_orphan"] == 0
+        assert orphan.exists()
+
+    def test_skips_non_shadow_dirs(self, tmp_path):
+        """Dirs without HEAD (non-initialised) are left alone."""
+        from tools.checkpoint_manager import prune_checkpoints
+
+        base = tmp_path / "checkpoints"
+        base.mkdir()
+        (base / "garbage-dir").mkdir()
+        (base / "garbage-dir" / "random.txt").write_text("hi")
+
+        result = prune_checkpoints(retention_days=0, checkpoint_base=base)
+        assert result["scanned"] == 0
+        assert (base / "garbage-dir").exists()
+
+    def test_tracks_bytes_freed(self, tmp_path):
+        from tools.checkpoint_manager import prune_checkpoints
+
+        base = tmp_path / "checkpoints"
+        orphan = self._seed_shadow_repo(base, "1234" * 4, tmp_path / "gone")
+        (orphan / "objects").mkdir()
+        (orphan / "objects" / "pack.bin").write_bytes(b"x" * 5000)
+
+        result = prune_checkpoints(retention_days=0, checkpoint_base=base)
+        assert result["deleted_orphan"] == 1
+        assert result["bytes_freed"] >= 5000
+
+    def test_base_missing_returns_empty_counts(self, tmp_path):
+        from tools.checkpoint_manager import prune_checkpoints
+
+        result = prune_checkpoints(checkpoint_base=tmp_path / "does-not-exist")
+        assert result == {
+            "scanned": 0, "deleted_orphan": 0, "deleted_stale": 0,
+            "errors": 0, "bytes_freed": 0,
+        }
+
+
+class TestMaybeAutoPruneCheckpoints:
+    def _seed(self, base, dir_hash, workdir):
+        base.mkdir(parents=True, exist_ok=True)
+        shadow = base / dir_hash
+        shadow.mkdir()
+        (shadow / "HEAD").write_text("ref: refs/heads/main\n")
+        (shadow / "HERMES_WORKDIR").write_text(str(workdir) + "\n")
+        return shadow
+
+    def test_first_call_prunes_and_writes_marker(self, tmp_path):
+        from tools.checkpoint_manager import maybe_auto_prune_checkpoints
+
+        base = tmp_path / "checkpoints"
+        self._seed(base, "0000" * 4, tmp_path / "gone")
+
+        out = maybe_auto_prune_checkpoints(checkpoint_base=base)
+        assert out["skipped"] is False
+        assert out["result"]["deleted_orphan"] == 1
+        assert (base / ".last_prune").exists()
+
+    def test_second_call_within_interval_skips(self, tmp_path):
+        from tools.checkpoint_manager import maybe_auto_prune_checkpoints
+
+        base = tmp_path / "checkpoints"
+        self._seed(base, "1111" * 4, tmp_path / "gone")
+
+        first = maybe_auto_prune_checkpoints(
+            checkpoint_base=base, min_interval_hours=24
+        )
+        assert first["skipped"] is False
+
+        self._seed(base, "2222" * 4, tmp_path / "also-gone")
+        second = maybe_auto_prune_checkpoints(
+            checkpoint_base=base, min_interval_hours=24
+        )
+        assert second["skipped"] is True
+        # The second orphan must still exist — skip was honoured.
+        assert (base / ("2222" * 4)).exists()
+
+    def test_corrupt_marker_treated_as_no_prior_run(self, tmp_path):
+        from tools.checkpoint_manager import maybe_auto_prune_checkpoints
+
+        base = tmp_path / "checkpoints"
+        base.mkdir()
+        (base / ".last_prune").write_text("not-a-timestamp")
+        self._seed(base, "3333" * 4, tmp_path / "gone")
+
+        out = maybe_auto_prune_checkpoints(checkpoint_base=base)
+        assert out["skipped"] is False
+        assert out["result"]["deleted_orphan"] == 1
+
+    def test_missing_base_no_raise(self, tmp_path):
+        from tools.checkpoint_manager import maybe_auto_prune_checkpoints
+
+        out = maybe_auto_prune_checkpoints(
+            checkpoint_base=tmp_path / "does-not-exist"
+        )
+        assert out["skipped"] is False
+        assert out["result"]["scanned"] == 0
+

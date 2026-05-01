@@ -269,6 +269,7 @@ class ModalEnvironment(BaseEnvironment):
             upload_fn=self._modal_upload,
             delete_fn=self._modal_delete,
             bulk_upload_fn=self._modal_bulk_upload,
+            bulk_download_fn=self._modal_bulk_download,
         )
         self._sync_manager.sync(force=True)
         self.init_session()
@@ -347,6 +348,27 @@ class ModalEnvironment(BaseEnvironment):
 
         self._worker.run_coroutine(_bulk(), timeout=120)
 
+    def _modal_bulk_download(self, dest: Path) -> None:
+        """Download remote .hermes/ as a tar archive.
+
+        Modal sandboxes always run as root, so /root/.hermes is hardcoded
+        (consistent with iter_sync_files call on line 269).
+        """
+        async def _download():
+            proc = await self._sandbox.exec.aio(
+                "bash", "-c", "tar cf - -C / root/.hermes"
+            )
+            data = await proc.stdout.read.aio()
+            exit_code = await proc.wait.aio()
+            if exit_code != 0:
+                raise RuntimeError(f"Modal bulk download failed (exit {exit_code})")
+            return data
+
+        tar_bytes = self._worker.run_coroutine(_download(), timeout=120)
+        if isinstance(tar_bytes, str):
+            tar_bytes = tar_bytes.encode()
+        dest.write_bytes(tar_bytes)
+
     def _modal_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files via exec."""
         rm_cmd = quoted_rm_command(remote_paths)
@@ -403,6 +425,10 @@ class ModalEnvironment(BaseEnvironment):
         """Snapshot the filesystem (if persistent) then stop the sandbox."""
         if self._sandbox is None:
             return
+
+        if self._sync_manager:
+            logger.info("Modal: syncing files from sandbox...")
+            self._sync_manager.sync_back()
 
         if self._persistent:
             try:

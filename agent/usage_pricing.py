@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
+from utils import base_url_host_matches
 
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
@@ -358,6 +359,25 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://aws.amazon.com/bedrock/pricing/",
         pricing_version="bedrock-pricing-2026-04",
     ),
+    # MiniMax
+    (
+        "minimax",
+        "minimax-m2.7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        source="official_docs_snapshot",
+        pricing_version="minimax-pricing-2026-04",
+    ),
+    (
+        "minimax-cn",
+        "minimax-m2.7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        source="official_docs_snapshot",
+        pricing_version="minimax-pricing-2026-04",
+    ),
 }
 
 
@@ -393,12 +413,14 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
-    if provider_name == "openrouter" or "openrouter.ai" in base:
+    if provider_name == "openrouter" or base_url_host_matches(base_url or "", "openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
     if provider_name == "anthropic":
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "openai":
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name in {"minimax", "minimax-cn"}:
+        return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
@@ -532,10 +554,22 @@ def normalize_usage(
         prompt_total = _to_int(getattr(response_usage, "prompt_tokens", 0))
         output_tokens = _to_int(getattr(response_usage, "completion_tokens", 0))
         details = getattr(response_usage, "prompt_tokens_details", None)
+        # Primary: OpenAI-style prompt_tokens_details. Fallback: Anthropic-style
+        # top-level fields that some OpenAI-compatible proxies (OpenRouter, Vercel
+        # AI Gateway, Cline) expose when routing Claude models — without this
+        # fallback, cache writes are undercounted as 0 and cache reads can be
+        # missed when the proxy only surfaces them at the top level.
+        # Port of cline/cline#10266.
         cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
+        if not cache_read_tokens:
+            cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
         cache_write_tokens = _to_int(
             getattr(details, "cache_write_tokens", 0) if details else 0
         )
+        if not cache_write_tokens:
+            cache_write_tokens = _to_int(
+                getattr(response_usage, "cache_creation_input_tokens", 0)
+            )
         input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
     reasoning_tokens = 0

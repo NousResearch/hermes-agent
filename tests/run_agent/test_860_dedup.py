@@ -29,6 +29,8 @@ class TestFlushDeduplication:
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
             agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
                 model="test/model",
                 quiet_mode=True,
                 session_db=session_db,
@@ -36,6 +38,8 @@ class TestFlushDeduplication:
                 skip_context_files=True,
                 skip_memory=True,
             )
+        # Simulate lazy session creation (normally done by run_conversation)
+        agent._ensure_db_session()
         return agent
 
     def test_flush_writes_only_new_messages(self):
@@ -271,6 +275,8 @@ class TestFlushIdxInit:
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
             agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
                 model="test/model",
                 quiet_mode=True,
                 skip_context_files=True,
@@ -283,6 +289,8 @@ class TestFlushIdxInit:
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
             agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
                 model="test/model",
                 quiet_mode=True,
                 skip_context_files=True,

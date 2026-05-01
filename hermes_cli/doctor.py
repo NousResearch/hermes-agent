@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import shutil
+import importlib.util
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -29,7 +30,10 @@ if _env_path.exists():
 load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.models import _HERMES_USER_AGENT
+from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
+from utils import base_url_host_matches
 
 
 _PROVIDER_ENV_HINTS = (
@@ -44,6 +48,7 @@ _PROVIDER_ENV_HINTS = (
     "Z_AI_API_KEY",
     "KIMI_API_KEY",
     "KIMI_CN_API_KEY",
+    "GMI_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
@@ -54,6 +59,7 @@ _PROVIDER_ENV_HINTS = (
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
     "XIAOMI_API_KEY",
+    "TOKENHUB_API_KEY",
 )
 
 
@@ -70,6 +76,14 @@ def _system_package_install_cmd(pkg: str) -> str:
     if sys.platform == "darwin":
         return f"brew install {pkg}"
     return f"sudo apt install {pkg}"
+
+
+def _safe_which(cmd: str) -> str | None:
+    """shutil.which wrapper resilient to platform monkeypatching in tests."""
+    try:
+        return shutil.which(cmd)
+    except Exception:
+        return None
 
 
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
@@ -277,6 +291,162 @@ def run_doctor(args):
     config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():
         check_ok(f"{_DHH}/config.yaml exists")
+
+        # Validate model.provider and model.default values
+        try:
+            import yaml as _yaml
+            cfg = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            model_section = cfg.get("model") or {}
+            provider_raw = (model_section.get("provider") or "").strip()
+            provider = provider_raw.lower()
+            default_model = (model_section.get("default") or model_section.get("model") or "").strip()
+
+            known_providers: set = set()
+            try:
+                from hermes_cli.auth import (
+                    PROVIDER_REGISTRY,
+                    resolve_provider as _resolve_auth_provider,
+                )
+                known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto"}
+            except Exception:
+                _resolve_auth_provider = None
+                pass
+            try:
+                from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
+                from hermes_cli.providers import (
+                    normalize_provider as _normalize_catalog_provider,
+                    resolve_provider_full as _resolve_provider_full,
+                )
+            except Exception:
+                _compatible_custom_providers = None
+                _normalize_catalog_provider = None
+                _resolve_provider_full = None
+
+            custom_providers = []
+            if _compatible_custom_providers is not None:
+                try:
+                    custom_providers = _compatible_custom_providers(cfg)
+                except Exception:
+                    custom_providers = []
+
+            user_providers = cfg.get("providers")
+            if isinstance(user_providers, dict):
+                known_providers.update(str(name).strip().lower() for name in user_providers if str(name).strip())
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                name = str(entry.get("name") or "").strip()
+                if name:
+                    known_providers.add("custom:" + name.lower().replace(" ", "-"))
+
+            valid_provider_ids = set(known_providers)
+            provider_ids_to_accept = {provider} if provider else set()
+            if _normalize_catalog_provider is not None:
+                for known_provider in known_providers:
+                    try:
+                        valid_provider_ids.add(_normalize_catalog_provider(known_provider))
+                    except Exception:
+                        continue
+
+            runtime_provider = provider
+            if (
+                provider
+                and _resolve_auth_provider is not None
+                and provider not in ("auto", "custom")
+            ):
+                try:
+                    runtime_provider = _resolve_auth_provider(provider)
+                    provider_ids_to_accept.add(runtime_provider)
+                except Exception:
+                    runtime_provider = provider
+
+            catalog_provider = provider
+            if (
+                provider
+                and _resolve_provider_full is not None
+                and provider not in ("auto", "custom")
+            ):
+                provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
+                catalog_provider = provider_def.id if provider_def is not None else None
+                if catalog_provider is not None:
+                    provider_ids_to_accept.add(catalog_provider)
+
+            if provider and provider != "auto":
+                if catalog_provider is None or (
+                    known_providers
+                    and not (provider_ids_to_accept & valid_provider_ids)
+                ):
+                    known_list = ", ".join(sorted(known_providers)) if known_providers else "(unavailable)"
+                    check_fail(
+                        f"model.provider '{provider_raw}' is not a recognised provider",
+                        f"(known: {known_list})",
+                    )
+                    issues.append(
+                        f"model.provider '{provider_raw}' is unknown. "
+                        f"Valid providers: {known_list}. "
+                        f"Fix: run 'hermes config set model.provider <valid_provider>'"
+                    )
+
+            # Warn if model is set to a provider-prefixed name on a provider that doesn't use them
+            provider_for_policy = runtime_provider or catalog_provider
+            providers_accepting_vendor_slugs = {
+                "openrouter",
+                "custom",
+                "auto",
+                "ai-gateway",
+                "kilocode",
+                "opencode-zen",
+                "huggingface",
+                "lmstudio",
+                "nous",
+            }
+            if (
+                default_model
+                and "/" in default_model
+                and provider_for_policy
+                and provider_for_policy not in providers_accepting_vendor_slugs
+            ):
+                check_warn(
+                    f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
+                    "(vendor-prefixed slugs belong to aggregators like openrouter)",
+                )
+                issues.append(
+                    f"model.default '{default_model}' is vendor-prefixed but model.provider is '{provider_raw}'. "
+                    "Either set model.provider to 'openrouter', or drop the vendor prefix."
+                )
+
+            # Check credentials for the configured provider.
+            # Limit to API-key providers in PROVIDER_REGISTRY — other provider
+            # types (OAuth, SDK, openrouter/anthropic/custom/auto) have their
+            # own env-var checks elsewhere in doctor, and get_auth_status()
+            # returns a bare {logged_in: False} for anything it doesn't
+            # explicitly dispatch, which would produce false positives.
+            if runtime_provider and runtime_provider not in ("auto", "custom", "openrouter"):
+                try:
+                    from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
+                    pconfig = PROVIDER_REGISTRY.get(runtime_provider)
+                    if pconfig and getattr(pconfig, "auth_type", "") == "api_key":
+                        status = get_auth_status(runtime_provider) or {}
+                        configured = bool(
+                            status.get("configured")
+                            or status.get("logged_in")
+                            or status.get("api_key")
+                        )
+                        if not configured:
+                            check_fail(
+                                f"model.provider '{runtime_provider}' is set but no API key is configured",
+                                "(check ~/.hermes/.env or run 'hermes setup')",
+                            )
+                            issues.append(
+                                f"No credentials found for provider '{runtime_provider}'. "
+                                f"Run 'hermes setup' or set the provider's API key in {_DHH}/.env, "
+                                f"or switch providers with 'hermes config set model.provider <name>'"
+                            )
+                except Exception:
+                    pass
+
+        except Exception as e:
+            check_warn("Could not validate model/provider config", f"({e})")
     else:
         fallback_config = PROJECT_ROOT / 'cli-config.yaml'
         if fallback_config.exists():
@@ -373,7 +543,12 @@ def run_doctor(args):
     print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
 
     try:
-        from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status
+        from hermes_cli.auth import (
+            get_nous_auth_status,
+            get_codex_auth_status,
+            get_gemini_oauth_auth_status,
+            get_minimax_oauth_auth_status,
+        )
 
         nous_status = get_nous_auth_status()
         if nous_status.get("logged_in"):
@@ -388,13 +563,41 @@ def run_doctor(args):
             check_warn("OpenAI Codex auth", "(not logged in)")
             if codex_status.get("error"):
                 check_info(codex_status["error"])
+
+        gemini_status = get_gemini_oauth_auth_status()
+        if gemini_status.get("logged_in"):
+            email = gemini_status.get("email") or ""
+            project = gemini_status.get("project_id") or ""
+            pieces = []
+            if email:
+                pieces.append(email)
+            if project:
+                pieces.append(f"project={project}")
+            suffix = f" ({', '.join(pieces)})" if pieces else ""
+            check_ok("Google Gemini OAuth", f"(logged in{suffix})")
+        else:
+            check_warn("Google Gemini OAuth", "(not logged in)")
+
+        minimax_status = get_minimax_oauth_auth_status()
+        if minimax_status.get("logged_in"):
+            region = minimax_status.get("region", "global")
+            check_ok("MiniMax OAuth", f"(logged in, region={region})")
+        else:
+            check_warn("MiniMax OAuth", "(not logged in)")
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 
-    if shutil.which("codex"):
+    if _safe_which("codex"):
         check_ok("codex CLI")
     else:
-        check_warn("codex CLI not found", "(required for openai-codex login)")
+        # Native OAuth uses Hermes' own device-code flow — the Codex CLI is
+        # only needed if you want to import existing tokens from
+        # ~/.codex/auth.json.  Downgrade to info so users running
+        # `hermes auth openai-codex` aren't told they're missing something.
+        check_info(
+            "codex CLI not installed "
+            "(optional — only required to import tokens from an existing Codex CLI login)"
+        )
 
     # =========================================================================
     # Check: Directory structure
@@ -602,13 +805,13 @@ def run_doctor(args):
     print(color("◆ External Tools", Colors.CYAN, Colors.BOLD))
     
     # Git
-    if shutil.which("git"):
+    if _safe_which("git"):
         check_ok("git")
     else:
         check_warn("git not found", "(optional)")
     
     # ripgrep (optional, for faster file search)
-    if shutil.which("rg"):
+    if _safe_which("rg"):
         check_ok("ripgrep (rg)", "(faster file search)")
     else:
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
@@ -617,7 +820,7 @@ def run_doctor(args):
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     if terminal_env == "docker":
-        if shutil.which("docker"):
+        if _safe_which("docker"):
             # Check if docker daemon is running
             try:
                 result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
@@ -632,7 +835,7 @@ def run_doctor(args):
             check_fail("docker not found", "(required for TERMINAL_ENV=docker)")
             issues.append("Install Docker or change TERMINAL_ENV")
     else:
-        if shutil.which("docker"):
+        if _safe_which("docker"):
             check_ok("docker", "(optional)")
         else:
             if _is_termux():
@@ -678,8 +881,52 @@ def run_doctor(args):
             check_fail("daytona SDK not installed", "(pip install daytona)")
             issues.append("Install daytona SDK: pip install daytona")
 
+    # Vercel Sandbox (if using vercel_sandbox backend)
+    if terminal_env == "vercel_sandbox":
+        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
+        from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
+        if runtime in _SUPPORTED_VERCEL_RUNTIMES:
+            check_ok("Vercel runtime", f"({runtime})")
+        else:
+            supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
+            check_fail("Vercel runtime unsupported", f"({runtime}; use {supported})")
+            issues.append(f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}")
+
+        disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
+        if disk in ("", "0", "51200"):
+            check_ok("Vercel disk setting", "(uses platform default)")
+        else:
+            check_fail("Vercel custom disk unsupported", "(reset terminal.container_disk to 51200)")
+            issues.append("Vercel Sandbox does not support custom container_disk; use the shared default 51200")
+
+        if importlib.util.find_spec("vercel") is not None:
+            check_ok("vercel SDK", "(installed)")
+        else:
+            check_fail("vercel SDK not installed", "(pip install 'hermes-agent[vercel]')")
+            issues.append("Install the Vercel optional dependency: pip install 'hermes-agent[vercel]'")
+
+        auth_status = describe_vercel_auth()
+        if auth_status.ok:
+            check_ok("Vercel auth", f"({auth_status.label})")
+        elif auth_status.label.startswith("partial"):
+            check_fail("Vercel auth incomplete", f"({auth_status.label})")
+            issues.append("Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together")
+        else:
+            check_fail("Vercel auth not configured", f"({auth_status.label})")
+            issues.append(
+                "Configure Vercel Sandbox auth with VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID"
+            )
+        for line in auth_status.detail_lines:
+            check_info(f"Vercel auth {line}")
+
+        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("1", "true", "yes", "on")
+        if persistent:
+            check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
+        else:
+            check_info("Vercel persistence: ephemeral filesystem")
+
     # Node.js + agent-browser (for browser automation tools)
-    if shutil.which("node"):
+    if _safe_which("node"):
         check_ok("Node.js")
         # Check if agent-browser is installed
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
@@ -705,7 +952,7 @@ def run_doctor(args):
             check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
-    if shutil.which("npm"):
+    if _safe_which("npm"):
         npm_dirs = [
             (PROJECT_ROOT, "Browser tools (agent-browser)"),
             (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
@@ -760,6 +1007,16 @@ def run_doctor(args):
             elif response.status_code == 401:
                 print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(invalid API key)', Colors.DIM)}                ")
                 issues.append("Check OPENROUTER_API_KEY in .env")
+            elif response.status_code == 402:
+                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(out of credits — payment required)', Colors.DIM)}")
+                issues.append(
+                    "OpenRouter account has insufficient credits. "
+                    "Fix: run 'hermes config set model.provider <provider>' to switch providers, "
+                    "or fund your OpenRouter account at https://openrouter.ai/settings/credits"
+                )
+            elif response.status_code == 429:
+                print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color('(rate limited)', Colors.DIM)}                ")
+                issues.append("OpenRouter rate limit hit — consider switching to a different provider or waiting")
             else:
                 print(f"\r  {color('✗', Colors.RED)} OpenRouter API {color(f'(HTTP {response.status_code})', Colors.DIM)}                ")
         except Exception as e:
@@ -774,10 +1031,16 @@ def run_doctor(args):
         print("  Checking Anthropic API...", end="", flush=True)
         try:
             import httpx
-            from agent.anthropic_adapter import _is_oauth_token, _COMMON_BETAS, _OAUTH_ONLY_BETAS
+            from agent.anthropic_adapter import (
+                _is_oauth_token,
+                _COMMON_BETAS,
+                _OAUTH_ONLY_BETAS,
+                _CONTEXT_1M_BETA,
+            )
 
             headers = {"anthropic-version": "2023-06-01"}
-            if _is_oauth_token(anthropic_key):
+            is_oauth = _is_oauth_token(anthropic_key)
+            if is_oauth:
                 headers["Authorization"] = f"Bearer {anthropic_key}"
                 headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
             else:
@@ -787,6 +1050,25 @@ def run_doctor(args):
                 headers=headers,
                 timeout=10
             )
+            # Reactive recovery: OAuth subscriptions that don't include 1M
+            # context reject the request with 400 "long context beta is not
+            # yet available for this subscription". Retry once with that
+            # beta stripped so the doctor check doesn't falsely report the
+            # Anthropic API as unreachable for those users.
+            if (
+                is_oauth
+                and response.status_code == 400
+                and "long context beta" in response.text.lower()
+                and "not yet available" in response.text.lower()
+            ):
+                headers["anthropic-beta"] = ",".join(
+                    [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS)
+                )
+                response = httpx.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers=headers,
+                    timeout=10,
+                )
             if response.status_code == 200:
                 print(f"\r  {color('✓', Colors.GREEN)} Anthropic API                           ")
             elif response.status_code == 401:
@@ -803,10 +1085,13 @@ def run_doctor(args):
     _apikey_providers = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
+        ("StepFun Step Plan",   ("STEPFUN_API_KEY",),                           "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_BASE_URL", True),
         ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
         ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
+        ("GMI Cloud",        ("GMI_API_KEY",),                                "https://api.gmi-serving.com/v1/models", "GMI_BASE_URL", True),
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
+        ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                             "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
         ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
         # MiniMax: the /anthropic endpoint doesn't support /models, but the /v1 endpoint does.
         ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
@@ -833,18 +1118,25 @@ def run_doctor(args):
             try:
                 import httpx
                 _base = os.getenv(_base_env, "") if _base_env else ""
-                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
+                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com/coding/v1
+                # (OpenAI-compat surface, which exposes /models for health check).
                 if not _base and _key.startswith("sk-kimi-"):
                     _base = "https://api.kimi.com/coding/v1"
-                # Anthropic-compat endpoints (/anthropic) don't support /models.
-                # Rewrite to the OpenAI-compat /v1 surface for health checks.
+                # Anthropic-compat endpoints (/anthropic, api.kimi.com/coding
+                # with no /v1) don't support /models.  Rewrite to the OpenAI-compat
+                # /v1 surface for health checks.
                 if _base and _base.rstrip("/").endswith("/anthropic"):
                     from agent.auxiliary_client import _to_openai_base_url
                     _base = _to_openai_base_url(_base)
+                if base_url_host_matches(_base, "api.kimi.com") and _base.rstrip("/").endswith("/coding"):
+                    _base = _base.rstrip("/") + "/v1"
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
-                _headers = {"Authorization": f"Bearer {_key}"}
-                if "api.kimi.com" in _url.lower():
-                    _headers["User-Agent"] = "KimiCLI/1.30.0"
+                _headers = {
+                    "Authorization": f"Bearer {_key}",
+                    "User-Agent": _HERMES_USER_AGENT,
+                }
+                if base_url_host_matches(_base, "api.kimi.com"):
+                    _headers["User-Agent"] = "claude-code/0.1.0"
                 _resp = httpx.get(
                     _url,
                     headers=_headers,
@@ -876,8 +1168,8 @@ def run_doctor(args):
                 _model_count = len(_br_resp.get("modelSummaries", []))
                 print(f"\r  {color('✓', Colors.GREEN)} {_label} {color(f'({_auth_var}, {_region}, {_model_count} models)', Colors.DIM)}           ")
             except ImportError:
-                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color('(boto3 not installed — pip install hermes-agent[bedrock])', Colors.DIM)}           ")
-                issues.append("Install boto3 for Bedrock: pip install hermes-agent[bedrock]")
+                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(boto3 not installed — {sys.executable} -m pip install boto3)', Colors.DIM)}           ")
+                issues.append(f"Install boto3 for Bedrock: {sys.executable} -m pip install boto3")
             except Exception as _e:
                 _err_name = type(_e).__name__
                 print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_err_name}: {_e})', Colors.DIM)}           ")

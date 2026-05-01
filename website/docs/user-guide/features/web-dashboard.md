@@ -23,6 +23,8 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--port` | `9119` | Port to run the web server on |
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
+| `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
+| `--tui` | off | Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). Alternatively set `HERMES_DASHBOARD_TUI=1`. |
 
 ```bash
 # Custom port
@@ -37,13 +39,13 @@ hermes dashboard --no-open
 
 ## Prerequisites
 
-The web dashboard requires FastAPI and Uvicorn. Install them with:
+The default `hermes-agent` install does not ship the HTTP stack or PTY helper — those are optional extras. The **web dashboard** needs FastAPI and Uvicorn (`web` extra). The **Chat** tab also needs `ptyprocess` to spawn the embedded TUI behind a pseudo-terminal (`pty` extra on POSIX). Install both with:
 
 ```bash
-pip install hermes-agent[web]
+pip install 'hermes-agent[web,pty]'
 ```
 
-If you installed with `pip install hermes-agent[all]`, the web dependencies are already included.
+The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `pip install hermes-agent[all]` includes both extras and is the easiest path if you also want messaging/voice/etc.
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
 
@@ -59,6 +61,28 @@ The landing page shows a live overview of your installation:
 - **Recent sessions** — list of the 20 most recent sessions with model, message count, token usage, and a preview of the conversation
 
 The status page auto-refreshes every 5 seconds.
+
+### Chat
+
+The **Chat** tab embeds the full Hermes TUI (the same interface you get from `hermes --tui`) directly in the browser. Everything you can do in the terminal TUI — slash commands, model picker, tool-call cards, markdown streaming, clarify/sudo/approval prompts, skin theming — works identically here, because the dashboard is running the real TUI binary and rendering its ANSI output through [xterm.js](https://xtermjs.org/) with its WebGL renderer for pixel-perfect cell layout.
+
+**How it works:**
+
+- `/api/pty` opens a WebSocket authenticated with the dashboard's session token
+- The server spawns `hermes --tui` behind a POSIX pseudo-terminal
+- Keystrokes travel to the PTY; ANSI output streams back to the browser
+- xterm.js's WebGL renderer paints each cell to an integer-pixel grid; mouse tracking (SGR 1006), wide characters (Unicode 11), and box-drawing glyphs all render natively
+- Resizing the browser window resizes the TUI via the `@xterm/addon-fit` addon
+
+**Resume an existing session:** from the **Sessions** tab, click the play icon (▶) next to any session. That jumps to `/chat?resume=<id>` and launches the TUI with `--resume`, loading the full history.
+
+**Prerequisites:**
+
+- Node.js (same requirement as `hermes --tui`; the TUI bundle is built on first launch)
+- `ptyprocess` — installed by the `pty` extra (`pip install 'hermes-agent[web,pty]'`, or `[all]` covers both)
+- POSIX kernel (Linux, macOS, or WSL). Native Windows Python is not supported — use WSL.
+
+Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
 
 ### Config
 
@@ -299,70 +323,27 @@ The frontend is built with React 19, TypeScript, Tailwind CSS v4, and shadcn/ui-
 
 When you run `hermes update`, the web frontend is automatically rebuilt if `npm` is available. This keeps the dashboard in sync with code updates. If `npm` isn't installed, the update skips the frontend build and `hermes dashboard` will build it on first launch.
 
-## Themes
+## Themes & plugins
 
-The dashboard supports visual themes that change colors, overlay effects, and overall feel. Switch themes live from the header bar — click the palette icon next to the language switcher.
+The dashboard ships with six built-in themes and can be extended with user-defined themes, plugin tabs, and backend API routes — all drop-in, no repo clone needed.
 
-### Built-in Themes
+**Switch themes live** from the header bar — click the palette icon next to the language switcher. Selection persists to `config.yaml` under `dashboard.theme` and is restored on page load.
 
-| Theme | Description |
-|-------|-------------|
-| **Hermes Teal** | Classic dark teal (default) |
-| **Midnight** | Deep blue-violet with cool accents |
-| **Ember** | Warm crimson and bronze |
-| **Mono** | Clean grayscale, minimal |
-| **Cyberpunk** | Neon green on black |
-| **Rosé** | Soft pink and warm ivory |
+Built-in themes:
 
-Theme selection is persisted to `config.yaml` under `dashboard.theme` and restored on page load.
+| Theme | Character |
+|-------|-----------|
+| **Hermes Teal** (`default`) | Dark teal + cream, system fonts, comfortable spacing |
+| **Midnight** (`midnight`) | Deep blue-violet, Inter + JetBrains Mono |
+| **Ember** (`ember`) | Warm crimson + bronze, Spectral serif + IBM Plex Mono |
+| **Mono** (`mono`) | Grayscale, IBM Plex, compact |
+| **Cyberpunk** (`cyberpunk`) | Neon green on black, Share Tech Mono |
+| **Rosé** (`rose`) | Pink + ivory, Fraunces serif, spacious |
 
-### Custom Themes
+To build your own theme, add a plugin tab, inject into shell slots, or expose plugin-specific REST endpoints, see **[Extending the Dashboard](./extending-the-dashboard)** — the complete guide covers:
 
-Create a YAML file in `~/.hermes/dashboard-themes/`:
-
-```yaml
-# ~/.hermes/dashboard-themes/ocean.yaml
-name: ocean
-label: Ocean
-description: Deep sea blues with coral accents
-
-colors:
-  background: "#0a1628"
-  foreground: "#e0f0ff"
-  card: "#0f1f35"
-  card-foreground: "#e0f0ff"
-  primary: "#ff6b6b"
-  primary-foreground: "#0a1628"
-  secondary: "#152540"
-  secondary-foreground: "#e0f0ff"
-  muted: "#1a2d4a"
-  muted-foreground: "#7899bb"
-  accent: "#1f3555"
-  accent-foreground: "#e0f0ff"
-  destructive: "#fb2c36"
-  destructive-foreground: "#fff"
-  success: "#4ade80"
-  warning: "#fbbf24"
-  border: "color-mix(in srgb, #ff6b6b 15%, transparent)"
-  input: "color-mix(in srgb, #ff6b6b 15%, transparent)"
-  ring: "#ff6b6b"
-  popover: "#0f1f35"
-  popover-foreground: "#e0f0ff"
-
-overlay:
-  noiseOpacity: 0.08
-  noiseBlendMode: color-dodge
-  warmGlowOpacity: 0.15
-  warmGlowColor: "rgba(255,107,107,0.2)"
-```
-
-The 21 color tokens map directly to the CSS custom properties used throughout the dashboard. All fields are required for custom themes. The `overlay` section is optional — it controls the grain texture and ambient glow effects.
-
-Refresh the dashboard after creating the file. Custom themes appear in the theme picker alongside built-ins.
-
-### Theme API
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/dashboard/themes` | GET | List available themes + active name |
-| `/api/dashboard/theme` | PUT | Set active theme. Body: `{"name": "midnight"}` |
+- Theme YAML schema — palette, typography, layout, assets, componentStyles, colorOverrides, customCSS
+- Layout variants — `standard`, `cockpit`, `tiled`
+- Plugin manifest, SDK, shell slots, page-scoped slots (inject widgets into built-in pages without overriding them), backend FastAPI routes
+- A full combined theme-plus-plugin walkthrough (Strike Freedom cockpit demo)
+- Discovery, reload, and troubleshooting

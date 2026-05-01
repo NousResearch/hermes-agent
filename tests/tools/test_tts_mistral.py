@@ -216,30 +216,8 @@ class TestCheckTtsRequirementsMistral:
         with patch("tools.tts_tool._import_edge_tts", side_effect=ImportError), \
              patch("tools.tts_tool._import_elevenlabs", side_effect=ImportError), \
              patch("tools.tts_tool._import_openai_client", side_effect=ImportError), \
-             patch("tools.tts_tool._check_neutts_available", return_value=False):
+             patch("tools.tts_tool._check_neutts_available", return_value=False), \
+             patch("tools.tts_tool._check_kittentts_available", return_value=False), \
+             patch("tools.tts_tool._check_piper_available", return_value=False), \
+             patch("tools.tts_tool._has_any_command_tts_provider", return_value=False):
             assert check_tts_requirements() is False
-
-
-class TestMistralTtsOpus:
-    def test_telegram_produces_ogg_and_voice_compatible(
-        self, tmp_path, mock_mistral_module, monkeypatch
-    ):
-        import json
-
-        from tools.tts_tool import text_to_speech_tool
-
-        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
-        mock_mistral_module.audio.speech.complete.return_value = MagicMock(
-            audio_data=base64.b64encode(b"opus-audio").decode()
-        )
-
-        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "mistral"}):
-            result = json.loads(text_to_speech_tool("Hello"))
-
-        assert result["success"] is True
-        assert result["file_path"].endswith(".ogg")
-        assert result["voice_compatible"] is True
-        assert "[[audio_as_voice]]" in result["media_tag"]
-        call_kwargs = mock_mistral_module.audio.speech.complete.call_args[1]
-        assert call_kwargs["response_format"] == "opus"

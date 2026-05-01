@@ -129,7 +129,7 @@ Not sure what's available? Here's a quick directory of major features:
 | **MCP** | Connect to external tool servers via Model Context Protocol | [MCP](/docs/user-guide/features/mcp) |
 | **Cron** | Schedule recurring agent tasks | [Cron](/docs/user-guide/features/cron) |
 | **Delegation** | Spawn sub-agents for parallel work | [Delegation](/docs/user-guide/features/delegation) |
-| **Code Execution** | Run code in sandboxed environments | [Code Execution](/docs/user-guide/features/code-execution) |
+| **Code Execution** | Run Python scripts that call Hermes tools programmatically | [Code Execution](/docs/user-guide/features/code-execution) |
 | **Browser** | Web browsing and scraping | [Browser](/docs/user-guide/features/browser) |
 | **Hooks** | Event-driven callbacks and middleware | [Hooks](/docs/user-guide/features/hooks) |
 | **Batch Processing** | Process multiple inputs in bulk | [Batch Processing](/docs/user-guide/features/batch-processing) |

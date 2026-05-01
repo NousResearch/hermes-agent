@@ -20,11 +20,6 @@ def _make_adapter(monkeypatch, **extra):
     return BlueBubblesAdapter(cfg)
 
 
-class TestBlueBubblesPlatformEnum:
-    def test_bluebubbles_enum_exists(self):
-        assert Platform.BLUEBUBBLES.value == "bluebubbles"
-
-
 class TestBlueBubblesConfigLoading:
     def test_apply_env_overrides_bluebubbles(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
@@ -40,15 +35,6 @@ class TestBlueBubblesConfigLoading:
         assert bc.extra["server_url"] == "http://localhost:1234"
         assert bc.extra["password"] == "secret"
         assert bc.extra["webhook_port"] == 9999
-
-    def test_connected_platforms_includes_bluebubbles(self, monkeypatch):
-        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
-        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
-        from gateway.config import GatewayConfig, _apply_env_overrides
-
-        config = GatewayConfig()
-        _apply_env_overrides(config)
-        assert Platform.BLUEBUBBLES in config.get_connected_platforms()
 
     def test_home_channel_set_from_env(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
@@ -79,6 +65,37 @@ class TestBlueBubblesHelpers:
         from gateway.platforms.bluebubbles import check_bluebubbles_requirements
 
         assert check_bluebubbles_requirements() is True
+
+    def test_supports_message_editing_is_false(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        assert adapter.SUPPORTS_MESSAGE_EDITING is False
+
+    def test_truncate_message_omits_pagination_suffixes(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        chunks = adapter.truncate_message("abcdefghij", max_length=6)
+        assert len(chunks) > 1
+        assert "".join(chunks) == "abcdefghij"
+        assert all("(" not in chunk for chunk in chunks)
+
+    @pytest.mark.asyncio
+    async def test_send_splits_paragraphs_into_multiple_bubbles(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        sent = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            sent.append(payload["message"])
+            return {"data": {"guid": f"msg-{len(sent)}"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("user@example.com", "first thought\n\nsecond thought")
+
+        assert result.success is True
+        assert sent == ["first thought", "second thought"]
 
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -271,29 +288,6 @@ class TestBlueBubblesGuidResolution:
             adapter._resolve_chat_guid("")
         )
         assert result is None
-
-
-class TestBlueBubblesToolsetIntegration:
-    def test_toolset_exists(self):
-        from toolsets import TOOLSETS
-
-        assert "hermes-bluebubbles" in TOOLSETS
-
-    def test_toolset_in_gateway_composite(self):
-        from toolsets import TOOLSETS
-
-        gateway = TOOLSETS["hermes-gateway"]
-        assert "hermes-bluebubbles" in gateway["includes"]
-
-
-class TestBlueBubblesPromptHint:
-    def test_platform_hint_exists(self):
-        from agent.prompt_builder import PLATFORM_HINTS
-
-        assert "bluebubbles" in PLATFORM_HINTS
-        hint = PLATFORM_HINTS["bluebubbles"]
-        assert "iMessage" in hint
-        assert "plain text" in hint
 
 
 class TestBlueBubblesAttachmentDownload:

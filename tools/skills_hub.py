@@ -289,6 +289,7 @@ class GitHubSource(SkillSource):
         {"repo": "anthropics/skills", "path": "skills/"},
         {"repo": "VoltAgent/awesome-agent-skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
+        {"repo": "MiniMax-AI/cli", "path": "skill/"},
     ]
 
     def __init__(self, auth: GitHubAuth, extra_taps: Optional[List[Dict]] = None):
@@ -928,6 +929,176 @@ class WellKnownSkillSource(SkillSource):
     @staticmethod
     def _wrap_identifier(base_url: str, skill_name: str) -> str:
         return f"well-known:{base_url.rstrip('/')}/{skill_name}"
+
+
+# ---------------------------------------------------------------------------
+# Direct URL source adapter
+# ---------------------------------------------------------------------------
+
+class UrlSource(SkillSource):
+    """Fetch a single-file SKILL.md skill directly from an HTTP(S) URL.
+
+    The identifier IS the URL (e.g. ``https://example.com/path/SKILL.md``).
+    Only single-file skills are supported — multi-file skills with
+    ``references/`` or ``scripts/`` subfolders need a manifest we can't
+    discover from a bare URL.
+
+    The skill name is read from the ``name:`` field in the SKILL.md YAML
+    frontmatter (with a URL-slug fallback). Trust level is always
+    ``community`` and the same security scan runs as for every other source.
+    """
+
+    def source_id(self) -> str:
+        return "url"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "community"
+
+    # Search is meaningless for a direct URL — skip (return empty).
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        return []
+
+    def _matches(self, identifier: str) -> bool:
+        """Return True iff this source should handle ``identifier``.
+
+        We claim bare HTTP(S) URLs that end in ``.md`` (typically
+        ``.../SKILL.md``). Wrapped identifiers (``github:``,
+        ``well-known:``, etc.) and ``/.well-known/skills/`` URLs are
+        left for their respective adapters.
+        """
+        if not isinstance(identifier, str):
+            return False
+        ident = identifier.strip()
+        if not ident.lower().startswith(("http://", "https://")):
+            return False
+        # Don't steal well-known URLs.
+        if "/.well-known/skills/" in ident or ident.rstrip("/").endswith("/index.json"):
+            return False
+        # Only claim URLs that look like a markdown file.
+        try:
+            path = urlparse(ident).path
+        except ValueError:
+            return False
+        return path.lower().endswith(".md")
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        if not self._matches(identifier):
+            return None
+        url = identifier.strip()
+        text = self._fetch_text(url)
+        if text is None:
+            return None
+        fm = GitHubSource._parse_frontmatter_quick(text)
+        name = self._resolve_skill_name(fm, url)
+        description = str(fm.get("description") or "")
+        tags: List[str] = []
+        metadata = fm.get("metadata", {})
+        if isinstance(metadata, dict):
+            hermes_meta = metadata.get("hermes", {})
+            if isinstance(hermes_meta, dict):
+                raw_tags = hermes_meta.get("tags", [])
+                if isinstance(raw_tags, list):
+                    tags = [str(t) for t in raw_tags]
+        return SkillMeta(
+            name=name or "",
+            description=description,
+            source="url",
+            identifier=url,
+            trust_level="community",
+            path=name or "",
+            tags=tags,
+            extra={"url": url, "awaiting_name": name is None},
+        )
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        if not self._matches(identifier):
+            return None
+        url = identifier.strip()
+        text = self._fetch_text(url)
+        if text is None:
+            return None
+
+        fm = GitHubSource._parse_frontmatter_quick(text)
+        name = self._resolve_skill_name(fm, url)
+
+        # When auto-resolution fails, return a bundle with an empty name and
+        # ``awaiting_name=True`` in metadata. The install flow (``do_install``)
+        # either prompts the user on a TTY or refuses with an actionable error
+        # on non-interactive surfaces. Keep the expensive HTTP fetch's result
+        # so the caller doesn't have to re-download after picking a name.
+        skill_name = ""
+        if name is not None:
+            try:
+                skill_name = _validate_skill_name(name)
+            except ValueError:
+                logger.warning("URL skill %s produced unsafe skill name: %r", url, name)
+                return None
+
+        return SkillBundle(
+            name=skill_name,
+            files={"SKILL.md": text},
+            source="url",
+            identifier=url,
+            trust_level="community",
+            metadata={"url": url, "awaiting_name": not skill_name},
+        )
+
+    @staticmethod
+    def _fetch_text(url: str) -> Optional[str]:
+        try:
+            resp = httpx.get(url, timeout=20, follow_redirects=True)
+            if resp.status_code == 200:
+                return resp.text
+        except httpx.HTTPError as exc:
+            logger.debug("UrlSource fetch failed for %s: %s", url, exc)
+            return None
+        return None
+
+    # Skill names must look like identifiers: lowercase letters/digits with
+    # optional hyphens/underscores. Blocks dangerous (``../evil``) AND useless
+    # (``SKILL``, ``README``, empty) candidates before they hit the disk.
+    _VALID_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+    @classmethod
+    def _is_valid_skill_name(cls, name: Optional[str]) -> bool:
+        if not isinstance(name, str):
+            return False
+        candidate = name.strip().lower()
+        if not candidate or candidate in {"skill", "readme", "index", "unnamed-skill"}:
+            return False
+        return bool(cls._VALID_NAME_RE.match(candidate))
+
+    @classmethod
+    def _resolve_skill_name(cls, fm: dict, url: str) -> Optional[str]:
+        """Pick a skill name from frontmatter or URL.
+
+        Returns ``None`` when neither source produces a valid identifier;
+        callers (CLI ``do_install``) then prompt the user or refuse. Preferring
+        a clean failure over a useless auto-name like ``SKILL`` or ``unnamed-skill``.
+        """
+        # 1. Frontmatter ``name:`` is authoritative when present and valid.
+        fm_name = fm.get("name") if isinstance(fm, dict) else None
+        if isinstance(fm_name, str) and cls._is_valid_skill_name(fm_name):
+            return fm_name.strip()
+
+        # 2. URL-slug heuristic: ``.../<name>/SKILL.md`` → ``<name>``;
+        #    ``.../<name>.md`` → ``<name>``. Validate each candidate.
+        try:
+            path = urlparse(url).path
+        except ValueError:
+            return None
+        parts = [p for p in path.split("/") if p]
+        if parts and parts[-1].lower() == "skill.md" and len(parts) >= 2:
+            candidate = parts[-2]
+            if cls._is_valid_skill_name(candidate):
+                return candidate
+        if parts:
+            candidate = re.sub(r"\.md$", "", parts[-1], flags=re.IGNORECASE)
+            if cls._is_valid_skill_name(candidate):
+                return candidate
+
+        # Nothing usable — let the caller handle it.
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -2930,6 +3101,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         HermesIndexSource(auth=auth), # Centralized index (search + resolved install paths)
         SkillsShSource(auth=auth),
         WellKnownSkillSource(),
+        UrlSource(),                  # Direct HTTP(S) URL to a SKILL.md file
         GitHubSource(auth=auth, extra_taps=extra_taps),
         ClawHubSource(),
         ClaudeMarketplaceSource(auth=auth),

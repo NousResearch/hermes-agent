@@ -149,6 +149,23 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
+    def test_clone_config_copies_source_skills(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        skill_dir = default_home / "skills" / "custom" / "installed-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: installed-skill\n---\n")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert (
+            profile_dir
+            / "skills"
+            / "custom"
+            / "installed-skill"
+            / "SKILL.md"
+        ).read_text() == "---\nname: installed-skill\n---\n"
+
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
@@ -170,6 +187,23 @@ class TestCreateProfile:
         assert not (profile_dir / "gateway.pid").exists()
         assert not (profile_dir / "gateway_state.json").exists()
         assert not (profile_dir / "processes.json").exists()
+
+    def test_clone_all_excludes_sibling_profiles_tree(self, profile_env):
+        """--clone-all from default ~/.hermes must not copy profiles/* (nested explosion)."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        profiles_root = default_home / "profiles"
+        profiles_root.mkdir(exist_ok=True)
+        (profiles_root / "other").mkdir(parents=True, exist_ok=True)
+        (profiles_root / "other" / "marker.txt").write_text("sibling data")
+
+        (default_home / "memories").mkdir(exist_ok=True)
+        (default_home / "memories" / "note.md").write_text("remember this")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert (profile_dir / "memories" / "note.md").read_text() == "remember this"
+        assert not (profile_dir / "profiles").exists()
 
     def test_clone_config_missing_files_skipped(self, profile_env):
         """Clone config gracefully skips files that don't exist in source."""
@@ -384,6 +418,69 @@ class TestRenameProfile:
         assert new_dir.is_dir()
         assert new_dir == tmp_path / ".hermes" / "profiles" / "newname"
 
+    def test_renames_root_honcho_host_without_changing_ai_peer(self, profile_env):
+        tmp_path = profile_env
+        create_profile("ssi_health", no_alias=True)
+        honcho_path = tmp_path / ".hermes" / "honcho.json"
+        honcho_path.write_text(json.dumps({
+            "hosts": {
+                "hermes.ssi_health": {
+                    "recallMode": "hybrid",
+                    "writeFrequency": "async",
+                    "sessionStrategy": "per-session",
+                    "saveMessages": True,
+                    "peerName": "user-peer",
+                    "aiPeer": "ssi_health",
+                    "workspace": "hermes",
+                    "enabled": True,
+                }
+            }
+        }))
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("ssi_health", "heimdall")
+
+        cfg = json.loads(honcho_path.read_text())
+        assert "hermes.ssi_health" not in cfg["hosts"]
+        assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "ssi_health"
+        assert cfg["hosts"]["hermes.heimdall"]["peerName"] == "user-peer"
+
+    def test_pins_ai_peer_when_absent_on_honcho_host_rename(self, profile_env):
+        tmp_path = profile_env
+        create_profile("ssi_health", no_alias=True)
+        honcho_path = tmp_path / ".hermes" / "honcho.json"
+        honcho_path.write_text(json.dumps({
+            "hosts": {
+                "hermes.ssi_health": {"workspace": "hermes", "enabled": True}
+            }
+        }))
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("ssi_health", "heimdall")
+
+        cfg = json.loads(honcho_path.read_text())
+        assert "hermes.ssi_health" not in cfg["hosts"]
+        assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "ssi_health"
+        assert cfg["hosts"]["hermes.heimdall"]["workspace"] == "hermes"
+
+    def test_does_not_overwrite_existing_honcho_host_on_rename(self, profile_env):
+        tmp_path = profile_env
+        create_profile("ssi_health", no_alias=True)
+        honcho_path = tmp_path / ".hermes" / "honcho.json"
+        honcho_path.write_text(json.dumps({
+            "hosts": {
+                "hermes.ssi_health": {"aiPeer": "ssi_health"},
+                "hermes.heimdall": {"aiPeer": "heimdall"},
+            }
+        }))
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("ssi_health", "heimdall")
+
+        cfg = json.loads(honcho_path.read_text())
+        assert cfg["hosts"]["hermes.ssi_health"]["aiPeer"] == "ssi_health"
+        assert cfg["hosts"]["hermes.heimdall"]["aiPeer"] == "heimdall"
+
     def test_default_raises_value_error(self, profile_env):
         with pytest.raises(ValueError, match="default"):
             rename_profile("default", "newname")
@@ -454,6 +551,47 @@ class TestExportImport:
         # Importing to same existing name should fail
         with pytest.raises(FileExistsError):
             import_profile(str(archive_path), name="coder")
+
+    def test_import_with_explicit_name_does_not_mutate_existing_archive_root_profile(
+        self, profile_env, tmp_path
+    ):
+        create_profile("victim", no_alias=True)
+        victim_dir = get_profile_dir("victim")
+        (victim_dir / "marker.txt").write_text("original")
+
+        archive_path = tmp_path / "export" / "victim.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive_path, "w:gz") as tf:
+            data = b"imported"
+            info = tarfile.TarInfo("victim/marker.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        imported = import_profile(str(archive_path), name="renamed")
+
+        assert imported == get_profile_dir("renamed")
+        assert (imported / "marker.txt").read_text() == "imported"
+        assert (victim_dir / "marker.txt").read_text() == "original"
+
+    def test_import_rejects_archive_with_multiple_top_level_directories(
+        self, profile_env, tmp_path
+    ):
+        archive_path = tmp_path / "export" / "multi-root.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for member_name, data in (
+                ("alpha/marker.txt", b"a"),
+                ("beta/marker.txt", b"b"),
+            ):
+                info = tarfile.TarInfo(member_name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+        with pytest.raises(ValueError, match="exactly one top-level directory"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not get_profile_dir("coder").exists()
 
     def test_import_rejects_traversal_archive_member(self, profile_env, tmp_path):
         archive_path = tmp_path / "export" / "evil.tar.gz"
@@ -799,35 +937,30 @@ class TestEdgeCases:
         assert default.skill_count == 0
 
     def test_gateway_running_check_with_pid_file(self, profile_env):
-        """Verify _check_gateway_running reads pid file and probes os.kill."""
+        """Verify _check_gateway_running uses the shared gateway PID validator."""
         from hermes_cli.profiles import _check_gateway_running
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
 
-        # No pid file -> not running
-        assert _check_gateway_running(default_home) is False
-
-        # Write a PID file with a JSON payload
-        pid_file = default_home / "gateway.pid"
-        pid_file.write_text(json.dumps({"pid": 99999}))
-
-        # os.kill(99999, 0) should raise ProcessLookupError -> not running
-        assert _check_gateway_running(default_home) is False
-
-        # Mock os.kill to simulate a running process
-        with patch("os.kill", return_value=None):
+        with patch("gateway.status.get_running_pid", return_value=99999) as mock_get_running_pid:
             assert _check_gateway_running(default_home) is True
+        mock_get_running_pid.assert_called_once_with(
+            default_home / "gateway.pid",
+            cleanup_stale=False,
+        )
 
     def test_gateway_running_check_plain_pid(self, profile_env):
-        """Pid file containing just a number (legacy format)."""
+        """Shared PID validator returning None means the profile is not running."""
         from hermes_cli.profiles import _check_gateway_running
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
-        pid_file = default_home / "gateway.pid"
-        pid_file.write_text("99999")
 
-        with patch("os.kill", return_value=None):
-            assert _check_gateway_running(default_home) is True
+        with patch("gateway.status.get_running_pid", return_value=None) as mock_get_running_pid:
+            assert _check_gateway_running(default_home) is False
+        mock_get_running_pid.assert_called_once_with(
+            default_home / "gateway.pid",
+            cleanup_stale=False,
+        )
 
     def test_profile_name_boundary_single_char(self):
         """Single alphanumeric character is valid."""

@@ -9,6 +9,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import MessageType
 
 
 def _make_fake_mautrix():
@@ -108,12 +109,23 @@ def _make_fake_mautrix():
         def add_event_handler(self, event_type, handler):
             self._event_handlers.setdefault(event_type, []).append(handler)
 
+        def add_dispatcher(self, dispatcher_type):
+            pass
+
     class InternalEventType:
         INVITE = "internal.invite"
 
     mautrix_client.Client = Client
     mautrix_client.InternalEventType = InternalEventType
     mautrix.client = mautrix_client
+
+    # --- mautrix.client.dispatcher ---
+    mautrix_client_dispatcher = types.ModuleType("mautrix.client.dispatcher")
+
+    class MembershipEventDispatcher:
+        pass
+
+    mautrix_client_dispatcher.MembershipEventDispatcher = MembershipEventDispatcher
 
     # --- mautrix.client.state_store ---
     mautrix_client_state_store = types.ModuleType("mautrix.client.state_store")
@@ -163,6 +175,19 @@ def _make_fake_mautrix():
 
     mautrix_crypto_store.MemoryCryptoStore = MemoryCryptoStore
 
+    # --- mautrix.crypto.attachments ---
+    mautrix_crypto_attachments = types.ModuleType("mautrix.crypto.attachments")
+
+    def encrypt_attachment(data):
+        encrypted_file = MagicMock()
+        encrypted_file.serialize.return_value = {
+            "key": {"k": "testkey"}, "iv": "testiv",
+            "hashes": {"sha256": "testhash"}, "v": "v2",
+        }
+        return (b"ciphertext_" + data, encrypted_file)
+
+    mautrix_crypto_attachments.encrypt_attachment = encrypt_attachment
+
     # --- mautrix.crypto.store.asyncpg ---
     mautrix_crypto_store_asyncpg = types.ModuleType("mautrix.crypto.store.asyncpg")
 
@@ -173,9 +198,13 @@ def _make_fake_mautrix():
             self.account_id = account_id
             self.pickle_key = pickle_key
             self.db = db
+            self._device_id = ""
 
         async def open(self):
             pass
+
+        async def put_device_id(self, device_id):
+            self._device_id = device_id
 
     mautrix_crypto_store_asyncpg.PgCryptoStore = PgCryptoStore
 
@@ -200,8 +229,10 @@ def _make_fake_mautrix():
         "mautrix.api": mautrix_api,
         "mautrix.types": mautrix_types,
         "mautrix.client": mautrix_client,
+        "mautrix.client.dispatcher": mautrix_client_dispatcher,
         "mautrix.client.state_store": mautrix_client_state_store,
         "mautrix.crypto": mautrix_crypto,
+        "mautrix.crypto.attachments": mautrix_crypto_attachments,
         "mautrix.crypto.store": mautrix_crypto_store,
         "mautrix.crypto.store.asyncpg": mautrix_crypto_store_asyncpg,
         "mautrix.util": mautrix_util,
@@ -212,15 +243,6 @@ def _make_fake_mautrix():
 # ---------------------------------------------------------------------------
 # Platform & Config
 # ---------------------------------------------------------------------------
-
-class TestMatrixPlatformEnum:
-    def test_matrix_enum_exists(self):
-        assert Platform.MATRIX.value == "matrix"
-
-    def test_matrix_in_platform_list(self):
-        platforms = [p.value for p in Platform]
-        assert "matrix" in platforms
-
 
 class TestMatrixConfigLoading:
     def test_apply_env_overrides_with_access_token(self, monkeypatch):
@@ -356,6 +378,16 @@ class TestMatrixTypingIndicator:
             RoomID("!room:example.org"),
             timeout=0,
         )
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_no_client_is_noop(self):
+        self.adapter._client = None
+        await self.adapter.stop_typing("!room:example.org")  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_suppresses_exceptions(self):
+        self.adapter._client.set_typing = AsyncMock(side_effect=Exception("network"))
+        await self.adapter.stop_typing("!room:example.org")  # should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -835,6 +867,41 @@ class TestMatrixAccessTokenAuth:
         await adapter.disconnect()
 
 
+class TestDeviceKeyReVerification:
+    @pytest.mark.asyncio
+    async def test_verify_fails_when_server_keys_mismatch_after_upload(self):
+        """share_keys() succeeds but server still has old keys -> should return False."""
+        adapter = _make_adapter()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = "TESTDEVICE"
+
+        # First query: keys missing -> triggers share_keys
+        # Second query: keys still don't match -> should fail
+        mock_keys_missing = MagicMock()
+        mock_keys_missing.device_keys = {"@bot:example.org": {}}
+
+        mock_keys_mismatch = MagicMock()
+        mock_device = MagicMock()
+        mock_device.keys = {"ed25519:TESTDEVICE": "server_old_key"}
+        mock_keys_mismatch.device_keys = {"@bot:example.org": {"TESTDEVICE": mock_device}}
+
+        mock_client.query_keys = AsyncMock(side_effect=[mock_keys_missing, mock_keys_mismatch])
+
+        mock_olm = MagicMock()
+        mock_olm.account = MagicMock()
+        mock_olm.account.shared = False
+        mock_olm.account.identity_keys = {"ed25519": "local_new_key"}
+        mock_olm.share_keys = AsyncMock()
+
+        from gateway.platforms.matrix import MatrixAdapter
+        result = await adapter._verify_device_keys_on_server(mock_client, mock_olm)
+
+        assert result is False
+        mock_olm.share_keys.assert_awaited_once()
+
+
 class TestMatrixE2EEHardFail:
     """connect() must refuse to start when E2EE is requested but deps are missing."""
 
@@ -1138,6 +1205,91 @@ class TestMatrixSyncLoop:
         fake_client.handle_sync.assert_called_once()
         mock_sync_store.put_next_batch.assert_awaited_once_with("s1234")
 
+    @pytest.mark.asyncio
+    async def test_sync_loop_reconciles_pending_invites(self):
+        """Pending rooms.invite entries should be joined if callbacks were missed."""
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        async def _sync_once(**kwargs):
+            adapter._closing = True
+            return {
+                "rooms": {
+                    "join": {"!joined:example.org": {}},
+                    "invite": {"!invited:example.org": {}},
+                },
+                "next_batch": "s1234",
+            }
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_once)
+        fake_client.join_room = AsyncMock()
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        adapter._client = fake_client
+
+        with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+            await adapter._sync_loop()
+
+        fake_client.join_room.assert_awaited_once()
+        assert "!joined:example.org" in adapter._joined_rooms
+        assert "!invited:example.org" in adapter._joined_rooms
+
+
+class TestMatrixUploadAndSend:
+    @pytest.mark.asyncio
+    async def test_upload_unencrypted_room_uses_plain_url(self):
+        """Unencrypted rooms should use plain 'url' key."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+        mock_client = MagicMock()
+        mock_client.crypto = object()
+        mock_client.state_store = MagicMock()
+        mock_client.state_store.is_encrypted = AsyncMock(return_value=False)
+        mock_client.upload_media = AsyncMock(return_value="mxc://example.org/plain")
+        mock_client.send_message_event = AsyncMock(return_value="$event")
+        adapter._client = mock_client
+
+        result = await adapter._upload_and_send(
+            "!room:example.org", b"hello", "test.txt", "text/plain", "m.file",
+        )
+
+        assert result.success is True
+        sent = mock_client.send_message_event.await_args.args[2]
+        assert sent["url"] == "mxc://example.org/plain"
+        assert "file" not in sent
+
+    @pytest.mark.asyncio
+    async def test_upload_encrypted_room_uses_file_payload(self):
+        """Encrypted rooms should use 'file' key with crypto metadata."""
+        adapter = _make_adapter()
+        adapter._encryption = True
+        mock_client = MagicMock()
+        mock_client.crypto = object()
+        mock_client.state_store = MagicMock()
+        mock_client.state_store.is_encrypted = AsyncMock(return_value=True)
+        mock_client.upload_media = AsyncMock(return_value="mxc://example.org/enc")
+        mock_client.send_message_event = AsyncMock(return_value="$event")
+        adapter._client = mock_client
+
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            result = await adapter._upload_and_send(
+                "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
+            )
+
+        assert result.success is True
+        # Should have uploaded ciphertext, not plaintext
+        uploaded_data = mock_client.upload_media.await_args.args[0]
+        assert uploaded_data != b"secret"
+        sent = mock_client.send_message_event.await_args.args[2]
+        assert "url" not in sent
+        assert "file" in sent
+        assert sent["file"]["url"] == "mxc://example.org/enc"
+
 
 class TestMatrixEncryptedSendFallback:
     @pytest.mark.asyncio
@@ -1165,128 +1317,24 @@ class TestMatrixEncryptedSendFallback:
 
 
 # ---------------------------------------------------------------------------
-# E2EE: MegolmEvent key request + buffering via _on_encrypted_event
+# E2EE: _joined_rooms reference preservation for CryptoStateStore
 # ---------------------------------------------------------------------------
 
-class TestMatrixMegolmEventHandling:
-    @pytest.mark.asyncio
-    async def test_encrypted_event_buffers_for_retry(self):
-        """_on_encrypted_event should buffer undecrypted events for retry."""
-        adapter = _make_adapter()
-        adapter._user_id = "@bot:example.org"
-        adapter._startup_ts = 0.0
-        adapter._dm_rooms = {}
+class TestJoinedRoomsReference:
+    def test_joined_rooms_reference_preserved_after_reassignment(self):
+        """_CryptoStateStore must see updates after initial sync populates rooms."""
+        from gateway.platforms.matrix import _CryptoStateStore
 
-        fake_event = MagicMock()
-        fake_event.room_id = "!room:example.org"
-        fake_event.event_id = "$encrypted_event"
-        fake_event.sender = "@alice:example.org"
+        joined = set()
+        store = _CryptoStateStore(MagicMock(), joined)
 
-        await adapter._on_encrypted_event(fake_event)
+        # Simulate what connect() should do: mutate in place, not reassign.
+        joined.clear()
+        joined.update(["!room1:example.org", "!room2:example.org"])
 
-        # Should have buffered the event
-        assert len(adapter._pending_megolm) == 1
-        room_id, event, ts = adapter._pending_megolm[0]
-        assert room_id == "!room:example.org"
-        assert event is fake_event
-
-    @pytest.mark.asyncio
-    async def test_encrypted_event_buffer_capped(self):
-        """Buffer should not grow past _MAX_PENDING_EVENTS."""
-        adapter = _make_adapter()
-        adapter._user_id = "@bot:example.org"
-        adapter._startup_ts = 0.0
-        adapter._dm_rooms = {}
-
-        from gateway.platforms.matrix import _MAX_PENDING_EVENTS
-
-        for i in range(_MAX_PENDING_EVENTS + 10):
-            evt = MagicMock()
-            evt.room_id = "!room:example.org"
-            evt.event_id = f"$event_{i}"
-            evt.sender = "@alice:example.org"
-            await adapter._on_encrypted_event(evt)
-
-        assert len(adapter._pending_megolm) == _MAX_PENDING_EVENTS
-
-
-# ---------------------------------------------------------------------------
-# E2EE: Retry pending decryptions
-# ---------------------------------------------------------------------------
-
-class TestMatrixRetryPendingDecryptions:
-    @pytest.mark.asyncio
-    async def test_successful_decryption_routes_to_handler(self):
-        adapter = _make_adapter()
-        adapter._user_id = "@bot:example.org"
-        adapter._startup_ts = 0.0
-        adapter._dm_rooms = {}
-
-        fake_encrypted = MagicMock()
-        fake_encrypted.event_id = "$encrypted"
-
-        decrypted_event = MagicMock()
-
-        mock_crypto = MagicMock()
-        mock_crypto.decrypt_megolm_event = AsyncMock(return_value=decrypted_event)
-
-        fake_client = MagicMock()
-        fake_client.crypto = mock_crypto
-        adapter._client = fake_client
-
-        now = time.time()
-        adapter._pending_megolm = [("!room:ex.org", fake_encrypted, now)]
-
-        with patch.object(adapter, "_on_room_message", AsyncMock()) as mock_handler:
-            await adapter._retry_pending_decryptions()
-            mock_handler.assert_awaited_once_with(decrypted_event)
-
-        # Buffer should be empty now
-        assert len(adapter._pending_megolm) == 0
-
-    @pytest.mark.asyncio
-    async def test_still_undecryptable_stays_in_buffer(self):
-        adapter = _make_adapter()
-
-        fake_encrypted = MagicMock()
-        fake_encrypted.event_id = "$still_encrypted"
-
-        mock_crypto = MagicMock()
-        mock_crypto.decrypt_megolm_event = AsyncMock(side_effect=Exception("missing key"))
-
-        fake_client = MagicMock()
-        fake_client.crypto = mock_crypto
-        adapter._client = fake_client
-
-        now = time.time()
-        adapter._pending_megolm = [("!room:ex.org", fake_encrypted, now)]
-
-        await adapter._retry_pending_decryptions()
-
-        assert len(adapter._pending_megolm) == 1
-
-    @pytest.mark.asyncio
-    async def test_expired_events_dropped(self):
-        adapter = _make_adapter()
-
-        from gateway.platforms.matrix import _PENDING_EVENT_TTL
-
-        fake_event = MagicMock()
-        fake_event.event_id = "$old_event"
-
-        mock_crypto = MagicMock()
-        fake_client = MagicMock()
-        fake_client.crypto = mock_crypto
-        adapter._client = fake_client
-
-        # Timestamp well past TTL
-        old_ts = time.time() - _PENDING_EVENT_TTL - 60
-        adapter._pending_megolm = [("!room:ex.org", fake_event, old_ts)]
-
-        await adapter._retry_pending_decryptions()
-
-        # Should have been dropped
-        assert len(adapter._pending_megolm) == 0
+        import asyncio
+        rooms = asyncio.get_event_loop().run_until_complete(store.find_shared_rooms("@user:ex"))
+        assert set(rooms) == {"!room1:example.org", "!room2:example.org"}
 
 
 # ---------------------------------------------------------------------------
@@ -1354,10 +1402,69 @@ class TestMatrixEncryptedEventHandler:
         handler_calls = mock_client.add_event_handler.call_args_list
         registered_types = [call.args[0] for call in handler_calls]
 
-        # Should have registered handlers for ROOM_MESSAGE, REACTION, INVITE, and ROOM_ENCRYPTED
-        assert len(handler_calls) >= 4  # At minimum these four
+        # Should have registered handlers for ROOM_MESSAGE, REACTION, INVITE
+        assert len(handler_calls) >= 3
 
         await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_on_stale_otk_conflict(self):
+        """connect() must refuse E2EE when OTK upload hits 'already exists'."""
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=MagicMock(user_id="@bot:example.org", device_id="DEV123"))
+        mock_client.add_event_handler = MagicMock()
+        mock_client.add_dispatcher = MagicMock()
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"DEV123": {
+                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
+            }}},
+        })
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        # share_keys succeeds on first call (from _verify_device_keys_on_server),
+        # then raises "already exists" on the proactive OTK flush in connect().
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock(
+            side_effect=[None, Exception("One time key signed_curve25519:AAAAAQ already exists")]
+        )
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                result = await adapter.connect()
+
+        assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -1741,15 +1848,48 @@ class TestMatrixReadReceipts:
         self.adapter = _make_adapter()
 
     @pytest.mark.asyncio
+    async def test_accepted_message_schedules_read_receipt(self):
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!room:ex",
+            sender="@alice:ex",
+            event_id="$event1",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        self.adapter._background_read_receipt.assert_called_once_with(
+            "!room:ex", "$event1"
+        )
+
+    @pytest.mark.asyncio
     async def test_send_read_receipt(self):
-        """send_read_receipt should call client.set_read_markers."""
+        """send_read_receipt should call mautrix's real read-marker API."""
         mock_client = MagicMock()
-        mock_client.set_read_markers = AsyncMock(return_value=None)
+        mock_client.set_fully_read_marker = AsyncMock(return_value=None)
         self.adapter._client = mock_client
 
         result = await self.adapter.send_read_receipt("!room:ex", "$event1")
         assert result is True
-        mock_client.set_read_markers.assert_called_once()
+        mock_client.set_fully_read_marker.assert_awaited_once_with(
+            "!room:ex", "$event1", "$event1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_read_receipt_falls_back_to_receipt_only(self):
+        """send_read_receipt should still work with clients lacking read markers."""
+        mock_client = MagicMock(spec=["send_receipt"])
+        mock_client.send_receipt = AsyncMock(return_value=None)
+        self.adapter._client = mock_client
+
+        result = await self.adapter.send_read_receipt("!room:ex", "$event1")
+        assert result is True
+        mock_client.send_receipt.assert_awaited_once_with("!room:ex", "$event1")
 
     @pytest.mark.asyncio
     async def test_read_receipt_no_client(self):
@@ -1758,6 +1898,81 @@ class TestMatrixReadReceipts:
         assert result is False
 
 
+# ---------------------------------------------------------------------------
+# Media normalization
+# ---------------------------------------------------------------------------
+
+class TestMatrixImageOnlyMediaNormalization:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._client = MagicMock()
+        self.adapter._client.download_media = AsyncMock(return_value=None)
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        self.adapter._mxc_to_http = (
+            lambda url: "https://matrix.example.org/_matrix/media/v3/download/example/30.png"
+        )
+
+    @pytest.mark.asyncio
+    async def test_image_only_filename_body_is_not_forwarded_as_text(self):
+        captured_event = None
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter.handle_message = capture
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$image1",
+            event_ts=0.0,
+            source_content={
+                "msgtype": "m.image",
+                "body": "30.png",
+                "url": "mxc://example/30.png",
+                "info": {"mimetype": "image/png"},
+            },
+            relates_to={},
+            msgtype="m.image",
+        )
+
+        assert captured_event is not None
+        assert captured_event.text == ""
+        assert captured_event.media_urls == [
+            "https://matrix.example.org/_matrix/media/v3/download/example/30.png"
+        ]
+        assert captured_event.message_type == MessageType.PHOTO
+
+    @pytest.mark.asyncio
+    async def test_image_caption_text_is_preserved(self):
+        captured_event = None
+
+        async def capture(msg_event):
+            nonlocal captured_event
+            captured_event = msg_event
+
+        self.adapter.handle_message = capture
+
+        await self.adapter._handle_media_message(
+            room_id="!room:example.org",
+            sender="@alice:example.org",
+            event_id="$image2",
+            event_ts=0.0,
+            source_content={
+                "msgtype": "m.image",
+                "body": "Please describe this chart",
+                "url": "mxc://example/30.png",
+                "info": {"mimetype": "image/png"},
+            },
+            relates_to={},
+            msgtype="m.image",
+        )
+
+        assert captured_event is not None
+        assert captured_event.text == "Please describe this chart"
 # ---------------------------------------------------------------------------
 # Message redaction
 # ---------------------------------------------------------------------------
@@ -1854,3 +2069,280 @@ class TestMatrixPresence:
         assert result is False
 
 
+# ---------------------------------------------------------------------------
+# Self / bridge / system sender filtering — regression coverage for #15763
+# ("Hall of Mirrors": recursive pairing / echo loops triggered by bridge
+# or bot-self senders bypassing the early-drop guard in _on_room_message).
+# ---------------------------------------------------------------------------
+
+class TestMatrixSelfSenderFilter:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    def test_exact_match_is_self(self):
+        self.adapter._user_id = "@bot:example.org"
+        assert self.adapter._is_self_sender("@bot:example.org") is True
+
+    def test_case_insensitive_match_is_self(self):
+        # Some homeservers canonicalize the localpart differently at
+        # different API surfaces — a case-sensitive equality check lets
+        # the bot's own sender through and triggers the pairing / echo
+        # loop in #15763.
+        self.adapter._user_id = "@Bot:Example.ORG"
+        assert self.adapter._is_self_sender("@bot:example.org") is True
+        assert self.adapter._is_self_sender("@BOT:EXAMPLE.ORG") is True
+
+    def test_whitespace_trimmed(self):
+        self.adapter._user_id = "@bot:example.org"
+        assert self.adapter._is_self_sender("  @bot:example.org  ") is True
+
+    def test_different_user_is_not_self(self):
+        self.adapter._user_id = "@bot:example.org"
+        assert self.adapter._is_self_sender("@alice:example.org") is False
+
+    def test_empty_user_id_is_treated_as_self(self):
+        # If whoami hasn't resolved yet (or login failed), we cannot
+        # prove a sender is NOT us.  Defensively drop rather than leak
+        # our own outbound traffic into the agent loop.
+        self.adapter._user_id = ""
+        assert self.adapter._is_self_sender("@alice:example.org") is True
+        assert self.adapter._is_self_sender("") is True
+
+
+class TestMatrixSystemBridgeFilter:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+
+    def test_appservice_underscore_prefix_is_bridge(self):
+        # Conventional appservice namespace puppets
+        assert self.adapter._is_system_or_bridge_sender(
+            "@_telegram_12345:bridge.example.org"
+        ) is True
+        assert self.adapter._is_system_or_bridge_sender(
+            "@_discord_999:example.org"
+        ) is True
+        assert self.adapter._is_system_or_bridge_sender(
+            "@_slackbridge_puppet:example.org"
+        ) is True
+
+    def test_empty_localpart_is_system(self):
+        assert self.adapter._is_system_or_bridge_sender("@:server.example") is True
+
+    def test_empty_sender_is_system(self):
+        assert self.adapter._is_system_or_bridge_sender("") is True
+        assert self.adapter._is_system_or_bridge_sender("   ") is True
+
+    def test_regular_user_is_not_bridge(self):
+        assert self.adapter._is_system_or_bridge_sender(
+            "@alice:example.org"
+        ) is False
+        # A user whose localpart merely CONTAINS an underscore is not a
+        # bridge — the convention is a LEADING underscore.
+        assert self.adapter._is_system_or_bridge_sender(
+            "@alice_smith:example.org"
+        ) is False
+
+    def test_bot_account_is_not_bridge(self):
+        # The Hermes bot itself (no leading underscore) must not be
+        # classified as a bridge — that filter is a pairing guard, not
+        # a self-filter.
+        assert self.adapter._is_system_or_bridge_sender(
+            "@daemon:nerdworks.casa"
+        ) is False
+
+
+class TestMatrixOnRoomMessageFilter:
+    """End-to-end coverage of _on_room_message drop conditions."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._user_id = "@bot:example.org"
+        self.adapter._startup_ts = 0.0  # accept any event_ts
+        self.adapter._handle_text_message = AsyncMock()
+        self.adapter._handle_media_message = AsyncMock()
+
+    @staticmethod
+    def _mk_event(sender, body="hi", msgtype="m.text", event_id=None, ts=None):
+        import time as _t
+
+        ev = MagicMock()
+        ev.room_id = "!room:example.org"
+        ev.sender = sender
+        ev.event_id = event_id or f"$evt-{sender}-{body}"
+        ev.timestamp = int((ts or _t.time()) * 1000)
+        ev.server_timestamp = ev.timestamp
+        ev.content = {"msgtype": msgtype, "body": body}
+        return ev
+
+    @pytest.mark.asyncio
+    async def test_own_sender_case_insensitive_dropped(self):
+        # Simulate whoami returning a differently-cased copy of our MXID.
+        self.adapter._user_id = "@Bot:Example.ORG"
+        ev = self._mk_event(sender="@bot:example.org")
+        await self.adapter._on_room_message(ev)
+        self.adapter._handle_text_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bridge_sender_dropped_before_pairing(self):
+        ev = self._mk_event(sender="@_telegram_12345:bridge.example.org")
+        await self.adapter._on_room_message(ev)
+        # Bridge / appservice identities must never flow through to the
+        # gateway — otherwise they trigger pairing (#15763).
+        self.adapter._handle_text_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_sender_dropped(self):
+        ev = self._mk_event(sender="")
+        await self.adapter._on_room_message(ev)
+        self.adapter._handle_text_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_self_with_unresolved_user_id_dropped(self):
+        # whoami has not resolved yet → user_id empty → drop ALL traffic
+        # defensively rather than risk echoing our own outbound messages.
+        self.adapter._user_id = ""
+        ev = self._mk_event(sender="@alice:example.org")
+        await self.adapter._on_room_message(ev)
+        self.adapter._handle_text_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_regular_user_reaches_text_handler(self):
+        ev = self._mk_event(sender="@alice:example.org", body="hello bot")
+        await self.adapter._on_room_message(ev)
+        self.adapter._handle_text_message.assert_awaited_once()
+# ---------------------------------------------------------------------------
+# DM auto-thread
+# ---------------------------------------------------------------------------
+
+class TestMatrixDmAutoThread:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        # Disable require_mention so DMs pass gating
+        self.adapter._require_mention = False
+
+    @pytest.mark.asyncio
+    async def test_dm_auto_thread_enabled_creates_thread(self):
+        """When dm_auto_thread is True, DM messages get auto-threaded."""
+        self.adapter._dm_auto_thread = True
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!dm:ex",
+            sender="@alice:ex",
+            event_id="$ev1",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        _body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        assert thread_id == "$ev1"
+
+    @pytest.mark.asyncio
+    async def test_dm_auto_thread_disabled_no_thread(self):
+        """When dm_auto_thread is False (default), DMs have no auto-thread."""
+        self.adapter._dm_auto_thread = False
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!dm:ex",
+            sender="@alice:ex",
+            event_id="$ev2",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        _body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        assert thread_id is None
+
+
+
+# ---------------------------------------------------------------------------
+# Proxy configuration
+# ---------------------------------------------------------------------------
+
+class TestMatrixProxyConfig:
+    """Verify that MatrixAdapter resolves and propagates proxy settings."""
+
+    def _make_adapter(self, monkeypatch, proxy_env=None):
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        # Clear generic proxy vars so they don't leak from the host
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy", "MATRIX_PROXY"):
+            monkeypatch.delenv(key, raising=False)
+        if proxy_env:
+            for k, v in proxy_env.items():
+                monkeypatch.setenv(k, v)
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            from gateway.platforms.matrix import MatrixAdapter
+            cfg = PlatformConfig(enabled=True, token="syt_test",
+                                 extra={"homeserver": "https://matrix.example.org",
+                                        "user_id": "@bot:example.org"})
+            return MatrixAdapter(cfg)
+
+    def test_no_proxy_by_default(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch)
+        assert adapter._proxy_url is None
+
+    def test_matrix_proxy_env_var(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch,
+                                     proxy_env={"MATRIX_PROXY": "socks5://proxy:1080"})
+        assert adapter._proxy_url == "socks5://proxy:1080"
+
+    def test_generic_proxy_fallback(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch,
+                                     proxy_env={"HTTPS_PROXY": "http://corp:8080"})
+        assert adapter._proxy_url == "http://corp:8080"
+
+    def test_matrix_proxy_takes_priority(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch,
+                                     proxy_env={"MATRIX_PROXY": "socks5://special:1080",
+                                                "HTTPS_PROXY": "http://generic:8080"})
+        assert adapter._proxy_url == "socks5://special:1080"
+
+
+class TestCreateMatrixSession:
+    """Verify _create_matrix_session applies proxy at the session level."""
+
+    @pytest.mark.asyncio
+    async def test_no_proxy_returns_trust_env_session(self):
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            from gateway.platforms.matrix import _create_matrix_session
+            session = _create_matrix_session(None)
+            try:
+                assert session.trust_env is True
+            finally:
+                await session.close()
+
+    @pytest.mark.asyncio
+    async def test_http_proxy_sets_default_proxy(self):
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            from gateway.platforms.matrix import _create_matrix_session
+            session = _create_matrix_session("http://proxy:8080")
+            try:
+                assert str(session._default_proxy) == "http://proxy:8080"
+            finally:
+                await session.close()
+
+    @pytest.mark.asyncio
+    async def test_socks_proxy_uses_connector(self):
+        fake_connector = MagicMock()
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            with patch.dict("sys.modules", {
+                "aiohttp_socks": MagicMock(
+                    ProxyConnector=MagicMock(
+                        from_url=MagicMock(return_value=fake_connector)
+                    )
+                ),
+            }):
+                from gateway.platforms.matrix import _create_matrix_session
+                session = _create_matrix_session("socks5://proxy:1080")
+                try:
+                    assert session.connector is fake_connector
+                finally:
+                    await session.close()

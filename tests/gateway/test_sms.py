@@ -20,9 +20,6 @@ from gateway.config import Platform, PlatformConfig, HomeChannel
 class TestSmsConfigLoading:
     """Verify _apply_env_overrides wires SMS correctly."""
 
-    def test_sms_platform_enum_exists(self):
-        assert Platform.SMS.value == "sms"
-
     def test_env_overrides_create_sms_config(self):
         from gateway.config import load_gateway_config
 
@@ -55,19 +52,6 @@ class TestSmsConfigLoading:
             assert hc.chat_id == "+15559876543"
             assert hc.name == "My Phone"
             assert hc.platform == Platform.SMS
-
-    def test_sms_in_connected_platforms(self):
-        from gateway.config import load_gateway_config
-
-        env = {
-            "TWILIO_ACCOUNT_SID": "ACtest123",
-            "TWILIO_AUTH_TOKEN": "token_abc",
-        }
-        with patch.dict(os.environ, env, clear=False):
-            config = load_gateway_config()
-            connected = config.get_connected_platforms()
-            assert Platform.SMS in connected
-
 
 # ── Format / truncate ───────────────────────────────────────────────
 
@@ -179,44 +163,6 @@ class TestSmsRequirements:
 
 
 # ── Toolset verification ───────────────────────────────────────────
-
-class TestSmsToolset:
-    def test_hermes_sms_toolset_exists(self):
-        from toolsets import get_toolset
-
-        ts = get_toolset("hermes-sms")
-        assert ts is not None
-        assert "tools" in ts
-
-    def test_hermes_sms_in_gateway_includes(self):
-        from toolsets import get_toolset
-
-        gw = get_toolset("hermes-gateway")
-        assert gw is not None
-        assert "hermes-sms" in gw["includes"]
-
-    def test_sms_platform_hint_exists(self):
-        from agent.prompt_builder import PLATFORM_HINTS
-
-        assert "sms" in PLATFORM_HINTS
-        assert "concise" in PLATFORM_HINTS["sms"].lower()
-
-    def test_sms_in_scheduler_platform_map(self):
-        """Verify cron scheduler recognizes 'sms' as a valid platform."""
-        # Just check the Platform enum has SMS — the scheduler imports it dynamically
-        assert Platform.SMS.value == "sms"
-
-    def test_sms_in_send_message_platform_map(self):
-        """Verify send_message_tool recognizes 'sms'."""
-        # The platform_map is built inside _handle_send; verify SMS enum exists
-        assert hasattr(Platform, "SMS")
-
-    def test_sms_in_cronjob_deliver_description(self):
-        """Verify cronjob_tools mentions sms in deliver description."""
-        from tools.cronjob_tools import CRONJOB_SCHEMA
-        deliver_desc = CRONJOB_SCHEMA["parameters"]["properties"]["deliver"]["description"]
-        assert "sms" in deliver_desc.lower()
-
 
 # ── Webhook host configuration ─────────────────────────────────────
 

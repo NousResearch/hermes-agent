@@ -431,3 +431,96 @@ class TestBuildOAuthAuthNonInteractive:
 
         assert auth is not None
         assert "no cached tokens found" not in caplog.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Extracted helper tests (Task 3 of MCP OAuth consolidation)
+# ---------------------------------------------------------------------------
+
+
+def test_build_client_metadata_basic():
+    """_build_client_metadata returns metadata with expected defaults."""
+    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+
+    cfg = {"client_name": "Test Client"}
+    _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+
+    assert md.client_name == "Test Client"
+    assert "authorization_code" in md.grant_types
+    assert "refresh_token" in md.grant_types
+
+
+def test_build_client_metadata_without_secret_is_public():
+    """Without client_secret, token endpoint auth is 'none' (public client)."""
+    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+
+    cfg = {}
+    _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+    assert md.token_endpoint_auth_method == "none"
+
+
+def test_build_client_metadata_with_secret_is_confidential():
+    """With client_secret, token endpoint auth is 'client_secret_post'."""
+    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+
+    cfg = {"client_secret": "shh"}
+    _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+    assert md.token_endpoint_auth_method == "client_secret_post"
+
+
+def test_configure_callback_port_picks_free_port():
+    """_configure_callback_port(0) picks a free port in the ephemeral range."""
+    from tools.mcp_oauth import _configure_callback_port
+
+    cfg = {"redirect_port": 0}
+    port = _configure_callback_port(cfg)
+    assert 1024 < port < 65536
+    assert cfg["_resolved_port"] == port
+
+
+def test_configure_callback_port_uses_explicit_port():
+    """An explicit redirect_port is preserved."""
+    from tools.mcp_oauth import _configure_callback_port
+
+    cfg = {"redirect_port": 54321}
+    port = _configure_callback_port(cfg)
+    assert port == 54321
+    assert cfg["_resolved_port"] == 54321
+
+
+def test_build_oauth_auth_preserves_server_url_path():
+    """server_url with path is forwarded to OAuthClientProvider unmodified.
+
+    Regression for #16015: previously ``_parse_base_url`` stripped the path,
+    collapsing ``https://mcp.notion.com/mcp`` to ``https://mcp.notion.com`` and
+    breaking RFC 9728 protected-resource validation against servers whose PRM
+    advertises a path-scoped resource (Notion). The MCP SDK strips the path
+    itself for authorization-server discovery via
+    ``OAuthContext.get_authorization_base_url``; Hermes must not pre-strip.
+    """
+    from tools import mcp_oauth
+
+    captured: dict = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    with patch.object(mcp_oauth, "_OAUTH_AVAILABLE", True), \
+         patch.object(mcp_oauth, "OAuthClientProvider", _FakeProvider), \
+         patch.object(mcp_oauth, "_is_interactive", return_value=True), \
+         patch.object(mcp_oauth, "_maybe_preregister_client"), \
+         patch.object(mcp_oauth, "HermesTokenStorage") as mock_storage_cls:
+        mock_storage_cls.return_value = MagicMock(has_cached_tokens=lambda: True)
+        build_oauth_auth(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            oauth_config={},
+        )
+
+    assert captured["server_url"] == "https://mcp.notion.com/mcp"
+
+

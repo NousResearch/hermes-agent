@@ -78,6 +78,7 @@ class ContextEngine(ABC):
         self,
         messages: List[Dict[str, Any]],
         current_tokens: int = None,
+        focus_topic: str = None,
     ) -> List[Dict[str, Any]]:
         """Compact the message list and return the new message list.
 
@@ -86,6 +87,12 @@ class ContextEngine(ABC):
         context budget. The implementation is free to summarize, build a
         DAG, or do anything else — as long as the returned list is a valid
         OpenAI-format message sequence.
+
+        Args:
+            focus_topic: Optional topic string from manual ``/compress <focus>``.
+                Engines that support guided compression should prioritise
+                preserving information related to this topic.  Engines that
+                don't support it may simply ignore this argument.
         """
 
     # -- Optional: pre-flight check ----------------------------------------
@@ -97,6 +104,21 @@ class ContextEngine(ABC):
         can do a cheap estimate.
         """
         return False
+
+    # -- Optional: manual /compress preflight ------------------------------
+
+    def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
+        """Quick check: is there anything in ``messages`` that can be compacted?
+
+        Used by the gateway ``/compress`` command as a preflight guard —
+        returning False lets the gateway report "nothing to compress yet"
+        without making an LLM call.
+
+        Default returns True (always attempt).  Engines with a cheap way
+        to introspect their own head/tail boundaries should override this
+        to return False when the transcript is still entirely protected.
+        """
+        return True
 
     # -- Optional: session lifecycle ---------------------------------------
 

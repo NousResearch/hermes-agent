@@ -96,7 +96,7 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None):
+def make_message(*, channel, content: str, mentions=None, msg_type=None):
     author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
     return SimpleNamespace(
         id=123,
@@ -107,6 +107,7 @@ def make_message(*, channel, content: str, mentions=None):
         created_at=datetime.now(timezone.utc),
         channel=channel,
         author=author,
+        type=msg_type if msg_type is not None else discord_platform.discord.MessageType.default,
     )
 
 
@@ -205,6 +206,21 @@ async def test_discord_free_response_channel_overrides_mention_requirement(adapt
 
 
 @pytest.mark.asyncio
+async def test_discord_free_response_channel_can_come_from_config_extra(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["free_response_channels"] = ["789", "999"]
+
+    message = make_message(channel=FakeTextChannel(channel_id=789), content="allowed from config")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "allowed from config"
+
+
+@pytest.mark.asyncio
 async def test_discord_forum_parent_in_free_response_list_allows_forum_thread(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "222")
@@ -274,6 +290,31 @@ async def test_discord_auto_thread_enabled_by_default(adapter, monkeypatch):
     event = adapter.handle_message.await_args.args[0]
     assert event.source.chat_type == "thread"
     assert event.source.thread_id == "999"
+
+
+@pytest.mark.asyncio
+async def test_discord_reply_message_skips_auto_thread(adapter, monkeypatch):
+    """Quote-replies should stay in-channel instead of trying to create a thread."""
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123),
+        content="reply without mention",
+        msg_type=discord_platform.discord.MessageType.reply,
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "reply without mention"
+    assert event.source.chat_id == "123"
+    assert event.source.chat_type == "group"
 
 
 @pytest.mark.asyncio
@@ -382,6 +423,33 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "follow-up from voice text chat"
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_free_channel_skips_auto_thread(adapter, monkeypatch):
+    """Free-response channels must NOT auto-create threads — bot replies inline.
+
+    Without this, every message in a free-response channel would spin off a
+    thread (since the channel bypasses the @mention gate), defeating the
+    lightweight-chat purpose of free-response mode.
+    """
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="free chat message",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
     assert event.source.chat_type == "group"
 
 

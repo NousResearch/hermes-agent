@@ -12,8 +12,8 @@ Hermes Agent includes an integrated RL (Reinforcement Learning) training pipelin
 
 The RL training system consists of three components:
 
-1. **Atropos** — A trajectory API server that coordinates environment interactions, manages rollout groups, and computes advantages
-2. **Tinker** — A training service that handles model weights, LoRA training, sampling/inference, and optimizer steps
+1. **[Atropos](https://github.com/NousResearch/atropos)** — A trajectory API server that coordinates environment interactions, manages rollout groups, and computes advantages
+2. **[Tinker](https://thinkingmachines.ai/tinker/)** — A training service that handles model weights, LoRA training, sampling/inference, and optimizer steps
 3. **Environments** — Python classes that define tasks, scoring, and reward functions (e.g., GSM8K math problems)
 
 The agent can discover environments, configure training parameters, launch training runs, and monitor metrics — all through a set of `rl_*` tools.
@@ -24,7 +24,7 @@ RL training requires:
 
 - **Python >= 3.11** (Tinker package requirement)
 - **TINKER_API_KEY** — API key for the Tinker training service
-- **WANDB_API_KEY** — API key for Weights & Biases metrics tracking
+- **WANDB_API_KEY** — API key for [Weights & Biases](https://wandb.ai/) metrics tracking
 - The `tinker-atropos` submodule (at `tinker-atropos/` relative to the Hermes root)
 
 ```bash

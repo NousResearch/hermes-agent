@@ -10,7 +10,7 @@ import requests
 
 from tools.browser_providers.base import CloudBrowserProvider
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled
+from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
 
 logger = logging.getLogger(__name__)
 _pending_create_keys: Dict[str, str] = {}
@@ -75,7 +75,7 @@ class BrowserUseProvider(CloudBrowserProvider):
 
     def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
         api_key = os.environ.get("BROWSER_USE_API_KEY")
-        if api_key:
+        if api_key and not prefers_gateway("browser"):
             return {
                 "api_key": api_key,
                 "base_url": _BASE_URL,

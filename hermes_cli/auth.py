@@ -209,7 +209,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="zai",
         name="Z.AI / GLM",
         auth_type="api_key",
-        inference_base_url="https://api.z.ai/api/paas/v4",
+        inference_base_url="https://api.z.ai/api/anthropic",
         api_key_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
@@ -554,10 +554,14 @@ def _resolve_api_key_provider_secret(
 
 ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
-    ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
-    ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
+    # Try /api/anthropic endpoints first (Anthropic protocol, more lenient limits)
+    ("global-anthropic",  "https://api.z.ai/api/anthropic",        ["glm-5"],   "Global (Anthropic)"),
+    ("cn-anthropic",      "https://open.bigmodel.cn/api/anthropic", ["glm-5"],   "China (Anthropic)"),
     ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
     ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
+    # Fallback to /api/paas/v4 endpoints (OpenAI-compatible, independent quota limits)
+    ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global (OpenAI-compat)"),
+    ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China (OpenAI-compat)"),
 ]
 
 

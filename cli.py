@@ -3280,6 +3280,16 @@ class HermesCLI:
         base_url = runtime.get("base_url")
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
+        # Preserve explicitly-selected non-default transport modes across turns.
+        # Some providers/models require anthropic_messages or codex_responses;
+        # runtime resolution may return chat_completions as a generic default.
+        if (
+            resolved_provider == self.provider
+            and self.api_mode
+            and self.api_mode != "chat_completions"
+            and resolved_api_mode == "chat_completions"
+        ):
+            resolved_api_mode = self.api_mode
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")

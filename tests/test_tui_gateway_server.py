@@ -4131,3 +4131,44 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
     agent_rows = next(section["rows"] for section in sections if section["title"] == "Agent")
 
     assert ["Max Turns", "120"] in agent_rows
+
+
+
+def test_session_create_includes_session_key(monkeypatch):
+    """Regression test for #18465: session.create must return session_key for TUI resume consistency.
+
+    When session.create is called, it generates both a short UUID (session_id)
+    and a DB session key (session_key). The response must include session_key so
+    the TUI frontend can write the correct key to the active session file.
+    Without session_key in the response, the frontend writes the short UUID,
+    which fails to resolve in SessionDB (DB uses session_key as the key).
+    """
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "test"})
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    import tools.approval as _approval
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
+
+    assert "result" in resp
+    result = resp["result"]
+
+    # Must include session_id (short UUID)
+    assert "session_id" in result
+    session_id = result["session_id"]
+    assert len(session_id) == 8  # Short UUID is 8 characters
+
+    # Must also include session_key (DB key format: YYYYMMDD_HHMMSS_xxxxxx)
+    assert "session_key" in result
+    session_key = result["session_key"]
+    assert len(session_key) == 22  # Format: YYYYMMDD_HHMMSS_xxxxxx (22 chars)
+
+    # session_id and session_key must be different
+    assert session_id != session_key

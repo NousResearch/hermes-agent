@@ -145,7 +145,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       resetSession()
       setSessionStartedAt(Date.now())
 
-      writeActiveSessionFile(r.session_id)
+      writeActiveSessionFile(r.session_key ?? r.session_id)
       patchUiState({
         info,
         sid: r.session_id,

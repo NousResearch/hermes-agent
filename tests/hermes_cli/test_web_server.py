@@ -721,6 +721,41 @@ class TestNewEndpoints:
         assert captured["pid"] == 4243
         assert captured["sig"] == web_server.signal.SIGTERM
 
+    def test_conductor_delete_stops_recovered_process_group(self, monkeypatch):
+        """Recovered missions should still stop the detached process group."""
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as web_server
+
+        missions_dir = get_hermes_home() / "conductor"
+        missions_dir.mkdir(parents=True, exist_ok=True)
+        status_path = missions_dir / "conductor-recovered.json"
+        status_path.write_text(json.dumps({
+            "id": "conductor-recovered",
+            "name": "conductor-recovered",
+            "status": "running",
+            "pid": 4244,
+            "started_at": 1,
+            "log_path": str(missions_dir / "conductor-recovered.log"),
+        }))
+
+        captured = {}
+
+        def fake_killpg(pid, sig):
+            captured["pid"] = pid
+            captured["sig"] = sig
+
+        monkeypatch.setattr(web_server, "_pid_is_running", lambda pid: pid == 4244)
+        monkeypatch.setattr(web_server.os, "killpg", fake_killpg)
+
+        delete_resp = self.client.delete("/api/conductor/missions/conductor-recovered")
+
+        assert delete_resp.status_code == 200
+        data = delete_resp.json()
+        assert data["status"] == "cancelled"
+        assert data["stopped"] is True
+        assert captured["pid"] == 4244
+        assert captured["sig"] == web_server.signal.SIGTERM
+
     # --- Profiles ---
 
     def test_profiles_list_includes_default(self):

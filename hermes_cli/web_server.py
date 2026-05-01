@@ -859,10 +859,14 @@ def _terminate_conductor_process(proc: Optional[subprocess.Popen], pid: Optional
 
     if sys.platform != "win32" and pid and pid > 0 and _pid_is_running(pid):
         try:
-            os.kill(pid, signal.SIGTERM)
+            os.killpg(pid, signal.SIGTERM)
             return True
         except Exception:
-            return False
+            try:
+                os.kill(pid, signal.SIGTERM)
+                return True
+            except Exception:
+                return False
 
     return False
 

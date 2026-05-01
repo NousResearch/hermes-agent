@@ -55,3 +55,12 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 - **Full web control** — Search, extract, browse, vision, image generation, TTS
 - **MCP support** — Connect to any MCP server for extended tool capabilities
 - **Research-ready** — Batch processing, trajectory export, RL training with Atropos. Built by [Nous Research](https://nousresearch.com) — the lab behind Hermes, Nomos, and Psyche models
+
+## For LLMs and coding agents
+
+Machine-readable entry points to this documentation:
+
+- **[`/llms.txt`](/llms.txt)** — curated index of every doc page with short descriptions. ~17 KB, safe to load into an LLM context.
+- **[`/llms-full.txt`](/llms-full.txt)** — every doc page concatenated into a single markdown file for one-shot ingestion. ~1.8 MB.
+
+Both files also resolve at `/docs/llms.txt` and `/docs/llms-full.txt`. Generated fresh on every deploy.

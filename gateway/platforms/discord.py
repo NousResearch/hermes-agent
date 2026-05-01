@@ -608,6 +608,20 @@ class DiscordAdapter(BasePlatformAdapter):
             if proxy_url:
                 logger.info("[%s] Using proxy for Discord: %s", self.name, proxy_url)
 
+            # Close any existing client before creating a new one.  On
+            # reconnect connect() is called again; without this guard the old
+            # websocket stays alive long enough for Discord to deliver each
+            # inbound event twice — once to the orphaned client and once to
+            # the new one — causing duplicate agent turns (#18187).
+            if self._client is not None and not self._client.is_closed():
+                logger.debug("[%s] Closing existing Discord client before reconnect", self.name)
+                try:
+                    await self._client.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._client = None
+            self._ready_event.clear()
+
             # Create bot — proxy= for HTTP, connector= for SOCKS.
             # allowed_mentions is set with safe defaults (no @everyone/roles)
             # so LLM output or echoed user content can't ping the whole

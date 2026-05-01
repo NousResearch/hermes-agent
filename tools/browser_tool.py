@@ -175,6 +175,8 @@ _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
+_cached_ignore_https_errors: Optional[bool] = None
+_ignore_https_errors_resolved = False
 
 
 def _get_command_timeout() -> int:
@@ -199,6 +201,32 @@ def _get_command_timeout() -> int:
     except Exception as e:
         logger.debug("Could not read command_timeout from config: %s", e)
     _cached_command_timeout = result
+    return result
+
+
+def _get_ignore_https_errors_config() -> bool:
+    """Return whether to ignore HTTPS certificate errors from config.yaml.
+
+    Reads ``config["browser"]["ignore_https_errors"]`` and falls back to
+    ``False`` if unset or unreadable.  Result is cached after the first call.
+    """
+    global _cached_ignore_https_errors, _ignore_https_errors_resolved
+    if _ignore_https_errors_resolved:
+        return _cached_ignore_https_errors  # type: ignore[return-value]
+
+    _ignore_https_errors_resolved = True
+    result = False
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+        if isinstance(browser_cfg, dict):
+            val = browser_cfg.get("ignore_https_errors")
+            if val is not None:
+                result = bool(val)
+    except Exception as e:
+        logger.debug("Could not read ignore_https_errors from config: %s", e)
+    _cached_ignore_https_errors = result
     return result
 
 
@@ -1447,7 +1475,11 @@ def _run_browser_command(
     # Only the synthetic npx fallback needs to expand into multiple argv items.
     cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
 
-    cmd_parts = cmd_prefix + backend_args + [
+    extra_args: List[str] = []
+    if _get_ignore_https_errors_config():
+        extra_args.append("--ignore-https-errors")
+
+    cmd_parts = cmd_prefix + backend_args + extra_args + [
         "--json",
         command
     ] + args
@@ -2710,12 +2742,15 @@ def cleanup_all_browsers() -> None:
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed
+    global _cached_ignore_https_errors, _ignore_https_errors_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
     _cached_command_timeout = None
     _command_timeout_resolved = False
     _cached_chromium_installed = None
+    _cached_ignore_https_errors = None
+    _ignore_https_errors_resolved = False
 
 # ============================================================================
 # Requirements Check

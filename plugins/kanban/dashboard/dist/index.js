@@ -231,7 +231,7 @@
               String(this.state.error && this.state.error.message || this.state.error)),
             h(Button, {
               onClick: () => this.setState({ error: null }),
-              className: "h-7 px-3 text-xs border border-border hover:bg-foreground/10 cursor-pointer",
+              size: "sm",
             }, "Reload view"),
           ),
         );
@@ -599,11 +599,11 @@
       h("div", { className: "flex-1" }),
       h(Button, {
         onClick: props.onNudgeDispatch,
-        className: "h-8 px-3 text-xs border border-border hover:bg-foreground/10 cursor-pointer",
+        size: "sm",
       }, "Nudge dispatcher"),
       h(Button, {
         onClick: props.onRefresh,
-        className: "h-8 px-3 text-xs border border-border hover:bg-foreground/10 cursor-pointer",
+        size: "sm",
       }, "Refresh"),
     );
   }
@@ -619,21 +619,21 @@
         `${props.count} selected`),
       h(Button, {
         onClick: function () { props.onApply({ status: "ready" }); },
-        className: "hermes-kanban-bulk-btn",
+        size: "sm",
       }, "→ ready"),
       h(Button, {
         onClick: function () {
           props.onApply({ status: "done" },
             `Mark ${props.count} task(s) as done?`);
         },
-        className: "hermes-kanban-bulk-btn",
+        size: "sm",
       }, "Complete"),
       h(Button, {
         onClick: function () {
           props.onApply({ archive: true },
             `Archive ${props.count} task(s)?`);
         },
-        className: "hermes-kanban-bulk-btn",
+        size: "sm",
       }, "Archive"),
       h("div", { className: "hermes-kanban-bulk-reassign" },
         h(Select, {
@@ -654,14 +654,13 @@
             setAssignee("");
           },
           disabled: !assignee,
-          className: cn("hermes-kanban-bulk-btn",
-            !assignee ? "opacity-40 cursor-not-allowed" : ""),
+          size: "sm",
         }, "Apply"),
       ),
       h("div", { className: "flex-1" }),
       h(Button, {
         onClick: props.onClear,
-        className: "hermes-kanban-bulk-btn",
+        size: "sm",
       }, "Clear"),
     );
   }
@@ -993,11 +992,11 @@
       h("div", { className: "flex gap-2" },
         h(Button, {
           onClick: submit,
-          className: "h-7 px-2 text-xs border border-border hover:bg-foreground/10 cursor-pointer flex-1",
+          size: "sm",
         }, "Create"),
         h(Button, {
           onClick: props.onCancel,
-          className: "h-7 px-2 text-xs border border-border hover:bg-foreground/10 cursor-pointer",
+          size: "sm",
         }, "Cancel"),
       ),
     );
@@ -1125,7 +1124,7 @@
           }),
           h(Button, {
             onClick: handleComment,
-            className: "h-8 px-3 text-xs border border-border hover:bg-foreground/10 cursor-pointer",
+            size: "sm",
           }, "Comment"),
         ) : null,
       ),
@@ -1355,10 +1354,10 @@
         className: "h-8 text-sm flex-1",
       }),
       h(Button, { onClick: save,
-        className: "h-7 px-2 text-xs border border-border hover:bg-foreground/10 cursor-pointer",
+        size: "sm",
       }, "Save"),
       h(Button, { onClick: props.onCancel,
-        className: "h-7 px-2 text-xs border border-border hover:bg-foreground/10 cursor-pointer",
+        size: "sm",
       }, "Cancel"),
     );
   }
@@ -1439,10 +1438,10 @@
         editing
           ? h("div", { className: "flex gap-1" },
               h(Button, { onClick: save,
-                className: "h-6 px-2 text-xs border border-border hover:bg-foreground/10 cursor-pointer",
+                size: "sm",
               }, "Save"),
               h(Button, { onClick: function () { setEditing(false); setV(props.task.body || ""); },
-                className: "h-6 px-2 text-xs border border-border hover:bg-foreground/10 cursor-pointer",
+                size: "sm",
               }, "Cancel"),
             )
           : h("button", {
@@ -1516,8 +1515,7 @@
             props.onAddParent(newParent).then(function () { setNewParent(""); });
           },
           disabled: !newParent,
-          className: cn("h-7 px-2 text-xs border border-border cursor-pointer",
-            !newParent ? "opacity-40 cursor-not-allowed" : "hover:bg-foreground/10"),
+          size: "sm",
         }, "+ parent"),
       ),
       h("div", { className: "hermes-kanban-deps-row" },
@@ -1556,8 +1554,7 @@
             props.onAddChild(newChild).then(function () { setNewChild(""); });
           },
           disabled: !newChild,
-          className: cn("h-7 px-2 text-xs border border-border cursor-pointer",
-            !newChild ? "opacity-40 cursor-not-allowed" : "hover:bg-foreground/10"),
+          size: "sm",
         }, "+ child"),
       ),
     );
@@ -1569,10 +1566,7 @@
       return h(Button, {
         onClick: function () { if (enabled !== false) props.onPatch(patch, { confirm: confirmMsg }); },
         disabled: enabled === false,
-        className: cn(
-          "h-7 px-2 text-xs border border-border cursor-pointer",
-          enabled === false ? "opacity-40 cursor-not-allowed" : "hover:bg-foreground/10",
-        ),
+        size: "sm",
       }, label);
     };
     return h("div", { className: "hermes-kanban-actions" },

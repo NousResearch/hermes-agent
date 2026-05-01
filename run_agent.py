@@ -11641,6 +11641,7 @@ class AIAgent:
                         usage=self._usage_summary_for_api_request_hook(response),
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
+                        reasoning_content=getattr(assistant_message, "reasoning_content", None) or "",
                     )
                 except Exception:
                     pass

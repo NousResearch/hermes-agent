@@ -1,0 +1,29 @@
+name: langfuse-tracing
+version: 1.0.0
+description: "Langfuse LLM observability — trace, generation, and span tracking for Hermes sessions."
+author: "Hermes Team"
+kind: standalone
+pip_dependencies:
+  - langfuse>=2.0.0
+hooks:
+  - on_session_start
+  - on_session_end
+  - on_session_finalize
+  - pre_llm_call
+  - post_llm_call
+  - pre_api_request
+  - post_api_request
+  - pre_tool_call
+  - post_tool_call
+requires_env:
+  - name: LANGFUSE_PUBLIC_KEY
+    description: "Langfuse public key (from project settings)"
+    url: "https://cloud.langfuse.com"
+  - name: LANGFUSE_SECRET_KEY
+    description: "Langfuse secret key (from project settings)"
+    url: "https://cloud.langfuse.com"
+    secret: true
+  - name: LANGFUSE_HOST
+    description: "Langfuse host URL (leave empty for cloud, defaults to https://cloud.langfuse.com)"
+    url: "https://cloud.langfuse.com"
+    secret: false

@@ -1046,5 +1046,50 @@ class TestImapConnectionCleanup(unittest.TestCase):
         mock_imap.logout.assert_called_once()
 
 
+class TestFetchMalformedResponse(unittest.TestCase):
+    """Guard against malformed IMAP FETCH responses (#12498, #18106)."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.email import EmailAdapter
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "test@example.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_IMAP_PORT": "993",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_SMTP_PORT": "587",
+        }):
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_fetch_skips_int_payload(self):
+        """msg_data[0] is bytes → indexing yields int → guard skips."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.uid.side_effect = [
+            ("OK", [b"1"]),           # search
+            ("OK", [b"abcdef"]),      # fetch — msg_data[0] is bytes, [1] is int
+        ]
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+
+    def test_fetch_skips_none_payload(self):
+        """msg_data[0] is None → TypeError on [1] → guard skips."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.uid.side_effect = [
+            ("OK", [b"1"]),      # search
+            ("OK", [None]),      # fetch — msg_data[0] is None
+        ]
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+
+
 if __name__ == "__main__":
     unittest.main()

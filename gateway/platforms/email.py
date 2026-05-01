@@ -362,7 +362,24 @@ class EmailAdapter(BasePlatformAdapter):
                     if status != "OK":
                         continue
 
-                    raw_email = msg_data[0][1]
+                    # Guard against malformed FETCH responses where the
+                    # body slot is an int, plain bytes, or None instead
+                    # of the expected (header, body) tuple (#12498, #18106).
+                    try:
+                        raw_email = msg_data[0][1]
+                    except (IndexError, TypeError):
+                        logger.warning(
+                            "[Email] Malformed IMAP FETCH response for UID %s: %r",
+                            uid, msg_data,
+                        )
+                        continue
+                    if not isinstance(raw_email, (bytes, bytearray)):
+                        logger.warning(
+                            "[Email] IMAP FETCH returned non-bytes payload for UID %s "
+                            "(type=%s); skipping",
+                            uid, type(raw_email).__name__,
+                        )
+                        continue
                     msg = email_lib.message_from_bytes(raw_email)
 
                     sender_raw = msg.get("From", "")

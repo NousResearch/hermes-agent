@@ -2178,11 +2178,111 @@ class HindsightMemoryProvider(MemoryProvider):
                 old_content = "[" + ",".join(old_turns) + "]"
                 flush_document_id = old_document_id
 
+            # Snapshot pipeline config before session rotation mutates self._*
+            flush_bank_id = self._bank_id
+            flush_retain_async = self._retain_async
+            flush_retain_extract = self._retain_extract
+            flush_retain_prefilter = self._retain_prefilter
+            flush_retain_dedup = self._retain_dedup
+            flush_retain_context = self._retain_context
+            flush_context_tagging = self._retain_context_tagging
+            flush_aux_fallback = self._aux_fallback_to_main
+
             def _flush():
                 try:
+                    # ── Same pipeline gates as _do_retain / handle_tool_call ──
+                    needs_classification = flush_retain_prefilter or flush_context_tagging == "smart"
+                    classification = None
+
+                    aux_bypassed = self._is_aux_breaker_open()
+                    use_main = False
+                    if aux_bypassed and (needs_classification or flush_retain_dedup or flush_retain_extract):
+                        if flush_aux_fallback:
+                            use_main = True
+                            aux_bypassed = False
+                            logger.info("Flush-on-switch: aux breaker open — falling back to main model for %d chars", len(old_content))
+                        else:
+                            logger.info("Flush-on-switch: aux breaker open — bypassing smart pipeline for %d chars", len(old_content))
+
+                    # ── Extract pipeline ──────────────────────────────────
+                    if flush_retain_extract and not aux_bypassed:
+                        points = self._extract_points(old_content, use_main=use_main)
+                        if points:
+                            classified = self._classify_points(points, use_main=use_main)
+                            retained_points = [c for c in classified if c["verdict"] == "RETAIN"]
+                            if not retained_points:
+                                logger.info("Flush-on-switch extract: all %d points classified as SKIP", len(classified))
+                                return
+
+                            if flush_retain_dedup:
+                                novel_points = []
+                                for rp in retained_points:
+                                    if not self._check_dedup(rp["point"], use_main=use_main):
+                                        novel_points.append(rp)
+                                    else:
+                                        logger.debug("Flush-on-switch extract: dedup DUPLICATE — %s", rp["point"][:80])
+                                if not novel_points:
+                                    logger.info("Flush-on-switch extract: all %d retained points are duplicates", len(retained_points))
+                                    return
+                                retained_points = novel_points
+
+                            items = []
+                            for rp in retained_points:
+                                point_tags = list(old_lineage_tags)
+                                if flush_context_tagging == "on":
+                                    scope_tag = self._build_scope_tag()
+                                    if scope_tag not in point_tags:
+                                        point_tags.append(scope_tag)
+                                elif flush_context_tagging == "smart":
+                                    if rp.get("scope") == "SCOPED":
+                                        scope_tag = self._build_scope_tag()
+                                        if scope_tag not in point_tags:
+                                            point_tags.append(scope_tag)
+                                    else:
+                                        if "scope:general" not in point_tags:
+                                            point_tags.append("scope:general")
+
+                                item = self._build_retain_kwargs(
+                                    rp["point"],
+                                    context=flush_retain_context,
+                                    metadata=old_metadata,
+                                    tags=point_tags or None,
+                                )
+                                item.pop("bank_id", None)
+                                item.pop("retain_async", None)
+                                items.append(item)
+
+                            logger.info(
+                                "Flush-on-switch extract: retaining %d points (%d extracted, %d after classify, %d after dedup)",
+                                len(items), len(points), sum(1 for c in classified if c["verdict"] == "RETAIN"), len(items),
+                            )
+                            self._run_hindsight_operation(
+                                lambda client: client.aretain_batch(
+                                    bank_id=flush_bank_id,
+                                    items=items,
+                                    retain_async=flush_retain_async,
+                                )
+                            )
+                            logger.debug("Flush-on-switch extract retain succeeded")
+                            return
+                        else:
+                            logger.info("Flush-on-switch extract: extraction failed or empty, falling back to blob retain")
+
+                    # ── Blob-level pipeline (original / fallback) ─────────
+                    if needs_classification and not aux_bypassed:
+                        classification = self._classify_for_retain(old_content, use_main=use_main)
+                        if flush_retain_prefilter and classification == "SKIP":
+                            logger.info("Flush-on-switch: SKIP — not retaining %d chars", len(old_content))
+                            return
+
+                    if flush_retain_dedup and not aux_bypassed:
+                        if self._check_dedup(old_content, use_main=use_main):
+                            logger.info("Flush-on-switch: DUPLICATE — skipping retain of %d chars", len(old_content))
+                            return
+
                     item = self._build_retain_kwargs(
                         old_content,
-                        context=self._retain_context,
+                        context=flush_retain_context,
                         metadata=old_metadata,
                         tags=old_lineage_tags or None,
                     )
@@ -2190,14 +2290,14 @@ class HindsightMemoryProvider(MemoryProvider):
                     item.pop("retain_async", None)
                     logger.debug(
                         "Hindsight flush-on-switch: bank=%s, doc=%s, num_turns=%d",
-                        self._bank_id, old_document_id, len(old_turns),
+                        flush_bank_id, old_document_id, len(old_turns),
                     )
                     self._run_hindsight_operation(
                         lambda client: client.aretain_batch(
-                            bank_id=self._bank_id,
+                            bank_id=flush_bank_id,
                             items=[item],
                             document_id=flush_document_id,
-                            retain_async=self._retain_async,
+                            retain_async=flush_retain_async,
                         )
                     )
                 except Exception as e:

@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
+from agent.credential_resolver import CredentialResolveError, resolve_credential_string
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
@@ -115,6 +116,15 @@ def _get_model_config() -> Dict[str, Any]:
         # Accept "model" as alias for "default" (users intuitively write model.model)
         if not cfg.get("default") and cfg.get("model"):
             cfg["default"] = cfg["model"]
+        # Resolve api_key references like 'env:VAR', 'keychain:svc/acct',
+        # 'secret-tool:svc/acct'. Plain literals pass through unchanged.
+        raw_key = cfg.get("api_key")
+        if isinstance(raw_key, str) and raw_key.strip():
+            try:
+                cfg["api_key"] = resolve_credential_string(raw_key)
+            except CredentialResolveError as exc:
+                logger.error("model.api_key reference failed: %s", exc)
+                cfg["api_key"] = ""
         default = (cfg.get("default") or "").strip()
         base_url = (cfg.get("base_url") or "").strip()
         is_local = "localhost" in base_url or "127.0.0.1" in base_url

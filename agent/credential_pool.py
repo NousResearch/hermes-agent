@@ -14,6 +14,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import get_env_value
+from agent.credential_resolver import (
+    CredentialResolveError,
+    resolve_credential_string,
+)
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -1494,6 +1498,16 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
         base_url = str(cp_config.get("base_url") or "").strip().rstrip("/")
         name = str(cp_config.get("name") or "").strip()
         if api_key:
+            try:
+                api_key = resolve_credential_string(api_key)
+            except CredentialResolveError as exc:
+                logger.error(
+                    "custom_providers[%s].api_key reference failed: %s",
+                    name or pool_key,
+                    exc,
+                )
+                api_key = ""
+        if api_key:
             source = f"config:{name}"
             if not _is_suppressed(pool_key, source):
                 active_sources.add(source)
@@ -1523,6 +1537,12 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                 if isinstance(v, str) and v.strip():
                     model_api_key = v.strip()
                     break
+            if model_provider == "custom" and model_base_url and model_api_key:
+                try:
+                    model_api_key = resolve_credential_string(model_api_key)
+                except CredentialResolveError as exc:
+                    logger.error("model.api_key reference failed: %s", exc)
+                    model_api_key = ""
             if model_provider == "custom" and model_base_url and model_api_key:
                 # Check if this model's base_url matches our custom provider
                 matched_key = get_custom_provider_pool_key(model_base_url)

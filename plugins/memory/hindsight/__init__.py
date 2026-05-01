@@ -1476,8 +1476,8 @@ class HindsightMemoryProvider(MemoryProvider):
         When use_main=True, falls back to the main model instead of auxiliary.
         """
         try:
-            # Truncate content for recall query
-            query = content[:2000]
+            # Truncate content for recall query — Hindsight caps at 500 tokens (~1500 chars)
+            query = content[:1200]
 
             # Build recall kwargs — cheap recall just to check for duplicates
             recall_kwargs: dict = {
@@ -1698,19 +1698,53 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error("Missing required parameter: content")
             context = args.get("context")
             try:
-                # Merge user-provided tags with scope tag when context tagging is active
+                # ── Smart pipeline (same gates as sync_turn) ──────────
+                needs_classification = self._retain_prefilter or self._retain_context_tagging == "smart"
+                classification = None
+
+                aux_bypassed = self._is_aux_breaker_open()
+                use_main = False
+                if aux_bypassed and (needs_classification or self._retain_dedup):
+                    if self._aux_fallback_to_main:
+                        use_main = True
+                        aux_bypassed = False
+                        logger.info("Tool retain: aux breaker open — falling back to main model for %d chars", len(content))
+                    else:
+                        logger.info("Tool retain: aux breaker open — bypassing smart pipeline for %d chars", len(content))
+
+                if needs_classification and not aux_bypassed:
+                    classification = self._classify_for_retain(content, use_main=use_main)
+                    if self._retain_prefilter and classification == "SKIP":
+                        logger.info("Tool retain: SKIP — not retaining %d chars", len(content))
+                        return json.dumps({"result": "Memory filtered (noise/irrelevant per retain mission). Not stored."})
+
+                if self._retain_dedup and not aux_bypassed:
+                    if self._check_dedup(content, use_main=use_main):
+                        logger.info("Tool retain: DUPLICATE — skipping %d chars", len(content))
+                        return json.dumps({"result": "Memory filtered (duplicate of existing knowledge). Not stored."})
+
+                # ── Scope tagging ─────────────────────────────────────
                 extra_tags = list(_normalize_retain_tags(args.get("tags")))
-                if self._retain_context_tagging in ("on", "smart"):
+                if self._retain_context_tagging == "on":
                     scope_tag = self._build_scope_tag()
                     if scope_tag not in extra_tags:
                         extra_tags.append(scope_tag)
+                elif self._retain_context_tagging == "smart":
+                    if classification == "SCOPED":
+                        scope_tag = self._build_scope_tag()
+                        if scope_tag not in extra_tags:
+                            extra_tags.append(scope_tag)
+                    else:
+                        if "scope:general" not in extra_tags:
+                            extra_tags.append("scope:general")
+
                 retain_kwargs = self._build_retain_kwargs(
                     content,
                     context=context,
                     tags=extra_tags or None,
                 )
-                logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
-                             self._bank_id, len(content), context)
+                logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s, tags=%s",
+                             self._bank_id, len(content), context, extra_tags)
                 self._run_hindsight_operation(lambda client: client.aretain(**retain_kwargs))
                 logger.debug("Tool hindsight_retain: success")
                 return json.dumps({"result": "Memory stored successfully."})

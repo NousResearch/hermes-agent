@@ -80,6 +80,8 @@ AUTHOR_MAP = {
     "thomasjhon6666@gmail.com": "ThomassJonax",
     "focusflow.app.help@gmail.com": "yes999zc",
     "rob@atlas.lan": "rmoen",
+    # Slack ephemeral slash-ack salvage (May 2026)
+    "probepark@users.noreply.github.com": "probepark",
     "162235745+0z1-ghb@users.noreply.github.com": "0z1-ghb",
     "yes999zc@163.com": "yes999zc",
     "343873859@qq.com": "DrStrangerUJN",

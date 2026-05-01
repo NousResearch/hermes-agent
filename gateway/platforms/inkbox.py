@@ -465,6 +465,8 @@ class InkboxAdapter(BasePlatformAdapter):
         if mode == "sms":
             to_number = str(meta.get("to_phone") or chat_id).strip()
             if not to_number.startswith("+"):
+                # chat_id is a contact UUID (or unknown shape) — look up the
+                # primary phone number on the contact record.
                 to_number = await asyncio.to_thread(self._lookup_contact_phone, chat_id)
                 if not to_number:
                     return SendResult(
@@ -482,7 +484,15 @@ class InkboxAdapter(BasePlatformAdapter):
         if mode == "email":
             to_addr = (meta.get("to_email") or "").strip()
             if not to_addr:
-                to_addr = await asyncio.to_thread(self._lookup_contact_email, chat_id)
+                # If the chat_id already looks like an email address, use it
+                # directly — this is the unknown-sender path where the
+                # contact lookup at ingest returned 0 matches and the raw
+                # email became the chat_id.  Only try contacts.get() when the
+                # chat_id is a contact UUID we can actually fetch.
+                if "@" in str(chat_id):
+                    to_addr = str(chat_id).strip()
+                else:
+                    to_addr = await asyncio.to_thread(self._lookup_contact_email, chat_id)
             if not to_addr:
                 return SendResult(
                     success=False,
@@ -903,8 +913,9 @@ async def send_inkbox_direct(
                 }
 
             if chosen_mode == "email":
-                target = chat_id
-                if "@" not in str(target):
+                target = str(chat_id).strip()
+                if "@" not in target:
+                    # chat_id is a contact UUID — look up the primary email.
                     contact = client.contacts.get(chat_id)
                     emails = getattr(contact, "emails", None) or []
                     primary = next((e for e in emails if getattr(e, "is_primary", False)), None)

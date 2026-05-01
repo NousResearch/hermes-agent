@@ -1537,6 +1537,7 @@ class AIAgent:
             self._fallback_chain = []
         self._fallback_index = 0
         self._fallback_activated = False
+        self._fallback_restore_fail_count = 0
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
         if self._fallback_chain and not self.quiet_mode:
@@ -2405,6 +2406,7 @@ class AIAgent:
         # ── Reset fallback state ──
         self._fallback_activated = False
         self._fallback_index = 0
+        self._fallback_restore_fail_count = 0
 
         # When the user deliberately swaps primary providers (e.g. openrouter
         # → anthropic), drop any fallback entries that target the OLD primary
@@ -7692,18 +7694,28 @@ class AIAgent:
                 provider=rt["compressor_provider"],
             )
 
-            # ── Reset fallback chain for the new turn ──
-            self._fallback_activated = False
-            self._fallback_index = 0
-
             logging.info(
                 "Primary runtime restored for new turn: %s (%s)",
                 self.model, self.provider,
             )
-            return True
         except Exception as e:
             logging.warning("Failed to restore primary runtime: %s", e)
+            # Track consecutive restore failures and notify exactly once at the
+            # threshold so the user is informed without repeated spam.
+            self._fallback_restore_fail_count += 1
+            if self._fallback_restore_fail_count == 3:
+                self._emit_status(
+                    f"⚠️  Primary provider unavailable after "
+                    f"{self._fallback_restore_fail_count} attempts — using fallback. "
+                    f"Check your API key and network connection."
+                )
             return False
+
+        # Success — reset all fallback state outside the try block
+        self._fallback_activated = False
+        self._fallback_index = 0
+        self._fallback_restore_fail_count = 0
+        return True
 
     # Which error types indicate a transient transport failure worth
     # one more attempt with a rebuilt client / connection pool.

@@ -132,13 +132,65 @@ def get_skin_tool_prefix() -> str:
     return "┊"
 
 
+# Built-in tool → emoji map.  Used as layer 3 in get_tool_emoji() so that
+# dynamic reactions work out-of-the-box without requiring a skin or per-tool
+# registry emoji.  Grouped by toolset for readability.
+_BUILTIN_TOOL_EMOJIS: dict[str, str] = {
+    # file
+    "read_file": "📄",
+    "write_file": "📝",
+    "patch": "🩹",
+    "search_files": "🔎",
+    # terminal
+    "terminal": "💻",
+    "process": "⚙️",
+    "execute_code": "🐍",
+    # browser
+    "browser_navigate": "🌐",
+    "browser_click": "🖱️",
+    "browser_type": "⌨️",
+    "browser_snapshot": "📸",
+    "browser_scroll": "📜",
+    "browser_vision": "👁️",
+    "browser_back": "◀️",
+    "browser_press": "⌨️",
+    "browser_get_images": "🖼️",
+    "browser_console": "🌐",
+    # web / search
+    "web_search": "🔍",
+    "web_extract": "🌐",
+    # memory / session
+    "memory": "🧠",
+    "session_search": "🔍",
+    "hindsight_retain": "🧠",
+    "hindsight_recall": "🔍",
+    "hindsight_reflect": "💭",
+    # skills
+    "skill_view": "📖",
+    "skill_manage": "🛠️",
+    "skills_list": "📚",
+    # delegation / cron
+    "delegate_task": "👥",
+    "cronjob": "⏰",
+    # communication
+    "send_message": "💬",
+    "clarify": "❓",
+    # media
+    "text_to_speech": "🔊",
+    "vision_analyze": "👁️",
+    # todo
+    "todo": "✅",
+}
+
+
 def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     """Get the display emoji for a tool.
 
     Resolution order:
     1. Active skin's ``tool_emojis`` overrides (if a skin is loaded)
     2. Tool registry's per-tool ``emoji`` field
-    3. *default* fallback
+    3. Built-in tool emoji map (covers core tools without requiring skin/registry)
+    4. *default* fallback
     """
     # 1. Skin override
     skin = _get_skin()
@@ -154,8 +206,8 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
             return emoji
     except Exception:
         pass
-    # 3. Hardcoded fallback
-    return default
+    # 3. Built-in map
+    return _BUILTIN_TOOL_EMOJIS.get(tool_name, default)
 
 
 # =========================================================================

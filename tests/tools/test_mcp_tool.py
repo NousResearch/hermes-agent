@@ -2701,12 +2701,14 @@ class _CompatType:
 
 try:
     from mcp.types import (
+        ClientCapabilities,
         CreateMessageResult,
         ErrorData,
         SamplingCapability,
         TextContent,
     )
 except ImportError:
+    ClientCapabilities = _CompatType
     CreateMessageResult = _CompatType
     ErrorData = _CompatType
     SamplingCapability = _CompatType
@@ -3504,6 +3506,25 @@ class TestMetricsTracking:
 # ---------------------------------------------------------------------------
 
 class TestSessionKwargs:
+    @staticmethod
+    def _capability_payload(capability):
+        if hasattr(capability, "model_dump"):
+            return capability.model_dump(exclude_none=True)
+        return {
+            key: (
+                TestSessionKwargs._capability_payload(value)
+                if hasattr(value, "__dict__")
+                else value
+            )
+            for key, value in vars(capability).items()
+            if value is not None
+        }
+
+    @classmethod
+    def _client_capability_payload(cls, sampling_capability):
+        capabilities = ClientCapabilities(sampling=sampling_capability)
+        return cls._capability_payload(capabilities)
+
     def test_returns_correct_keys(self):
         handler = SamplingHandler("sk", {})
         kwargs = handler.session_kwargs()
@@ -3516,7 +3537,42 @@ class TestSessionKwargs:
         kwargs = handler.session_kwargs()
         cap = kwargs["sampling_capabilities"]
         assert isinstance(cap, SamplingCapability)
+        assert cap.tools is None
+        assert "tools" not in self._capability_payload(cap)
+        assert self._client_capability_payload(cap) == {"sampling": {}}
+
+    def test_sampling_tools_capability_is_opt_in(self):
+        handler = SamplingHandler("sk3", {"expose_client_tools": True})
+        kwargs = handler.session_kwargs()
+        cap = kwargs["sampling_capabilities"]
         assert isinstance(cap.tools, SamplingToolsCapability)
+        assert "tools" in self._capability_payload(cap)
+        assert self._client_capability_payload(cap) == {"sampling": {"tools": {}}}
+
+    @pytest.mark.parametrize(
+        "raw_value, expected",
+        [
+            (False, False),
+            ("false", False),
+            ("0", False),
+            ("off", False),
+            (True, True),
+            ("true", True),
+            ("1", True),
+            ("yes", True),
+        ],
+    )
+    def test_sampling_tools_capability_parses_bool_flags(self, raw_value, expected):
+        handler = SamplingHandler("sk4", {"expose_client_tools": raw_value})
+        cap = handler.session_kwargs()["sampling_capabilities"]
+        payload = self._capability_payload(cap)
+
+        if expected:
+            assert isinstance(cap.tools, SamplingToolsCapability)
+            assert "tools" in payload
+        else:
+            assert cap.tools is None
+            assert "tools" not in payload
 
 
 # ---------------------------------------------------------------------------
@@ -3531,7 +3587,7 @@ class TestMCPServerTaskSamplingIntegration:
         server = MCPServerTask("int_test")
         config = {
             "command": "fake",
-            "sampling": {"enabled": True, "max_rpm": 5},
+            "sampling": {"enabled": True, "max_rpm": 5, "expose_client_tools": True},
         }
         # We only need to test the setup logic, not the actual connection.
         # Calling run() would attempt a real connection, so we test the
@@ -3547,6 +3603,7 @@ class TestMCPServerTaskSamplingIntegration:
         assert isinstance(server._sampling, SamplingHandler)
         assert server._sampling.server_name == "int_test"
         assert server._sampling.max_rpm == 5
+        assert server._sampling.expose_client_tools is True
 
     def test_sampling_handler_none_when_disabled(self):
         """MCPServerTask._sampling is None when sampling is disabled."""

@@ -681,10 +681,11 @@ mcp_servers:
       max_rpm: 10              # Rate limit: max requests per minute (default: 10)
       max_tool_rounds: 5       # Max tool-use rounds in sampling loops (default: 5)
       allowed_models: []       # Allowlist of model names the server may request (empty = any)
+      expose_client_tools: false # Advertise extended sampling.tools capability
       log_level: "info"        # Audit log level: debug, info, or warning (default: info)
 ```
 
-The sampling handler includes a sliding-window rate limiter, per-request timeouts, and tool-loop depth limits to prevent runaway usage. Metrics (request count, errors, tokens used) are tracked per server instance.
+The sampling handler includes a sliding-window rate limiter, per-request timeouts, and tool-loop depth limits to prevent runaway usage. Hermes does not advertise the extended `sampling.tools` client capability unless `expose_client_tools: true` is set, because some strict MCP servers reject unknown sampling sub-capabilities during initialization. Most servers only need normal sampling; enable `expose_client_tools` only for servers that explicitly support sampling tool callbacks. Metrics (request count, errors, tokens used) are tracked per server instance.
 
 To disable sampling for a specific server:
 

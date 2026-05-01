@@ -57,6 +57,7 @@ Example config::
           max_rpm: 10                # max requests per minute
           allowed_models: []         # model whitelist (empty = all)
           max_tool_rounds: 5         # tool loop limit (0 = disable)
+          expose_client_tools: false # advertise extended sampling.tools capability
           log_level: "info"          # audit verbosity
 
 Features:
@@ -107,6 +108,8 @@ from typing import Callable
 from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional
 from urllib.parse import urlparse
+
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -1136,6 +1139,9 @@ class SamplingHandler:
         )
         self.model_override = config.get("model")
         self.allowed_models = config.get("allowed_models", [])
+        self.expose_client_tools = is_truthy_value(
+            config.get("expose_client_tools"), default=False
+        )
 
         _log_levels = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING}
         self.audit_level = _log_levels.get(
@@ -1341,11 +1347,14 @@ class SamplingHandler:
 
     def session_kwargs(self) -> dict:
         """Return kwargs to pass to ClientSession for sampling support."""
+        sampling_capabilities = (
+            SamplingCapability(tools=SamplingToolsCapability())
+            if self.expose_client_tools
+            else SamplingCapability()
+        )
         return {
             "sampling_callback": self,
-            "sampling_capabilities": SamplingCapability(
-                tools=SamplingToolsCapability(),
-            ),
+            "sampling_capabilities": sampling_capabilities,
         }
 
     # -- Main callback -------------------------------------------------------

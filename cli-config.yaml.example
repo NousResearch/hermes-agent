@@ -998,6 +998,7 @@ platform_toolsets:
 #       max_rpm: 10             # max requests per minute
 #       allowed_models: []      # model whitelist (empty = all)
 #       max_tool_rounds: 5      # tool loop limit (0 = disable)
+#       expose_client_tools: false # advertise extended sampling.tools capability
 #       log_level: "info"       # audit verbosity
 
 # =============================================================================

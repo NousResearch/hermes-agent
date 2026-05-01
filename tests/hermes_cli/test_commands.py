@@ -13,6 +13,7 @@ from hermes_cli.commands import (
     SlashCommandAutoSuggest,
     SlashCommandCompleter,
     _CMD_NAME_LIMIT,
+    _SLACK_RESERVED_COMMANDS,
     _TG_NAME_LIMIT,
     _clamp_command_names,
     _clamp_telegram_names,
@@ -299,8 +300,18 @@ class TestSlackNativeSlashes:
     def test_includes_canonical_commands(self):
         names = {n for n, _d, _h in slack_native_slashes()}
         # Sample of gateway-available canonical commands
-        for expected in ("new", "stop", "background", "model", "help", "status"):
+        for expected in ("new", "stop", "background", "model", "help"):
             assert expected in names, f"missing canonical /{expected}"
+
+    def test_excludes_slack_reserved_commands(self):
+        """Slack built-in commands (e.g. /status, /me, /join) cannot be
+        registered by apps and must be excluded from the manifest.
+        Users can still reach them via /hermes <command>."""
+        names = {n for n, _d, _h in slack_native_slashes()}
+        for reserved in _SLACK_RESERVED_COMMANDS:
+            assert reserved not in names, (
+                f"/{reserved} is a Slack built-in and must not appear in the manifest"
+            )
 
     def test_includes_aliases_as_first_class_slashes(self):
         """Aliases (/btw, /bg, /reset, /q) must be registered as standalone
@@ -319,6 +330,9 @@ class TestSlackNativeSlashes:
         Telegram but not Slack (because of Slack's 50-slash cap), this
         test fails loudly so we can curate the list rather than silently
         dropping parity.
+
+        Slack-reserved built-in commands (e.g. /status) are excluded
+        from parity checks since they cannot be registered on Slack.
         """
         slack_names = {n for n, _d, _h in slack_native_slashes()}
         tg_names = {n for n, _d in telegram_bot_commands()}
@@ -329,7 +343,8 @@ class TestSlackNativeSlashes:
 
         slack_norm = {_norm(n) for n in slack_names}
         tg_norm = {_norm(n) for n in tg_names}
-        missing = tg_norm - slack_norm
+        reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
+        missing = (tg_norm - slack_norm) - reserved_norm
         assert not missing, (
             f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
         )

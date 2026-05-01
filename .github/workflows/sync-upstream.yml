@@ -220,25 +220,41 @@ jobs:
               `Subsequent scheduled runs will rebuild \`main\` once the source branches are healthy.`,
             ].join("\n");
 
-            const { data: openIssues } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: "open",
-              labels: "sync-failure",
-            });
-            if (openIssues.length > 0) {
-              await github.rest.issues.createComment({
+            function issuesDisabledError(err) {
+              const msg = String(err?.message || err || "");
+              return err?.status === 410 || /issues has been disabled/i.test(msg);
+            }
+
+            try {
+              const { data: openIssues } = await github.rest.issues.listForRepo({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: openIssues[0].number,
-                body: `Another sync failure (${today}) at upstream \`${upstreamSha}\`: ${runUrl}`,
+                state: "open",
+                labels: "sync-failure",
               });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: `Upstream sync failed (${today})`,
-                body,
-                labels: ["sync-failure"],
-              });
+              if (openIssues.length > 0) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: openIssues[0].number,
+                  body: `Another sync failure (${today}) at upstream \`${upstreamSha}\`: ${runUrl}`,
+                });
+              } else {
+                await github.rest.issues.create({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  title: `Upstream sync failed (${today})`,
+                  body,
+                  labels: ["sync-failure"],
+                });
+              }
+            } catch (err) {
+              if (issuesDisabledError(err)) {
+                core.warning(
+                  "Upstream sync failed, but this repository has GitHub Issues disabled — cannot open or update a sync-failure issue. " +
+                    `See the workflow log at ${runUrl}`,
+                );
+                return;
+              }
+              throw err;
             }

@@ -38,9 +38,10 @@ import os
 import re
 import shutil
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
@@ -169,6 +170,153 @@ VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
 # Subdirectories allowed for write_file/remove_file
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
+MUTATING_ACTIONS = {"create", "edit", "patch", "delete", "write_file", "remove_file"}
+SELF_MODIFICATION_POLICY_ID = "skills.self_modification"
+
+
+# =============================================================================
+# Self-modification authorization helpers
+# =============================================================================
+
+def _load_self_modification_policy() -> Dict[str, Any]:
+    """Load the MVP policy boundary for agent-managed skill mutations."""
+    policy = {
+        "policy_id": SELF_MODIFICATION_POLICY_ID,
+        "enabled": True,
+        "audit_enabled": True,
+        "require_reason": False,
+        "allowed_actions": sorted(MUTATING_ACTIONS),
+    }
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        configured = cfg.get("skills", {}).get("self_modification", {})
+        if isinstance(configured, dict):
+            for key in ("enabled", "audit_enabled", "require_reason"):
+                if key in configured:
+                    policy[key] = bool(configured[key])
+            if "allowed_actions" in configured:
+                allowed_actions = configured["allowed_actions"]
+                if isinstance(allowed_actions, str):
+                    allowed_actions = [allowed_actions]
+                if isinstance(allowed_actions, list):
+                    policy["allowed_actions"] = sorted(
+                        action for action in allowed_actions if action in MUTATING_ACTIONS
+                    )
+    except Exception:
+        pass
+    return policy
+
+
+def _default_skill_mutation_audit_path() -> Path:
+    """Return the audit log path, keeping tests that patch SKILLS_DIR isolated."""
+    try:
+        if SKILLS_DIR.resolve().parent == HERMES_HOME.resolve():
+            return HERMES_HOME / "skill_mutation_audit.jsonl"
+    except Exception:
+        pass
+    return SKILLS_DIR / ".skill_mutation_audit.jsonl"
+
+
+def _evaluate_self_modification_policy(
+    action: str,
+    reason: Optional[str],
+    policy: Dict[str, Any],
+) -> Tuple[bool, List[str]]:
+    """Evaluate the authorization contract before a skill write/delete action."""
+    denies = []
+    if action not in MUTATING_ACTIONS:
+        denies.append(f"unknown mutating action: {action}")
+    if not policy.get("enabled", True):
+        denies.append("self-modifying skills are disabled")
+    if action not in set(policy.get("allowed_actions", [])):
+        denies.append(f"action '{action}' is not allowed by policy")
+    if policy.get("require_reason") and not (reason or "").strip():
+        denies.append("reason is required by policy")
+    return not denies, denies
+
+
+def _audit_skill_mutation(
+    *,
+    action: str,
+    name: str,
+    reason: Optional[str],
+    policy: Dict[str, Any],
+    allowed: bool,
+    denies: List[str],
+    result: Dict[str, Any],
+) -> None:
+    """Append best-effort audit evidence for allowed and denied skill mutations."""
+    if not policy.get("audit_enabled", True):
+        return
+
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "policy_id": policy.get("policy_id", SELF_MODIFICATION_POLICY_ID),
+        "action": action,
+        "skill": name,
+        "reason": reason,
+        "allowed": allowed,
+        "denies": denies,
+        "result_success": bool(result.get("success")),
+        "result_error": result.get("error"),
+        "allowed_actions": policy.get("allowed_actions", []),
+        "require_reason": bool(policy.get("require_reason", False)),
+    }
+    try:
+        audit_path = _default_skill_mutation_audit_path()
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        with audit_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        logger.warning("Failed to write skill mutation audit event", exc_info=True)
+
+
+def _authorized_skill_mutation_result(
+    action: str,
+    name: str,
+    reason: Optional[str],
+    handler,
+) -> Dict[str, Any]:
+    """Run a skill mutation through the self-modification policy and audit it."""
+    policy = _load_self_modification_policy()
+    allowed, denies = _evaluate_self_modification_policy(action, reason, policy)
+    if not allowed:
+        result = {
+            "success": False,
+            "error": "Skill self-modification blocked by policy: " + "; ".join(denies),
+            "authorization": {
+                "policy_id": policy.get("policy_id", SELF_MODIFICATION_POLICY_ID),
+                "allowed": False,
+                "denies": denies,
+            },
+        }
+        _audit_skill_mutation(
+            action=action,
+            name=name,
+            reason=reason,
+            policy=policy,
+            allowed=False,
+            denies=denies,
+            result=result,
+        )
+        return result
+
+    result = handler()
+    result.setdefault("authorization", {
+        "policy_id": policy.get("policy_id", SELF_MODIFICATION_POLICY_ID),
+        "allowed": True,
+    })
+    _audit_skill_mutation(
+        action=action,
+        name=name,
+        reason=reason,
+        policy=policy,
+        allowed=True,
+        denies=[],
+        result=result,
+    )
+    return result
 
 
 # =============================================================================
@@ -702,6 +850,7 @@ def skill_manage(
     old_string: str = None,
     new_string: str = None,
     replace_all: bool = False,
+    reason: str = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
@@ -711,34 +860,46 @@ def skill_manage(
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
-        result = _create_skill(name, content, category)
+        result = _authorized_skill_mutation_result(
+            action, name, reason, lambda: _create_skill(name, content, category)
+        )
 
     elif action == "edit":
         if not content:
             return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
-        result = _edit_skill(name, content)
+        result = _authorized_skill_mutation_result(
+            action, name, reason, lambda: _edit_skill(name, content)
+        )
 
     elif action == "patch":
         if not old_string:
             return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
         if new_string is None:
             return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
-        result = _patch_skill(name, old_string, new_string, file_path, replace_all)
+        result = _authorized_skill_mutation_result(
+            action, name, reason, lambda: _patch_skill(name, old_string, new_string, file_path, replace_all)
+        )
 
     elif action == "delete":
-        result = _delete_skill(name)
+        result = _authorized_skill_mutation_result(
+            action, name, reason, lambda: _delete_skill(name)
+        )
 
     elif action == "write_file":
         if not file_path:
             return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
         if file_content is None:
             return tool_error("file_content is required for 'write_file'.", success=False)
-        result = _write_file(name, file_path, file_content)
+        result = _authorized_skill_mutation_result(
+            action, name, reason, lambda: _write_file(name, file_path, file_content)
+        )
 
     elif action == "remove_file":
         if not file_path:
             return tool_error("file_path is required for 'remove_file'.", success=False)
-        result = _remove_file(name, file_path)
+        result = _authorized_skill_mutation_result(
+            action, name, reason, lambda: _remove_file(name, file_path)
+        )
 
     else:
         result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
@@ -855,6 +1016,13 @@ SKILL_MANAGE_SCHEMA = {
                 "type": "string",
                 "description": "Content for the file. Required for 'write_file'."
             },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Short audit reason for the skill mutation. Required when "
+                    "skills.self_modification.require_reason is enabled."
+                )
+            },
         },
         "required": ["action", "name"],
     },
@@ -877,6 +1045,7 @@ registry.register(
         file_content=args.get("file_content"),
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False)),
+        replace_all=args.get("replace_all", False),
+        reason=args.get("reason")),
     emoji="📝",
 )

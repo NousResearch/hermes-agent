@@ -516,6 +516,21 @@ skills:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
 
+  # Policy boundary for agent-managed skill create/edit/patch/delete actions.
+  # Defaults preserve the current behavior while recording audit evidence for
+  # self-modification attempts.
+  self_modification:
+    enabled: true
+    audit_enabled: true
+    require_reason: false
+    allowed_actions:
+      - create
+      - edit
+      - patch
+      - delete
+      - write_file
+      - remove_file
+
 # =============================================================================
 # Agent Behavior
 # =============================================================================

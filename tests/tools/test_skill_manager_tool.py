@@ -486,6 +486,85 @@ class TestSkillManageDispatcher:
         assert result["success"] is True
 
 
+class TestSelfModificationPolicy:
+    def test_create_records_allowed_audit_event(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config",
+                   return_value={"skills": {"self_modification": {"audit_enabled": True}}}):
+            raw = skill_manage(
+                action="create",
+                name="test-skill",
+                content=VALID_SKILL_CONTENT,
+                reason="Capture a proven workflow.",
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["authorization"]["allowed"] is True
+
+        audit_path = tmp_path / ".skill_mutation_audit.jsonl"
+        event = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[-1])
+        assert event["policy_id"] == "skills.self_modification"
+        assert event["action"] == "create"
+        assert event["skill"] == "test-skill"
+        assert event["allowed"] is True
+        assert event["result_success"] is True
+
+    def test_disabled_policy_blocks_create_and_audits_denial(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config",
+                   return_value={"skills": {"self_modification": {"enabled": False}}}):
+            raw = skill_manage(
+                action="create",
+                name="blocked-skill",
+                content=VALID_SKILL_CONTENT,
+                reason="Should be denied.",
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "self-modifying skills are disabled" in result["error"]
+        assert not (tmp_path / "blocked-skill").exists()
+
+        audit_path = tmp_path / ".skill_mutation_audit.jsonl"
+        event = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[-1])
+        assert event["allowed"] is False
+        assert event["result_success"] is False
+        assert "self-modifying skills are disabled" in event["denies"]
+
+    def test_require_reason_blocks_mutation_without_reason(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config",
+                   return_value={"skills": {"self_modification": {"require_reason": True}}}):
+            raw = skill_manage(
+                action="create",
+                name="needs-reason",
+                content=VALID_SKILL_CONTENT,
+            )
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "reason is required by policy" in result["error"]
+        assert not (tmp_path / "needs-reason").exists()
+
+    def test_allowed_actions_policy_blocks_delete(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("keep-me", VALID_SKILL_CONTENT)
+
+            with patch("hermes_cli.config.load_config",
+                       return_value={"skills": {"self_modification": {"allowed_actions": ["create"]}}}):
+                raw = skill_manage(
+                    action="delete",
+                    name="keep-me",
+                    reason="Attempt delete.",
+                )
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "action 'delete' is not allowed by policy" in result["error"]
+        assert (tmp_path / "keep-me" / "SKILL.md").exists()
+
+
 class TestSecurityScanGate:
     """_security_scan_skill is gated by skills.guard_agent_created config flag."""
 

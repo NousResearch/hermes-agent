@@ -34,6 +34,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/stop` | Kill all running background processes |
 | `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn (doesn't interrupt the current agent response). |
 | `/steer <prompt>` | Inject a mid-run note that arrives at the agent **after the next tool call** — no interrupt, no new user turn. The text is appended to the last tool result's content once the current tool completes, giving the agent new context without breaking the current tool-calling loop. Use this to nudge direction mid-task (e.g. "focus on the auth module" while the agent is running tests). |
+| `/goal <text>` | Set a standing goal Hermes works toward across turns. After each turn an auxiliary model judges whether the goal is satisfied by the agent's last response; if not, Hermes automatically feeds a continuation prompt back into the same session and keeps working. Subcommands: `/goal` (status), `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Budget defaults to 20 turns (`goals.max_turns` in `config.yaml`); any real user message preempts the continuation loop. Our take on the Ralph loop — state survives `/resume` because it's stored in `state_meta` keyed by session ID. |
 | `/resume [name]` | Resume a previously-named session |
 | `/redraw` | Force a full UI repaint (recovers from terminal drift after tmux resize, mouse selection artifacts, etc.) |
 | `/status` | Show session info |
@@ -153,6 +154,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/background <prompt>` | Run a prompt in a separate background session. Results are delivered back to the same chat when the task finishes. See [Messaging Background Sessions](/docs/user-guide/messaging/#background-sessions). |
 | `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn without interrupting the current one. |
 | `/steer <prompt>` | Inject a message after the next tool call without interrupting — the model picks it up on its next iteration rather than as a new turn. |
+| `/goal <text>` | Set a standing goal Hermes works toward across turns. A judge model checks after each turn whether the goal is satisfied; if not, Hermes auto-continues until it is, you pause/clear it, or the turn budget (default 20) is hit. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Safe to run mid-agent for status/pause/clear; setting a new goal requires `/stop` first. |
 | `/footer [on\|off\|status]` | Toggle the runtime-metadata footer on final replies (shows model, tool counts, timing). |
 | `/curator [status\|run\|pin\|archive]` | Background skill maintenance controls. |
 | `/reload-mcp` (alias: `/reload_mcp`) | Reload MCP servers from config. |

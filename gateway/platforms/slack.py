@@ -21,6 +21,7 @@ try:
     from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
     from slack_sdk.web.async_client import AsyncWebClient
+    import aiohttp
     SLACK_AVAILABLE = True
 except ImportError:
     SLACK_AVAILABLE = False
@@ -310,6 +311,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
+        # Slash-command contexts: stash response_url + user_id so send()
+        # can route the first reply ephemerally.  Keyed by
+        # (channel_id, user_id) to avoid cross-user collisions.
+        # Each value: {"response_url": str, "ts": float}
+        self._slash_command_contexts: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
     def _describe_slack_api_error(self, response: Any, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Convert Slack API auth/permission failures into actionable user-facing text."""
@@ -367,6 +373,86 @@ class SlackAdapter(BasePlatformAdapter):
                 "This usually means a scope, auth, or file-permission problem."
             )
         return None
+
+    # ------------------------------------------------------------------
+    # Slash-command ephemeral helpers
+    # ------------------------------------------------------------------
+
+    _SLASH_CTX_TTL = 120.0  # seconds — response_url is valid for 30 min;
+    # we use a much shorter TTL to avoid routing unrelated messages
+    # as ephemeral if the command handler was slow or dropped.
+
+    def _pop_slash_context(
+        self, chat_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return and remove the slash-command context for *chat_id*, if fresh.
+
+        Contexts older than ``_SLASH_CTX_TTL`` seconds are silently discarded.
+        Uses a full scan (dict is tiny) so we don't need the user_id in
+        ``send()``, which only receives the channel ID from base.py.
+        """
+        now = time.monotonic()
+        # Clean up stale entries on every lookup — dict is small.
+        stale_keys = [
+            k for k, v in self._slash_command_contexts.items()
+            if now - v["ts"] > self._SLASH_CTX_TTL
+        ]
+        for k in stale_keys:
+            self._slash_command_contexts.pop(k, None)
+
+        # Find the context for this channel (may be keyed under any user).
+        match_key = None
+        for key in list(self._slash_command_contexts):
+            if key[0] == chat_id:
+                match_key = key
+                break
+        if match_key is None:
+            return None
+        return self._slash_command_contexts.pop(match_key)
+
+    async def _send_slash_ephemeral(
+        self,
+        ctx: Dict[str, Any],
+        content: str,
+    ) -> "SendResult":
+        """Replace the initial ephemeral ack via ``response_url``.
+
+        Slack's ``response_url`` accepts a POST with ``replace_original``
+        for up to 30 minutes after the slash command was invoked.  This
+        lets us swap the "Running /cmd…" placeholder with the real reply,
+        and the message stays ephemeral ("Only visible to you").
+
+        Falls back to a simple ``True`` SendResult if the POST fails —
+        the user already saw the initial ack, so a delivery failure here
+        is non-critical.
+        """
+        formatted = self.format_message(content)
+        payload = {
+            "response_type": "ephemeral",
+            "replace_original": True,
+            "text": formatted,
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    ctx["response_url"],
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        return SendResult(success=True, message_id=None)
+                    body = await resp.text()
+                    logger.warning(
+                        "[Slack] response_url POST returned %s: %s",
+                        resp.status,
+                        body[:200],
+                    )
+        except Exception as e:
+            logger.warning(
+                "[Slack] response_url POST failed: %s", e,
+            )
+        # Non-fatal — the user saw the initial ack already.
+        return SendResult(success=True, message_id=None)
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -502,7 +588,11 @@ class SlackAdapter(BasePlatformAdapter):
 
             @self._app.command(_slash_pattern)
             async def handle_hermes_command(ack, command):
-                await ack()
+                slash = (command.get("command") or "").lstrip("/")
+                await ack(
+                    response_type="ephemeral",
+                    text=f"Running `/{slash}`…",
+                )
                 await self._handle_slash_command(command)
 
             # Register Block Kit action handlers for approval buttons
@@ -574,6 +664,17 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            # Check for a pending slash-command context.  When the user ran a
+            # native slash command (e.g. /q, /stop, /model), the initial ack
+            # already showed an ephemeral "Running /cmd…" message.  If we have
+            # a stashed response_url for this channel, replace that ack with
+            # the actual command reply ephemerally instead of posting publicly.
+            slash_ctx = self._pop_slash_context(chat_id)
+            if slash_ctx:
+                return await self._send_slash_ephemeral(
+                    slash_ctx, content,
+                )
+
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
 
@@ -2536,6 +2637,16 @@ class SlackAdapter(BasePlatformAdapter):
             source=source,
             raw_message=command,
         )
+
+        # Stash the Slack response_url so the first reply for this
+        # channel+user can be routed ephemerally (replaces the initial
+        # "Running /cmd…" ack shown by handle_hermes_command).
+        response_url = command.get("response_url", "")
+        if response_url and user_id and channel_id:
+            self._slash_command_contexts[(channel_id, user_id)] = {
+                "response_url": response_url,
+                "ts": time.monotonic(),
+            }
 
         await self.handle_message(event)
 

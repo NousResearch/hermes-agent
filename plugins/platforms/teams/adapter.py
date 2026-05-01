@@ -520,7 +520,14 @@ class TeamsAdapter(BasePlatformAdapter):
         if not self._app:
             return
         try:
-            await self._app.send(chat_id, TypingActivityInput())
+            # Some test/mocked SDK environments don't expose TypingActivityInput.
+            # Fall back to a minimal typing payload so send() still executes.
+            activity = (
+                TypingActivityInput()
+                if TypingActivityInput is not None
+                else {"type": "typing"}
+            )
+            await self._app.send(chat_id, activity)
         except Exception:
             pass
 

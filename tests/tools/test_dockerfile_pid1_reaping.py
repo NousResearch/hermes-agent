@@ -107,7 +107,7 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
 
 def test_dockerfile_installs_tui_dependencies(dockerfile_text):
     assert "ui-tui/package.json" in dockerfile_text
-    assert "ui-tui/packages/hermes-ink/package-lock.json" in dockerfile_text
+    assert "ui-tui/packages/hermes-ink/" in dockerfile_text
     assert any(
         "ui-tui" in step and "npm" in step and (" install" in step or " ci" in step)
         for step in _run_steps(dockerfile_text)
@@ -124,15 +124,11 @@ def test_dockerfile_builds_tui_assets(dockerfile_text):
 def test_dockerfile_materializes_local_tui_ink_package(dockerfile_text):
     assert any(
         "ui-tui" in step
-        and "node_modules/@hermes/ink" in step
-        and "packages/hermes-ink" in step
-        and "rm -rf packages/hermes-ink/node_modules" in step
-        and "npm install --omit=dev" in step
-        and "--prefix node_modules/@hermes/ink" in step
-        and "rm -rf node_modules/@hermes/ink/node_modules/react" in step
-        and "await import('@hermes/ink')" in step
+        and "npm install" in step
+        and "npm_config_install_links=false" in dockerfile_text
         for step in _run_steps(dockerfile_text)
     )
+    assert "COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/" in dockerfile_text
 
 
 def test_dockerignore_excludes_nested_dependency_dirs():

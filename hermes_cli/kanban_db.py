@@ -590,6 +590,15 @@ def _claimer_id() -> str:
 # Task creation / mutation
 # ---------------------------------------------------------------------------
 
+def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
+    """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
+    if assignee is None:
+        return None
+    from hermes_cli.profiles import normalize_profile_name
+
+    return normalize_profile_name(assignee)
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -631,6 +640,7 @@ def create_task(
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
     """
+    assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
     if workspace_kind not in VALID_WORKSPACE_KINDS:
@@ -795,7 +805,7 @@ def list_tasks(
     params: list[Any] = []
     if assignee is not None:
         query += " AND assignee = ?"
-        params.append(assignee)
+        params.append(_canonical_assignee(assignee))
     if status is not None:
         if status not in VALID_STATUSES:
             raise ValueError(f"status must be one of {sorted(VALID_STATUSES)}")
@@ -819,6 +829,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
     Refuses to reassign a task that's currently running (claim_lock set).
     Reassign after the current run completes if needed.
     """
+    profile = _canonical_assignee(profile)
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,)
@@ -2064,6 +2075,10 @@ def _default_spawn(task: Task, workspace: str) -> Optional[int]:
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
+    from hermes_cli.profiles import normalize_profile_name
+
+    profile_arg = normalize_profile_name(task.assignee)
+
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
     if task.tenant:
@@ -2074,11 +2089,11 @@ def _default_spawn(task: Task, workspace: str) -> Optional[int]:
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
-    env["HERMES_PROFILE"] = task.assignee
+    env["HERMES_PROFILE"] = profile_arg
 
     cmd = [
         "hermes",
-        "-p", task.assignee,
+        "-p", profile_arg,
         # Auto-load the kanban-worker skill so every dispatched worker
         # has the pattern library (good summary/metadata shapes, retry
         # diagnostics, block-reason examples) in its context, even if

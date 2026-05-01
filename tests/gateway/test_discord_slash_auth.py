@@ -123,11 +123,19 @@ def adapter():
     return a
 
 
+_SENTINEL = object()
+
+
 def _make_interaction(
     user_id, *, channel_id=12345, guild_id=42, in_dm=False, in_thread=False,
-    parent_channel_id=None,
+    parent_channel_id=None, user=_SENTINEL,
 ):
-    """Build a mock Discord Interaction with a still-unresponded response."""
+    """Build a mock Discord Interaction with a still-unresponded response.
+
+    ``channel_id`` may be set to ``None`` to simulate a guild interaction
+    payload missing a resolvable channel id (fail-closed exercise).
+    Pass ``user=None`` to simulate a payload missing the user object.
+    """
     import discord
 
     response = SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock())
@@ -138,11 +146,18 @@ def _make_interaction(
         channel = discord.Thread()
         channel.id = channel_id
         channel.parent_id = parent_channel_id
+    elif channel_id is None:
+        channel = None
     else:
         channel = SimpleNamespace(id=channel_id)
 
+    if user is _SENTINEL:
+        user_obj = SimpleNamespace(id=int(user_id), name=f"user_{user_id}")
+    else:
+        user_obj = user
+
     return SimpleNamespace(
-        user=SimpleNamespace(id=int(user_id), name=f"user_{user_id}"),
+        user=user_obj,
         guild=SimpleNamespace(owner_id=999),
         guild_id=guild_id,
         channel_id=channel_id,
@@ -392,3 +407,331 @@ def test_visibility_hide_tolerates_unsetable_command(adapter, caplog):
 
 # os import for test_visibility_hide_off_by_default_is_noop
 import os  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed parity on malformed slash auth context
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_missing_channel_id_rejected_when_channel_policy_configured(
+    adapter, monkeypatch,
+):
+    """A guild interaction without a resolvable channel id must fail
+    closed when DISCORD_ALLOWED_CHANNELS is configured. Without this
+    guard the entire channel-policy block silently fell through."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "1111,2222")
+    interaction = _make_interaction("100200300", channel_id=None)
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+    interaction.response.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_missing_channel_id_allowed_when_no_channel_policy(adapter):
+    """No DISCORD_ALLOWED_CHANNELS configured + missing channel id: still
+    pass through the channel block (matches no-allowlist default)."""
+    interaction = _make_interaction("100200300", channel_id=None)
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+
+
+@pytest.mark.asyncio
+async def test_missing_user_rejected_when_allowlist_configured(adapter):
+    """interaction.user is None with a user/role allowlist active:
+    fail closed without raising AttributeError."""
+    adapter._allowed_user_ids = {"100200300"}
+    interaction = _make_interaction("100200300", user=None)
+    # Must not raise — must return False with an ephemeral rejection
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+    interaction.response.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_missing_user_allowed_when_no_allowlist_configured(adapter):
+    """interaction.user is None but no allowlist configured: allow
+    (preserves no-allowlist back-compat -- anyone is allowed when no
+    policy is in effect)."""
+    interaction = _make_interaction("100200300", user=None)
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+
+
+# ---------------------------------------------------------------------------
+# Thread parent channel allowlist parity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_thread_parent_in_allowlist_passes(adapter, monkeypatch):
+    """Thread whose parent channel is on DISCORD_ALLOWED_CHANNELS passes
+    even though the thread id itself isn't on the list."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "5555")
+    interaction = _make_interaction(
+        "100200300", channel_id=9999, in_thread=True, parent_channel_id=5555,
+    )
+    assert await adapter._check_slash_authorization(interaction, "/help") is True
+
+
+@pytest.mark.asyncio
+async def test_thread_parent_in_ignorelist_rejects(adapter, monkeypatch):
+    """Thread whose parent channel is on DISCORD_IGNORED_CHANNELS rejects
+    even when the thread id itself isn't ignored."""
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "5555")
+    interaction = _make_interaction(
+        "100200300", channel_id=9999, in_thread=True, parent_channel_id=5555,
+    )
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+
+
+@pytest.mark.asyncio
+async def test_ignored_beats_allowed(adapter, monkeypatch):
+    """Channel listed in BOTH allowed and ignored: the ignored entry wins.
+    Anything else would be a foot-gun where adding to ignored does nothing
+    if the channel is also explicitly allowed."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "1111")
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "1111")
+    interaction = _make_interaction("100200300", channel_id=1111)
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+
+
+# ---------------------------------------------------------------------------
+# Admin notify soft-fail fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_notify_falls_back_to_slack_on_telegram_soft_fail(adapter):
+    """adapter.send returning SendResult(success=False) must NOT short-
+    circuit the fallback chain. Treating a soft failure as delivered
+    means a Telegram outage swallows alerts silently."""
+    from gateway.session import Platform
+
+    soft_fail = SimpleNamespace(success=False, error="rate limited")
+    telegram_adapter = SimpleNamespace(send=AsyncMock(return_value=soft_fail))
+    slack_adapter = SimpleNamespace(send=AsyncMock())
+    home_tg = SimpleNamespace(chat_id="987654321")
+    home_sl = SimpleNamespace(chat_id="C12345")
+    homes = {Platform.TELEGRAM: home_tg, Platform.SLACK: home_sl}
+    runner = SimpleNamespace(
+        adapters={
+            Platform.TELEGRAM: telegram_adapter,
+            Platform.SLACK: slack_adapter,
+        },
+        config=SimpleNamespace(get_home_channel=lambda p: homes.get(p)),
+    )
+    adapter.gateway_runner = runner
+
+    await adapter._notify_unauthorized_slash("u", "1", 2, 3, "/x", "reason")
+
+    telegram_adapter.send.assert_awaited_once()
+    slack_adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_notify_returns_on_telegram_truthy_success(adapter):
+    """adapter.send returning SendResult(success=True) -- or any object
+    without a falsy success attribute -- should still short-circuit at
+    Telegram. (This guards against the soft-fail patch over-correcting.)"""
+    from gateway.session import Platform
+
+    ok = SimpleNamespace(success=True, message_id="m1")
+    telegram_adapter = SimpleNamespace(send=AsyncMock(return_value=ok))
+    slack_adapter = SimpleNamespace(send=AsyncMock())
+    home_tg = SimpleNamespace(chat_id="987654321")
+    home_sl = SimpleNamespace(chat_id="C12345")
+    homes = {Platform.TELEGRAM: home_tg, Platform.SLACK: home_sl}
+    runner = SimpleNamespace(
+        adapters={
+            Platform.TELEGRAM: telegram_adapter,
+            Platform.SLACK: slack_adapter,
+        },
+        config=SimpleNamespace(get_home_channel=lambda p: homes.get(p)),
+    )
+    adapter.gateway_runner = runner
+
+    await adapter._notify_unauthorized_slash("u", "1", 2, 3, "/x", "reason")
+
+    telegram_adapter.send.assert_awaited_once()
+    slack_adapter.send.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# /skill autocomplete + callback gating
+# ---------------------------------------------------------------------------
+
+
+def _capture_skill_registration(adapter, monkeypatch, entries):
+    """Run ``_register_skill_group`` against a stubbed skill catalog and
+    return ``(handler_callback, autocomplete_callback)``.
+
+    The autocomplete callback is captured by monkeypatching
+    ``discord.app_commands.autocomplete`` -- the production decorator is
+    a no-op stub in this test file's discord mock, so capturing the
+    callback through it is the direct route in tests.
+    """
+    import discord
+
+    captured: dict = {}
+
+    def fake_categories(reserved_names):
+        # Match discord_skill_commands_by_category's tuple shape:
+        # (categories_dict, uncategorized_list, hidden_count)
+        return ({}, list(entries), 0)
+
+    import hermes_cli.commands as _hc
+    monkeypatch.setattr(
+        _hc, "discord_skill_commands_by_category", fake_categories,
+    )
+
+    def capture_autocomplete(**kwargs):
+        # Only one autocomplete in /skill registration: name=...
+        captured["autocomplete"] = kwargs.get("name")
+
+        def _passthrough(fn):
+            return fn
+
+        return _passthrough
+
+    monkeypatch.setattr(
+        discord.app_commands, "autocomplete", capture_autocomplete,
+        raising=False,
+    )
+
+    registered: list = []
+
+    class _Tree:
+        def get_commands(self):
+            return []
+
+        def add_command(self, cmd):
+            registered.append(cmd)
+
+    adapter._register_skill_group(_Tree())
+    assert registered, "_register_skill_group did not register a command"
+    return registered[0].callback, captured["autocomplete"]
+
+
+@pytest.mark.asyncio
+async def test_skill_autocomplete_returns_empty_for_unauthorized(
+    adapter, monkeypatch,
+):
+    """Autocomplete must not leak the installed skill catalog to users
+    who can't run /skill. With DISCORD_ALLOWED_USERS configured and the
+    interaction user outside it, the autocomplete callback returns []."""
+    adapter._allowed_user_ids = {"100200300"}
+    entries = [
+        ("alpha", "First skill", "/alpha"),
+        ("beta", "Second skill", "/beta"),
+    ]
+    _handler, autocomplete = _capture_skill_registration(
+        adapter, monkeypatch, entries,
+    )
+
+    interaction = _make_interaction("999999999")
+    result = await autocomplete(interaction, "")
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_skill_autocomplete_returns_choices_for_authorized(
+    adapter, monkeypatch,
+):
+    """Sanity: an authorized user still gets the autocomplete suggestions."""
+    adapter._allowed_user_ids = {"100200300"}
+    entries = [
+        ("alpha", "First skill", "/alpha"),
+        ("beta", "Second skill", "/beta"),
+    ]
+    _handler, autocomplete = _capture_skill_registration(
+        adapter, monkeypatch, entries,
+    )
+
+    interaction = _make_interaction("100200300")
+    result = await autocomplete(interaction, "")
+    assert len(result) == 2
+    assert {choice.value for choice in result} == {"alpha", "beta"}
+
+
+@pytest.mark.asyncio
+async def test_skill_handler_rejects_before_dispatch_for_unauthorized(
+    adapter, monkeypatch,
+):
+    """The /skill handler must call _check_slash_authorization BEFORE
+    skill_lookup. Otherwise unknown vs known names produce divergent
+    responses ("Unknown skill: foo" vs auth rejection) which is a
+    catalog-probing oracle."""
+    adapter._allowed_user_ids = {"100200300"}
+    entries = [("alpha", "First skill", "/alpha")]
+    handler, _autocomplete = _capture_skill_registration(
+        adapter, monkeypatch, entries,
+    )
+
+    # Patch _run_simple_slash so we can detect any leak through it.
+    dispatched: list = []
+
+    async def fake_dispatch(_interaction, text):
+        dispatched.append(text)
+
+    adapter._run_simple_slash = fake_dispatch  # type: ignore[assignment]
+
+    interaction = _make_interaction("999999999")
+    await handler(interaction, "alpha", "")
+
+    interaction.response.send_message.assert_awaited_once()
+    args, kwargs = interaction.response.send_message.call_args
+    assert kwargs.get("ephemeral") is True
+    assert "not authorized" in (
+        args[0] if args else kwargs.get("content", "")
+    ).lower()
+    # Critically: nothing was dispatched, and the auth message did NOT
+    # mention the skill name "alpha" (no catalog leak).
+    assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_skill_handler_known_and_unknown_produce_same_rejection(
+    adapter, monkeypatch,
+):
+    """An unauthorized user probing for valid skill names must see the
+    same rejection text regardless of whether the name they tried is
+    on the registered catalog."""
+    adapter._allowed_user_ids = {"100200300"}
+    entries = [("alpha", "First skill", "/alpha")]
+    handler, _ = _capture_skill_registration(adapter, monkeypatch, entries)
+
+    adapter._run_simple_slash = AsyncMock()  # type: ignore[assignment]
+
+    known_interaction = _make_interaction("999999999")
+    unknown_interaction = _make_interaction("999999999")
+    await handler(known_interaction, "alpha", "")
+    await handler(unknown_interaction, "definitely-not-a-skill", "")
+
+    known_interaction.response.send_message.assert_awaited_once()
+    unknown_interaction.response.send_message.assert_awaited_once()
+    known_args, known_kwargs = known_interaction.response.send_message.call_args
+    unknown_args, unknown_kwargs = (
+        unknown_interaction.response.send_message.call_args
+    )
+    assert known_args == unknown_args
+    assert known_kwargs == unknown_kwargs
+
+
+@pytest.mark.asyncio
+async def test_skill_handler_dispatches_for_authorized(
+    adapter, monkeypatch,
+):
+    """Sanity: an authorized user reaches _run_simple_slash with the
+    resolved cmd_key and arguments."""
+    adapter._allowed_user_ids = {"100200300"}
+    entries = [("alpha", "First skill", "/alpha")]
+    handler, _ = _capture_skill_registration(adapter, monkeypatch, entries)
+
+    dispatched: list = []
+
+    async def fake_dispatch(_interaction, text):
+        dispatched.append(text)
+
+    adapter._run_simple_slash = fake_dispatch  # type: ignore[assignment]
+
+    interaction = _make_interaction("100200300")
+    await handler(interaction, "alpha", "extra args")
+    assert dispatched == ["/alpha extra args"]

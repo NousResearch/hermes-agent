@@ -75,6 +75,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str | None]]]] = [
         ("user-guide/features/delegation", "Delegation", None),
         ("user-guide/features/kanban", "Kanban Multi-Agent", None),
         ("user-guide/features/kanban-tutorial", "Kanban Tutorial", None),
+        ("user-guide/features/goals", "Persistent Goals", None),
         ("user-guide/features/code-execution", "Code Execution", None),
         ("user-guide/features/hooks", "Hooks", None),
         ("user-guide/features/batch-processing", "Batch Processing", None),

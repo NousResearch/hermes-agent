@@ -64,7 +64,15 @@ source "${INSTALL_DIR}/.venv/bin/activate"
 # The "home/" subdirectory is a per-profile HOME for subprocesses (git,
 # ssh, gh, npm …).  Without it those tools write to /root which is
 # ephemeral and shared across profiles.  See issue #4426.
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
+# The ".local/bin" directory is on the image PATH so later
+# `docker compose exec ... bash` sessions can find the hermes launcher even
+# though they do not run this entrypoint or activate the venv first.
+mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home} "$HERMES_HOME/.local/bin"
+
+hermes_launcher="$HERMES_HOME/.local/bin/hermes"
+if [ ! -e "$hermes_launcher" ] || [ -L "$hermes_launcher" ]; then
+    ln -sfn "${INSTALL_DIR}/.venv/bin/hermes" "$hermes_launcher"
+fi
 
 # .env
 if [ ! -f "$HERMES_HOME/.env" ]; then

@@ -14,6 +14,7 @@ import {
   ChevronLeft,
   VideoOff,
   AlertCircle,
+  Scissors,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -41,6 +42,12 @@ const fetchJSON = SDK?.fetchJSON ?? (async (url: string, opts?: any) => {
 // Types
 // ---------------------------------------------------------------------------
 
+interface Word {
+  word: string;
+  start: number;
+  end: number;
+}
+
 interface CaptionSegment {
   id: number;
   start: number;
@@ -48,6 +55,7 @@ interface CaptionSegment {
   text: string;
   lang: "en" | "vi" | "";  // may be "" on pre-phonetics jobs
   phonetic: string;
+  words?: Word[];
 }
 
 interface CaptionStyle {
@@ -220,6 +228,77 @@ function VideoPlayer({
 }
 
 // ---------------------------------------------------------------------------
+// Word Split Editor
+// ---------------------------------------------------------------------------
+
+function SplitEditor({
+  seg,
+  splitBefore,
+  onToggle,
+  onApply,
+  onCancel,
+}: {
+  seg: CaptionSegment;
+  splitBefore: Set<number>;
+  onToggle: (wordIdx: number) => void;
+  onApply: () => void;
+  onCancel: () => void;
+}) {
+  const words = seg.words ?? [];
+  return (
+    <div className="mt-2 rounded-lg bg-zinc-50 dark:bg-zinc-900/60 border border-zinc-300 dark:border-zinc-600 p-3">
+      <p className="text-xs text-zinc-500 dark:text-zinc-400 mb-2.5">
+        Click ✂ between words to mark split points:
+      </p>
+      <div className="flex flex-wrap items-end gap-y-2 gap-x-0.5">
+        {words.map((w, i) => (
+          <React.Fragment key={i}>
+            {i > 0 && (
+              <button
+                onClick={() => onToggle(i)}
+                title={`Split before "${w.word.trim()}"`}
+                className={`self-center w-6 h-5 flex items-center justify-center rounded text-xs font-bold transition-colors ${
+                  splitBefore.has(i)
+                    ? "bg-orange-400 dark:bg-orange-500 text-white"
+                    : "bg-zinc-200 dark:bg-zinc-700 text-zinc-400 hover:bg-orange-200 dark:hover:bg-orange-800/50 hover:text-orange-600"
+                }`}
+              >
+                ✂
+              </button>
+            )}
+            <div className="flex flex-col items-center">
+              <span className="px-1.5 py-0.5 rounded bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-600 text-xs font-medium text-zinc-800 dark:text-zinc-100 whitespace-nowrap">
+                {w.word.trim()}
+              </span>
+              <span className="text-[10px] text-zinc-400 tabular-nums mt-0.5">
+                {formatTime(w.start)}
+              </span>
+            </div>
+          </React.Fragment>
+        ))}
+      </div>
+      <div className="flex gap-2 mt-3">
+        <button
+          onClick={onApply}
+          disabled={splitBefore.size === 0}
+          className="px-3 py-1 rounded bg-orange-500 text-white text-xs font-medium hover:bg-orange-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {splitBefore.size > 0
+            ? `Apply — ${splitBefore.size + 1} segments`
+            : "Select a split point"}
+        </button>
+        <button
+          onClick={onCancel}
+          className="px-3 py-1 rounded border border-zinc-300 dark:border-zinc-600 text-xs font-medium hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Editor
 // ---------------------------------------------------------------------------
 
@@ -234,6 +313,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   const [burnSuccess, setBurnSuccess] = useState(false);
   const [burnTimestamp, setBurnTimestamp] = useState(Date.now());
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [splitState, setSplitState] = useState<{ segIdx: number; splitBefore: Set<number> } | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -263,6 +343,59 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
       })
     );
   }, []);
+
+  const openSplit = useCallback((idx: number) => {
+    setSplitState({ segIdx: idx, splitBefore: new Set() });
+  }, []);
+
+  const toggleSplitPoint = useCallback((wordIdx: number) => {
+    setSplitState((prev) => {
+      if (!prev) return null;
+      const next = new Set(prev.splitBefore);
+      if (next.has(wordIdx)) next.delete(wordIdx);
+      else next.add(wordIdx);
+      return { ...prev, splitBefore: next };
+    });
+  }, []);
+
+  const applyWordSplit = useCallback(() => {
+    if (!splitState) return;
+    const { segIdx, splitBefore } = splitState;
+    const seg = segments[segIdx];
+    const words = seg.words ?? [];
+    if (words.length < 2 || splitBefore.size === 0) {
+      setSplitState(null);
+      return;
+    }
+    const sortedSplits = Array.from(splitBefore).sort((a, b) => a - b);
+    const boundaries = [0, ...sortedSplits, words.length];
+    const newSegs: CaptionSegment[] = [];
+    for (let j = 0; j < boundaries.length - 1; j++) {
+      const group = words.slice(boundaries[j], boundaries[j + 1]);
+      const text = group.map((w) => w.word.trim()).join(" ").trim();
+      if (!text) continue;
+      newSegs.push({
+        ...seg,
+        id: 0,
+        start: group[0].start,
+        end: group[group.length - 1].end,
+        text,
+        phonetic: "",
+        words: group,
+      });
+    }
+    if (newSegs.length < 2) {
+      setSplitState(null);
+      return;
+    }
+    setSegments((prev) =>
+      [...prev.slice(0, segIdx), ...newSegs, ...prev.slice(segIdx + 1)].map((s, i) => ({
+        ...s,
+        id: i,
+      }))
+    );
+    setSplitState(null);
+  }, [splitState, segments]);
 
   const handleReburn = async () => {
     if (!style) return;
@@ -436,6 +569,23 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                         onChange={(e) => updateSegment(idx, "text", e.target.value)}
                         placeholder="(no text)"
                       />
+                      {(seg.words?.length ?? 0) >= 2 && (
+                        <button
+                          onClick={() =>
+                            splitState?.segIdx === idx
+                              ? setSplitState(null)
+                              : openSplit(idx)
+                          }
+                          title="Split segment at word boundary"
+                          className={`shrink-0 p-1 rounded transition-colors ${
+                            splitState?.segIdx === idx
+                              ? "text-orange-500 dark:text-orange-400"
+                              : "text-zinc-300 dark:text-zinc-600 hover:text-zinc-600 dark:hover:text-zinc-300"
+                          }`}
+                        >
+                          <Scissors className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                     {lang === "vi" && (
                       <div className="flex items-center gap-2 pl-[calc(1.75rem+5.5rem+3rem+0.75rem)]">
@@ -447,6 +597,15 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                           placeholder="[pronunciation guide]"
                         />
                       </div>
+                    )}
+                    {splitState?.segIdx === idx && (
+                      <SplitEditor
+                        seg={seg}
+                        splitBefore={splitState.splitBefore}
+                        onToggle={toggleSplitPoint}
+                        onApply={applyWordSplit}
+                        onCancel={() => setSplitState(null)}
+                      />
                     )}
                   </div>
                 );
@@ -481,9 +640,9 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
 function StyleField({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="w-24 shrink-0 text-xs text-zinc-500">{label}</span>
+      <span className="w-24 shrink-0 text-xs text-muted-foreground">{label}</span>
       <input
-        className="flex-1 min-w-0 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-600 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors text-zinc-900 dark:text-zinc-100"
+        className="flex-1 min-w-0 bg-card border border-border rounded px-2 py-1 text-xs text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/30 placeholder:text-muted-foreground transition-colors"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
@@ -495,10 +654,10 @@ function StyleField({ label, value, onChange, placeholder }: { label: string; va
 function StyleNumberField({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="w-24 shrink-0 text-xs text-zinc-500">{label}</span>
+      <span className="w-24 shrink-0 text-xs text-muted-foreground">{label}</span>
       <input
         type="number"
-        className="w-20 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-600 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors text-zinc-900 dark:text-zinc-100"
+        className="w-20 bg-card border border-border rounded px-2 py-1 text-xs text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/30 transition-colors"
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
       />

@@ -193,12 +193,72 @@ def _build_ass_content(segments: list[dict], style: dict) -> str:
 # Core operations
 # ---------------------------------------------------------------------------
 
+
+def _get_split_threshold() -> float:
+    """Load the word-gap split threshold from config (default 0.4 s)."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return float(cfg.get("caption", {}).get("word_split_threshold", 0.4))
+    except Exception:
+        return 0.4
+
+
+def _auto_split_segments(segments: list[dict], threshold: float = 0.4) -> list[dict]:
+    """Split segments wherever the inter-word pause >= *threshold* seconds.
+
+    Whisper VAD can group several short words into one segment even when there
+    are clear pauses between them.  When word_timestamps=True is enabled we
+    detect those pauses and split automatically so each natural unit gets its
+    own on-screen time-slot.
+
+    Segments without word data (or with <= 1 word) are passed through unchanged.
+    """
+    result: list[dict] = []
+    for seg in segments:
+        words = seg.get("words", [])
+        if len(words) <= 1:
+            result.append(seg)
+            continue
+
+        split_before: list[int] = []
+        for i in range(len(words) - 1):
+            gap = words[i + 1]["start"] - words[i]["end"]
+            if gap >= threshold:
+                split_before.append(i + 1)
+
+        if not split_before:
+            result.append(seg)
+            continue
+
+        boundaries = [0] + split_before + [len(words)]
+        for j in range(len(boundaries) - 1):
+            group = words[boundaries[j]: boundaries[j + 1]]
+            text = " ".join(w["word"].strip() for w in group).strip()
+            if not text:
+                continue
+            result.append({
+                **seg,
+                "id": len(result),
+                "start": round(group[0]["start"], 3),
+                "end": round(group[-1]["end"], 3),
+                "text": text,
+                "words": group,
+            })
+
+    for i, seg in enumerate(result):
+        seg["id"] = i
+    return result
+
+
 def transcribe(video_path: str) -> list[dict]:
     """Transcribe audio with auto language detection using faster-whisper.
 
     Fully local — no internet required after model download. No rate limits.
-    Returns segments: {id, start, end, text, lang, phonetic}
+    Returns segments: {id, start, end, text, lang, phonetic, words}
     lang and phonetic are blank — filled in by generate_phonetics().
+    words contains per-word timestamps used by the dashboard split editor
+    and by auto-split logic.
     """
     try:
         from faster_whisper import WhisperModel  # type: ignore
@@ -216,7 +276,7 @@ def transcribe(video_path: str) -> list[dict]:
         video_path,
         language=None,        # auto-detect — works for mixed EN/VI
         vad_filter=True,
-        word_timestamps=False,
+        word_timestamps=True,
     )
     logger.info(
         "Detected language: %s (prob %.2f)", info.language, info.language_probability
@@ -226,6 +286,10 @@ def transcribe(video_path: str) -> list[dict]:
     for seg in segments_raw:
         text = seg.text.strip()
         if text:
+            words = [
+                {"word": w.word, "start": round(float(w.start), 3), "end": round(float(w.end), 3)}
+                for w in (seg.words or [])
+            ]
             segments.append({
                 "id": len(segments),
                 "start": round(float(seg.start), 3),
@@ -233,7 +297,12 @@ def transcribe(video_path: str) -> list[dict]:
                 "text": text,
                 "lang": "",       # filled by generate_phonetics()
                 "phonetic": "",
+                "words": words,
             })
+
+    threshold = _get_split_threshold()
+    segments = _auto_split_segments(segments, threshold)
+    logger.info("After auto-split: %d segments (threshold=%.2fs)", len(segments), threshold)
     return segments
 
 

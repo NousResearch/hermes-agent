@@ -55,7 +55,7 @@ git rebase upstream/main           # resolve conflicts
 python -m pytest tests/gateway/test_pre_gateway_dispatch.py \
                  tests/gateway/test_session.py \
                  tests/hermes_cli/test_plugins.py -q
-git push --force-with-lease pebble <branch>
+git push --force-with-lease origin <branch>
 ```
 
 Close the open `sync-failure` issue. The next scheduled run will rebuild `main` on top of the healthy source branches.

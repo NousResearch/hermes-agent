@@ -214,7 +214,7 @@ jobs:
               `git fetch upstream`,
               `# Rebase the offending source branch (ops-overlay or a feature/*) onto upstream/main,`,
               `# resolve conflicts, run focused tests, then:`,
-              `git push --force-with-lease pebble <branch>`,
+              `git push --force-with-lease origin <branch>`,
               `\`\`\``,
               ``,
               `Subsequent scheduled runs will rebuild \`main\` once the source branches are healthy.`,
@@ -222,7 +222,8 @@ jobs:
 
             function issuesDisabledError(err) {
               const msg = String(err?.message || err || "");
-              return err?.status === 410 || /issues has been disabled/i.test(msg);
+              const status = err?.status ?? err?.response?.status;
+              return status === 410 || /issues has been disabled/i.test(msg);
             }
 
             try {

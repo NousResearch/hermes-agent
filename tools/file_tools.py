@@ -444,7 +444,7 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = 500, hashline: bool = False, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
@@ -484,7 +484,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # file hasn't been modified since, return a lightweight stub
         # instead of re-sending the same content.  Saves context tokens.
         resolved_str = str(_resolved)
-        dedup_key = (resolved_str, offset, limit)
+        dedup_key = (resolved_str, offset, limit, hashline)
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
@@ -543,6 +543,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
+
+        # ── Hashline re-format ──────────────────────────────────────────
+        # When hashline=True, replace plain line-number prefixes with
+        # content-hash anchors.  We strip the existing `{lineno}|` prefix
+        # and re-apply format_hash_lines with the same offset.
+        if hashline and result.content and not result.error:
+            from tools.line_hash import format_hash_lines
+            stripped = []
+            for row in result.content.split("\n"):
+                pipe = row.find("|")
+                stripped.append(row[pipe + 1 :] if pipe >= 0 else row)
+            result.content = format_hash_lines(stripped, offset=offset - 1)
 
         # ── Character-count guard ─────────────────────────────────────
         # We're model-agnostic so we can't count tokens; characters are
@@ -849,6 +861,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
+               anchor_range: str = None, new_content: str = None,
                task_id: str = "default") -> str:
     """Patch a file using replace mode or V4A patch format."""
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
@@ -914,6 +927,14 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 if not patch:
                     return tool_error("patch content required")
                 result = file_ops.patch_v4a(patch)
+            elif mode == "hashline":
+                if not path:
+                    return tool_error("path required for hashline mode")
+                if not anchor_range:
+                    return tool_error("anchor_range required for hashline mode (e.g. 'k7m2:a9f1')")
+                if new_content is None:
+                    return tool_error("new_content required for hashline mode (empty string to delete)")
+                result = file_ops.patch_hashline(path, anchor_range, new_content)
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1034,7 +1055,8 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000},
+            "hashline": {"type": "boolean", "description": "When true, output uses hashline format (LINE:HASH|CONTENT) instead of plain line numbers. Use with patch mode='hashline' for anchor-based editing.", "default": False}
         },
         "required": ["path"]
     }
@@ -1055,16 +1077,26 @@ WRITE_FILE_SCHEMA = {
 
 PATCH_SCHEMA = {
     "name": "patch",
-    "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nReplace mode (default): find a unique string and replace it.\nPatch mode: apply V4A multi-file patches for bulk changes.",
+    "description": (
+        "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. "
+        "Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. "
+        "Returns a unified diff. Auto-runs syntax checks after editing.\n\n"
+        "Replace mode (default): find a unique string and replace it.\n"
+        "Patch mode: apply V4A multi-file patches for bulk changes.\n"
+        "Hashline mode: edit using content-hash anchors from read_file(hashline=True). "
+        "More reliable than replace mode because anchors don't depend on exact whitespace matching."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
-            "mode": {"type": "string", "enum": ["replace", "patch"], "description": "Edit mode: 'replace' for targeted find-and-replace, 'patch' for V4A multi-file patches", "default": "replace"},
-            "path": {"type": "string", "description": "File path to edit (required for 'replace' mode)"},
+            "mode": {"type": "string", "enum": ["replace", "patch", "hashline"], "description": "Edit mode: 'replace' for targeted find-and-replace, 'patch' for V4A multi-file patches, 'hashline' for anchor-based edits", "default": "replace"},
+            "path": {"type": "string", "description": "File path to edit (required for 'replace' and 'hashline' modes)"},
             "old_string": {"type": "string", "description": "Text to find in the file (required for 'replace' mode). Must be unique in the file unless replace_all=true. Include enough surrounding context to ensure uniqueness."},
             "new_string": {"type": "string", "description": "Replacement text (required for 'replace' mode). Can be empty string to delete the matched text."},
             "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring a unique match (default: false)", "default": False},
-            "patch": {"type": "string", "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch"}
+            "patch": {"type": "string", "description": "V4A format patch content (required for 'patch' mode). Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch"},
+            "anchor_range": {"type": "string", "description": "Hashline anchor range (required for 'hashline' mode). Format: 'start_hash:end_hash' (e.g. 'k7m2:a9f1'). Both hashes come from read_file(hashline=True) output."},
+            "new_content": {"type": "string", "description": "Replacement content for 'hashline' mode. Empty string deletes the anchored range."}
         },
         "required": ["mode"]
     }
@@ -1092,7 +1124,7 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), hashline=args.get("hashline", False), task_id=tid)
 
 
 def _handle_write_file(args, **kw):
@@ -1105,7 +1137,9 @@ def _handle_patch(args, **kw):
     return patch_tool(
         mode=args.get("mode", "replace"), path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid)
+        replace_all=args.get("replace_all", False), patch=args.get("patch"),
+        anchor_range=args.get("anchor_range"), new_content=args.get("new_content"),
+        task_id=tid)
 
 
 def _handle_search_files(args, **kw):

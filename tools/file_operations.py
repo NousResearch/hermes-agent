@@ -233,6 +233,21 @@ class FileOperations(ABC):
         ...
 
     @abstractmethod
+    def patch_hashline(self, path: str, anchor_range: str, new_content: str) -> PatchResult:
+        """Apply a hashline edit using content-hash anchors.
+
+        Parameters
+        ----------
+        path:
+            File to edit.
+        anchor_range:
+            ``"start_hash:end_hash"`` anchor range (or single anchor for insert).
+        new_content:
+            Replacement text.  Empty string deletes the range.
+        """
+        ...
+
+    @abstractmethod
     def delete_file(self, path: str) -> WriteResult:
         """Delete a file. Returns WriteResult with .error set on failure."""
         ...
@@ -849,7 +864,125 @@ class ShellFileOperations(FileOperations):
         # Apply operations
         result = apply_v4a_operations(operations, self)
         return result
-    
+
+    def patch_hashline(self, path: str, anchor_range: str, new_content: str) -> PatchResult:
+        """Apply a hashline edit using content-hash anchors.
+
+        Steps:
+        1. Read file and build anchor map from current content.
+        2. Parse anchor range and resolve to line numbers.
+        3. Validate anchors against current content (staleness guard).
+        4. Replace/insert/delete the target lines.
+        5. Write back, generate diff, auto-lint.
+        """
+        from tools.line_hash import (
+            build_anchor_map,
+            format_hash_lines,
+            parse_anchor,
+            parse_anchor_range,
+            suggest_similar_anchors,
+        )
+
+        # ── Read file ───────────────────────────────────────────────────
+        read_result = self.read_file_raw(path)
+        if read_result.error:
+            return PatchResult(error=f"Failed to read {path}: {read_result.error}")
+        old_content = read_result.content
+        old_lines = old_content.split("\n")
+
+        # ── Build anchor map ────────────────────────────────────────────
+        anchor_map = build_anchor_map(old_lines)
+
+        # ── Parse range ─────────────────────────────────────────────────
+        parsed = parse_anchor_range(anchor_range)
+        if parsed is None:
+            return PatchResult(
+                error=(
+                    f"Invalid anchor_range format: '{anchor_range}'. "
+                    "Expected 'hash1:hash2' (e.g. 'k7m2:a9f1') or a single hash."
+                )
+            )
+        start_tag, end_tag = parsed
+
+        # ── Resolve anchors ─────────────────────────────────────────────
+        start_info = parse_anchor(start_tag)
+        end_info = parse_anchor(end_tag)
+        if start_info is None:
+            suggestions = suggest_similar_anchors(start_tag, anchor_map, old_lines)
+            hint = "\nDid you mean?\n" + "\n".join(suggestions) if suggestions else ""
+            return PatchResult(
+                error=f"Invalid start anchor: '{start_tag}'. Must be 4-char base36 hash.{hint}"
+            )
+        if end_info is None:
+            suggestions = suggest_similar_anchors(end_tag, anchor_map, old_lines)
+            hint = "\nDid you mean?\n" + "\n".join(suggestions) if suggestions else ""
+            return PatchResult(
+                error=f"Invalid end anchor: '{end_tag}'. Must be 4-char base36 hash.{hint}"
+            )
+
+        start_line = anchor_map.get(start_tag)
+        end_line = anchor_map.get(end_tag)
+
+        if start_line is None:
+            suggestions = suggest_similar_anchors(start_tag, anchor_map, old_lines)
+            hint = "\nDid you mean?\n" + "\n".join(suggestions) if suggestions else ""
+            return PatchResult(
+                error=(
+                    f"Start anchor '{start_tag}' not found in file. "
+                    f"The file content may have changed since last read."
+                    f"{hint}"
+                )
+            )
+        if end_line is None:
+            suggestions = suggest_similar_anchors(end_tag, anchor_map, old_lines)
+            hint = "\nDid you mean?\n" + "\n".join(suggestions) if suggestions else ""
+            return PatchResult(
+                error=(
+                    f"End anchor '{end_tag}' not found in file. "
+                    f"The file content may have changed since last read."
+                    f"{hint}"
+                )
+            )
+
+        # Ensure start <= end.
+        if start_line > end_line:
+            start_line, end_line = end_line, start_line
+
+        # ── Apply edit ──────────────────────────────────────────────────
+        # Lines are 1-based; list is 0-based.
+        before = old_lines[: start_line - 1]
+        after = old_lines[end_line:]
+        new_lines = new_content.split("\n") if new_content else []
+        new_file_lines = before + new_lines + after
+        new_full = "\n".join(new_file_lines)
+
+        # ── Write & diff ────────────────────────────────────────────────
+        write_result = self.write_file(path, new_full)
+        if write_result.error:
+            return PatchResult(error=f"Failed to write {path}: {write_result.error}")
+
+        import difflib
+        diff = "".join(
+            difflib.unified_diff(
+                old_lines, new_file_lines,
+                fromfile=f"a/{path}", tofile=f"b/{path}",
+            )
+        )
+
+        # ── Lint ────────────────────────────────────────────────────────
+        lint = self._check_lint(path)
+
+        return PatchResult(
+            success=True,
+            file_path=path,
+            old_text=format_hash_lines(old_lines[start_line - 1 : end_line], offset=start_line - 1),
+            new_text=new_content,
+            replacement_count=1,
+            strategy="hashline",
+            diff=diff,
+            lint_result=lint,
+        )
+
     def _check_lint(self, path: str) -> LintResult:
         """
         Run syntax check on a file after editing.

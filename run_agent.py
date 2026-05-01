@@ -1393,33 +1393,69 @@ class AIAgent:
                     if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
                         client_kwargs["default_headers"] = dict(_routed_client._default_headers)
                 else:
-                    # When the user explicitly chose a non-OpenRouter provider
-                    # but no credentials were found, fail fast with a clear
-                    # message instead of silently routing through OpenRouter.
-                    _explicit = (self.provider or "").strip().lower()
-                    if _explicit and _explicit not in ("auto", "openrouter", "custom"):
-                        # Look up the actual env var name from the provider
-                        # config — some providers use non-standard names
-                        # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
-                        _env_hint = f"{_explicit.upper()}_API_KEY"
-                        try:
-                            from hermes_cli.auth import PROVIDER_REGISTRY
-                            _pcfg = PROVIDER_REGISTRY.get(_explicit)
-                            if _pcfg and _pcfg.api_key_env_vars:
-                                _env_hint = _pcfg.api_key_env_vars[0]
-                        except Exception:
-                            pass
-                        raise RuntimeError(
-                            f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_env_hint} environment "
-                            f"variable, or switch to a different provider with `hermes model`."
+                    # When the primary provider has no currently-available
+                    # credentials (e.g. single-key pool in 429 cooldown), try
+                    # configured fallback providers before failing init.
+                    _fallback_chain = fallback_model if isinstance(fallback_model, list) else []
+                    _fallback_selected = False
+                    for _fb in _fallback_chain:
+                        if not isinstance(_fb, dict):
+                            continue
+                        _fb_provider = (_fb.get("provider") or "").strip().lower()
+                        _fb_model = (_fb.get("model") or "").strip()
+                        if not _fb_provider or not _fb_model:
+                            continue
+                        _fb_client, _fb_resolved_model = resolve_provider_client(
+                            _fb_provider,
+                            model=_fb_model,
+                            raw_codex=True,
+                            explicit_base_url=_fb.get("base_url"),
+                            explicit_api_key=_fb.get("api_key"),
                         )
-                    # No provider configured — reject with a clear message.
-                    raise RuntimeError(
-                        "No LLM provider configured. Run `hermes model` to "
-                        "select a provider, or run `hermes setup` for first-time "
-                        "configuration."
-                    )
+                        if _fb_client is None:
+                            continue
+                        self.provider = _fb_provider
+                        self.model = _fb_resolved_model or _fb_model
+                        self._fallback_activated = True
+                        client_kwargs = {
+                            "api_key": _fb_client.api_key,
+                            "base_url": str(_fb_client.base_url),
+                        }
+                        if _provider_timeout is not None:
+                            client_kwargs["timeout"] = _provider_timeout
+                        if hasattr(_fb_client, '_default_headers') and _fb_client._default_headers:
+                            client_kwargs["default_headers"] = dict(_fb_client._default_headers)
+                        _fallback_selected = True
+                        break
+
+                    if not _fallback_selected:
+                        # When the user explicitly chose a non-OpenRouter provider
+                        # but no credentials were found, fail fast with a clear
+                        # message instead of silently routing through OpenRouter.
+                        _explicit = (self.provider or "").strip().lower()
+                        if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                            # Look up the actual env var name from the provider
+                            # config — some providers use non-standard names
+                            # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
+                            _env_hint = f"{_explicit.upper()}_API_KEY"
+                            try:
+                                from hermes_cli.auth import PROVIDER_REGISTRY
+                                _pcfg = PROVIDER_REGISTRY.get(_explicit)
+                                if _pcfg and _pcfg.api_key_env_vars:
+                                    _env_hint = _pcfg.api_key_env_vars[0]
+                            except Exception:
+                                pass
+                            raise RuntimeError(
+                                f"Provider '{_explicit}' is set in config.yaml but no API key "
+                                f"was found. Set the {_env_hint} environment "
+                                f"variable, or switch to a different provider with `hermes model`."
+                            )
+                        # No provider configured — reject with a clear message.
+                        raise RuntimeError(
+                            "No LLM provider configured. Run `hermes model` to "
+                            "select a provider, or run `hermes setup` for first-time "
+                            "configuration."
+                        )
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 

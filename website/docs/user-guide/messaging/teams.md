@@ -44,14 +44,14 @@ Teams cannot deliver messages to `localhost`. For local development, use any tun
 ```bash
 # devtunnel (Microsoft)
 devtunnel create hermes-bot --allow-anonymous
-devtunnel port create hermes-bot -p 3978 --protocol https
+devtunnel port create hermes-bot -p 3978 --protocol https  # replace 3978 with TEAMS_PORT if changed
 devtunnel host hermes-bot
 
 # ngrok
-ngrok http 3978
+ngrok http 3978  # replace 3978 with TEAMS_PORT if changed
 
 # cloudflared
-cloudflared tunnel --url http://localhost:3978
+cloudflared tunnel --url http://localhost:3978  # replace 3978 with TEAMS_PORT if changed
 ```
 
 Copy the `https://` URL from the output — you'll use it in the next step. Leave the tunnel running while developing.

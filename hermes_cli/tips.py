@@ -1,6 +1,10 @@
 """Random tips shown at CLI session start to help users discover features."""
 
+import json
+import logging
 import random
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -337,13 +341,57 @@ TIPS = [
 ]
 
 
-def get_random_tip(exclude_recent: int = 0) -> str:
+def get_random_tip(exclude_recent: int = 5) -> str:
     """Return a random tip string.
 
     Args:
-        exclude_recent: not used currently; reserved for future
-            deduplication across sessions.
+        exclude_recent: number of recent tips to exclude from selection
+            to ensure variety across sessions. Defaults to 5.
     """
-    return random.choice(TIPS)
+    if not TIPS:
+        return ""
+
+    if exclude_recent <= 0:
+        return random.choice(TIPS)
+
+    try:
+        from hermes_state import SessionDB
+
+        state = SessionDB()
+        recent_raw = state.get_meta("recent_tips")
+        recent_indices = []
+        if recent_raw:
+            try:
+                recent_indices = json.loads(recent_raw)
+                # Sanitize: ensure they are all valid indices
+                recent_indices = [
+                    idx for idx in recent_indices if isinstance(idx, int) and 0 <= idx < len(TIPS)
+                ]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Filter available tips
+        available_indices = [i for i in range(len(TIPS)) if i not in recent_indices]
+
+        # Fallback if we somehow excluded everything or exclude_recent >= len(TIPS)
+        if not available_indices:
+            available_indices = list(range(len(TIPS)))
+            recent_indices = []  # Reset history if we've exhausted everything
+
+        idx = random.choice(available_indices)
+
+        # Update history
+        recent_indices.append(idx)
+        if len(recent_indices) > exclude_recent:
+            recent_indices = recent_indices[-exclude_recent:]
+
+        state.set_meta("recent_tips", json.dumps(recent_indices))
+        return TIPS[idx]
+
+    except Exception as e:
+        # Never let tip generation crash the session start.
+        # Fall back to pure random on any DB error.
+        logger.debug("Failed to fetch/save recent tips from state.db: %s", e)
+        return random.choice(TIPS)
 
 

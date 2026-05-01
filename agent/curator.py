@@ -767,6 +767,39 @@ def _write_run_report(
     consolidated = classification["consolidated"]
     pruned = classification["pruned"]
 
+    # Rewrite cron job skill references. When the curator consolidates
+    # skill X into umbrella Y, any cron job that lists X fails to load
+    # it at run time — the scheduler skips it and the job runs without
+    # the instructions it was scheduled to follow. Rewriting the
+    # references in-place keeps scheduled jobs working across
+    # consolidation passes. Best-effort: never let a cron-module issue
+    # break the curator.
+    cron_rewrites: Dict[str, Any] = {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
+    try:
+        consolidated_map = {
+            e["name"]: e["into"]
+            for e in consolidated
+            if isinstance(e, dict) and e.get("name") and e.get("into")
+        }
+        pruned_names = [
+            e["name"] for e in pruned
+            if isinstance(e, dict) and e.get("name")
+        ]
+        if consolidated_map or pruned_names:
+            from cron.jobs import rewrite_skill_refs as _rewrite_cron_refs
+            cron_rewrites = _rewrite_cron_refs(
+                consolidated=consolidated_map,
+                pruned=pruned_names,
+            )
+    except Exception as e:
+        logger.debug("Curator cron skill rewrite failed: %s", e, exc_info=True)
+        cron_rewrites = {
+            "rewrites": [],
+            "jobs_updated": 0,
+            "jobs_scanned": 0,
+            "error": str(e),
+        }
+
     payload = {
         "started_at": started_at.isoformat(),
         "duration_seconds": round(elapsed_seconds, 2),
@@ -782,6 +815,7 @@ def _write_run_report(
             "consolidated_this_run": len(consolidated),
             "pruned_this_run": len(pruned),
             "state_transitions": len(transitions),
+            "cron_jobs_rewritten": int(cron_rewrites.get("jobs_updated", 0)),
             "tool_calls_total": sum(tc_counts.values()),
         },
         "tool_call_counts": tc_counts,
@@ -791,6 +825,7 @@ def _write_run_report(
         "pruned_names": [p["name"] for p in pruned],
         "added": added,
         "state_transitions": transitions,
+        "cron_rewrites": cron_rewrites,
         "llm_final": llm_meta.get("final", ""),
         "llm_summary": llm_meta.get("summary", ""),
         "llm_error": llm_meta.get("error"),
@@ -812,6 +847,17 @@ def _write_run_report(
         (run_dir / "REPORT.md").write_text(md, encoding="utf-8")
     except Exception as e:
         logger.debug("Curator REPORT.md write failed: %s", e)
+
+    # cron_rewrites.json — only when at least one job was touched, to
+    # keep run dirs uncluttered for the common no-op case.
+    try:
+        if int(cron_rewrites.get("jobs_updated", 0)) > 0:
+            (run_dir / "cron_rewrites.json").write_text(
+                json.dumps(cron_rewrites, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+    except Exception as e:
+        logger.debug("Curator cron_rewrites.json write failed: %s", e)
 
     return run_dir
 
@@ -941,6 +987,39 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
         lines.append(f"### State transitions ({len(trans)})\n")
         for t in trans:
             lines.append(f"- `{t.get('name')}`: {t.get('from')} → {t.get('to')}")
+        lines.append("")
+
+    # Cron job rewrites — show which scheduled jobs had their skill
+    # references updated so users can audit that the auto-rewrite did
+    # the right thing. Only present when at least one job changed.
+    cron_rw = p.get("cron_rewrites") or {}
+    cron_rewrites_list = cron_rw.get("rewrites") or []
+    if cron_rewrites_list:
+        lines.append(f"### Cron job skill references rewritten ({len(cron_rewrites_list)})\n")
+        lines.append(
+            "_Cron jobs that referenced a consolidated or pruned skill were "
+            "updated in-place so they keep loading the right instructions "
+            "on their next run. See `cron_rewrites.json` for the full record._\n"
+        )
+        SHOW = 25
+        for entry in cron_rewrites_list[:SHOW]:
+            job_name = entry.get("job_name") or entry.get("job_id") or "?"
+            before = entry.get("before") or []
+            after = entry.get("after") or []
+            mapped = entry.get("mapped") or {}
+            dropped = entry.get("dropped") or []
+            lines.append(
+                f"- `{job_name}`: `{', '.join(before)}` → `{', '.join(after) or '(none)'}`"
+            )
+            for old, new in mapped.items():
+                lines.append(f"    - `{old}` → `{new}` (consolidated)")
+            for name in dropped:
+                lines.append(f"    - `{name}` dropped (pruned)")
+        if len(cron_rewrites_list) > SHOW:
+            lines.append(
+                f"- … and {len(cron_rewrites_list) - SHOW} more "
+                "(see `cron_rewrites.json`)"
+            )
         lines.append("")
 
     # Full LLM final response

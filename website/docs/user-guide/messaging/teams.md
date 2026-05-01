@@ -68,7 +68,7 @@ teams app create \
   --endpoint "https://<your-tunnel-url>/api/messages"
 ```
 
-The CLI outputs your `CLIENT_ID`, `CLIENT_SECRET`, and `TENANT_ID`. Save them — you'll need all three.
+The CLI outputs your `CLIENT_ID`, `CLIENT_SECRET`, and `TENANT_ID`, plus an install link for Step 6. Save the client secret — it won't be shown again.
 
 ---
 
@@ -111,11 +111,13 @@ Look for:
 
 ## Step 6: Install the App in Teams
 
-```bash
-teams app install --id <teamsAppId>
+Open the **Install in Teams** link printed by `teams app create` in Step 3:
+
+```
+https://teams.microsoft.com/l/app/<teamsAppId>?installAppPackage=true&appTenantId=<tenantId>
 ```
 
-The `teamsAppId` was printed by `teams app create` in Step 3. After installing, open Microsoft Teams and send a direct message to your bot — it's ready.
+After installing, open Microsoft Teams and send a direct message to your bot — it's ready.
 
 ---
 

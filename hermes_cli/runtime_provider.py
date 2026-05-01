@@ -358,16 +358,20 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return None
     if not requested_norm.startswith("custom:"):
         try:
-            resolved_builtin = auth_mod.resolve_provider(requested_norm)
-            # If resolve_provider mapped the name to "custom" (e.g. "ollama"
-            # is aliased to "custom"), it's NOT a real built-in provider —
-            # fall through so we can check custom_providers entries instead.
-            if resolved_builtin == "custom":
-                pass  # continue to named custom provider lookup
-            else:
-                return None
+            canonical = auth_mod.resolve_provider(requested_norm)
         except AuthError:
             pass
+        else:
+            # A user-declared ``custom_providers`` entry whose name matches
+            # only an *alias* (``kimi`` → built-in ``kimi-coding``) is the
+            # user's intended target — alias rewriting would otherwise hijack
+            # the request.  We only defer to the built-in when the raw name is
+            # the canonical provider itself (``nous``, ``openrouter``, …) so
+            # accidentally shadowing a canonical provider still resolves to
+            # the built-in. See tests/hermes_cli/test_runtime_provider_resolution.py
+            # ``test_named_custom_provider_does_not_shadow_builtin_provider``.
+            if (canonical or "").strip().lower() == requested_norm:
+                return None
 
     config = load_config()
     

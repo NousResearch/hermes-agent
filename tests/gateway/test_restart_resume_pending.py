@@ -999,3 +999,65 @@ class TestStuckLoopEscalation:
 
         assert store._entries[entry.session_key].resume_pending is False
         assert not counts_file.exists()
+
+    def test_increment_restart_failure_counts_uses_atomic_json_write(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.run import GatewayRunner
+
+        source = _make_source()
+        session_key = _make_store(tmp_path).get_or_create_session(source).session_key
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        calls = []
+
+        def _fake_atomic_json_write(path, payload, **kwargs):
+            calls.append((path, payload, kwargs))
+
+        monkeypatch.setattr("gateway.run.atomic_json_write", _fake_atomic_json_write)
+
+        runner = object.__new__(GatewayRunner)
+        runner._increment_restart_failure_counts({session_key})
+
+        assert calls == [
+            (
+                tmp_path / ".restart_failure_counts",
+                {session_key: 1},
+                {"indent": None},
+            )
+        ]
+
+    def test_clear_restart_failure_count_uses_atomic_json_write_when_entries_remain(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+
+        from gateway.run import GatewayRunner
+
+        source = _make_source()
+        session_key = _make_store(tmp_path).get_or_create_session(source).session_key
+        other_key = "agent:main:telegram:dm:other"
+        counts_file = tmp_path / ".restart_failure_counts"
+        counts_file.write_text(
+            json.dumps({session_key: 2, other_key: 1}),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        calls = []
+
+        def _fake_atomic_json_write(path, payload, **kwargs):
+            calls.append((path, payload, kwargs))
+
+        monkeypatch.setattr("gateway.run.atomic_json_write", _fake_atomic_json_write)
+
+        runner = object.__new__(GatewayRunner)
+        runner._clear_restart_failure_count(session_key)
+
+        assert calls == [
+            (
+                tmp_path / ".restart_failure_counts",
+                {other_key: 1},
+                {"indent": None},
+            )
+        ]

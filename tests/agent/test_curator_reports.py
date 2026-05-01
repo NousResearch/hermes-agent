@@ -320,6 +320,7 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
     and cron_rewrites.json."""
     curator = curator_env_with_cron["curator"]
     jobs = curator_env_with_cron["jobs"]
+    home = curator_env_with_cron["home"]
 
     # Create a cron job that depends on a soon-to-be-consolidated skill
     job = jobs.create_job(
@@ -330,6 +331,14 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
     )
 
     # Simulate a curator pass that consolidated `foo` → `foo-umbrella`
+    # The consolidation-artifact verifier requires the umbrella's support
+    # file to exist on disk, so materialize what the tool call would have
+    # produced before invoking the run-report writer.
+    umbrella_dir = home / "skills" / "foo-umbrella"
+    (umbrella_dir / "references").mkdir(parents=True, exist_ok=True)
+    (umbrella_dir / "SKILL.md").write_text("# foo-umbrella\n")
+    (umbrella_dir / "references" / "foo.md").write_text("from foo")
+
     before = [{"name": "foo", "state": "active", "pinned": False}]
     after = [{"name": "foo-umbrella", "state": "active", "pinned": False}]
 

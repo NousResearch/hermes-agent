@@ -188,3 +188,18 @@ async def test_btw_dispatches_mid_run():
     runner._handle_background_command.assert_awaited_once()
     assert result is not None
     assert "can't run mid-turn" not in result
+
+
+@pytest.mark.asyncio
+async def test_goal_dispatches_mid_run():
+    """/goal mid-run must spawn a parallel supervised loop, not interrupt the active run."""
+    runner = _make_runner()
+    runner._handle_goal_command = AsyncMock(
+        return_value='🎯 Goal loop started: "finish the batch"'
+    )
+
+    result = await runner._handle_message(_make_event("/goal finish the batch"))
+
+    runner._handle_goal_command.assert_awaited_once()
+    assert result is not None
+    assert "can't run mid-turn" not in result

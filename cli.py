@@ -6320,6 +6320,8 @@ class HermesCLI:
             self._handle_agents_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
+        elif canonical == "goal":
+            self._handle_goal_command(cmd_original)
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
@@ -6467,6 +6469,156 @@ class HermesCLI:
         
         return True
     
+    def _handle_goal_command(self, cmd: str):
+        """Handle /goal <prompt> — run an autonomous supervised loop in the background."""
+        from hermes_cli.goal_loop import (
+            get_goal_max_loops,
+            make_goal_supervisor_prompt,
+            make_goal_worker_prompt,
+            parse_goal_supervisor_decision,
+        )
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /goal <prompt>")
+            _cprint("  Example: /goal finish the current feature, run tests, and summarize blockers")
+            _cprint("  Runs in a separate session; a supervisor model decides whether to continue.")
+            return
+
+        goal = parts[1].strip()
+        self._background_task_counter += 1
+        task_num = self._background_task_counter
+        task_id = f"goal_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        max_loops = get_goal_max_loops()
+
+        if not self._ensure_runtime_credentials():
+            _cprint("  (>_<) Cannot start goal: no valid credentials.")
+            return
+
+        _cprint(f"  🎯 Goal loop #{task_num} started: \"{goal[:60]}{'...' if len(goal) > 60 else ''}\"")
+        _cprint(f"  Task ID: {task_id}")
+        _cprint(f"  Max supervisor loops: {max_loops}")
+        _cprint("  You can continue chatting — the final goal report will appear when done.\n")
+
+        turn_route = self._resolve_turn_agent_config(goal)
+
+        def _new_agent(session_suffix: str, *, tools_enabled: bool):
+            agent = AIAgent(
+                model=turn_route["model"],
+                api_key=turn_route["runtime"].get("api_key"),
+                base_url=turn_route["runtime"].get("base_url"),
+                provider=turn_route["runtime"].get("provider"),
+                api_mode=turn_route["runtime"].get("api_mode"),
+                acp_command=turn_route["runtime"].get("command"),
+                acp_args=turn_route["runtime"].get("args"),
+                max_iterations=self.max_turns,
+                enabled_toolsets=self.enabled_toolsets if tools_enabled else [],
+                quiet_mode=True,
+                verbose_logging=False,
+                session_id=f"{task_id}_{session_suffix}",
+                platform="cli",
+                session_db=self._session_db,
+                reasoning_config=self.reasoning_config,
+                service_tier=self.service_tier,
+                request_overrides=turn_route.get("request_overrides"),
+                providers_allowed=self._providers_only,
+                providers_ignored=self._providers_ignore,
+                providers_order=self._providers_order,
+                provider_sort=self._provider_sort,
+                provider_require_parameters=self._provider_require_params,
+                provider_data_collection=self._provider_data_collection,
+                fallback_model=self._fallback_model,
+            )
+            agent._print_fn = lambda *_a, **_kw: None
+            return agent
+
+        def run_goal():
+            set_sudo_password_callback(self._sudo_password_callback)
+            set_approval_callback(self._approval_callback)
+            try:
+                set_secret_capture_callback(self._secret_capture_callback)
+            except Exception:
+                pass
+            final_response = ""
+            decision_text = ""
+            completed = False
+            try:
+                previous_response = ""
+                supervisor_feedback = ""
+                for iteration in range(1, max_loops + 1):
+                    if not self._agent_running:
+                        self._spinner_text = f"/goal loop {iteration}/{max_loops}"
+                        if self._app:
+                            self._app.invalidate()
+                    worker = _new_agent(f"worker_{iteration}", tools_enabled=True)
+                    worker_prompt = make_goal_worker_prompt(
+                        goal, iteration, previous_response=previous_response, supervisor_feedback=supervisor_feedback
+                    )
+                    result = worker.run_conversation(user_message=worker_prompt, task_id=f"{task_id}_worker_{iteration}")
+                    final_response = result.get("final_response", "") if result else ""
+                    if not final_response and result and result.get("error"):
+                        final_response = f"Error: {result['error']}"
+
+                    supervisor = _new_agent(f"supervisor_{iteration}", tools_enabled=False)
+                    sup_result = supervisor.run_conversation(
+                        user_message=make_goal_supervisor_prompt(goal, iteration, final_response),
+                        task_id=f"{task_id}_supervisor_{iteration}",
+                    )
+                    decision_text = sup_result.get("final_response", "") if sup_result else ""
+                    decision = parse_goal_supervisor_decision(decision_text)
+                    supervisor_feedback = decision.feedback
+                    if decision.complete:
+                        completed = True
+                        break
+                    previous_response = final_response
+
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+                status = "complete" if completed else f"stopped after {max_loops} loop(s)"
+                _cprint(f"  🎯 Goal loop #{task_num} {status}")
+                _cprint(f"  Goal: \"{goal[:80]}{'...' if len(goal) > 80 else ''}\"")
+                if supervisor_feedback:
+                    _cprint(f"  Supervisor: {supervisor_feedback[:240]}{'...' if len(supervisor_feedback) > 240 else ''}")
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+                response = final_response or decision_text or "(No response generated)"
+                _chat_console = ChatConsole()
+                _chat_console.print(Panel(
+                    _render_final_assistant_content(response, mode=self.final_response_markdown),
+                    title=f"[{_accent_hex()} bold]⚕ Hermes (/goal #{task_num})[/]",
+                    title_align="left",
+                    border_style=_accent_hex(),
+                    box=rich_box.HORIZONTALS,
+                    padding=(1, 4),
+                ))
+                if self.bell_on_complete:
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+            except Exception as e:
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                _cprint(f"  ❌ Goal loop #{task_num} failed: {e}")
+            finally:
+                try:
+                    set_sudo_password_callback(None)
+                    set_approval_callback(None)
+                    set_secret_capture_callback(None)
+                except Exception:
+                    pass
+                self._background_tasks.pop(task_id, None)
+                if not self._agent_running:
+                    self._spinner_text = ""
+                if self._app:
+                    self._invalidate(min_interval=0)
+
+        thread = threading.Thread(target=run_goal, daemon=True, name=f"goal-task-{task_id}")
+        self._background_tasks[task_id] = thread
+        thread.start()
+
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.
 

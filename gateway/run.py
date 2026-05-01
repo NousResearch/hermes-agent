@@ -3944,12 +3944,14 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
 
-            # /background must bypass the running-agent guard — it starts a
-            # parallel task and must never interrupt the active conversation.
+            # /background and /goal must bypass the running-agent guard — they start
+            # parallel tasks and must never interrupt the active conversation.
             # /btw is an alias of /background and resolves to the same canonical
             # name, so this branch handles both commands.
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name == "goal":
+                return await self._handle_goal_command(event)
 
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
@@ -4245,6 +4247,9 @@ class GatewayRunner:
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical == "goal":
+            return await self._handle_goal_command(event)
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
@@ -7103,6 +7108,186 @@ class GatewayRunner:
                 f"A pre-rollback snapshot was saved automatically."
             )
         return f"❌ {result['error']}"
+
+    async def _handle_goal_command(self, event: MessageEvent) -> str:
+        """Handle /goal <prompt> — run a supervised autonomous loop in the background."""
+        from hermes_cli.goal_loop import get_goal_max_loops
+
+        prompt = event.get_command_args().strip()
+        if not prompt:
+            return (
+                "Usage: /goal <prompt>\n"
+                "Example: /goal finish the current feature, run tests, and summarize blockers\n\n"
+                "Runs the prompt in a separate session. A supervisor model decides whether to continue."
+            )
+
+        source = event.source
+        task_id = f"goal_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+        _task = asyncio.create_task(self._run_goal_task(prompt, source, task_id))
+        self._background_tasks.add(_task)
+        _task.add_done_callback(self._background_tasks.discard)
+
+        max_loops = get_goal_max_loops()
+        preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+        return (
+            f'🎯 Goal loop started: "{preview}"\n'
+            f"Task ID: {task_id}\n"
+            f"Max supervisor loops: {max_loops}\n"
+            "You can keep chatting — the final goal report will appear when done."
+        )
+
+    async def _run_goal_task(self, prompt: str, source: "SessionSource", task_id: str) -> None:
+        """Execute a /goal worker/supervisor loop and deliver the result to the chat."""
+        from run_agent import AIAgent
+        from hermes_cli.goal_loop import (
+            get_goal_max_loops,
+            make_goal_supervisor_prompt,
+            make_goal_worker_prompt,
+            parse_goal_supervisor_decision,
+        )
+
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            logger.warning("No adapter for platform %s in goal task %s", source.platform, task_id)
+            return
+
+        _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        max_loops = get_goal_max_loops()
+        preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+
+        try:
+            user_config = _load_gateway_config()
+            model, runtime_kwargs = self._resolve_session_agent_runtime(source=source, user_config=user_config)
+            if not runtime_kwargs.get("api_key"):
+                await adapter.send(
+                    source.chat_id,
+                    f"❌ Goal task {task_id} failed: no provider credentials configured.",
+                    metadata=_thread_metadata,
+                )
+                return
+
+            platform_key = _platform_config_key(source.platform)
+            from hermes_cli.tools_config import _get_platform_tools
+            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            pr = self._provider_routing
+            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            reasoning_config = self._resolve_session_reasoning_config(source=source)
+            self._reasoning_config = reasoning_config
+            self._service_tier = self._load_service_tier()
+            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+
+            def run_sync():
+                previous_response = ""
+                supervisor_feedback = ""
+                final_response = ""
+                decision_text = ""
+                completed = False
+
+                def new_agent(session_suffix: str, *, tools_enabled: bool):
+                    return AIAgent(
+                        model=turn_route["model"],
+                        **turn_route["runtime"],
+                        max_iterations=max_iterations,
+                        quiet_mode=True,
+                        verbose_logging=False,
+                        enabled_toolsets=enabled_toolsets if tools_enabled else [],
+                        reasoning_config=reasoning_config,
+                        service_tier=self._service_tier,
+                        request_overrides=turn_route.get("request_overrides"),
+                        providers_allowed=pr.get("only"),
+                        providers_ignored=pr.get("ignore"),
+                        providers_order=pr.get("order"),
+                        provider_sort=pr.get("sort"),
+                        provider_require_parameters=pr.get("require_parameters", False),
+                        provider_data_collection=pr.get("data_collection"),
+                        session_id=f"{task_id}_{session_suffix}",
+                        platform=platform_key,
+                        user_id=source.user_id,
+                        user_name=source.user_name,
+                        chat_id=source.chat_id,
+                        chat_name=source.chat_name,
+                        chat_type=source.chat_type,
+                        thread_id=source.thread_id,
+                        session_db=self._session_db,
+                        fallback_model=self._fallback_model,
+                    )
+
+                for iteration in range(1, max_loops + 1):
+                    worker = new_agent(f"worker_{iteration}", tools_enabled=True)
+                    try:
+                        result = worker.run_conversation(
+                            user_message=make_goal_worker_prompt(
+                                prompt,
+                                iteration,
+                                previous_response=previous_response,
+                                supervisor_feedback=supervisor_feedback,
+                            ),
+                            task_id=f"{task_id}_worker_{iteration}",
+                        )
+                    finally:
+                        self._cleanup_agent_resources(worker)
+                    final_response = result.get("final_response", "") if result else ""
+                    if not final_response and result and result.get("error"):
+                        final_response = f"Error: {result['error']}"
+
+                    supervisor = new_agent(f"supervisor_{iteration}", tools_enabled=False)
+                    try:
+                        sup_result = supervisor.run_conversation(
+                            user_message=make_goal_supervisor_prompt(prompt, iteration, final_response),
+                            task_id=f"{task_id}_supervisor_{iteration}",
+                        )
+                    finally:
+                        self._cleanup_agent_resources(supervisor)
+                    decision_text = sup_result.get("final_response", "") if sup_result else ""
+                    decision = parse_goal_supervisor_decision(decision_text)
+                    supervisor_feedback = decision.feedback
+                    if decision.complete:
+                        completed = True
+                        break
+                    previous_response = final_response
+
+                return {
+                    "final_response": final_response or decision_text,
+                    "completed": completed,
+                    "supervisor_feedback": supervisor_feedback,
+                }
+
+            result = await self._run_in_executor_with_context(run_sync)
+            response = (result or {}).get("final_response", "") or "(No response generated)"
+            completed = bool((result or {}).get("completed"))
+            feedback = (result or {}).get("supervisor_feedback", "")
+            status = "complete" if completed else f"stopped after {max_loops} loop(s)"
+            header = f'🎯 Goal loop {status}\nGoal: "{preview}"\n'
+            if feedback:
+                header += f"Supervisor: {feedback[:240]}{'...' if len(feedback) > 240 else ''}\n"
+            header += "\n"
+
+            media_files, response = adapter.extract_media(response)
+            images, text_content = adapter.extract_images(response)
+            if text_content:
+                await adapter.send(source.chat_id, header + text_content, metadata=_thread_metadata)
+            elif not images and not media_files:
+                await adapter.send(source.chat_id, header + "(No response generated)", metadata=_thread_metadata)
+            for image_url, alt_text in (images or []):
+                try:
+                    await adapter.send_image(source.chat_id, image_url, caption=alt_text, metadata=_thread_metadata)
+                except Exception:
+                    pass
+            for media_path, _is_voice in (media_files or []):
+                try:
+                    await adapter.send_document(source.chat_id, file_path=media_path, metadata=_thread_metadata)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.exception("Goal task %s failed", task_id)
+            try:
+                await adapter.send(
+                    chat_id=source.chat_id,
+                    content=f"❌ Goal task {task_id} failed: {e}",
+                    metadata=_thread_metadata,
+                )
+            except Exception:
+                pass
 
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.

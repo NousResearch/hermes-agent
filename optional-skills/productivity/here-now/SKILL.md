@@ -1,16 +1,6 @@
 ---
 name: here.now
-description: >
-  here.now lets agents publish websites and store private files in cloud
-  Drives. Use Sites to publish HTML, documents, images, PDFs, videos, and
-  static files to live URLs at {slug}.here.now or custom domains. Use Drives as private cloud
-  folders where agents can store files (documents, context, memory, plans,
-  assets, media, research, code, etc), share them with other agents, and
-  continue across sessions and tools. Use when asked to "publish this", "host
-  this", "deploy this", "share this on the web", "make a website", "put this
-  online", "create a webpage", "generate a URL", "build a chatbot", "save this
-  to my Drive", "store this for later", "write this to cloud storage", "share a
-  folder with another agent", or "use my here.now Drive".
+description: Publish static sites to {slug}.here.now and store private files in cloud Drives for agent-to-agent handoff.
 version: 1.15.3
 author: here.now
 license: MIT

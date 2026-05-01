@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 try:
+    from hermes_constants import get_hermes_home
+except ImportError:
+    import os as _os
+    def get_hermes_home() -> Path:  # type: ignore[misc]
+        val = (_os.environ.get("HERMES_HOME") or "").strip()
+        return Path(val) if val else Path.home() / ".hermes"
+
+try:
     from fastapi import APIRouter
 except Exception:  # Allows local unit tests without dashboard dependencies.
     class APIRouter:  # type: ignore
@@ -135,15 +143,15 @@ ACHIEVEMENTS: List[Dict[str, Any]] = [
 
 
 def state_path() -> Path:
-    return Path.home() / ".hermes" / "plugins" / "hermes-achievements" / "state.json"
+    return get_hermes_home() / "plugins" / "hermes-achievements" / "state.json"
 
 
 def snapshot_path() -> Path:
-    return Path.home() / ".hermes" / "plugins" / "hermes-achievements" / "scan_snapshot.json"
+    return get_hermes_home() / "plugins" / "hermes-achievements" / "scan_snapshot.json"
 
 
 def checkpoint_path() -> Path:
-    return Path.home() / ".hermes" / "plugins" / "hermes-achievements" / "scan_checkpoint.json"
+    return get_hermes_home() / "plugins" / "hermes-achievements" / "scan_checkpoint.json"
 
 
 def load_state() -> Dict[str, Any]:

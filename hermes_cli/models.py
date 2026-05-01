@@ -311,7 +311,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "deepseek": [
         "deepseek-v4-pro",
+        "deepseek-v4-pro[1m]",
         "deepseek-v4-flash",
+        "deepseek-v4-flash[1m]",
         "deepseek-chat",
         "deepseek-reasoner",
     ],

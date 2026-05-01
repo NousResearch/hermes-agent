@@ -288,7 +288,7 @@ def generate_phonetics(segments: list[dict], api_key: str | None = None) -> list
             base_url="https://integrate.api.nvidia.com/v1",
         )
         response = client.chat.completions.create(
-            model="moonshotai/kimi-k2.5",
+            model="moonshotai/kimi-k2.6",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=2048,

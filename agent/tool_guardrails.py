@@ -186,7 +186,14 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
 
 
 def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
-    """Classify a tool result using shared display/runtime semantics."""
+    """Safety-fallback classifier used only when callers don't pass ``failed``.
+
+    Mirrors ``agent.display._detect_tool_failure`` exactly so the guardrail
+    never disagrees with the CLI's user-visible ``[error]`` tag. Production
+    callers in ``run_agent.py`` always pass an explicit ``failed=`` derived
+    from ``_detect_tool_failure``; this function exists so standalone callers
+    (tests, tooling) still get consistent behavior.
+    """
     if result is None:
         return False, ""
 
@@ -196,31 +203,18 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
                 return True, f" [exit {exit_code}]"
-            if data.get("success") is False or data.get("failed") is True:
-                return True, " [error]"
-            error = data.get("error")
-            if error is not None and error != "":
-                return True, " [error]"
         return False, ""
 
-    data = safe_json_loads(result)
-    if isinstance(data, dict):
-        if tool_name == "memory":
-            error = data.get("error", "")
-            if data.get("success") is False and isinstance(error, str) and "exceed the limit" in error:
+    if tool_name == "memory":
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
+            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
-        if data.get("success") is False or data.get("failed") is True:
-            return True, " [error]"
-        error = data.get("error")
-        if error is not None and error != "":
-            return True, " [error]"
-        return False, ""
 
     lower = result[:500].lower()
-    if "traceback" in lower or lower.startswith("error:"):
-        return True, " [error]"
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
         return True, " [error]"
+
     return False, ""
 
 

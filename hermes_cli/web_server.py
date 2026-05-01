@@ -345,6 +345,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "dashboard": "display",
     "code_execution": "agent",
     "prompt_caching": "agent",
+    "goals": "agent",
     # Only `telegram.reactions` currently lives under telegram — fold it in
     # with the other messaging-platform config (discord) so it isn't an
     # orphan tab of one field.
@@ -3617,12 +3618,16 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
 
 @app.get("/api/dashboard/plugins")
 async def get_dashboard_plugins():
-    """Return discovered dashboard plugins."""
+    """Return discovered dashboard plugins (excludes user-hidden ones)."""
     plugins = _get_dashboard_plugins()
-    # Strip internal fields before sending to frontend.
+    # Read user's hidden plugins list from config.
+    config = load_config()
+    hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+    # Strip internal fields before sending to frontend and filter out hidden.
     return [
         {k: v for k, v in p.items() if not k.startswith("_")}
         for p in plugins
+        if p["name"] not in hidden
     ]
 
 
@@ -3631,6 +3636,268 @@ async def rescan_dashboard_plugins():
     """Force re-scan of dashboard plugins."""
     plugins = _get_dashboard_plugins(force_rescan=True)
     return {"ok": True, "count": len(plugins)}
+
+
+class _AgentPluginInstallBody(BaseModel):
+    identifier: str
+    force: bool = False
+    enable: bool = True
+
+
+def _strip_dashboard_manifest(p: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in p.items() if not k.startswith("_")}
+
+
+def _merged_plugins_hub() -> Dict[str, Any]:
+    """Agent discovery + dashboard manifests + optional provider picker metadata."""
+    from hermes_cli.plugins_cmd import (
+        _discover_all_plugins,
+        _get_current_context_engine,
+        _get_current_memory_provider,
+        _discover_context_engines,
+        _discover_memory_providers,
+        _get_disabled_set,
+        _get_enabled_set,
+        _read_manifest as _read_plugin_manifest_at,
+    )
+
+    dashboard_list = _get_dashboard_plugins()
+    dash_by_name = {str(p["name"]): p for p in dashboard_list}
+
+    disabled_set = _get_disabled_set()
+    enabled_set = _get_enabled_set()
+
+    # Read user-hidden plugins from config for the user_hidden field.
+    config = load_config()
+    hidden_plugins: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+
+    plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
+    rows: List[Dict[str, Any]] = []
+
+    for name, version, description, source, dir_str in _discover_all_plugins():
+        if name in disabled_set:
+            runtime_status = "disabled"
+        elif name in enabled_set:
+            runtime_status = "enabled"
+        else:
+            runtime_status = "inactive"
+
+        dir_path = Path(dir_str)
+        dm = dash_by_name.get(name)
+        has_dash_manifest = dm is not None or (dir_path / "dashboard" / "manifest.json").exists()
+
+        under_user_tree = False
+        try:
+            dir_path.resolve().relative_to(plugins_root_resolved)
+            under_user_tree = True
+        except ValueError:
+            pass
+
+        can_remove_update = (
+            source in ("user", "git") and under_user_tree and Path(dir_str).is_dir()
+        )
+
+        # Check if this plugin provides tools that require auth
+        auth_required = False
+        auth_command = ""
+        manifest_data = _read_plugin_manifest_at(dir_path)
+        provides_tools = manifest_data.get("provides_tools") or []
+        if provides_tools:
+            try:
+                from tools.registry import registry
+                for tname in provides_tools:
+                    entry = registry.get_entry(tname)
+                    if entry and entry.check_fn and not entry.check_fn():
+                        auth_required = True
+                        auth_command = f"hermes auth {name}"
+                        break
+            except Exception:
+                pass
+
+        rows.append({
+            "name": name,
+            "version": version or "",
+            "description": description or "",
+            "source": source,
+            "runtime_status": runtime_status,
+            "has_dashboard_manifest": has_dash_manifest,
+            "dashboard_manifest": _strip_dashboard_manifest(dm) if dm else None,
+            "path": dir_str,
+            "can_remove": can_remove_update,
+            "can_update_git": can_remove_update and (Path(dir_str) / ".git").exists(),
+            "auth_required": auth_required,
+            "auth_command": auth_command,
+            "user_hidden": name in hidden_plugins,
+        })
+
+    agent_names = {r["name"] for r in rows}
+    orphan_dashboard = [
+        _strip_dashboard_manifest(p)
+        for p in dashboard_list
+        if str(p["name"]) not in agent_names
+    ]
+
+    memory_providers: List[Dict[str, str]] = []
+    try:
+        for n, desc in _discover_memory_providers():
+            memory_providers.append({"name": n, "description": desc})
+    except Exception:
+        memory_providers = []
+
+    context_engines: List[Dict[str, str]] = []
+    try:
+        for n, desc in _discover_context_engines():
+            context_engines.append({"name": n, "description": desc})
+    except Exception:
+        context_engines = []
+
+    return {
+        "plugins": rows,
+        "orphan_dashboard_plugins": orphan_dashboard,
+        "providers": {
+            "memory_provider": _get_current_memory_provider() or "",
+            "memory_options": memory_providers,
+            "context_engine": _get_current_context_engine(),
+            "context_options": context_engines,
+        },
+    }
+
+
+@app.get("/api/dashboard/plugins/hub")
+async def get_plugins_hub(request: Request):
+    """Unified agent plugins + dashboard extension metadata (session protected)."""
+    _require_token(request)
+    try:
+        return _merged_plugins_hub()
+    except Exception as exc:
+        _log.warning("plugins/hub failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
+
+
+@app.post("/api/dashboard/agent-plugins/install")
+async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
+    _require_token(request)
+    from hermes_cli.plugins_cmd import dashboard_install_plugin
+
+    result = dashboard_install_plugin(
+        body.identifier.strip(),
+        force=body.force,
+        enable=body.enable,
+    )
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("error") or "Install failed.",
+        )
+    _get_dashboard_plugins(force_rescan=True)
+    # Strip internal paths from the response
+    result.pop("after_install_path", None)
+    return result
+
+
+def _validate_plugin_name(name: str) -> str:
+    """Reject path-traversal attempts in plugin name URL parameters."""
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="Invalid plugin name.")
+    return name
+
+
+@app.post("/api/dashboard/agent-plugins/{name}/enable")
+async def post_agent_plugin_enable(request: Request, name: str):
+    _require_token(request)
+    name = _validate_plugin_name(name)
+    from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
+
+    result = dashboard_set_agent_plugin_enabled(name, enabled=True)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Enable failed.")
+    return result
+
+
+@app.post("/api/dashboard/agent-plugins/{name}/disable")
+async def post_agent_plugin_disable(request: Request, name: str):
+    _require_token(request)
+    name = _validate_plugin_name(name)
+    from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
+
+    result = dashboard_set_agent_plugin_enabled(name, enabled=False)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Disable failed.")
+    return result
+
+
+@app.post("/api/dashboard/agent-plugins/{name}/update")
+async def post_agent_plugin_update(request: Request, name: str):
+    _require_token(request)
+    name = _validate_plugin_name(name)
+    from hermes_cli.plugins_cmd import dashboard_update_user_plugin
+
+    result = dashboard_update_user_plugin(name)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Update failed.")
+    _get_dashboard_plugins(force_rescan=True)
+    return result
+
+
+@app.delete("/api/dashboard/agent-plugins/{name}")
+async def delete_agent_plugin(request: Request, name: str):
+    _require_token(request)
+    name = _validate_plugin_name(name)
+    from hermes_cli.plugins_cmd import dashboard_remove_user_plugin
+
+    result = dashboard_remove_user_plugin(name)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Remove failed.")
+    _get_dashboard_plugins(force_rescan=True)
+    return result
+
+
+class _PluginProvidersPutBody(BaseModel):
+    memory_provider: Optional[str] = None
+    context_engine: Optional[str] = None
+
+
+@app.put("/api/dashboard/plugin-providers")
+async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
+    """Persist memory provider / context engine selection (writes config.yaml)."""
+    _require_token(request)
+    from hermes_cli.plugins_cmd import (
+        _save_context_engine,
+        _save_memory_provider,
+    )
+
+    if body.memory_provider is not None:
+        _save_memory_provider(body.memory_provider)
+    if body.context_engine is not None:
+        _save_context_engine(body.context_engine)
+    return {"ok": True}
+
+
+class _PluginVisibilityBody(BaseModel):
+    hidden: bool
+
+
+@app.post("/api/dashboard/plugins/{name}/visibility")
+async def post_plugin_visibility(request: Request, name: str, body: _PluginVisibilityBody):
+    """Toggle a plugin's sidebar visibility (persists to config.yaml dashboard.hidden_plugins)."""
+    _require_token(request)
+    name = _validate_plugin_name(name)
+
+    config = load_config()
+    if "dashboard" not in config or not isinstance(config.get("dashboard"), dict):
+        config["dashboard"] = {}
+    hidden_list: list = config["dashboard"].get("hidden_plugins") or []
+    if not isinstance(hidden_list, list):
+        hidden_list = []
+
+    if body.hidden and name not in hidden_list:
+        hidden_list.append(name)
+    elif not body.hidden and name in hidden_list:
+        hidden_list.remove(name)
+
+    config["dashboard"]["hidden_plugins"] = hidden_list
+    save_config(config)
+    return {"ok": True, "name": name, "hidden": body.hidden}
 
 
 @app.get("/dashboard-plugins/{plugin_name}/{file_path:path}")

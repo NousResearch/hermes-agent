@@ -160,11 +160,13 @@ class HonchoSessionManager:
         Peers are lazy -- no API call until first use.
         Observation settings are controlled per-session via SessionPeerConfig.
         """
-        if peer_id in self._peers_cache:
-            return self._peers_cache[peer_id]
+        with self._cache_lock:
+            if peer_id in self._peers_cache:
+                return self._peers_cache[peer_id]
 
         peer = self.honcho.peer(peer_id)
-        self._peers_cache[peer_id] = peer
+        with self._cache_lock:
+            self._peers_cache[peer_id] = peer
         return peer
 
     def _get_or_create_honcho_session(
@@ -176,9 +178,10 @@ class HonchoSessionManager:
         Returns:
             Tuple of (honcho_session, existing_messages).
         """
-        if session_id in self._sessions_cache:
-            logger.debug("Honcho session '%s' retrieved from cache", session_id)
-            return self._sessions_cache[session_id], []
+        with self._cache_lock:
+            if session_id in self._sessions_cache:
+                logger.debug("Honcho session '%s' retrieved from cache", session_id)
+                return self._sessions_cache[session_id], []
 
         session = self.honcho.session(session_id)
 

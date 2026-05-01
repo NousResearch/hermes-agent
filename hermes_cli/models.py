@@ -2651,6 +2651,30 @@ def validate_requested_model(
     normalized = normalize_provider(provider)
     if normalized == "openrouter" and base_url and "openrouter.ai" not in base_url:
         normalized = "custom"
+
+    # Custom providers may define an explicit models map/list in config.
+    # When present, trust that local declaration before probing /v1/models,
+    # because many custom endpoints return incomplete listings.
+    if normalized == "custom":
+        try:
+            cfg = load_config() or {}
+            custom = (cfg.get("custom_providers") or {}).get(provider) or {}
+            declared_models = custom.get("models") or {}
+            if isinstance(declared_models, dict):
+                declared = [str(k) for k in declared_models.keys() if k]
+            elif isinstance(declared_models, list):
+                declared = [str(m) for m in declared_models if m]
+            else:
+                declared = []
+            if declared and requested in set(declared):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+        except Exception:
+            pass
     requested_for_lookup = requested
     if normalized == "copilot":
         requested_for_lookup = normalize_copilot_model_id(

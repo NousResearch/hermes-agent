@@ -623,6 +623,79 @@ class TestLoadGatewayConfig:
         import os
         assert os.environ.get("TELEGRAM_PROXY") == "socks5://from-env:1080"
 
+    def test_top_level_telegram_settings_do_not_disable_env_token_setup(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  reactions: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+        monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+
+        config = load_gateway_config()
+
+        telegram_config = config.platforms[Platform.TELEGRAM]
+        assert telegram_config.enabled is True
+        assert telegram_config.token == "123:abc"
+        assert "_enabled_explicit" not in telegram_config.extra
+
+    def test_explicit_top_level_telegram_enabled_false_wins_over_env_token(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  enabled: false\n"
+            "  reactions: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+        monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+
+        config = load_gateway_config()
+
+        telegram_config = config.platforms[Platform.TELEGRAM]
+        assert telegram_config.enabled is False
+        assert telegram_config.token == "123:abc"
+        assert "_enabled_explicit" not in telegram_config.extra
+
+    def test_explicit_platforms_telegram_enabled_false_wins_over_env_token(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    enabled: false\n"
+            "    extra:\n"
+            "      disable_link_previews: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+
+        config = load_gateway_config()
+
+        telegram_config = config.platforms[Platform.TELEGRAM]
+        assert telegram_config.enabled is False
+        assert telegram_config.token == "123:abc"
+        assert telegram_config.extra.get("disable_link_previews") is True
+        assert "_enabled_explicit" not in telegram_config.extra
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already

@@ -351,6 +351,13 @@ class DockerEnvironment(BaseEnvironment):
             if not vol:
                 continue
             if ":" in vol:
+                # Docker/Podman don't expand ~ in -v arguments; they'd try to
+                # mount a literal "~" directory. Expand the host side of
+                # host:container[:opts] before handing it off.
+                host_part, sep, rest = vol.partition(":")
+                if host_part.startswith("~"):
+                    host_part = os.path.expanduser(host_part)
+                vol = f"{host_part}{sep}{rest}"
                 volume_args.extend(["-v", vol])
                 if ":/workspace" in vol:
                     workspace_explicitly_mounted = True

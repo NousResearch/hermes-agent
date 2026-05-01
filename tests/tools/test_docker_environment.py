@@ -114,6 +114,32 @@ def test_ensure_docker_available_uses_resolved_executable(monkeypatch):
     ]
 
 
+def test_user_volumes_with_tilde_are_expanded(monkeypatch, tmp_path):
+    # podman/docker don't expand ~ in -v args; hermes must do it before
+    # handing the spec off, otherwise the runtime tries to mount a literal
+    # "~" directory and fails with exit 125.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        volumes=[
+            "~/Documents/projects:/workspace/projects",
+            "~/.hermes:/.hermes:ro",
+            "/already/absolute:/abs",
+        ],
+    )
+
+    run_cmd = next(cmd for cmd, _ in calls if isinstance(cmd, list) and "run" in cmd)
+    expected_home = str(home)
+    assert f"{expected_home}/Documents/projects:/workspace/projects" in run_cmd
+    assert f"{expected_home}/.hermes:/.hermes:ro" in run_cmd
+    assert "/already/absolute:/abs" in run_cmd
+    # nothing literal-tilde should reach the runtime
+    assert not any(arg.startswith("~/") for arg in run_cmd)
+
+
 def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     """Opt-in docker cwd mounting should bind the host cwd to /workspace."""
     project_dir = tmp_path / "my-project"

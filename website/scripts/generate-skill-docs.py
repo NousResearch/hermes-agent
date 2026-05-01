@@ -621,24 +621,22 @@ def build_sidebar_items(entries: list[tuple[dict[str, Any], dict[str, Any]]]) ->
 
 
 def write_sidebar(entries):
-    data = build_sidebar_items(entries)
-    # Render just the "Skills" block TS for inclusion.
-    def render_items(cats: list[dict]) -> str:
-        lines = []
-        for c in cats:
-            lines.append("            {")
-            lines.append("              type: 'category',")
-            lines.append(f"              label: '{c['label']}',")
-            lines.append("              collapsed: true,")
-            lines.append("              items: [")
-            for item in c["items"]:
-                lines.append(f"                '{item}',")
-            lines.append("              ],")
-            lines.append("            },")
-        return "\n".join(lines)
-
-    bundled_block = render_items(data["bundled_categories"])
-    optional_block = render_items(data["optional_categories"])
+    # The per-skill pages (`build_sidebar_items(entries)`) are still generated
+    # as standalone docs under `website/docs/user-guide/skills/{bundled,optional}/`
+    # and reachable via the catalog pages in Reference — but we intentionally
+    # do NOT explode them into the left sidebar. Two hundred-plus skill entries
+    # drown the actual product docs and make the site feel overwhelming to
+    # first-time visitors.
+    #
+    # Sidebar now shows:
+    #   Skills
+    #   ├── godmode              (hand-written spotlight guide)
+    #   ├── google-workspace     (hand-written spotlight guide)
+    #   ├── Bundled catalog →    (link to reference/skills-catalog)
+    #   └── Optional catalog →   (link to reference/optional-skills-catalog)
+    #
+    # The catalog pages are auto-regenerated tables with a link to every skill.
+    _ = build_sidebar_items(entries)  # still called for any side effects / validation
 
     skills_subtree = (
         "        {\n"
@@ -648,22 +646,8 @@ def write_sidebar(entries):
         "          items: [\n"
         "            'user-guide/skills/godmode',\n"
         "            'user-guide/skills/google-workspace',\n"
-        "            {\n"
-        "              type: 'category',\n"
-        "              label: 'Bundled (by default)',\n"
-        "              collapsed: true,\n"
-        "              items: [\n"
-        + bundled_block
-        + "\n              ],\n"
-        "            },\n"
-        "            {\n"
-        "              type: 'category',\n"
-        "              label: 'Optional (installable)',\n"
-        "              collapsed: true,\n"
-        "              items: [\n"
-        + optional_block
-        + "\n              ],\n"
-        "            },\n"
+        "            'reference/skills-catalog',\n"
+        "            'reference/optional-skills-catalog',\n"
         "          ],\n"
         "        },\n"
     )

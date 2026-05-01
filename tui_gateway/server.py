@@ -1251,6 +1251,70 @@ def _sync_session_key_after_compress(sid: str, session: dict) -> None:
         pass
 
 
+
+# ---- Tool-output truncation -------------------------------------------------
+
+# Per-turn safety valve: when a single tool (or a batch of parallel tools)
+# dumps a huge stdout, the raw text inflates the request tokens sent to the
+# model and can exceed the context window mid-turn.  _compress_context runs
+# *between* turns, so it never gets a chance to act.  Truncating tool results
+# here keeps the gateway-side history under a hard ceiling before the
+# agent assembles the LLM payload.
+#
+# Default threshold is tuned for qwen3.6-27b (~32k context).  Each tool
+# message is capped at 8k chars (≈2k tokens), which leaves room for system
+# prompt + prior history + response headroom.
+_MAX_TOOL_CHARS = int(os.environ.get("HERMES_TUI_MAX_TOOL_CHARS", "8000"))
+
+
+def _truncate_tool_messages(
+    messages: list[dict],
+    max_chars: int = _MAX_TOOL_CHARS,
+) -> list[dict]:
+    """Return a shallow copy of *messages* with oversized tool texts truncated.
+
+    Only tool messages, or flat role-less messages that look like normalized
+    tool output, are rewritten.  A trailing ``... [truncated, N chars total]``
+    banner is appended so the model still knows data was dropped.
+    """
+    out: list[dict] = []
+    protected_roles = {"user", "assistant", "system"}
+    flat_text_keys = {"role", "content", "text"}
+
+    for m in messages:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+
+        role = str(m.get("role", "")).lower()
+        field = ""
+        text = ""
+        if role == "tool":
+            for candidate in ("content", "text"):
+                value = m.get(candidate)
+                if isinstance(value, str) and value:
+                    field = candidate
+                    text = value
+                    break
+        elif role not in protected_roles and set(m).issubset(flat_text_keys):
+            for candidate in ("content", "text"):
+                value = m.get(candidate)
+                if isinstance(value, str) and value:
+                    field = candidate
+                    text = value
+                    break
+
+        if text and len(text) > max_chars:
+            head = text[:max_chars]
+            # Break at last newline to avoid splitting a word / ANSI code.
+            if "\n" in head:
+                head = head.rsplit("\n", 1)[0]
+            banner = f"\n... [truncated, {len(text)} chars total]"
+            m = dict(m)
+            m[field] = head + banner
+        out.append(m)
+    return out
+
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
@@ -2939,9 +3003,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     payload["rendered"] = r
                 _emit("message.delta", sid, payload)
 
+            # Safety valve: truncate oversized tool outputs before the agent
+            # assembles the LLM payload, preventing mid-turn context-window
+            # stalls when parallel tools dump large stdout.
+            safe_history = _truncate_tool_messages(history)
+
             result = agent.run_conversation(
                 run_message,
-                conversation_history=list(history),
+                conversation_history=safe_history,
                 stream_callback=_stream,
             )
 

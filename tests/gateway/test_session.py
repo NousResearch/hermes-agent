@@ -1243,7 +1243,7 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
 
-    def test_db_rewrite_is_atomic_on_insert_failure(self, tmp_path):
+    def test_db_rewrite_is_atomic_on_insert_failure(self, tmp_path, monkeypatch):
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "test.db")
@@ -1258,16 +1258,27 @@ class TestRewriteTranscriptPreservesReasoning:
         store._db = db
         store._loaded = True
 
+        # Force the second insert inside replace_messages to fail, simulating
+        # any storage-layer error that might abort a multi-row rewrite.
+        real_encode = SessionDB._encode_content
+        calls = {"n": 0}
+
+        def flaky_encode(cls, content):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated storage failure")
+            return real_encode.__func__(cls, content)
+
+        monkeypatch.setattr(SessionDB, "_encode_content", classmethod(flaky_encode))
+
         replacement = [
             {"role": "user", "content": "after user"},
-            {
-                "role": "assistant",
-                "content": {"not": "sqlite-bindable but JSONL-safe"},
-            },
+            {"role": "assistant", "content": "after assistant"},
         ]
 
         store.rewrite_transcript(session_id, replacement)
 
+        # The rewrite must roll back atomically — original messages preserved.
         after = db.get_messages_as_conversation(session_id)
         assert [msg["content"] for msg in after] == [
             "before user",

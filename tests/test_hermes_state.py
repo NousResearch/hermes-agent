@@ -212,6 +212,82 @@ class TestMessageStorage:
         messages = db.get_messages("s1")
         assert messages[0]["tool_calls"] == tool_calls
 
+    def test_multimodal_list_content_round_trip(self, db):
+        """Multimodal ``content`` (list of parts) must survive the SQLite
+        round-trip.  sqlite3 cannot bind Python lists directly, so the DB
+        layer JSON-encodes structured content on write and decodes on read.
+
+        Regression test for the "Error binding parameter 3: type 'list' is
+        not supported" crash users hit when pasting screenshots into the
+        TUI (issue #17522).
+        """
+        db.create_session(session_id="s1", source="cli")
+        content = [
+            {"type": "text", "text": "describe this screenshot"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,iVBORw0KG..."},
+            },
+        ]
+
+        # Write must not raise
+        db.append_message("s1", role="user", content=content)
+
+        # get_messages decodes back to the original list
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 1
+        assert msgs[0]["content"] == content
+
+        # get_messages_as_conversation decodes back to the original list
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert conv[0] == {"role": "user", "content": content}
+
+    def test_dict_content_round_trip(self, db):
+        """Dict-shaped content (e.g. provider wrappers) also round-trips."""
+        db.create_session(session_id="s1", source="cli")
+        content = {"parts": [{"text": "hi"}]}
+
+        db.append_message("s1", role="user", content=content)
+        msgs = db.get_messages("s1")
+        assert msgs[0]["content"] == content
+
+    def test_string_content_unchanged_by_encoding(self, db):
+        """Plain strings must not be wrapped — FTS search and legacy
+        consumers depend on raw-string storage for text content.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="plain text")
+
+        # Peek at the raw column to confirm no encoding was applied
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT content FROM messages WHERE session_id = ?", ("s1",)
+            ).fetchone()
+        assert row["content"] == "plain text"
+
+    def test_replace_messages_handles_multimodal_content(self, db):
+        """`replace_messages` (used by /retry, /undo, /compress) must also
+        handle list content without crashing."""
+        db.create_session(session_id="s1", source="cli")
+        content = [
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+        ]
+
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": content},
+                {"role": "assistant", "content": "I see a screenshot."},
+            ],
+        )
+
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 2
+        assert msgs[0]["content"] == content
+        assert msgs[1]["content"] == "I see a screenshot."
+
     def test_get_messages_as_conversation(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")

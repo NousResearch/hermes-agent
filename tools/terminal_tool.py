@@ -2001,9 +2001,10 @@ def terminal_tool(
             
             while retry_count <= max_retries:
                 try:
-                    execute_kwargs = {"timeout": effective_timeout}
-                    if workdir:
-                        execute_kwargs["cwd"] = workdir
+                    execute_kwargs = {
+                        "timeout": effective_timeout,
+                        "cwd": workdir or cwd,
+                    }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()

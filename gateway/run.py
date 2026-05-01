@@ -13083,11 +13083,28 @@ class GatewayRunner:
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
+                            # Extract MEDIA:<path> tags so files are delivered
+                            # natively instead of appearing as raw text labels.
+                            # Mirrors the base path in platforms/base.py L2724.
+                            media_files, first_response = adapter.extract_media(first_response)
                             await adapter.send(
                                 source.chat_id,
                                 first_response,
                                 metadata=_status_thread_metadata,
                             )
+                            # Deliver extracted media files (PDFs, images, etc.)
+                            for media_path, _is_voice in media_files:
+                                try:
+                                    await adapter.send_document(
+                                        chat_id=source.chat_id,
+                                        file_path=media_path,
+                                        metadata=_status_thread_metadata,
+                                    )
+                                except Exception as media_e:
+                                    logger.warning(
+                                        "Failed to deliver queue media %s: %s",
+                                        media_path, media_e,
+                                    )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                     elif first_response:

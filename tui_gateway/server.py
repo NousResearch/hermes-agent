@@ -341,6 +341,12 @@ def _is_usable_session_db(db) -> bool:
         and callable(getattr(db, "list_sessions_rich", None))
         and callable(getattr(db, "end_session", None))
         and callable(getattr(db, "get_session", None))
+        and callable(getattr(db, "get_session_by_title", None))
+        and callable(getattr(db, "reopen_session", None))
+        and callable(getattr(db, "get_messages_as_conversation", None))
+        and callable(getattr(db, "delete_session", None))
+        and callable(getattr(db, "set_session_title", None))
+        and callable(getattr(db, "append_message", None))
     )
 
 

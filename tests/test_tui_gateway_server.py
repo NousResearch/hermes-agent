@@ -3235,6 +3235,33 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
     assert server._db_error == "locking protocol"
 
 
+def test_get_db_recovers_from_stale_cached_stub(monkeypatch, tmp_path):
+    class _BadSessionDB:
+        def list_sessions_rich(self):
+            return []
+
+        def end_session(self):
+            return None
+
+        def get_session(self):
+            return None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(server, "_db", _BadSessionDB())
+    monkeypatch.setattr(server, "_db_error", None)
+
+    from hermes_state import SessionDB
+
+    db = server._get_db()
+
+    assert isinstance(db, SessionDB)
+    assert not isinstance(db, _BadSessionDB)
+
+    close = getattr(db, "close", None)
+    if callable(close):
+        close()
+
+
 def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     class _FakeWorker:
         def __init__(self, key, model):

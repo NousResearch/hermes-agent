@@ -274,9 +274,11 @@ class TestWindowsGatewayService:
 
     def test_windows_install_writes_supervisor_and_creates_task(self, tmp_path, monkeypatch):
         script_path = tmp_path / "gateway-supervisor.ps1"
+        startup_path = tmp_path / "Startup" / "HermesGateway.cmd"
         calls = []
 
         monkeypatch.setattr(gateway_cli, "get_windows_supervisor_script_path", lambda: script_path)
+        monkeypatch.setattr(gateway_cli, "get_windows_startup_command_path", lambda: startup_path)
         monkeypatch.setattr(gateway_cli, "windows_task_exists", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_windows_task_name", lambda: "HermesGateway")
         monkeypatch.setattr(gateway_cli, "generate_windows_supervisor_script", lambda: "supervisor script\n")

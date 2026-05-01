@@ -65,9 +65,8 @@ _adapter_logger.propagate = True
 
 def check_trueconf_requirements() -> bool:
     """Check if TrueConf adapter dependencies are available."""
-    try:
-        from trueconf import Bot  # noqa: F401
-    except ImportError:
+    import importlib.util
+    if importlib.util.find_spec("trueconf") is None:
         return False
     return bool(
         os.getenv("TRUECONF_SERVER")
@@ -141,7 +140,7 @@ class TrueConfAdapter(BasePlatformAdapter):
         self._server: str = os.getenv("TRUECONF_SERVER", "").strip()
         self._username: str = os.getenv("TRUECONF_USERNAME", "").strip()
         self._password: str = os.getenv("TRUECONF_PASSWORD", "").strip()
-        self._verify_ssl: bool = os.getenv("TRUECONF_VERIFY_SSL", True).lower() not in (
+        self._verify_ssl: bool = os.getenv("TRUECONF_VERIFY_SSL", "true").lower() not in (
             "false", "0", "no"
         )
 

@@ -11,6 +11,10 @@ from hermes_cli.path_env import (
 
 def test_common_tool_path_dirs_include_version_manager_and_platform_dirs(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # nvm honours $NVM_DIR ahead of $HOME/.nvm. CI runners commonly set
+    # $NVM_DIR to a path outside the test's tmp_path, so clear it to make
+    # the version-manager lookup deterministic.
+    monkeypatch.delenv("NVM_DIR", raising=False)
     mise_shims = tmp_path / ".local" / "share" / "mise" / "shims"
     asdf_shims = tmp_path / ".asdf" / "shims"
     nvm_node_bin = tmp_path / ".nvm" / "versions" / "node" / "v24.11.0" / "bin"

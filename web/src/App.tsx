@@ -64,7 +64,6 @@ import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
 import ChatPage from "@/pages/ChatPage";
-import CaptionEditorPage, { CaptionJobsPage } from "@/pages/CaptionEditorPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -103,7 +102,6 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
-  "/captions": CaptionJobsPage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -133,7 +131,6 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   { path: "/docs", labelKey: "documentation", label: "Documentation", icon: BookOpen },
-  { path: "/captions", labelKey: "captions", label: "Captions", icon: FileText },
 ];
 
 const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
@@ -555,7 +552,6 @@ export default function App() {
                   {routes.map(({ key, path, element }) => (
                     <Route key={key} path={path} element={element} />
                   ))}
-                  <Route path="/captions/:id" element={<CaptionEditorPage />} />
                   <Route
                     path="*"
                     element={<Navigate to="/sessions" replace />}

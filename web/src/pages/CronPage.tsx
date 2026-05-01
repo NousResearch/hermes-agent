@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Clock, Pause, Play, Plus, Trash2, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
+import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { api } from "@/lib/api";
 import type { CronJob } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -21,6 +22,12 @@ function formatTime(iso?: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   return d.toLocaleString();
+}
+
+function formatModelLabel(job: Pick<CronJob, "provider" | "model">, fallback: string): string {
+  if (job.provider && job.model) return `${job.provider} · ${job.model}`;
+  if (job.model) return job.model;
+  return fallback;
 }
 
 const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
@@ -43,6 +50,9 @@ export default function CronPage() {
   const [name, setName] = useState("");
   const [deliver, setDeliver] = useState("local");
   const [creating, setCreating] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState("");
+  const [selectedModel, setSelectedModel] = useState("");
+  const [pickerJob, setPickerJob] = useState<CronJob | "new" | null>(null);
 
   const loadJobs = useCallback(() => {
     api
@@ -56,6 +66,19 @@ export default function CronPage() {
     loadJobs();
   }, [loadJobs]);
 
+  const selectedModelSummary = useMemo(() => {
+    if (selectedProvider && selectedModel) {
+      return `${selectedProvider} · ${selectedModel}`;
+    }
+    if (selectedModel) return selectedModel;
+    return t.cron.useDefaultModel;
+  }, [selectedModel, selectedProvider, t.cron.useDefaultModel]);
+
+  const clearSelectedModel = () => {
+    setSelectedProvider("");
+    setSelectedModel("");
+  };
+
   const handleCreate = async () => {
     if (!prompt.trim() || !schedule.trim()) {
       showToast(`${t.cron.prompt} & ${t.cron.schedule} required`, "error");
@@ -68,12 +91,15 @@ export default function CronPage() {
         schedule: schedule.trim(),
         name: name.trim() || undefined,
         deliver,
+        provider: selectedProvider || undefined,
+        model: selectedModel || undefined,
       });
       showToast(t.common.create + " ✓", "success");
       setPrompt("");
       setSchedule("");
       setName("");
       setDeliver("local");
+      clearSelectedModel();
       loadJobs();
     } catch (e) {
       showToast(`${t.config.failedToSave}: ${e}`, "error");
@@ -109,6 +135,38 @@ export default function CronPage() {
       await api.triggerCronJob(job.id);
       showToast(
         `${t.cron.triggerNow}: "${job.name || job.prompt.slice(0, 30)}"`,
+        "success",
+      );
+      loadJobs();
+    } catch (e) {
+      showToast(`${t.status.error}: ${e}`, "error");
+    }
+  };
+
+  const handleJobModelUpdate = async (
+    job: CronJob,
+    provider: string,
+    model: string,
+  ) => {
+    await api.updateCronJob(job.id, {
+      provider: provider || null,
+      model: model || null,
+    });
+    showToast(
+      `${t.cron.changeModel}: "${job.name || job.prompt.slice(0, 30)}"`,
+      "success",
+    );
+    loadJobs();
+  };
+
+  const handleClearJobModel = async (job: CronJob) => {
+    try {
+      await api.updateCronJob(job.id, {
+        provider: null,
+        model: null,
+      });
+      showToast(
+        `${t.cron.clearModel}: "${job.name || job.prompt.slice(0, 30)}"`,
         "success",
       );
       loadJobs();
@@ -167,6 +225,28 @@ export default function CronPage() {
         loading={jobDelete.isDeleting}
       />
 
+      {pickerJob && (
+        <ModelPickerDialog
+          loader={api.getModelOptions}
+          alwaysGlobal
+          title={
+            pickerJob === "new"
+              ? t.cron.chooseModel
+              : `${t.cron.changeModel}: ${pickerJob.name || pickerJob.prompt.slice(0, 30)}`
+          }
+          onApply={async ({ provider, model }) => {
+            if (pickerJob === "new") {
+              setSelectedProvider(provider);
+              setSelectedModel(model);
+              showToast(`${t.cron.chooseModel}: ${provider} · ${model}`, "success");
+              return;
+            }
+            await handleJobModelUpdate(pickerJob, provider, model);
+          }}
+          onClose={() => setPickerJob(null)}
+        />
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
@@ -195,6 +275,32 @@ export default function CronPage() {
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
               />
+            </div>
+
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <Label>{t.cron.model}</Label>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {t.cron.modelOptionalHint}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {(selectedProvider || selectedModel) && (
+                    <Button outlined size="sm" onClick={clearSelectedModel}>
+                      {t.cron.clearModel}
+                    </Button>
+                  )}
+                  <Button size="sm" outlined onClick={() => setPickerJob("new")}>
+                    {selectedProvider || selectedModel
+                      ? t.cron.changeModel
+                      : t.cron.chooseModel}
+                  </Button>
+                </div>
+              </div>
+              <div className="text-xs font-mono text-muted-foreground border border-border/50 rounded-md px-3 py-2 bg-card/50">
+                {selectedModelSummary}
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -269,7 +375,7 @@ export default function CronPage() {
           <Card key={job.id}>
             <CardContent className="flex items-center gap-4 py-4">
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
                   <span className="font-medium text-sm truncate">
                     {job.name ||
                       job.prompt.slice(0, 60) +
@@ -281,6 +387,9 @@ export default function CronPage() {
                   {job.deliver && job.deliver !== "local" && (
                     <Badge tone="outline">{job.deliver}</Badge>
                   )}
+                  {(job.provider || job.model) && (
+                    <Badge tone="outline">{t.cron.model}</Badge>
+                  )}
                 </div>
                 {job.name && (
                   <p className="text-xs text-muted-foreground truncate mb-1">
@@ -288,13 +397,18 @@ export default function CronPage() {
                     {job.prompt.length > 100 ? "..." : ""}
                   </p>
                 )}
-                <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                  <span className="font-mono">{job.schedule_display}</span>
-                  <span>
-                    {t.cron.last}: {formatTime(job.last_run_at)}
-                  </span>
-                  <span>
-                    {t.cron.next}: {formatTime(job.next_run_at)}
+                <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <span className="font-mono">{job.schedule_display}</span>
+                    <span>
+                      {t.cron.last}: {formatTime(job.last_run_at)}
+                    </span>
+                    <span>
+                      {t.cron.next}: {formatTime(job.next_run_at)}
+                    </span>
+                  </div>
+                  <span className="font-mono">
+                    {t.cron.model}: {formatModelLabel(job, t.cron.useDefaultModel)}
                   </span>
                 </div>
                 {job.last_error && (
@@ -305,6 +419,28 @@ export default function CronPage() {
               </div>
 
               <div className="flex items-center gap-1 shrink-0">
+                <Button
+                  ghost
+                  size="sm"
+                  title={job.provider || job.model ? t.cron.changeModel : t.cron.chooseModel}
+                  aria-label={job.provider || job.model ? t.cron.changeModel : t.cron.chooseModel}
+                  onClick={() => setPickerJob(job)}
+                >
+                  {job.provider || job.model ? t.cron.changeModel : t.cron.chooseModel}
+                </Button>
+
+                {(job.provider || job.model) && (
+                  <Button
+                    ghost
+                    size="sm"
+                    title={t.cron.clearModel}
+                    aria-label={t.cron.clearModel}
+                    onClick={() => handleClearJobModel(job)}
+                  >
+                    {t.cron.clearModel}
+                  </Button>
+                )}
+
                 <Button
                   ghost
                   size="icon"

@@ -212,6 +212,12 @@ export interface Translations {
     schedule: string;
     schedulePlaceholder: string;
     deliverTo: string;
+    model: string;
+    modelOptionalHint: string;
+    chooseModel: string;
+    changeModel: string;
+    clearModel: string;
+    useDefaultModel: string;
     scheduledJobs: string;
     noJobs: string;
     last: string;

@@ -591,6 +591,89 @@ class TestNewEndpoints:
         resp = self.client.get("/api/cron/jobs/nonexistent-id")
         assert resp.status_code == 404
 
+    def test_cron_create_accepts_model_override(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        captured = {}
+
+        def fake_create_job(**kwargs):
+            captured.update(kwargs)
+            return {
+                "id": "job123",
+                "name": kwargs.get("name") or "job123",
+                "prompt": kwargs["prompt"],
+                "schedule": {"kind": "cron", "expr": kwargs["schedule"], "display": kwargs["schedule"]},
+                "schedule_display": kwargs["schedule"],
+                "enabled": True,
+                "state": "scheduled",
+                "deliver": kwargs.get("deliver"),
+                "provider": kwargs.get("provider"),
+                "model": kwargs.get("model"),
+                "last_run_at": None,
+                "next_run_at": None,
+                "last_error": None,
+            }
+
+        monkeypatch.setattr("cron.jobs.create_job", fake_create_job)
+
+        resp = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "prompt": "Summarize status",
+                "schedule": "0 9 * * *",
+                "name": "Daily summary",
+                "deliver": "telegram",
+                "provider": "minimax",
+                "model": "MiniMax-M2.7",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert captured["provider"] == "minimax"
+        assert captured["model"] == "MiniMax-M2.7"
+        assert data["provider"] == "minimax"
+        assert data["model"] == "MiniMax-M2.7"
+
+    def test_cron_update_accepts_model_override(self, monkeypatch):
+        updates_seen = {}
+
+        def fake_update_job(job_id, updates):
+            updates_seen["job_id"] = job_id
+            updates_seen["updates"] = updates
+            return {
+                "id": job_id,
+                "name": "Updated job",
+                "prompt": "Summarize status",
+                "schedule": {"kind": "cron", "expr": "0 9 * * *", "display": "0 9 * * *"},
+                "schedule_display": "0 9 * * *",
+                "enabled": True,
+                "state": "scheduled",
+                "deliver": "telegram",
+                "provider": updates.get("provider"),
+                "model": updates.get("model"),
+                "last_run_at": None,
+                "next_run_at": None,
+                "last_error": None,
+            }
+
+        monkeypatch.setattr("cron.jobs.update_job", fake_update_job)
+
+        resp = self.client.put(
+            "/api/cron/jobs/job123",
+            json={"updates": {"provider": "minimax", "model": "MiniMax-M2.7"}},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert updates_seen["job_id"] == "job123"
+        assert updates_seen["updates"] == {
+            "provider": "minimax",
+            "model": "MiniMax-M2.7",
+        }
+        assert data["provider"] == "minimax"
+        assert data["model"] == "MiniMax-M2.7"
+
     # --- Profiles ---
 
     def test_profiles_list_includes_default(self):

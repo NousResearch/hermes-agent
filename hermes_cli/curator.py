@@ -88,16 +88,68 @@ def _cmd_status(args) -> int:
     if pinned:
         print(f"\npinned ({len(pinned)}): {', '.join(pinned)}")
 
-    # Show top 5 least-recently-used active skills
+    # Show top 5 least-recently-active skills. Views and edits are activity too:
+    # curator should not report a skill as "never used" right after skill_view()
+    # or skill_manage() touched it.
     active = sorted(
         by_state.get("active", []),
-        key=lambda r: r.get("last_used_at") or r.get("created_at") or "",
+        key=lambda r: r.get("last_activity_at") or r.get("created_at") or "",
     )[:5]
     if active:
-        print("\nleast recently used (top 5):")
+        print("\nleast recently active (top 5):")
         for r in active:
-            last = _fmt_ts(r.get("last_used_at"))
-            print(f"  {r['name']:40s}  use={r.get('use_count', 0):3d}  last_used={last}")
+            last = _fmt_ts(r.get("last_activity_at"))
+            print(
+                f"  {r['name']:40s}  "
+                f"activity={r.get('activity_count', 0):3d}  "
+                f"use={r.get('use_count', 0):3d}  "
+                f"view={r.get('view_count', 0):3d}  "
+                f"patches={r.get('patch_count', 0):3d}  "
+                f"last_activity={last}"
+            )
+
+    # Show top 5 most-active and least-active skills by activity_count
+    # (use + view + patch). This is a different signal from
+    # least-recently-active: activity_count reflects frequency,
+    # last_activity_at reflects recency. A skill touched 30 times a year
+    # ago is high-frequency but stale; a skill touched once yesterday is
+    # recent but low-frequency. Both can matter.
+    active_all = by_state.get("active", [])
+    if active_all:
+        most_active = sorted(
+            active_all,
+            key=lambda r: (r.get("activity_count") or 0, r.get("last_activity_at") or ""),
+            reverse=True,
+        )[:5]
+        if most_active and (most_active[0].get("activity_count") or 0) > 0:
+            print("\nmost active (top 5):")
+            for r in most_active:
+                last = _fmt_ts(r.get("last_activity_at"))
+                print(
+                    f"  {r['name']:40s}  "
+                    f"activity={r.get('activity_count', 0):3d}  "
+                    f"use={r.get('use_count', 0):3d}  "
+                    f"view={r.get('view_count', 0):3d}  "
+                    f"patches={r.get('patch_count', 0):3d}  "
+                    f"last_activity={last}"
+                )
+
+        least_active = sorted(
+            active_all,
+            key=lambda r: (r.get("activity_count") or 0, r.get("last_activity_at") or ""),
+        )[:5]
+        if least_active:
+            print("\nleast active (top 5):")
+            for r in least_active:
+                last = _fmt_ts(r.get("last_activity_at"))
+                print(
+                    f"  {r['name']:40s}  "
+                    f"activity={r.get('activity_count', 0):3d}  "
+                    f"use={r.get('use_count', 0):3d}  "
+                    f"view={r.get('view_count', 0):3d}  "
+                    f"patches={r.get('patch_count', 0):3d}  "
+                    f"last_activity={last}"
+                )
 
     return 0
 

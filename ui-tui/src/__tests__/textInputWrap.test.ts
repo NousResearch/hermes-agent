@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import { offsetFromPosition } from '../components/textInput.js'
-import { cursorLayout, inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
+import { composerPromptWidth, cursorLayout, inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
 
-describe('cursorLayout — char-wrap parity with wrap-ansi', () => {
+describe('cursorLayout — word-wrap parity with wrap-ansi', () => {
   it('places cursor mid-line at its column', () => {
     expect(cursorLayout('hello world', 6, 40)).toEqual({ column: 6, line: 0 })
   })
@@ -18,12 +18,20 @@ describe('cursorLayout — char-wrap parity with wrap-ansi', () => {
     expect(cursorLayout('abcdefgh', 8, 8)).toEqual({ column: 0, line: 1 })
   })
 
-  it('tracks a word across a char-wrap boundary without jumping', () => {
-    // With wordWrap:false, "hello world" at cols=8 is "hello wo\nrld" —
-    // typing incremental letters doesn't reshuffle the word across lines.
+  it('moves words across wrap boundaries instead of splitting them', () => {
+    // With wordWrap:true, "hello wor" at cols=8 is "hello \nwor" rather
+    // than "hello wo\nr".
     expect(cursorLayout('hello wo', 8, 8)).toEqual({ column: 0, line: 1 })
-    expect(cursorLayout('hello wor', 9, 8)).toEqual({ column: 1, line: 1 })
-    expect(cursorLayout('hello worl', 10, 8)).toEqual({ column: 2, line: 1 })
+    expect(cursorLayout('hello wor', 9, 8)).toEqual({ column: 3, line: 1 })
+    expect(cursorLayout('hello worl', 10, 8)).toEqual({ column: 4, line: 1 })
+    expect(cursorLayout('hello world', 11, 8)).toEqual({ column: 5, line: 1 })
+  })
+
+  it('wraps the next word instead of splitting it at the right edge', () => {
+    const text = 'hello world baby chickens are so cool its really rainy outside but wish'
+
+    expect(cursorLayout(text, text.length, 70)).toEqual({ column: 4, line: 1 })
+    expect(inputVisualHeight(text, 70)).toBe(2)
   })
 
   it('honours explicit newlines', () => {
@@ -42,6 +50,12 @@ describe('input metrics helpers', () => {
     expect(inputVisualHeight('one\ntwo', 40)).toBe(2)
   })
 
+  it('counts the prompt gap as its own cell', () => {
+    expect(composerPromptWidth('>')).toBe(2)
+    expect(composerPromptWidth('❯')).toBe(2)
+    expect(composerPromptWidth('Ψ >')).toBe(4)
+  })
+
   it('reserves gutters on wide panes without starving narrow composer width', () => {
     expect(stableComposerColumns(100, 3)).toBe(93)
     expect(stableComposerColumns(100, 5)).toBe(91)
@@ -50,7 +64,7 @@ describe('input metrics helpers', () => {
   })
 })
 
-describe('offsetFromPosition — char-wrap inverse of cursorLayout', () => {
+describe('offsetFromPosition — word-wrap inverse of cursorLayout', () => {
   it('returns 0 for empty input', () => {
     expect(offsetFromPosition('', 0, 0, 10)).toBe(0)
   })
@@ -64,9 +78,21 @@ describe('offsetFromPosition — char-wrap inverse of cursorLayout', () => {
   })
 
   it('maps clicks on a wrapped second row at cols boundary', () => {
-    // "abcdefghij" at cols=8 wraps to "abcdefgh\nij" — click at row 1 col 0
-    // should land on 'i' (offset 8).
+    // Long words still hard-wrap when there is no word boundary.
     expect(offsetFromPosition('abcdefghij', 1, 0, 8)).toBe(8)
+  })
+
+  it('maps clicks on a word-wrapped second row', () => {
+    // "hello world" at cols=8 wraps to "hello \nworld".
+    expect(offsetFromPosition('hello world', 1, 0, 8)).toBe(6)
+    expect(offsetFromPosition('hello world', 1, 3, 8)).toBe(9)
+  })
+
+  it('maps clicks on the moved final word', () => {
+    const text = 'hello world baby chickens are so cool its really rainy outside but wish'
+
+    expect(offsetFromPosition(text, 1, 0, 70)).toBe(text.indexOf('wish'))
+    expect(offsetFromPosition(text, 1, 3, 70)).toBe(text.indexOf('wish') + 3)
   })
 
   it('maps clicks past a \\n into the target line', () => {

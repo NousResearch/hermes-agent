@@ -20,6 +20,7 @@ import {
   BookOpen,
   Clock,
   Code,
+  Cpu,
   Database,
   Download,
   Eye,
@@ -37,17 +38,16 @@ import {
   Sparkles,
   Star,
   Terminal,
+  Users,
   Wrench,
   X,
   Zap,
 } from "lucide-react";
-import {
-  Button,
-  ListItem,
-  SelectionSwitcher,
-  Spinner,
-  Typography,
-} from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { ListItem } from "@nous-research/ui/ui/components/list-item";
+import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Typography } from "@/components/NouiTypography";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
@@ -61,7 +61,9 @@ import EnvPage from "@/pages/EnvPage";
 import SessionsPage from "@/pages/SessionsPage";
 import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
+import ModelsPage from "@/pages/ModelsPage";
 import CronPage from "@/pages/CronPage";
+import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
@@ -96,9 +98,11 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
+  "/models": ModelsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
   "/skills": SkillsPage,
+  "/profiles": ProfilesPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -125,9 +129,16 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Analytics",
     icon: BarChart3,
   },
+  {
+    path: "/models",
+    labelKey: "models",
+    label: "Models",
+    icon: Cpu,
+  },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
+  { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   {
@@ -142,6 +153,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Activity,
   BarChart3,
   Clock,
+  Cpu,
   FileText,
   KeyRound,
   MessageSquare,
@@ -153,6 +165,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Globe,
   Database,
   Shield,
+  Users,
   Wrench,
   Zap,
   Heart,

@@ -6,6 +6,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
@@ -100,6 +101,10 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "VERCEL_OIDC_TOKEN",
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
     })
     return frozenset(blocked)
 
@@ -365,6 +370,11 @@ class LocalEnvironment(BaseEnvironment):
             preexec_fn=None if _IS_WINDOWS else os.setsid,
             cwd=self.cwd,
         )
+        if not _IS_WINDOWS:
+            try:
+                proc._hermes_pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                pass
 
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
@@ -373,17 +383,69 @@ class LocalEnvironment(BaseEnvironment):
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
+
+        def _group_alive(pgid: int) -> bool:
+            try:
+                # POSIX-only: _IS_WINDOWS is handled before this helper is used.
+                os.killpg(pgid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                # The group exists, even if this process cannot signal it.
+                return True
+
+        def _wait_for_group_exit(pgid: int, timeout: float) -> bool:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                # Reap the wrapper promptly. A dead but unreaped group leader
+                # still makes killpg(pgid, 0) report the group as alive.
+                try:
+                    proc.poll()
+                except Exception:
+                    pass
+                if not _group_alive(pgid):
+                    return True
+                time.sleep(0.05)
+            try:
+                proc.poll()
+            except Exception:
+                pass
+            return not _group_alive(pgid)
+
         try:
             if _IS_WINDOWS:
                 proc.terminate()
             else:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGTERM)
                 try:
-                    proc.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
+                    pgid = os.getpgid(proc.pid)
+                except ProcessLookupError:
+                    pgid = getattr(proc, "_hermes_pgid", None)
+                    if pgid is None:
+                        raise
+
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                except ProcessLookupError:
+                    return
+
+                # Wait on the process group, not just the shell wrapper. Under
+                # load the wrapper can exit before grandchildren do; returning
+                # at that point leaves orphaned process-group members behind.
+                if _wait_for_group_exit(pgid, 1.0):
+                    return
+
+                try:
+                    # POSIX-only: _IS_WINDOWS is handled by the outer branch.
                     os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
+                except ProcessLookupError:
+                    return
+                _wait_for_group_exit(pgid, 2.0)
+                try:
+                    proc.wait(timeout=0.2)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+        except (ProcessLookupError, PermissionError, OSError):
             try:
                 proc.kill()
             except Exception:
@@ -392,7 +454,8 @@ class LocalEnvironment(BaseEnvironment):
     def _update_cwd(self, result: dict):
         """Read CWD from temp file (local-only, no round-trip needed)."""
         try:
-            cwd_path = open(self._cwd_file).read().strip()
+            with open(self._cwd_file) as f:
+                cwd_path = f.read().strip()
             if cwd_path:
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):

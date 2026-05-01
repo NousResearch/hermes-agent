@@ -77,6 +77,7 @@ Good defaults:
 | **Kimi / Moonshot China** | China-region Moonshot endpoint | Set `KIMI_CN_API_KEY` |
 | **Arcee AI** | Trinity models | Set `ARCEEAI_API_KEY` |
 | **GMI Cloud** | Multi-model direct API | Set `GMI_API_KEY` |
+| **MiniMax (OAuth)** | MiniMax-M2.7 via browser OAuth — no API key needed | `hermes model` → MiniMax (OAuth) |
 | **MiniMax** | International MiniMax endpoint | Set `MINIMAX_API_KEY` |
 | **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_API_KEY` |
 | **Alibaba Cloud** | Qwen models via DashScope | Set `DASHSCOPE_API_KEY` |

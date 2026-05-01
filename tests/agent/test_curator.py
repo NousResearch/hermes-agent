@@ -363,6 +363,19 @@ def test_state_atomic_write_no_tmp_leftovers(curator_env):
         assert not p.name.startswith(".curator_state_"), f"tmp leftover: {p.name}"
 
 
+def test_state_preserves_last_report_path(curator_env):
+    c = curator_env["curator"]
+    c.save_state({
+        "last_run_at": "2026-04-30T12:00:00+00:00",
+        "last_run_summary": "ok",
+        "last_report_path": "/tmp/curator-report",
+        "paused": False,
+        "run_count": 1,
+    })
+    state = c.load_state()
+    assert state["last_report_path"] == "/tmp/curator-report"
+
+
 def test_curator_review_prompt_has_invariants():
     """Core invariants must be in the review prompt text."""
     from agent.curator import CURATOR_REVIEW_PROMPT
@@ -485,3 +498,153 @@ def test_cli_pin_refuses_bundled_skill(curator_env, capsys):
     captured = capsys.readouterr()
     assert rc == 1
     assert "bundled" in captured.out.lower() or "hub" in captured.out.lower()
+
+
+# ---------------------------------------------------------------------------
+# curator review-model resolution (canonical auxiliary.curator slot)
+#
+# Curator was unified with the rest of the aux task system in Apr 2026 so
+# `hermes model` → auxiliary picker, the dashboard Models tab, and the full
+# per-task config (timeout, base_url, api_key, extra_body) all work for it.
+# Voscko report: curator.auxiliary.{provider,model} was advertised but never
+# read. Fix wires curator through auxiliary.curator with a legacy fallback.
+# ---------------------------------------------------------------------------
+
+
+def test_review_model_defaults_to_main_when_slot_is_auto(curator_env):
+    """auxiliary.curator absent (or auto/empty) → use main model.provider/model."""
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+    }
+    assert curator._resolve_review_model(cfg) == ("openrouter", "openai/gpt-5.5")
+
+    # Explicit auto/empty slot — still main model.
+    cfg["auxiliary"] = {"curator": {"provider": "auto", "model": ""}}
+    assert curator._resolve_review_model(cfg) == ("openrouter", "openai/gpt-5.5")
+
+
+def test_review_model_honors_auxiliary_curator_slot(curator_env):
+    """auxiliary.curator.{provider,model} fully set → that pair wins."""
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "openrouter",
+                "model": "openai/gpt-5.4-mini",
+            },
+        },
+    }
+    assert curator._resolve_review_model(cfg) == (
+        "openrouter", "openai/gpt-5.4-mini",
+    )
+
+
+def test_review_model_auxiliary_curator_partial_override_falls_back(curator_env):
+    """Only one of slot provider/model set → fall back to the main pair.
+
+    Prevents half-configured overrides from sending an empty side to
+    resolve_runtime_provider.
+    """
+    curator = curator_env["curator"]
+    base_main = {"provider": "openrouter", "default": "openai/gpt-5.5"}
+
+    cfg_provider_only = {
+        "model": dict(base_main),
+        "auxiliary": {"curator": {"provider": "openrouter", "model": ""}},
+    }
+    assert curator._resolve_review_model(cfg_provider_only) == (
+        "openrouter", "openai/gpt-5.5",
+    )
+
+    cfg_model_only = {
+        "model": dict(base_main),
+        "auxiliary": {"curator": {"provider": "auto", "model": "gpt-5.4-mini"}},
+    }
+    assert curator._resolve_review_model(cfg_model_only) == (
+        "openrouter", "openai/gpt-5.5",
+    )
+
+
+def test_review_model_legacy_curator_auxiliary_still_works(curator_env, caplog):
+    """Pre-unification users set curator.auxiliary.{provider,model} — honor it.
+
+    Emits a deprecation log line but keeps their config working.
+    """
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "curator": {
+            "auxiliary": {
+                "provider": "openrouter",
+                "model": "openai/gpt-5.4-mini",
+            },
+        },
+    }
+    import logging
+    with caplog.at_level(logging.INFO, logger="agent.curator"):
+        result = curator._resolve_review_model(cfg)
+    assert result == ("openrouter", "openai/gpt-5.4-mini")
+    assert any(
+        "deprecated curator.auxiliary" in rec.message for rec in caplog.records
+    ), "expected deprecation warning when legacy curator.auxiliary is used"
+
+
+def test_review_model_new_slot_wins_over_legacy(curator_env):
+    """When BOTH new and legacy are set, the canonical slot wins."""
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {"provider": "nous", "model": "new-winner"},
+        },
+        "curator": {
+            "auxiliary": {"provider": "openrouter", "model": "legacy-loser"},
+        },
+    }
+    assert curator._resolve_review_model(cfg) == ("nous", "new-winner")
+
+
+def test_review_model_handles_missing_sections(curator_env):
+    """Missing auxiliary/curator sections never raise — fall back cleanly."""
+    curator = curator_env["curator"]
+    cfg = {"model": {"provider": "anthropic", "model": "claude-sonnet-4-6"}}
+    assert curator._resolve_review_model(cfg) == (
+        "anthropic", "claude-sonnet-4-6",
+    )
+
+    # Completely empty config → ("auto", "") — resolve_runtime_provider
+    # handles the auto-detection chain from there.
+    assert curator._resolve_review_model({}) == ("auto", "")
+
+
+def test_curator_slot_is_canonical_aux_task():
+    """Curator must be a first-class slot in every aux-task registry.
+
+    Four sources of truth, all checked by the shared registry test
+    (test_aux_config.py) for the main tasks — this test pins `curator`
+    specifically so the unification doesn't silently regress.
+    """
+    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_cli.main import _AUX_TASKS
+    from hermes_cli.web_server import _AUX_TASK_SLOTS
+
+    # 1. DEFAULT_CONFIG.auxiliary — schema source
+    assert "curator" in DEFAULT_CONFIG["auxiliary"], \
+        "curator missing from DEFAULT_CONFIG['auxiliary']"
+    slot = DEFAULT_CONFIG["auxiliary"]["curator"]
+    assert slot["provider"] == "auto"
+    assert slot["model"] == ""
+    assert slot["timeout"] > 0, "curator timeout should be set (reviews run long)"
+
+    # 2. hermes_cli/main.py _AUX_TASKS — CLI picker
+    aux_keys = {k for k, _name, _desc in _AUX_TASKS}
+    assert "curator" in aux_keys, "curator missing from _AUX_TASKS (CLI picker)"
+
+    # 3. hermes_cli/web_server.py _AUX_TASK_SLOTS — REST API allowlist
+    assert "curator" in _AUX_TASK_SLOTS, \
+        "curator missing from _AUX_TASK_SLOTS (dashboard REST API)"
+
+    # 4. web/src/pages/ModelsPage.tsx is checked at build time; the tsx
+    #    array and this tuple share a ``Must match _AUX_TASK_SLOTS`` comment.

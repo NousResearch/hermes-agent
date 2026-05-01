@@ -60,6 +60,11 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Kanban multi-agent coordination — only in schema when the agent is
+    # spawned as a kanban worker (HERMES_KANBAN_TASK env set), otherwise
+    # zero schema footprint. Gated via check_fn in tools/kanban_tools.py.
+    "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
+    "kanban_comment", "kanban_create", "kanban_link",
 ]
 
 
@@ -200,6 +205,24 @@ TOOLSETS = {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
         "includes": []
+    },
+
+    "kanban": {
+        "description": (
+            "Kanban multi-agent coordination — only active when the agent "
+            "is spawned by the kanban dispatcher (HERMES_KANBAN_TASK env "
+            "set). The dispatcher runs inside the gateway by default; see "
+            "`kanban.dispatch_in_gateway` in config.yaml. Lets workers mark "
+            "tasks done with structured handoffs, block for human input, "
+            "heartbeat during long ops, comment on threads, and (for "
+            "orchestrators) fan out into child tasks."
+        ),
+        "tools": [
+            "kanban_show", "kanban_complete", "kanban_block",
+            "kanban_heartbeat", "kanban_comment",
+            "kanban_create", "kanban_link",
+        ],
+        "includes": [],
     },
 
     "discord": {
@@ -564,6 +587,27 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     # Get toolset definition
     toolset = get_toolset(name)
     if not toolset:
+        # Auto-generate a toolset for plugin platforms (hermes-<name>).
+        # Gives them _HERMES_CORE_TOOLS plus any tools the plugin registered
+        # into a toolset matching the platform name.
+        if name.startswith("hermes-"):
+            platform_name = name[len("hermes-"):]
+            try:
+                from gateway.platform_registry import platform_registry
+                if platform_registry.is_registered(platform_name):
+                    plugin_tools = set(_HERMES_CORE_TOOLS)
+                    try:
+                        from tools.registry import registry
+                        plugin_tools.update(
+                            e.name for e in registry._tools.values()
+                            if e.toolset == platform_name
+                        )
+                    except Exception:
+                        pass
+                    return list(plugin_tools)
+            except Exception:
+                pass
+
         return []
 
     # Collect direct tools

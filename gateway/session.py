@@ -62,6 +62,7 @@ from .config import (
 )
 from .whatsapp_identity import (
     canonical_whatsapp_identifier,
+    normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace
 
@@ -234,7 +235,7 @@ def build_session_context_prompt(
 ) -> str:
     """
     Build the dynamic system prompt section that tells the agent about its context.
-    
+
     This is injected into the system prompt so the agent knows:
     - Where messages are coming from
     - What platforms are connected
@@ -246,13 +247,23 @@ def build_session_context_prompt(
     Platforms like Discord are excluded because mentions need real IDs.
     Routing still uses the original values (they stay in SessionSource).
     """
-    # Only apply redaction on platforms where IDs aren't needed for mentions
-    redact_pii = redact_pii and context.source.platform in _PII_SAFE_PLATFORMS
+    # Only apply redaction on platforms where IDs aren't needed for mentions.
+    # Check both the hardcoded set (builtins) and the plugin registry.
+    _is_pii_safe = context.source.platform in _PII_SAFE_PLATFORMS
+    if not _is_pii_safe:
+        try:
+            from gateway.platform_registry import platform_registry
+            entry = platform_registry.get(context.source.platform.value)
+            if entry and entry.pii_safe:
+                _is_pii_safe = True
+        except Exception:
+            pass
+    redact_pii = redact_pii and _is_pii_safe
     lines = [
         "## Current Session Context",
         "",
     ]
-    
+
     # Source info
     platform_name = context.source.platform.value.title()
     if context.source.platform == Platform.LOCAL:
@@ -277,7 +288,7 @@ def build_session_context_prompt(
         else:
             desc = src.description
         lines.append(f"**Source:** {platform_name} ({desc})")
-    
+
     # Channel topic (if available - provides context about the channel's purpose)
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
@@ -302,7 +313,7 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
-    
+
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
         lines.append("")
@@ -368,9 +379,9 @@ def build_session_context_prompt(
     for p in context.connected_platforms:
         if p != Platform.LOCAL:
             platforms_list.append(f"{p.value}: Connected ✓")
-    
+
     lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
-    
+
     # Home channels
     if context.home_channels:
         lines.append("")
@@ -378,11 +389,11 @@ def build_session_context_prompt(
         for platform, home in context.home_channels.items():
             hc_id = _hash_chat_id(home.chat_id) if redact_pii else home.chat_id
             lines.append(f"  - {platform.value}: {home.name} (ID: {hc_id})")
-    
+
     # Delivery options for scheduled tasks
     lines.append("")
     lines.append("**Delivery options for scheduled tasks:**")
-    
+
     from hermes_constants import display_hermes_home
 
     # Origin delivery
@@ -398,15 +409,15 @@ def build_session_context_prompt(
     lines.append(
         f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)"
     )
-    
+
     # Platform home channels
     for platform, home in context.home_channels.items():
         lines.append(f"- `\"{platform.value}\"` → Home channel ({home.name})")
-    
+
     # Note about explicit targeting
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
-    
+
     return "\n".join(lines)
 
 
@@ -447,6 +458,15 @@ class SessionEntry:
     was_auto_reset: bool = False
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
+
+    # Set by reset_session() when the user explicitly sends /new or /reset.
+    # Consumed once by _handle_message_with_agent to trigger topic/channel
+    # skill re-injection on the first message of the new session.  We can't
+    # reuse was_auto_reset for this because that flag fires the "session
+    # expired due to inactivity" user-facing notice and a misleading
+    # context-note prepend — both wrong for an explicit manual reset.
+    # See issue #6508.
+    is_fresh_reset: bool = False
     
     # Set by the background expiry watcher after it finalizes an expired
     # session (invoking on_session_finalize hooks and evicting the cached
@@ -497,6 +517,7 @@ class SessionEntry:
                 if self.last_resume_marked_at
                 else None
             ),
+            "is_fresh_reset": self.is_fresh_reset,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -545,6 +566,7 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            is_fresh_reset=data.get("is_fresh_reset", False),
         )
 
 
@@ -1121,6 +1143,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                is_fresh_reset=True,
             )
 
             self._entries[session_key] = new_entry

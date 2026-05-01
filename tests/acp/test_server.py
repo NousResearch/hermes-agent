@@ -11,6 +11,7 @@ import acp
 from acp.agent.router import build_agent_router
 from acp.schema import (
     AgentCapabilities,
+    AgentMessageChunk,
     AuthenticateResponse,
     AvailableCommandsUpdate,
     Implementation,
@@ -27,6 +28,7 @@ from acp.schema import (
     SessionInfo,
     TextContentBlock,
     Usage,
+    UserMessageChunk,
 )
 from acp_adapter.server import HermesACPAgent, HERMES_VERSION
 from acp_adapter.session import SessionManager
@@ -223,6 +225,58 @@ class TestSessionOps:
     async def test_load_session_not_found_returns_none(self, agent):
         resp = await agent.load_session(cwd="/tmp", session_id="bogus")
         assert resp is None
+
+    @pytest.mark.asyncio
+    async def test_load_session_replays_persisted_history_to_client(self, agent):
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [
+            {"role": "system", "content": "hidden system"},
+            {"role": "user", "content": "what controls the / slash commands?"},
+            {"role": "assistant", "content": "HermesACPAgent._ADVERTISED_COMMANDS controls them."},
+            {"role": "tool", "content": "tool output should not replay"},
+        ]
+
+        mock_conn.session_update.reset_mock()
+        resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+
+        assert isinstance(resp, LoadSessionResponse)
+        calls = mock_conn.session_update.await_args_list
+        replay_calls = [
+            call for call in calls
+            if getattr(call.kwargs.get("update"), "session_update", None)
+            in {"user_message_chunk", "agent_message_chunk"}
+        ]
+        assert len(replay_calls) == 2
+        assert isinstance(replay_calls[0].kwargs["update"], UserMessageChunk)
+        assert replay_calls[0].kwargs["update"].content.text == "what controls the / slash commands?"
+        assert isinstance(replay_calls[1].kwargs["update"], AgentMessageChunk)
+        assert replay_calls[1].kwargs["update"].content.text.startswith("HermesACPAgent")
+
+    @pytest.mark.asyncio
+    async def test_resume_session_replays_persisted_history_to_client(self, agent):
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [{"role": "user", "content": "So tell me the current state"}]
+
+        mock_conn.session_update.reset_mock()
+        resp = await agent.resume_session(cwd="/tmp", session_id=new_resp.session_id)
+
+        assert isinstance(resp, ResumeSessionResponse)
+        updates = [call.kwargs["update"] for call in mock_conn.session_update.await_args_list]
+        assert any(
+            isinstance(update, UserMessageChunk)
+            and update.content.text == "So tell me the current state"
+            for update in updates
+        )
 
     @pytest.mark.asyncio
     async def test_resume_session_creates_new_if_missing(self, agent):
@@ -676,6 +730,7 @@ class TestSlashCommands:
         ]
         state.agent.compression_enabled = True
         state.agent._cached_system_prompt = "system"
+        state.agent.tools = None
         original_session_db = object()
         state.agent._session_db = original_session_db
 
@@ -692,7 +747,7 @@ class TestSlashCommands:
         with (
             patch.object(agent.session_manager, "save_session") as mock_save,
             patch(
-                "agent.model_metadata.estimate_messages_tokens_rough",
+                "agent.model_metadata.estimate_request_tokens_rough",
                 side_effect=[40, 12],
             ),
         ):

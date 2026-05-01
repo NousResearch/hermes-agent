@@ -1,14 +1,14 @@
 ---
-title: "Claude Code — Delegate coding tasks to Claude Code (Anthropic's CLI agent)"
+title: "Claude Code — Delegate coding to Claude Code CLI (features, PRs)"
 sidebar_label: "Claude Code"
-description: "Delegate coding tasks to Claude Code (Anthropic's CLI agent)"
+description: "Delegate coding to Claude Code CLI (features, PRs)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Claude Code
 
-Delegate coding tasks to Claude Code (Anthropic's CLI agent). Use for building features, refactoring, PR reviews, and iterative coding. Requires the claude CLI installed.
+Delegate coding to Claude Code CLI (features, PRs).
 
 ## Skill metadata
 

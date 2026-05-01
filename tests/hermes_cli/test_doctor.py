@@ -161,6 +161,38 @@ def test_check_gateway_service_linger_skips_when_service_not_installed(monkeypat
     assert issues == []
 
 
+def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
+    monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
+    monkeypatch.setenv("TERMINAL_VERCEL_RUNTIME", "python3.13")
+    monkeypatch.setenv("TERMINAL_CONTAINER_DISK", "2048")
+    monkeypatch.setenv("VERCEL_TOKEN", "super-secret-value")
+    monkeypatch.delenv("VERCEL_PROJECT_ID", raising=False)
+    monkeypatch.setenv("VERCEL_TEAM_ID", "team")
+    monkeypatch.setattr(doctor_mod.importlib.util, "find_spec", lambda name: object() if name == "vercel" else None)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "Vercel runtime" in out
+    assert "python3.13" in out
+    assert "Vercel custom disk unsupported" in out
+    assert "Vercel auth incomplete" in out
+    assert "VERCEL_PROJECT_ID" in out
+    assert "Vercel auth mode: incomplete access token" in out
+    assert "Vercel auth present env: VERCEL_TOKEN, VERCEL_TEAM_ID" in out
+    assert "Vercel auth missing env: VERCEL_PROJECT_ID" in out
+    assert "super-secret-value" not in out
+    assert "snapshot filesystem only" in out
+
+
 # ── Memory provider section (doctor should only check the *active* provider) ──
 
 

@@ -566,3 +566,282 @@ class TestSecurityScanGate:
 
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
             assert _guard_agent_created_enabled() is False
+
+    def test_guard_flag_quoted_false_stays_disabled(self):
+        """Quoted 'false' from YAML edits must not enable the guard."""
+        from tools.skill_manager_tool import _guard_agent_created_enabled
+
+        for quoted in ("false", "False", "0", "no", "off"):
+            with patch("hermes_cli.config.load_config",
+                       return_value={"skills": {"guard_agent_created": quoted}}):
+                assert _guard_agent_created_enabled() is False, \
+                    f"guard_agent_created={quoted!r} must coerce to False"
+
+    def test_guard_flag_quoted_true_enables(self):
+        """Quoted truthy strings must enable the guard."""
+        from tools.skill_manager_tool import _guard_agent_created_enabled
+
+        for quoted in ("true", "True", "1", "yes", "on"):
+            with patch("hermes_cli.config.load_config",
+                       return_value={"skills": {"guard_agent_created": quoted}}):
+                assert _guard_agent_created_enabled() is True, \
+                    f"guard_agent_created={quoted!r} must coerce to True"
+
+
+# ---------------------------------------------------------------------------
+# External skills directories (skills.external_dirs) — mutations in place
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _two_roots(local_dir: Path, external_dir: Path):
+    """Patch the skill manager so local SKILLS_DIR = local_dir and
+    get_all_skills_dirs() returns [local_dir, external_dir] in order."""
+    with patch("tools.skill_manager_tool.SKILLS_DIR", local_dir), \
+         patch("agent.skill_utils.get_all_skills_dirs",
+               return_value=[local_dir, external_dir]):
+        yield
+
+
+def _write_external_skill(external_dir: Path, name: str = "ext-skill") -> Path:
+    skill_dir = external_dir / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: An external skill.\n---\n\n"
+        "# External\n\nBody with OLD_MARKER here.\n"
+    )
+    return skill_dir
+
+
+class TestExternalSkillMutations:
+    """Verify skill_manage can patch/edit/write/remove/delete skills that live
+    under skills.external_dirs — in place, without duplicating to local.
+
+    Regression for issues #4759 and #4381: the read-only gate used to refuse
+    with 'Skill X is in an external directory and cannot be modified', which
+    caused agents to create duplicate copies in ~/.hermes/skills/ as a
+    workaround.
+    """
+
+    def test_patch_external_skill_writes_in_place(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external):
+            result = _patch_skill("ext-skill", "OLD_MARKER", "NEW_MARKER")
+
+        assert result["success"] is True, result
+        assert "NEW_MARKER" in (skill_dir / "SKILL.md").read_text()
+        # No duplicate in local
+        assert not (local / "ext-skill").exists()
+
+    def test_edit_external_skill_writes_in_place(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        new_content = (
+            "---\nname: ext-skill\ndescription: Rewritten.\n---\n\n"
+            "# Rewritten\n\nBrand new body.\n"
+        )
+        with _two_roots(local, external):
+            result = _edit_skill("ext-skill", new_content)
+
+        assert result["success"] is True, result
+        assert "Brand new body" in (skill_dir / "SKILL.md").read_text()
+        assert not (local / "ext-skill").exists()
+
+    def test_write_file_on_external_skill(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external):
+            result = _write_file("ext-skill", "references/notes.md", "# Notes\n")
+
+        assert result["success"] is True, result
+        assert (skill_dir / "references" / "notes.md").read_text() == "# Notes\n"
+        assert not (local / "ext-skill").exists()
+
+    def test_remove_file_on_external_skill(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "notes.md").write_text("# Notes\n")
+
+        with _two_roots(local, external):
+            result = _remove_file("ext-skill", "references/notes.md")
+
+        assert result["success"] is True, result
+        assert not (skill_dir / "references" / "notes.md").exists()
+
+    def test_delete_external_skill_removes_skill_not_root(self, tmp_path):
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        skill_dir = _write_external_skill(external)
+
+        with _two_roots(local, external):
+            result = _delete_skill("ext-skill")
+
+        assert result["success"] is True, result
+        assert not skill_dir.exists()
+        # The external root must NOT be rmdir'd, even when empty after deletion
+        assert external.exists() and external.is_dir()
+
+    def test_delete_external_skill_cleans_empty_category(self, tmp_path):
+        """When a skill lives under external/<category>/<name>, deleting the
+        last skill in the category should rmdir the empty category dir but
+        stop at the external root."""
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+        cat_dir = external / "team"
+        cat_dir.mkdir()
+        skill_dir = cat_dir / "ext-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: ext-skill\ndescription: An external skill.\n---\n\n"
+            "# External\n\nBody.\n"
+        )
+
+        with _two_roots(local, external):
+            result = _delete_skill("ext-skill")
+
+        assert result["success"] is True, result
+        assert not skill_dir.exists()
+        assert not cat_dir.exists()  # empty category cleaned up
+        assert external.exists()     # but never the external root
+
+    def test_create_still_writes_to_local_root(self, tmp_path):
+        """Creating a new skill always lands in local SKILLS_DIR, never
+        external_dirs — create is unchanged by this PR."""
+        local = tmp_path / "local"
+        external = tmp_path / "vault"
+        local.mkdir(); external.mkdir()
+
+        with _two_roots(local, external):
+            result = _create_skill("fresh-skill", VALID_SKILL_CONTENT.replace(
+                "name: test-skill", "name: fresh-skill"))
+
+        assert result["success"] is True, result
+        assert (local / "fresh-skill" / "SKILL.md").exists()
+        assert not (external / "fresh-skill").exists()
+
+
+
+# ---------------------------------------------------------------------------
+# Pinned-skill guard — skill_manage refuses all writes to pinned skills.
+# The user unpins via `hermes curator unpin <name>`.
+# ---------------------------------------------------------------------------
+
+class TestPinnedGuard:
+    """Every mutation action must refuse when the skill is pinned."""
+
+    @staticmethod
+    def _pin(name: str):
+        """Return a patch context that marks *name* as pinned in skill_usage."""
+        def _fake_get_record(skill_name, _name=name):
+            return {"pinned": True} if skill_name == _name else {"pinned": False}
+        return patch("tools.skill_usage.get_record", side_effect=_fake_get_record)
+
+    def test_edit_refuses_pinned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._pin("my-skill"):
+                result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        assert "hermes curator unpin my-skill" in result["error"]
+        # Original content preserved
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "A test skill" in content
+
+    def test_patch_refuses_pinned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._pin("my-skill"):
+                result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.")
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        assert "hermes curator unpin my-skill" in result["error"]
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "Do the thing." in content  # unchanged
+
+    def test_patch_supporting_file_refuses_pinned(self, tmp_path):
+        """Pin covers supporting files too, not just SKILL.md."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "references/api.md", "original")
+            with self._pin("my-skill"):
+                result = _patch_skill(
+                    "my-skill", "original", "modified",
+                    file_path="references/api.md",
+                )
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        assert (tmp_path / "my-skill" / "references" / "api.md").read_text() == "original"
+
+    def test_delete_refuses_pinned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._pin("my-skill"):
+                result = _delete_skill("my-skill")
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        # Skill still exists
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
+    def test_write_file_refuses_pinned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with self._pin("my-skill"):
+                result = _write_file("my-skill", "references/api.md", "content")
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        assert not (tmp_path / "my-skill" / "references" / "api.md").exists()
+
+    def test_remove_file_refuses_pinned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            _write_file("my-skill", "references/api.md", "content")
+            with self._pin("my-skill"):
+                result = _remove_file("my-skill", "references/api.md")
+        assert result["success"] is False
+        assert "pinned" in result["error"].lower()
+        # File still there
+        assert (tmp_path / "my-skill" / "references" / "api.md").exists()
+
+    def test_unpinned_skills_still_editable(self, tmp_path):
+        """Sanity check: the guard doesn't fire for unpinned skills.
+
+        Only the specifically-pinned skill is refused; a sibling skill must
+        still be freely editable.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("pinned-one", VALID_SKILL_CONTENT)
+            _create_skill("free-one", VALID_SKILL_CONTENT)
+            with self._pin("pinned-one"):
+                blocked = _edit_skill("pinned-one", VALID_SKILL_CONTENT_2)
+                allowed = _edit_skill("free-one", VALID_SKILL_CONTENT_2)
+        assert blocked["success"] is False
+        assert allowed["success"] is True
+
+    def test_broken_sidecar_fails_open(self, tmp_path):
+        """If skill_usage.get_record raises, we allow the write through.
+
+        Rationale: a corrupted telemetry file shouldn't lock the agent out
+        of skills it would otherwise be allowed to touch.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            with patch("tools.skill_usage.get_record",
+                       side_effect=RuntimeError("sidecar broken")):
+                result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True

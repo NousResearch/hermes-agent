@@ -933,6 +933,7 @@ class SessionDB:
         offset: int = 0,
         include_children: bool = False,
         project_compression_tips: bool = True,
+        order_by_last_active: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -952,6 +953,11 @@ class SessionDB:
         compressed continuations from being invisible to users while keeping
         delegate subagents and branches hidden. Pass ``False`` to return the
         raw root rows (useful for admin/debug UIs).
+
+        Pass ``order_by_last_active=True`` to sort by most-recent activity
+        instead of original conversation start time. This is computed after
+        compression-tip projection so "recent sessions" surfaces the live tip
+        of a compressed conversation in the correct slot.
         """
         where_clauses = []
         params = []
@@ -979,6 +985,15 @@ class SessionDB:
             params.extend(exclude_sources)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        order_sql = (
+            "ORDER BY last_active DESC, s.started_at DESC, s.id DESC"
+            if order_by_last_active
+            else "ORDER BY s.started_at DESC"
+        )
+        limit_sql = ""
+        if not order_by_last_active:
+            limit_sql = "LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
         query = f"""
             SELECT s.*,
                 COALESCE(
@@ -994,10 +1009,9 @@ class SessionDB:
                 ) AS last_active
             FROM sessions s
             {where_sql}
-            ORDER BY s.started_at DESC
-            LIMIT ? OFFSET ?
+            {order_sql}
+            {limit_sql}
         """
-        params.extend([limit, offset])
         with self._lock:
             cursor = self._conn.execute(query, params)
             rows = cursor.fetchall()
@@ -1046,6 +1060,17 @@ class SessionDB:
                 merged["_lineage_root_id"] = s["id"]
                 projected.append(merged)
             sessions = projected
+
+        if order_by_last_active:
+            sessions.sort(
+                key=lambda s: (
+                    s.get("last_active") or s.get("started_at") or 0,
+                    s.get("started_at") or 0,
+                    s.get("id") or "",
+                ),
+                reverse=True,
+            )
+            sessions = sessions[offset:offset + limit]
 
         return sessions
 

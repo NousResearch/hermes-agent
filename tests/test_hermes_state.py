@@ -1719,6 +1719,39 @@ class TestListSessionsRich:
         # No messages, so last_active falls back to started_at
         assert sessions[0]["last_active"] == sessions[0]["started_at"]
 
+    def test_order_by_last_active_surfaces_recently_touched_older_session_first(self, db):
+        t0 = 1709500000.0
+        db.create_session("old", "cli")
+        db.create_session("new", "cli")
+
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "old"))
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 10, "new"))
+
+        db.append_message("old", "user", "old first")
+        db.append_message("new", "user", "new first")
+        db.append_message("old", "assistant", "old touched later")
+
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND role=? AND content=?",
+                (t0 + 1, "old", "user", "old first"),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND role=? AND content=?",
+                (t0 + 11, "new", "user", "new first"),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND role=? AND content=?",
+                (t0 + 20, "old", "assistant", "old touched later"),
+            )
+            db._conn.commit()
+
+        assert [s["id"] for s in db.list_sessions_rich(limit=5)] == ["new", "old"]
+        assert [
+            s["id"] for s in db.list_sessions_rich(limit=5, order_by_last_active=True)
+        ] == ["old", "new"]
+
     def test_rich_list_includes_title(self, db):
         db.create_session("s1", "cli")
         db.set_session_title("s1", "refactoring auth")

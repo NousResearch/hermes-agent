@@ -6796,7 +6796,12 @@ class AIAgent:
         # This prevents thinking-capable models (Qwen3, etc.) from generating
         # <think> blocks and producing empty-response errors when the user has
         # set reasoning_effort: none.
-        if self.provider == "custom" and self.reasoning_config and isinstance(self.reasoning_config, dict):
+        # NOTE: DeepSeek V4 ignores `think: False` and still generates
+        # reasoning_content, which then REQUIRES passback — causing HTTP 400
+        # errors. Skip `think: False` for DeepSeek endpoints to avoid this.
+        _is_deepseek = "deepseek.com" in (self.base_url or "").lower()
+        if (self.provider == "custom" and not _is_deepseek
+                and self.reasoning_config and isinstance(self.reasoning_config, dict)):
             _effort = (self.reasoning_config.get("effort") or "").strip().lower()
             _enabled = self.reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
@@ -8753,6 +8758,31 @@ class AIAgent:
             # gated on context_compressor — so orphans from session loading or
             # manual message manipulation are always caught.
             api_messages = self._sanitize_api_messages(api_messages)
+
+            # DeepSeek V4 requires reasoning_content on every assistant message
+            # that had tool_calls when the model was in thinking mode.
+            # Enforce this here as a safety net in case the passback was lost
+            # (e.g. compressed context, session restore, delegation handoff).
+            if "deepseek.com" in (self.base_url or "").lower():
+                _internal_by_tc_id: dict = {}
+                for _m in messages:
+                    if _m.get("role") == "assistant" and _m.get("reasoning"):
+                        for _tc in (_m.get("tool_calls") or []):
+                            _tc_id = (_tc.get("id") or "") if isinstance(_tc, dict) else ""
+                            if _tc_id:
+                                _internal_by_tc_id[_tc_id] = _m["reasoning"]
+                for _api_m in api_messages:
+                    if (
+                        _api_m.get("role") == "assistant"
+                        and _api_m.get("tool_calls")
+                        and not _api_m.get("reasoning_content")
+                    ):
+                        for _tc in (_api_m.get("tool_calls") or []):
+                            _tc_id = (_tc.get("id") or "") if isinstance(_tc, dict) else ""
+                            _rc = _internal_by_tc_id.get(_tc_id)
+                            if _rc:
+                                _api_m["reasoning_content"] = _rc
+                                break
 
             # Normalize message whitespace and tool-call JSON for consistent
             # prefix matching.  Ensures bit-perfect prefixes across turns,

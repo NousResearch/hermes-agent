@@ -125,7 +125,7 @@ class _VikingClient:
             resp = self._httpx.get(
                 self._url("/health"), timeout=3.0
             )
-            return resp.status_code == 200
+            return True  # any HTTP response = server is alive
         except Exception:
             return False
 
@@ -340,8 +340,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Provide brief info about the knowledge base
         try:
             # Check what's in the knowledge base via a root listing
-            resp = self._client.get("/api/v1/fs/ls", params={"uri": "viking://"})
-            result = resp.get("result", [])
+            resp = self._client.get("/resources/list", params={"target": "viking://"})
+            result = self._unwrap_result(resp)
             children = len(result) if isinstance(result, list) else 0
             if children == 0:
                 return ""
@@ -383,11 +383,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     self._endpoint, self._api_key,
                     account=self._account, user=self._user, agent=self._agent,
                 )
-                resp = client.post("/api/v1/search/find", {
+                resp = client.post("/retrieval/find", {
                     "query": query,
-                    "top_k": 5,
+                    "limit": 5,
                 })
-                result = resp.get("result", {})
+                result = self._unwrap_result(resp)
                 parts = []
                 for ctx_type in ("memories", "resources"):
                     items = result.get(ctx_type, [])
@@ -424,12 +424,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 sid = self._session_id
 
                 # Add user message
-                client.post(f"/api/v1/sessions/{sid}/messages", {
+                client.post(f"/sessions/{sid}/message", {
                     "role": "user",
                     "content": user_content[:4000],  # trim very long messages
                 })
                 # Add assistant message
-                client.post(f"/api/v1/sessions/{sid}/messages", {
+                client.post(f"/sessions/{sid}/message", {
                     "role": "assistant",
                     "content": assistant_content[:4000],
                 })
@@ -464,7 +464,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return
 
         try:
-            self._client.post(f"/api/v1/sessions/{self._session_id}/commit")
+            self._client.post(f"/sessions/{self._session_id}/commit")
             logger.info("OpenViking session %s committed (%d turns)", self._session_id, self._turn_count)
         except Exception as e:
             logger.warning("OpenViking session commit failed: %s", e)
@@ -482,7 +482,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 )
                 # Add as a user message with memory context so the commit
                 # picks it up as an explicit memory during extraction
-                client.post(f"/api/v1/sessions/{self._session_id}/messages", {
+                client.post(f"/sessions/{self._session_id}/message", {
                     "role": "user",
                     "parts": [
                         {"type": "text", "text": f"[Memory note — {target}] {content}"},
@@ -530,9 +530,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     @staticmethod
     def _unwrap_result(resp: Any) -> Any:
-        """Return OpenViking payload body regardless of wrapped/unwrapped shape."""
-        if isinstance(resp, dict) and "result" in resp:
-            return resp.get("result")
+        """Return OpenViking payload body regardless of wrapped/unwrapped shape.
+
+        Handles both legacy {"result": ...} and new {"status": "success", "data": ...} formats.
+        """
+        if isinstance(resp, dict):
+            if "data" in resp:
+                return resp.get("data")
+            if "result" in resp:
+                return resp.get("result")
         return resp
 
     @staticmethod
@@ -553,7 +559,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         treat None as "unknown" and fall back to the exception-based path.
         """
         try:
-            resp = self._client.get("/api/v1/fs/stat", params={"uri": uri})
+            resp = self._client.get("/resources/stat", params={"uri": uri})
         except Exception:
             return None
         result = self._unwrap_result(resp)
@@ -580,10 +586,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if args.get("scope"):
             payload["target_uri"] = args["scope"]
         if args.get("limit"):
-            payload["top_k"] = args["limit"]
+            payload["limit"] = args["limit"]
 
-        resp = self._client.post("/api/v1/search/find", payload)
-        result = resp.get("result", {})
+        resp = self._client.post("/retrieval/find", payload)
+        result = self._unwrap_result(resp)
 
         # Format results for the model — keep it concise
         scored_entries = []
@@ -635,32 +641,43 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 resolved_uri = uri
                 used_fallback = True
 
-        # Map our level names to OpenViking GET endpoints.
-        endpoint = "/api/v1/content/read"
-        if not used_fallback:
-            if level == "abstract":
-                endpoint = "/api/v1/content/abstract"
-            elif level == "overview":
-                endpoint = "/api/v1/content/overview"
+        # Map our level names to OpenViking retrieval endpoints.
+        # New API: /retrieval/read with level=L0/L1/L2 for directories,
+        # /retrieval/read_binary for file content (base64-encoded).
+        is_dir = self._is_directory_uri(resolved_uri) if not used_fallback else None
 
-        try:
-            resp = self._client.get(endpoint, params={"uri": resolved_uri})
-        except Exception:
-            # OpenViking may return HTTP 500 for abstract/overview reads on normal
-            # file URIs (mem_*.md). For those, gracefully fallback to full read.
-            if not summary_level or resolved_uri != uri or used_fallback:
-                raise
-            resp = self._client.get("/api/v1/content/read", params={"uri": uri})
-            used_fallback = True
-
-        result = self._unwrap_result(resp)
-        # Content endpoints may return either plain strings or objects.
-        if isinstance(result, str):
-            content = result
-        elif isinstance(result, dict):
-            content = result.get("content", "") or result.get("text", "")
+        if is_dir is False or used_fallback:
+            # File URI — use read_binary (returns base64)
+            try:
+                import base64
+                resp = self._client.get("/retrieval/read_binary", params={"target": resolved_uri})
+                result = self._unwrap_result(resp)
+                if isinstance(result, str):
+                    content = base64.b64decode(result).decode("utf-8", errors="replace")
+                else:
+                    content = str(result) if result else ""
+            except Exception:
+                content = ""
         else:
-            content = ""
+            # Directory URI — use retrieval/read with level
+            level_map = {"abstract": "L0", "overview": "L1", "full": "L2"}
+            ov_level = level_map.get(level, "L2")
+            try:
+                resp = self._client.get("/retrieval/read", params={"target": resolved_uri, "level": ov_level})
+            except Exception:
+                # Fallback: try without level
+                if not summary_level or resolved_uri != uri:
+                    raise
+                resp = self._client.get("/retrieval/read", params={"target": resolved_uri})
+                used_fallback = True
+
+            result = self._unwrap_result(resp)
+            if isinstance(result, str):
+                content = result
+            elif isinstance(result, dict):
+                content = result.get("content", "") or result.get("text", "") or result.get("data", "")
+            else:
+                content = ""
 
         # Truncate long content to avoid flooding context.
         max_len = 8000
@@ -687,10 +704,11 @@ class OpenVikingMemoryProvider(MemoryProvider):
         action = args.get("action", "list")
         path = args.get("path", "viking://")
 
-        # Map action to the correct fs endpoint (all GET with uri= param)
-        endpoint_map = {"tree": "/api/v1/fs/tree", "list": "/api/v1/fs/ls", "stat": "/api/v1/fs/stat"}
-        endpoint = endpoint_map.get(action, "/api/v1/fs/ls")
-        resp = self._client.get(endpoint, params={"uri": path})
+        # Map action to the correct endpoint (all GET with target= param)
+        endpoint_map = {"tree": "/resources/tree", "list": "/resources/list", "stat": "/resources/stat"}
+        endpoint = endpoint_map.get(action, "/resources/list")
+        param_name = "uri" if action == "stat" else "target"
+        resp = self._client.get(endpoint, params={param_name: path})
         result = self._unwrap_result(resp)
 
         # Format list/tree results for readability
@@ -727,7 +745,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if category:
             text = f"[Remember — {category}] {content}"
 
-        self._client.post(f"/api/v1/sessions/{self._session_id}/messages", {
+        self._client.post(f"/sessions/{self._session_id}/message", {
             "role": "user",
             "parts": [
                 {"type": "text", "text": text},
@@ -744,12 +762,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not url:
             return tool_error("url is required")
 
-        payload: Dict[str, Any] = {"path": url}
+        payload: Dict[str, Any] = {"url": url}
         if args.get("reason"):
             payload["reason"] = args["reason"]
 
-        resp = self._client.post("/api/v1/resources", payload)
-        result = resp.get("result", {})
+        resp = self._client.post("/resources/add_url", payload)
+        result = self._unwrap_result(resp)
 
         return json.dumps({
             "status": "added",

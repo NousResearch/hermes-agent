@@ -41,14 +41,38 @@ curator:
   min_idle_hours: 2
   stale_after_days: 30
   archive_after_days: 90
-  auxiliary:
-    provider: null             # null = use main auxiliary client resolution
-    model: null
 ```
 
 To disable entirely, set `curator.enabled: false`.
 
-To use a cheaper aux model for the LLM review pass instead of your main model, set `curator.auxiliary.provider` and `curator.auxiliary.model` to something specific (e.g. `openrouter` + `google/gemini-3-flash-preview`).
+### Running the review on a cheaper aux model
+
+The curator's LLM review pass is a regular auxiliary task slot — `auxiliary.curator` — alongside Vision, Compression, Session Search, etc. "Auto" means "use my main chat model"; override the slot to pin a specific provider + model for the review pass instead.
+
+**Easiest — `hermes model`:**
+
+```bash
+hermes model                   # → "Auxiliary models — side-task routing"
+                               # → pick "Curator" → pick provider → pick model
+```
+
+The same picker is available in the web dashboard under the **Models** tab.
+
+**Direct config.yaml (equivalent):**
+
+```yaml
+auxiliary:
+  curator:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+    timeout: 600               # generous — reviews can take several minutes
+```
+
+Leaving `provider: auto` (the default) routes the review pass through whatever your main chat model is, matching the behavior of every other auxiliary task.
+
+:::note Legacy config
+Earlier releases used a one-off `curator.auxiliary.{provider,model}` block. That path still works but emits a deprecation log line — please migrate to `auxiliary.curator` above so the curator shares the same plumbing (`hermes model`, dashboard Models tab, `base_url`, `api_key`, `timeout`, `extra_body`) as every other aux task.
+:::
 
 ## CLI
 

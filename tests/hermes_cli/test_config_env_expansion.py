@@ -67,14 +67,15 @@ class TestLoadConfigExpansion:
             "    token: ${TELEGRAM_BOT_TOKEN}\n"
             "plain: no-substitution\n"
         )
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir(parents=True)
-        config_file = hermes_home / "config.yaml"
+        config_file = tmp_path / "config.yaml"
         config_file.write_text(config_yaml)
 
         monkeypatch.setenv("GOOGLE_API_KEY", "gsk-test-key")
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1234567:ABC-token")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Patch the imported function's own globals. Other tests may reload
+        # hermes_cli.config, making string-target monkeypatches hit a different
+        # module object than this collection-time imported load_config().
+        monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
 
         config = load_config()
 
@@ -84,13 +85,11 @@ class TestLoadConfigExpansion:
 
     def test_load_config_unresolved_kept_verbatim(self, tmp_path, monkeypatch):
         config_yaml = "model:\n  api_key: ${NOT_SET_XYZ_123}\n"
-        hermes_home = tmp_path / ".hermes"
-        hermes_home.mkdir(parents=True)
-        config_file = hermes_home / "config.yaml"
+        config_file = tmp_path / "config.yaml"
         config_file.write_text(config_yaml)
 
         monkeypatch.delenv("NOT_SET_XYZ_123", raising=False)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
 
         config = load_config()
 

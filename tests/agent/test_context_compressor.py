@@ -640,6 +640,30 @@ class TestCompressWithClient:
                 for tc in msg["tool_calls"]:
                     assert tc["id"] in answered_ids
 
+    def test_sanitizer_matches_responses_call_id_when_id_differs(self, compressor):
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fc_123",
+                        "call_id": "call_123",
+                        "response_item_id": "fc_123",
+                        "type": "function",
+                        "function": {"name": "search_files", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_123", "content": "result"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        assert [m.get("tool_call_id") for m in sanitized if m.get("role") == "tool"] == [
+            "call_123"
+        ]
+
     def test_summary_role_avoids_consecutive_user_messages(self):
         """Summary role should alternate with the last head message to avoid consecutive same-role messages."""
         mock_client = MagicMock()
@@ -1118,6 +1142,34 @@ class TestTokenBudgetTailProtection:
         )
         # At least one old tool result should have been pruned
         assert pruned >= 1
+
+    def test_prune_short_conv_protects_entire_tail(self, budget_compressor):
+        """Regression guard for PR #17025.
+
+        When ``len(messages) <= protect_tail_count`` and a token budget is
+        also set, every message must be protected. The previous code used
+        ``min(protect_tail_count, len(result) - 1)`` which capped the floor
+        one below the full length, leaving the oldest message eligible for
+        pruning.
+        """
+        c = budget_compressor
+        # 4 messages, protect_tail_count=4 -- nothing should be pruned.
+        # Oldest message is a large tool result; on the buggy path it falls
+        # outside the protected window and gets summarized.
+        messages = [
+            {"role": "tool", "content": "x" * 5000, "tool_call_id": "c0"},
+            {"role": "assistant", "content": "ack"},
+            {"role": "user", "content": "recent"},
+            {"role": "assistant", "content": "reply"},
+        ]
+        result, pruned = c._prune_old_tool_results(
+            messages,
+            protect_tail_count=4,
+            protect_tail_tokens=1_000_000,  # budget large enough to protect all
+        )
+        assert pruned == 0
+        # Tool result at index 0 must be preserved verbatim
+        assert result[0]["content"] == "x" * 5000
 
     def test_prune_without_token_budget_uses_message_count(self, budget_compressor):
         """Without protect_tail_tokens, falls back to message-count behavior."""

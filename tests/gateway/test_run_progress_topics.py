@@ -14,11 +14,6 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 from gateway.session import SessionSource
 
 
-def _noop_tool_progress(*_a, **_k):
-    """Stand-in when the gateway omits ``tool_progress_callback`` for a fake AIAgent."""
-    pass
-
-
 class ProgressCaptureAdapter(BasePlatformAdapter):
     def __init__(self, platform=Platform.TELEGRAM):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
@@ -72,15 +67,20 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
 
 class FakeAgent:
     def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback") or _noop_tool_progress
+        # Capture anything passed via kwargs (older code path) but don't
+        # freeze it — production now assigns tool_progress_callback after
+        # construction (see gateway/run.py around the agent-cache hit),
+        # so we must read it at call time, not at init.
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        cb = self.tool_progress_callback or _noop_tool_progress
-        cb("tool.started", "terminal", "pwd", {})
-        time.sleep(0.35)
-        cb("tool.started", "browser_navigate", "https://example.com", {})
-        time.sleep(0.35)
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "pwd", {})
+            time.sleep(0.35)
+            cb("tool.started", "browser_navigate", "https://example.com", {})
+            time.sleep(0.35)
         return {
             "final_response": "done",
             "messages": [],
@@ -93,12 +93,11 @@ class LongPreviewAgent:
     LONG_CMD = "cd /home/teknium/.hermes/hermes-agent/.worktrees/hermes-d8860339 && source .venv/bin/activate && python -m pytest tests/gateway/test_run_progress_topics.py -n0 -q"
 
     def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback") or _noop_tool_progress
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        cb = self.tool_progress_callback or _noop_tool_progress
-        cb("tool.started", "terminal", self.LONG_CMD, {})
+        self.tool_progress_callback("tool.started", "terminal", self.LONG_CMD, {})
         time.sleep(0.35)
         return {
             "final_response": "done",
@@ -109,14 +108,13 @@ class LongPreviewAgent:
 
 class DelayedProgressAgent:
     def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback") or _noop_tool_progress
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        cb = self.tool_progress_callback or _noop_tool_progress
-        cb("tool.started", "terminal", "first command", {})
+        self.tool_progress_callback("tool.started", "terminal", "first command", {})
         time.sleep(0.45)
-        cb("tool.started", "terminal", "second command", {})
+        self.tool_progress_callback("tool.started", "terminal", "second command", {})
         time.sleep(0.1)
         return {
             "final_response": "done",
@@ -258,11 +256,11 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
 @pytest.mark.asyncio
 async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
     """Slack DM progress should keep event ts fallback threading."""
-    import yaml
-
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
-    # Slack's built-in display default keeps tool_progress off unless overridden;
-    # env alone loses to resolve_display_setting — enable explicitly for this test.
+    # Since PR #8006, Slack's built-in display tier sets tool_progress="off"
+    # by default. Override via config so this test still exercises the
+    # progress-callback path the Slack DM event_message_id threading depends on.
+    import yaml
     (tmp_path / "config.yaml").write_text(
         yaml.dump({"display": {"platforms": {"slack": {"tool_progress": "all"}}}}),
         encoding="utf-8",
@@ -497,12 +495,11 @@ class VerboseAgent:
     LONG_CODE = "x" * 300
 
     def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback") or _noop_tool_progress
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        cb = self.tool_progress_callback or _noop_tool_progress
-        cb(
+        self.tool_progress_callback(
             "tool.started", "execute_code", None,
             {"code": self.LONG_CODE},
         )

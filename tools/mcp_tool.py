@@ -915,11 +915,12 @@ class MCPServerTask:
         except Exception:
             logger.exception("MCP server '%s': dynamic tool refresh failed", self.name)
 
-    def _schedule_tools_refresh(self) -> None:
+    def _schedule_tools_refresh(self) -> asyncio.Task:
         """Schedule a background tool refresh and keep it strongly referenced."""
         task = asyncio.create_task(self._refresh_tools_task())
         self._pending_refresh_tasks.add(task)
         task.add_done_callback(self._pending_refresh_tasks.discard)
+        return task
 
     def _make_message_handler(self):
         """Build a ``message_handler`` callback for ``ClientSession``.
@@ -946,16 +947,14 @@ class MCPServerTask:
                             # request. Refreshing synchronously inside the SDK
                             # notification handler can race with that request
                             # and wedge the stdio JSON-RPC stream, making all
-                            # subsequent tool calls time out.
-                            #
-                            # Test stubs may trigger this handler before a
-                            # session is attached; in that case refresh inline
-                            # to preserve historical behavior and deterministic
-                            # await assertions.
-                            if self.session is None:
-                                await self._refresh_tools()
-                            else:
-                                self._schedule_tools_refresh()
+                            # subsequent tool calls time out. Do the refresh in
+                            # a separate task and let the handler return
+                            # promptly.
+                            self._schedule_tools_refresh()
+                            # Yield one loop tick so tests and short-lived
+                            # notification contexts can observe the scheduled
+                            # refresh without awaiting the full server RPC.
+                            await asyncio.sleep(0)
                         case PromptListChangedNotification():
                             logger.debug("MCP server '%s': prompts/list_changed (ignored)", self.name)
                         case ResourceListChangedNotification():
@@ -1968,23 +1967,6 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
-def _get_server_rpc_lock(server: Any) -> asyncio.Lock:
-    """Return per-server RPC lock, creating one for legacy test stubs.
-
-    Some unit tests inject lightweight ``SimpleNamespace`` server objects
-    without ``_rpc_lock``. Keep handlers backward compatible by lazily
-    attaching a lock when missing.
-    """
-    lock = getattr(server, "_rpc_lock", None)
-    if lock is None:
-        lock = asyncio.Lock()
-        try:
-            setattr(server, "_rpc_lock", lock)
-        except Exception:
-            pass
-    return lock
-
-
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Return a sync handler that calls an MCP tool via the background loop.
 
@@ -2028,7 +2010,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
-            async with _get_server_rpc_lock(server):
+            async with server._rpc_lock:
                 result = await server.session.call_tool(tool_name, arguments=args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
@@ -2127,7 +2109,7 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
-            async with _get_server_rpc_lock(server):
+            async with server._rpc_lock:
                 result = await server.session.list_resources()
             resources = []
             for r in (result.resources if hasattr(result, "resources") else []):
@@ -2191,7 +2173,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             return tool_error("Missing required parameter 'uri'")
 
         async def _call():
-            async with _get_server_rpc_lock(server):
+            async with server._rpc_lock:
                 result = await server.session.read_resource(uri)
             # read_resource returns ReadResourceResult with .contents list
             parts: List[str] = []
@@ -2245,7 +2227,7 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             }, ensure_ascii=False)
 
         async def _call():
-            async with _get_server_rpc_lock(server):
+            async with server._rpc_lock:
                 result = await server.session.list_prompts()
             prompts = []
             for p in (result.prompts if hasattr(result, "prompts") else []):
@@ -2315,7 +2297,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         arguments = args.get("arguments", {})
 
         async def _call():
-            async with _get_server_rpc_lock(server):
+            async with server._rpc_lock:
                 result = await server.session.get_prompt(name, arguments=arguments)
             # GetPromptResult has .messages list
             messages = []

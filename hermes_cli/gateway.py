@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,6 +59,13 @@ class GatewayRuntimeSnapshot:
     @property
     def has_process_service_mismatch(self) -> bool:
         return self.service_installed and self.running and not self.service_running
+
+
+@dataclass(frozen=True)
+class ProfileGatewayProcess:
+    profile: str
+    path: Path
+    pid: int
 
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
@@ -369,6 +377,83 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
     for pid in _scan_gateway_pids(_exclude, all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)
     return pids
+
+
+def find_profile_gateway_processes(
+    exclude_pids: set | None = None,
+) -> list[ProfileGatewayProcess]:
+    """Return running gateway PIDs mapped to Hermes profiles via PID files."""
+    _exclude = set(exclude_pids or set())
+    processes: list[ProfileGatewayProcess] = []
+    try:
+        from gateway.status import get_running_pid
+        from hermes_cli.profiles import list_profiles
+    except Exception:
+        return processes
+
+    seen: set[int] = set()
+    for profile in list_profiles():
+        try:
+            pid = get_running_pid(profile.path / "gateway.pid", cleanup_stale=False)
+        except Exception:
+            continue
+        if pid is None or pid <= 0 or pid in _exclude or pid in seen:
+            continue
+        seen.add(pid)
+        processes.append(ProfileGatewayProcess(profile=profile.name, path=profile.path, pid=pid))
+    return processes
+
+
+def _gateway_run_args_for_profile(profile: str) -> list[str]:
+    args = [get_python_path(), "-m", "hermes_cli.main"]
+    if profile != "default":
+        args.extend(["--profile", profile])
+    args.extend(["gateway", "run", "--replace"])
+    return args
+
+
+def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
+    """Relaunch a manually-run profile gateway after its current PID exits."""
+    if old_pid <= 0:
+        return False
+
+    watcher = textwrap.dedent(
+        """
+        import os
+        import subprocess
+        import sys
+        import time
+
+        pid = int(sys.argv[1])
+        cmd = sys.argv[2:]
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            except PermissionError:
+                pass
+            time.sleep(0.2)
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        """
+    ).strip()
+
+    try:
+        subprocess.Popen(
+            [sys.executable, "-c", watcher, str(old_pid), *_gateway_run_args_for_profile(profile)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        return False
+    return True
 
 
 def _probe_systemd_service_running(system: bool = False) -> tuple[bool, bool]:
@@ -2368,7 +2453,11 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     # Exit with code 1 if gateway fails to connect any platform,
     # so systemd Restart=on-failure will retry on transient errors
     verbosity = None if quiet else verbose
-    success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+    try:
+        success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+    except KeyboardInterrupt:
+        print("\nGateway stopped.")
+        return
     if not success:
         sys.exit(1)
 
@@ -2761,15 +2850,77 @@ _PLATFORMS = [
         ],
     },
 ]
+def _all_platforms() -> list[dict]:
+    """Return the full list of platforms for setup menus.
+
+    Combines the built-in ``_PLATFORMS`` with plugin platforms registered via
+    ``platform_registry``. Plugins are discovered on first call so bundled
+    platforms (like IRC, which auto-load via ``kind: platform``) appear in
+    ``hermes setup gateway`` without needing the gateway to be running.
+    Built-ins keep their dict shape; plugin entries are adapted to the same
+    shape with ``_registry_entry`` holding the source.
+    """
+    # Populate the registry so plugin platforms are visible. Idempotent.
+    # Bundled platform plugins (``kind: platform``) auto-load unconditionally,
+    # so every shipped messaging channel appears in the setup menu by default.
+    # User-installed platform plugins under ~/.hermes/plugins/ still require
+    # opt-in via ``plugins.enabled`` (untrusted code).
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    except Exception as e:
+        logger.debug("plugin discovery failed during platform enumeration: %s", e)
+
+    platforms = [dict(p) for p in _PLATFORMS]
+    by_key = {p["key"]: p for p in platforms}
+
+    try:
+        from gateway.platform_registry import platform_registry
+    except Exception:
+        return platforms
+
+    for entry in platform_registry.all_entries():
+        if entry.name in by_key:
+            continue  # built-in already covers it
+        platforms.append({
+            "key": entry.name,
+            "label": entry.label,
+            "emoji": entry.emoji,
+            "token_var": entry.required_env[0] if entry.required_env else "",
+            "install_hint": entry.install_hint,
+            "_registry_entry": entry,
+        })
+    return platforms
 
 
 def _platform_status(platform: dict) -> str:
     """Return a plain-text status string for a platform.
 
     Returns uncolored text so it can safely be embedded in
-    simple_term_menu items (ANSI codes break width calculation).
+    curses menu items (ANSI codes break width calculation).
     """
-    token_var = platform["token_var"]
+    entry = platform.get("_registry_entry")
+    if entry is not None:
+        configured = False
+        # Prefer is_connected (checks both env and config.yaml) over
+        # check_fn (typically just dependency / env presence).
+        if entry.is_connected is not None:
+            try:
+                from gateway.config import PlatformConfig
+                synthetic = PlatformConfig(enabled=True)
+                configured = bool(entry.is_connected(synthetic))
+            except Exception:
+                configured = False
+        if not configured:
+            try:
+                configured = bool(entry.check_fn())
+            except Exception:
+                configured = False
+        return "configured" if configured else "not configured"
+
+    token_var = platform.get("token_var", "")
+    if not token_var:
+        return "not configured"
     val = get_env_value(token_var)
     if token_var == "WHATSAPP_ENABLED":
         if val and val.lower() == "true":
@@ -3727,6 +3878,71 @@ def _setup_signal():
     print_info(f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}")
 
 
+def _builtin_setup_fn(key: str):
+    """Resolve the interactive setup function for a built-in platform key.
+
+    Late-bound to avoid a circular import with ``hermes_cli.setup`` (which
+    imports from this module for the remaining bespoke flows).
+    """
+    from hermes_cli import setup as _s
+    return {
+        "telegram": _s._setup_telegram,
+        "discord": _s._setup_discord,
+        "slack": _s._setup_slack,
+        "matrix": _s._setup_matrix,
+        "mattermost": _s._setup_mattermost,
+        "bluebubbles": _s._setup_bluebubbles,
+        "webhooks": _s._setup_webhooks,
+        "signal": _setup_signal,
+        "whatsapp": _setup_whatsapp,
+        "weixin": _setup_weixin,
+        "dingtalk": _setup_dingtalk,
+        "feishu": _setup_feishu,
+        "wecom": _setup_wecom,
+        "qqbot": _setup_qqbot,
+    }.get(key)
+def _configure_platform(platform: dict) -> None:
+    """Run the interactive setup flow for a single platform.
+
+    Dispatch order:
+      1. Plugin-provided ``setup_fn`` on the registry entry.
+      2. Built-in setup function matched by platform key.
+      3. ``_setup_standard_platform`` when the entry has a ``vars`` schema.
+      4. Env-var hint fallback for plugins that offer no setup helper.
+
+    Bundled platform plugins (e.g. IRC) auto-load, so no plugin enable step
+    is needed here. User-installed platform plugins under ~/.hermes/plugins/
+    must already be in ``plugins.enabled`` before they appear in this menu.
+    """
+    entry = platform.get("_registry_entry")
+
+    if entry is not None and entry.setup_fn is not None:
+        entry.setup_fn()
+        return
+
+    fn = _builtin_setup_fn(platform["key"])
+    if fn is not None:
+        fn()
+        return
+
+    if platform.get("vars"):
+        _setup_standard_platform(platform)
+        return
+
+    # Plugin with no setup helper — show env-var instructions.
+    label = platform.get("label", platform["key"])
+    emoji = platform.get("emoji", "🔌")
+    print()
+    print(color(f"  ─── {emoji} {label} Setup ───", Colors.CYAN))
+    required = entry.required_env if entry else []
+    if required:
+        print_info(f"  Set these env vars in ~/.hermes/.env: {', '.join(required)}")
+    else:
+        print_info(f"  Configure {label} in config.yaml under gateway.platforms.{platform['key']}")
+    if platform.get("install_hint"):
+        print_info(f"  {platform['install_hint']}")
+
+
 def gateway_setup():
     """Interactive setup for messaging platforms + gateway service."""
     if is_managed():
@@ -3779,42 +3995,36 @@ def gateway_setup():
         print()
         print_header("Messaging Platforms")
 
-        menu_items = []
-        for plat in _PLATFORMS:
-            status = _platform_status(plat)
-            menu_items.append(f"{plat['label']}  ({status})")
+        platforms = _all_platforms()
+
+        menu_items = [
+            f"{p['emoji']} {p['label']}  ({_platform_status(p)})"
+            for p in platforms
+        ]
         menu_items.append("Done")
 
         choice = prompt_choice("Select a platform to configure:", menu_items, len(menu_items) - 1)
-
-        if choice == len(_PLATFORMS):
+        if choice == len(platforms):
             break
 
-        platform = _PLATFORMS[choice]
-
-        if platform["key"] == "whatsapp":
-            _setup_whatsapp()
-        elif platform["key"] == "signal":
-            _setup_signal()
-        elif platform["key"] == "weixin":
-            _setup_weixin()
-        elif platform["key"] == "dingtalk":
-            _setup_dingtalk()
-        elif platform["key"] == "feishu":
-            _setup_feishu()
-        elif platform["key"] == "qqbot":
-            _setup_qqbot()
-        elif platform["key"] == "wecom":
-            _setup_wecom()
-        else:
-            _setup_standard_platform(platform)
+        _configure_platform(platforms[choice])
 
     # ── Post-setup: offer to install/restart gateway ──
+    # Consider any platform (built-in or plugin) where the user has made
+    # meaningful progress.  ``_platform_status`` already handles plugin
+    # entries via their check_fn and per-platform dual-states like
+    # WhatsApp's "enabled, not paired".
+    def _is_progress(status: str) -> bool:
+        s = status.lower()
+        return not (
+            s == "not configured"
+            or s.startswith("partially")
+            or s.startswith("plugin disabled")
+        )
+
     any_configured = any(
-        bool(get_env_value(p["token_var"]))
-        for p in _PLATFORMS
-        if p["key"] != "whatsapp"
-    ) or (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true"
+        _is_progress(_platform_status(p)) for p in _all_platforms()
+    )
 
     if any_configured:
         print()

@@ -608,9 +608,6 @@ class CopilotACPClient:
                     end = start + limit if isinstance(limit, int) and limit > 0 else None
                     content = "".join(lines[start:end])
                 if content:
-                    # Copilot ACP file reads are always redacted, regardless of
-                    # global log-redaction toggle, to avoid leaking credentials
-                    # from .env / config files in tool output.
                     content = redact_sensitive_text(content, force=True)
                 response = {
                     "jsonrpc": "2.0",

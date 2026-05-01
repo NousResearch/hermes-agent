@@ -12,7 +12,6 @@ import os
 import queue
 import subprocess
 import sys
-from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import patch, MagicMock, PropertyMock, mock_open
 
@@ -206,92 +205,53 @@ class TestMacosOsascript:
 
 class TestIsWsl:
     def setup_method(self):
-        """Reset WSL cache between tests (see _mock_proc_version for path mocks)."""
+        # _is_wsl is hermes_constants.is_wsl; reset the function's own module
+        # globals so this stays stable even if hermes_constants was imported
+        # through a different module object earlier in a large xdist run.
         import hermes_constants
-
         hermes_constants._wsl_detected = None
+        _is_wsl.__globals__["_wsl_detected"] = None
 
     def teardown_method(self):
+        # Reset again after the test so we don't leak a cached value
+        # (True/False) into whichever test the xdist worker runs next.
         import hermes_constants
-
         hermes_constants._wsl_detected = None
-
-    @contextmanager
-    def _mock_proc_version(self, *, read_data: str | None = None, open_exc=None):
-        """Patch ``/proc/version`` reads and a non-WSL ``platform.uname().release``.
-
-        Real CI runners (e.g. Linux GitHub) may publish a release string that
-        intersects the WSL heuristics or resolve ``open`` only via
-        ``hermes_constants._builtin_open``; pin uname and patch by module path.
-        """
-        from types import SimpleNamespace
-
-        import hermes_constants
-
-        # Keep tests deterministic even if /proc/version mocking is bypassed by
-        # import-time aliases or platform quirks on CI workers.
-        wants_wsl = bool(read_data and "microsoft-standard" in read_data.lower())
-        fake_uname = SimpleNamespace(
-            release="5.15.0-microsoft-standard-WSL2" if wants_wsl else "6.8.0-generic"
-        )
-
-        def _fake_exists(path) -> bool:
-            # Normalize Path/str — CI workers may pass pathlib paths to exists().
-            norm = str(path).replace("\\", "/").rstrip("/")
-            if norm.endswith("WSLInterop"):
-                return wants_wsl
-            return False
-
-        import platform as plat_mod
-
-        plat_mod._uname_cache = None
-        hermes_constants._wsl_detected = None
-
-        # Linux: ``os.path`` is ``posixpath``; patching only ``hermes_constants.os.path``
-        # has proven flaky under pytest-xdist on GHA — patch ``posixpath.exists`` too.
-        with ExitStack() as stack:
-            stack.enter_context(patch.object(hermes_constants.platform, "uname", return_value=fake_uname))
-            stack.enter_context(patch.object(hermes_constants.os.path, "exists", side_effect=_fake_exists))
-            if sys.platform != "win32":
-                import posixpath
-
-                stack.enter_context(patch.object(posixpath, "exists", side_effect=_fake_exists))
-            if open_exc is not None:
-                stack.enter_context(patch("hermes_constants._builtin_open", side_effect=open_exc))
-                stack.enter_context(patch("builtins.open", side_effect=open_exc))
-                yield None
-                return
-            assert read_data is not None
-            m = mock_open(read_data=read_data)
-            stack.enter_context(patch("hermes_constants._builtin_open", m))
-            stack.enter_context(patch("builtins.open", m))
-            yield m
+        _is_wsl.__globals__["_wsl_detected"] = None
 
     def test_wsl2_detected(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with self._mock_proc_version(read_data=content):
+        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
             assert _is_wsl() is True
 
     def test_wsl1_detected(self):
         content = "Linux version 4.4.0-microsoft-standard"
-        with self._mock_proc_version(read_data=content):
+        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
             assert _is_wsl() is True
 
     def test_regular_linux(self):
+        # GHA hosted runners are Azure VMs whose real /proc/version often
+        # contains "microsoft". Patching builtins.open with mock_open is
+        # supposed to intercept hermes_constants.is_wsl's `open` call,
+        # but if another test on the same xdist worker already cached
+        # _wsl_detected=True, the mock never runs because the function
+        # short-circuits on the cache. setup_method resets, so we just
+        # need to be sure the patched `open` is actually reached.
         content = "Linux version 6.14.0-37-generic (buildd@lcy02-amd64-049)"
-        with self._mock_proc_version(read_data=content):
+        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
             assert _is_wsl() is False
 
     def test_proc_version_missing(self):
-        with self._mock_proc_version(open_exc=FileNotFoundError):
+        with patch.dict(_is_wsl.__globals__, {"open": MagicMock(side_effect=FileNotFoundError)}):
             assert _is_wsl() is False
 
     def test_result_is_cached(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with self._mock_proc_version(read_data=content) as m:
+        opener = mock_open(read_data=content)
+        with patch.dict(_is_wsl.__globals__, {"open": opener}):
             assert _is_wsl() is True
             assert _is_wsl() is True
-            assert m.call_count <= 1
+            opener.assert_called_once()  # only read once
 
 
 # ── WSL (powershell.exe) ────────────────────────────────────────────────

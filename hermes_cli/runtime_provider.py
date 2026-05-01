@@ -358,11 +358,20 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return None
     if not requested_norm.startswith("custom:"):
         try:
-            auth_mod.resolve_provider(requested_norm)
+            canonical = auth_mod.resolve_provider(requested_norm)
         except AuthError:
             pass
         else:
-            return None
+            # A user-declared ``custom_providers`` entry whose name matches
+            # only an *alias* (``kimi`` → built-in ``kimi-coding``) is the
+            # user's intended target — alias rewriting would otherwise hijack
+            # the request.  We only defer to the built-in when the raw name is
+            # the canonical provider itself (``nous``, ``openrouter``, …) so
+            # accidentally shadowing a canonical provider still resolves to
+            # the built-in. See tests/hermes_cli/test_runtime_provider_resolution.py
+            # ``test_named_custom_provider_does_not_shadow_builtin_provider``.
+            if (canonical or "").strip().lower() == requested_norm:
+                return None
 
     config = load_config()
     
@@ -391,7 +400,14 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
-                    api_mode = _parse_api_mode(entry.get("api_mode"))
+                    # The v11→v12 migration writes the API mode under the new
+                    # ``transport`` field, but hand-edited configs may still
+                    # use the legacy ``api_mode`` spelling.  Accept both —
+                    # the runtime normaliser ``_normalize_custom_provider_entry``
+                    # already does, so without this lift every migrated config
+                    # silently downgrades codex_responses / anthropic_messages
+                    # providers to chat_completions in the resolved runtime.
+                    api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
                     return result
@@ -409,7 +425,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
                         }
-                        api_mode = _parse_api_mode(entry.get("api_mode"))
+                        api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
                         return result

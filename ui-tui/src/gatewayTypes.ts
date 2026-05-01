@@ -129,6 +129,10 @@ export interface SessionListResponse {
   sessions?: SessionListItem[]
 }
 
+export interface SessionDeleteResponse {
+  deleted: string
+}
+
 export interface SessionMostRecentResponse {
   session_id?: null | string
   source?: string
@@ -167,9 +171,19 @@ export interface SessionUsageResponse {
 }
 
 export interface SessionCompressResponse {
+  after_messages?: number
+  after_tokens?: number
+  before_messages?: number
+  before_tokens?: number
   info?: SessionInfo
   messages?: GatewayTranscriptMessage[]
   removed?: number
+  summary?: {
+    headline?: string
+    noop?: boolean
+    note?: null | string
+    token_line?: string
+  }
   usage?: Usage
 }
 
@@ -306,6 +320,7 @@ export interface ModelOptionsResponse {
 
 export interface ReloadMcpResponse {
   status?: string
+  message?: string
 }
 
 export interface ReloadEnvResponse {
@@ -478,6 +493,7 @@ export type GatewayEvent =
   | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
+  | { payload?: { text?: string }; session_id?: string; type: 'review.summary' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.spawn_requested' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.start' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.thinking' }

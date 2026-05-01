@@ -78,6 +78,14 @@ def _system_package_install_cmd(pkg: str) -> str:
     return f"sudo apt install {pkg}"
 
 
+def _safe_which(cmd: str) -> str | None:
+    """shutil.which wrapper resilient to platform monkeypatching in tests."""
+    try:
+        return shutil.which(cmd)
+    except Exception:
+        return None
+
+
 def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
     steps: list[str] = []
     step = 1
@@ -579,7 +587,7 @@ def run_doctor(args):
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 
-    if shutil.which("codex"):
+    if _safe_which("codex"):
         check_ok("codex CLI")
     else:
         # Native OAuth uses Hermes' own device-code flow — the Codex CLI is
@@ -797,13 +805,13 @@ def run_doctor(args):
     print(color("◆ External Tools", Colors.CYAN, Colors.BOLD))
     
     # Git
-    if shutil.which("git"):
+    if _safe_which("git"):
         check_ok("git")
     else:
         check_warn("git not found", "(optional)")
     
     # ripgrep (optional, for faster file search)
-    if shutil.which("rg"):
+    if _safe_which("rg"):
         check_ok("ripgrep (rg)", "(faster file search)")
     else:
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
@@ -812,7 +820,7 @@ def run_doctor(args):
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     if terminal_env == "docker":
-        if shutil.which("docker"):
+        if _safe_which("docker"):
             # Check if docker daemon is running
             try:
                 result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
@@ -827,7 +835,7 @@ def run_doctor(args):
             check_fail("docker not found", "(required for TERMINAL_ENV=docker)")
             issues.append("Install Docker or change TERMINAL_ENV")
     else:
-        if shutil.which("docker"):
+        if _safe_which("docker"):
             check_ok("docker", "(optional)")
         else:
             if _is_termux():
@@ -918,7 +926,7 @@ def run_doctor(args):
             check_info("Vercel persistence: ephemeral filesystem")
 
     # Node.js + agent-browser (for browser automation tools)
-    if shutil.which("node"):
+    if _safe_which("node"):
         check_ok("Node.js")
         # Check if agent-browser is installed
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
@@ -944,7 +952,7 @@ def run_doctor(args):
             check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
-    if shutil.which("npm"):
+    if _safe_which("npm"):
         npm_dirs = [
             (PROJECT_ROOT, "Browser tools (agent-browser)"),
             (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
@@ -1023,10 +1031,16 @@ def run_doctor(args):
         print("  Checking Anthropic API...", end="", flush=True)
         try:
             import httpx
-            from agent.anthropic_adapter import _is_oauth_token, _COMMON_BETAS, _OAUTH_ONLY_BETAS
+            from agent.anthropic_adapter import (
+                _is_oauth_token,
+                _COMMON_BETAS,
+                _OAUTH_ONLY_BETAS,
+                _CONTEXT_1M_BETA,
+            )
 
             headers = {"anthropic-version": "2023-06-01"}
-            if _is_oauth_token(anthropic_key):
+            is_oauth = _is_oauth_token(anthropic_key)
+            if is_oauth:
                 headers["Authorization"] = f"Bearer {anthropic_key}"
                 headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
             else:
@@ -1036,6 +1050,25 @@ def run_doctor(args):
                 headers=headers,
                 timeout=10
             )
+            # Reactive recovery: OAuth subscriptions that don't include 1M
+            # context reject the request with 400 "long context beta is not
+            # yet available for this subscription". Retry once with that
+            # beta stripped so the doctor check doesn't falsely report the
+            # Anthropic API as unreachable for those users.
+            if (
+                is_oauth
+                and response.status_code == 400
+                and "long context beta" in response.text.lower()
+                and "not yet available" in response.text.lower()
+            ):
+                headers["anthropic-beta"] = ",".join(
+                    [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS)
+                )
+                response = httpx.get(
+                    "https://api.anthropic.com/v1/models",
+                    headers=headers,
+                    timeout=10,
+                )
             if response.status_code == 200:
                 print(f"\r  {color('✓', Colors.GREEN)} Anthropic API                           ")
             elif response.status_code == 401:

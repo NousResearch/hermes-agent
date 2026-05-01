@@ -320,7 +320,15 @@ def get_tool_definitions(
 
     result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)
     if quiet_mode:
+        # Cache the freshly-computed list, but hand callers a shallow copy so
+        # downstream mutations (e.g. run_agent appending memory/LCM tool
+        # schemas to self.tools) don't poison the cache. Without this, a
+        # long-lived Gateway process accumulates duplicate tool names across
+        # agent inits and providers that enforce unique tool names
+        # (DeepSeek, Xiaomi MiMo, Moonshot Kimi) reject the request with
+        # HTTP 400. Mirrors the cache-hit path above. (issue #17335)
         _tool_defs_cache[cache_key] = result
+        return list(result)
     return result
 
 
@@ -348,12 +356,17 @@ def _compute_tool_definitions(
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
-
-    elif disabled_toolsets:
+    else:
+        # Default: start with everything
         from toolsets import get_all_toolsets
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
+    # Always apply disabled toolsets as a subtraction step at the end.
+    # This ensures that even if a composite toolset (like hermes-cli)
+    # is enabled, any tools belonging to a disabled toolset are strictly
+    # stripped out. See issue #17309.
+    if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
@@ -368,10 +381,6 @@ def _compute_tool_definitions(
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
-    else:
-        from toolsets import get_all_toolsets
-        for ts_name in get_all_toolsets():
-            tools_to_include.update(resolve_toolset(ts_name))
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
@@ -668,6 +677,13 @@ def handle_function_call(
         # Check plugin hooks for a block directive (unless caller already
         # checked — e.g. run_agent._invoke_tool passes skip=True to
         # avoid double-firing the hook).
+        #
+        # Single-fire contract: pre_tool_call fires exactly once per tool
+        # execution. get_pre_tool_call_block_message() internally calls
+        # invoke_hook("pre_tool_call", ...) and returns the first block
+        # directive (if any), so observer plugins see the hook on that same
+        # pass. When skip=True, the caller already fired it — do nothing
+        # here.
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
             try:
@@ -684,21 +700,6 @@ def handle_function_call(
 
             if block_message is not None:
                 return json.dumps({"error": block_message}, ensure_ascii=False)
-        else:
-            # Still fire the hook for observers — just don't check for blocking
-            # (the caller already did that).
-            try:
-                from hermes_cli.plugins import invoke_hook
-                invoke_hook(
-                    "pre_tool_call",
-                    tool_name=function_name,
-                    args=function_args,
-                    task_id=task_id or "",
-                    session_id=session_id or "",
-                    tool_call_id=tool_call_id or "",
-                )
-            except Exception:
-                pass
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).

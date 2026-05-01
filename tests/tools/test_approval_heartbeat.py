@@ -131,14 +131,14 @@ class TestApprovalHeartbeat:
         """Polling slices don't delay responsiveness — resolve is near-instant."""
         from tools.approval import (
             check_all_command_guards,
+            has_blocking_approval,
             register_gateway_notify,
             resolve_gateway_approval,
         )
 
-        register_gateway_notify(self.SESSION_KEY, lambda _payload: None)
-
-        start_time = time.monotonic()
         result_holder: dict = {}
+
+        register_gateway_notify(self.SESSION_KEY, lambda _payload: None)
 
         def _run_check():
             result_holder["result"] = check_all_command_guards(
@@ -148,9 +148,18 @@ class TestApprovalHeartbeat:
         thread = threading.Thread(target=_run_check, daemon=True)
         thread.start()
 
+        # Wait until the worker has actually enqueued the approval. Resolving
+        # before registration is a test race, not a responsiveness signal.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if has_blocking_approval(self.SESSION_KEY):
+                break
+            time.sleep(0.01)
+        assert has_blocking_approval(self.SESSION_KEY)
+
         # Resolve almost immediately — the wait loop should return within
         # its current 1s poll slice.
-        time.sleep(0.1)
+        start_time = time.monotonic()
         resolve_gateway_approval(self.SESSION_KEY, "once")
         thread.join(timeout=5)
         elapsed = time.monotonic() - start_time

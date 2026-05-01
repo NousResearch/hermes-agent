@@ -333,6 +333,36 @@ def auth_adapter():
 
 
 # ---------------------------------------------------------------------------
+# Adapter internals
+# ---------------------------------------------------------------------------
+
+
+class TestAgentExecution:
+    @pytest.mark.asyncio
+    async def test_run_agent_uses_session_id_as_task_id(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 1
+        mock_agent.session_completion_tokens = 2
+        mock_agent.session_total_tokens = 3
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            result, usage = await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                session_id="session-123",
+            )
+
+        assert result == {"final_response": "ok"}
+        assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+        mock_agent.run_conversation.assert_called_once_with(
+            user_message="hello",
+            conversation_history=[],
+            task_id="session-123",
+        )
+
+
+# ---------------------------------------------------------------------------
 # /health endpoint
 # ---------------------------------------------------------------------------
 

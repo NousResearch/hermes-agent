@@ -717,6 +717,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        model_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -725,13 +727,41 @@ class APIServerAdapter(BasePlatformAdapter):
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
         from config.yaml platform_toolsets.api_server (same as all other
         gateway platforms), falling back to the hermes-api-server default.
+
+        ``model_override`` and ``provider_override`` allow per-request routing
+        for callers (gen-proxy, code-review.sh, ccc-cron-check.sh, webhook
+        ingestor) that need to pick a model+provider per call. When set,
+        ``provider_override`` re-resolves runtime credentials (api_key,
+        base_url, api_mode) for that provider; falling back to the gateway
+        default if the override fails. ``model_override`` overrides only the
+        model name and keeps the gateway default's provider.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        model = _resolve_gateway_model()
+        if provider_override:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            try:
+                runtime = resolve_runtime_provider(requested=provider_override)
+                runtime_kwargs = {
+                    "api_key": runtime.get("api_key"),
+                    "base_url": runtime.get("base_url"),
+                    "provider": runtime.get("provider"),
+                    "api_mode": runtime.get("api_mode"),
+                    "command": runtime.get("command"),
+                    "args": list(runtime.get("args") or []),
+                    "credential_pool": runtime.get("credential_pool"),
+                }
+            except Exception as exc:
+                logger.warning(
+                    "api_server: provider_override=%r failed to resolve (%s) — "
+                    "falling back to gateway default provider. Request will proceed "
+                    "but will not honor the caller's provider override.",
+                    provider_override, exc,
+                )
+        model = model_override or _resolve_gateway_model()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -1047,6 +1077,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
+                model_override=body.get("model"),
+                provider_override=body.get("provider") or (body.get("extra_body") or {}).get("provider"),
             ))
 
             return await self._write_sse_chat_completion(
@@ -1061,6 +1093,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                model_override=body.get("model"),
+                provider_override=body.get("provider") or (body.get("extra_body") or {}).get("provider"),
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1902,6 +1936,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
+                model_override=body.get("model"),
+                provider_override=body.get("provider") or (body.get("extra_body") or {}).get("provider"),
             ))
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
@@ -1930,6 +1966,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                model_override=body.get("model"),
+                provider_override=body.get("provider") or (body.get("extra_body") or {}).get("provider"),
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2326,6 +2364,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        model_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2348,6 +2388,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                model_override=model_override,
+                provider_override=provider_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -2549,6 +2591,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
+                    model_override=body.get("model"),
+                    provider_override=body.get("provider") or (body.get("extra_body") or {}).get("provider"),
                 )
                 self._active_run_agents[run_id] = agent
                 def _run_sync():

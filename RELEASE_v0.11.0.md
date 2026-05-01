@@ -289,6 +289,7 @@ A full React/Ink rewrite of the interactive CLI — invoked via `hermes --tui` o
 - **`hermes skills reset`** to un-stick bundled skills ([#11468](https://github.com/NousResearch/hermes-agent/pull/11468))
 - **Skills guard opt-in** — `config.skills.guard_agent_created` (default off) ([#14557](https://github.com/NousResearch/hermes-agent/pull/14557))
 - **Bundled skill scripts runnable out of the box** ([#13384](https://github.com/NousResearch/hermes-agent/pull/13384))
+- **ComfyUI promoted to built-in skill path** — moved from `optional-skills/creative/comfyui` to `skills/creative/comfyui` ([#17631](https://github.com/NousResearch/hermes-agent/pull/17631))
 - **`xitter` replaced with `xurl`** — the official X API CLI ([#12303](https://github.com/NousResearch/hermes-agent/pull/12303))
 - **MiniMax-AI/cli as default skill tap** (salvage #7501) ([#14493](https://github.com/NousResearch/hermes-agent/pull/14493))
 - **Fuzzy `@` file completions + mtime sorting** ([#9467](https://github.com/NousResearch/hermes-agent/pull/9467))

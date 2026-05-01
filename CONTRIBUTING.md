@@ -47,6 +47,16 @@ If your skill is official and useful but not universally needed (e.g., a paid se
 
 If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a skills registry and share it in the [Nous Research Discord](https://discord.gg/NousResearch). Users can install it with `hermes skills install`.
 
+Placement policy for official skills (required):
+
+- `skills/` (built-in): default-on, broadly useful, low-friction dependencies, expected by most users.
+- `optional-skills/` (official optional): still official, but heavyweight, paid/external-service-centric, or audience-specific.
+- When moving an official skill between these trees, treat it as a policy change (not just a file move):
+  - update contributor/docs references that mention the old path,
+  - add a short release-note/changelog line,
+  - add or update a regression check so discovery/placement cannot silently drift.
+- Current precedent: `comfyui` is a built-in creative skill and belongs under `skills/creative/comfyui`.
+
 ---
 
 ## Development Setup

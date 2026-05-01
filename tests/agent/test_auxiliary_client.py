@@ -22,6 +22,7 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
+    _resolve_task_provider_model,
 )
 
 
@@ -53,6 +54,36 @@ def codex_auth_dir(tmp_path, monkeypatch):
         lambda: "codex-test-token-abc123",
     )
     return codex_dir
+
+
+class TestResolveTaskProviderModel:
+    def test_null_auxiliary_base_url_does_not_force_custom_endpoint(self):
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }):
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model("compression")
+
+        assert provider == "deepseek"
+        assert model == "deepseek-v4-flash"
+        assert base_url is None
+        assert api_key is None
+        assert api_mode is None
+
+    def test_nullish_auxiliary_base_url_string_does_not_force_custom_endpoint(self):
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "base_url": "None",
+        }):
+            provider, model, base_url, _, _ = _resolve_task_provider_model("compression")
+
+        assert provider == "deepseek"
+        assert model == "deepseek-v4-flash"
+        assert base_url is None
 
 
 class TestNormalizeAuxProvider:

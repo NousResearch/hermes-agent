@@ -3051,13 +3051,28 @@ def _resolve_task_provider_model(
     cfg_api_key = None
     cfg_api_mode = None
 
+    def _clean_optional_str(value: Any) -> Optional[str]:
+        """Normalize optional config strings.
+
+        YAML null values load as None; converting them with str(None) creates
+        the literal "None", which previously made auxiliary.base_url settings
+        resolve to a bogus custom endpoint named "None". Treat null-ish strings
+        as absent so provider/model fallback behaves correctly.
+        """
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        if not cleaned or cleaned.lower() in {"none", "null"}:
+            return None
+        return cleaned
+
     if task:
         task_config = _get_auxiliary_task_config(task)
-        cfg_provider = str(task_config.get("provider", "")).strip() or None
-        cfg_model = str(task_config.get("model", "")).strip() or None
-        cfg_base_url = str(task_config.get("base_url", "")).strip() or None
-        cfg_api_key = str(task_config.get("api_key", "")).strip() or None
-        cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
+        cfg_provider = _clean_optional_str(task_config.get("provider"))
+        cfg_model = _clean_optional_str(task_config.get("model"))
+        cfg_base_url = _clean_optional_str(task_config.get("base_url"))
+        cfg_api_key = _clean_optional_str(task_config.get("api_key"))
+        cfg_api_mode = _clean_optional_str(task_config.get("api_mode"))
 
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode

@@ -1969,7 +1969,17 @@ def check_web_api_key() -> bool:
     configured = _load_web_config().get("backend", "").lower().strip()
     if configured in ("exa", "parallel", "firecrawl", "tavily"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    if configured == "ddgs":
+        return True
+    # Check paid backends
+    if any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily")):
+        return True
+    # Fallback: ddgs is free and needs no API key
+    try:
+        from ddgs import DDGS  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 def check_auxiliary_model() -> bool:

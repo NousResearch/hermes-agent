@@ -620,6 +620,45 @@ class TestCheckWebApiKey:
                     from tools.web_tools import check_web_api_key
                     assert check_web_api_key() is True
 
+    def test_ddgs_configured_backend_returns_true(self):
+        """When backend is explicitly set to ddgs, check passes without API keys."""
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "ddgs"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_ddgs_fallback_when_no_paid_keys(self):
+        """When no paid backend keys are set but ddgs is importable, check passes."""
+        with patch("tools.web_tools._load_web_config", return_value={}):
+            # ddgs is importable in this test environment
+            import importlib
+            ddgs_spec = importlib.util.find_spec("ddgs")
+            if ddgs_spec is None:
+                # Mock the import succeeding
+                import sys
+                from unittest.mock import MagicMock
+                sys.modules["ddgs"] = MagicMock()
+                try:
+                    from tools.web_tools import check_web_api_key
+                    assert check_web_api_key() is True
+                finally:
+                    del sys.modules["ddgs"]
+            else:
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is True
+
+    def test_no_keys_no_ddgs_returns_false(self):
+        """When no paid backend keys are set and ddgs is not importable, check fails."""
+        with patch("tools.web_tools._load_web_config", return_value={}):
+            import builtins
+            real_import = builtins.__import__
+            def mock_import(name, *args, **kwargs):
+                if name == "ddgs":
+                    raise ImportError("No module named 'ddgs'")
+                return real_import(name, *args, **kwargs)
+            with patch("builtins.__import__", side_effect=mock_import):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is False
+
 
 def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env

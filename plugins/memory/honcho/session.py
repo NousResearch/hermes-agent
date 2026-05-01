@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import queue
+import hashlib
 import re
 import logging
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
@@ -19,6 +21,17 @@ logger = logging.getLogger(__name__)
 
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()
+_RECENT_BATCH_FINGERPRINT_LIMIT = 128
+
+
+def _batch_fingerprint(messages: list[dict[str, Any]]) -> str:
+    digest = hashlib.blake2s(digest_size=16)
+    for msg in messages:
+        digest.update((msg.get("role") or "").encode("utf-8", errors="replace"))
+        digest.update(b"\0")
+        digest.update((msg.get("content") or "").encode("utf-8", errors="replace"))
+        digest.update(b"\0\0")
+    return digest.hexdigest()
 
 
 @dataclass
@@ -98,6 +111,7 @@ class HonchoSessionManager:
         self._cache_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
         self._sessions_cache: dict[str, Any] = {}
+        self._synced_batch_fingerprints: dict[str, tuple[set[str], deque[str]]] = {}
 
         # Write frequency state
         write_frequency = (config.write_frequency if config else "async")
@@ -364,6 +378,15 @@ class HonchoSessionManager:
         if not new_messages:
             return True
 
+        recent_set, recent_order = self._synced_batch_fingerprints.setdefault(
+            session.key, (set(), deque())
+        )
+        batch_fp = _batch_fingerprint(new_messages)
+        if batch_fp in recent_set:
+            for msg in new_messages:
+                msg["_synced"] = True
+            return True
+
         honcho_messages = []
         for msg in new_messages:
             peer = user_peer if msg["role"] == "user" else assistant_peer
@@ -373,6 +396,10 @@ class HonchoSessionManager:
             honcho_session.add_messages(honcho_messages)
             for msg in new_messages:
                 msg["_synced"] = True
+            recent_set.add(batch_fp)
+            recent_order.append(batch_fp)
+            while len(recent_order) > _RECENT_BATCH_FINGERPRINT_LIMIT:
+                recent_set.discard(recent_order.popleft())
             logger.debug("Synced %d messages to Honcho for %s", len(honcho_messages), session.key)
             with self._cache_lock:
                 self._cache[session.key] = session

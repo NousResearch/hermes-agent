@@ -718,11 +718,20 @@ The curator is an auxiliary-model background task that periodically reviews agen
 |------------|-------------|
 | `status` | Show curator status and skill stats |
 | `run` | Trigger a curator review now |
+| `run --sync` | Block until the LLM pass finishes |
+| `run --dry-run` | Preview only — produce the review report with no mutations |
+| `backup` | Take a manual tar.gz snapshot of `~/.hermes/skills/` (curator also snapshots automatically before every real run) |
+| `rollback` | Restore `~/.hermes/skills/` from a snapshot (defaults to newest) |
+| `rollback --list` | List available snapshots |
+| `rollback --id <ts>` | Restore a specific snapshot by id |
+| `rollback -y` | Skip the confirmation prompt |
 | `pause` | Pause the curator until resumed |
 | `resume` | Resume a paused curator |
 | `pin <skill>` | Pin a skill so the curator never auto-transitions it |
 | `unpin <skill>` | Unpin a skill |
 | `restore <skill>` | Restore an archived skill |
+
+On a fresh install the first scheduled pass is deferred by one full `interval_hours` (7 days by default) — the gateway will not curate immediately on the first tick after `hermes update`. Use `hermes curator run --dry-run` to preview before that happens.
 
 See [Curator](../user-guide/features/curator.md) for behavior and config.
 

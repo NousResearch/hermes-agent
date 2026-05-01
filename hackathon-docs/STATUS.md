@@ -1,7 +1,7 @@
 # Hackathon Build Status
 
-**Last updated**: 1 May 2026  
-**Deadline**: EOD Sunday 3 May 2026 (3 days remaining)
+**Last updated**: 1 May 2026 (evening)  
+**Deadline**: EOD Sunday 3 May 2026 (2 days remaining)
 
 ---
 
@@ -9,20 +9,34 @@
 
 ### 1. Core Video Captioning Tool — `tools/video_caption.py` ✅
 
-A fully self-contained Hermes tool that implements the entire bilingual caption pipeline:
+> **Pivoted 1 May**: Original design was EN→VI translation. Correct use case is Vietnamese
+> language *teaching* shorts — mixed EN/VI audio where the goal is phonetic guides for
+> Vietnamese words, not translating English content.
+
+A fully self-contained Hermes tool:
 
 | Function | What it does |
 |---|---|
-| `transcribe(video_path)` | Runs faster-whisper (`medium` model, VAD filter, English) — returns `{id, start, end, en}` segments |
-| `translate_to_vietnamese(segments, api_key)` | Batch-translates all EN lines in one Kimi K2.5 call via NVIDIA NIM — returns segments with `vi` field added |
-| `build_ass(segments, output_path)` | Generates a full ASS subtitle file with two styles: EN on top, VI below — reads style from config |
+| `transcribe(video_path)` | faster-whisper `medium` model, **auto language detect** (`language=None`), VAD filter — returns `{id, start, end, text, lang, phonetic}` segments |
+| `generate_phonetics(segments, api_key)` | Single Kimi K2.5 call (NVIDIA NIM): classifies each segment as `"en"` or `"vi"`, corrects Whisper-garbled Vietnamese diacritics, generates English phonetic guide e.g. `[humm biet]` for VI segments |
+| `build_ass(segments, output_path)` | ASS subtitle file with `MAIN` + `PHONETIC` styles: VI segments → Vietnamese text on top + italic phonetic below; EN segments → text only |
 | `burn(video_path, ass_path, output_path)` | FFmpeg H.264 burn-in with fast preset |
 | `_handle_caption(args)` | Dispatcher supporting 6 operations (see below) |
 
+**Segment schema**: `{id, start, end, text, lang ("en"|"vi"), phonetic}`
+
+**Caption layout on screen:**
+```
+Vietnamese segment:    không biết        ← MAIN style (bold, full size)
+                       [humm biet]       ← PHONETIC style (italic, smaller, semi-transparent)
+
+English segment:       Today we learn... ← MAIN style only
+```
+
 **Operations exposed to the agent:**
-- `caption` — full pipeline (transcribe → translate → burn), returns output video + numbered EN/VI list
+- `caption` — full pipeline (transcribe → generate_phonetics → build ASS → burn)
 - `transcribe` — transcription only
-- `translate` — translation of a given segments list
+- `generate_phonetics` — classify + correct + add phonetics via Kimi
 - `build_ass` — ASS file generation only
 - `burn` — burn a given ASS file into video
 - `reburn` — apply corrected segments and re-burn (the edit loop)
@@ -89,14 +103,14 @@ Users can override any field in `~/.hermes/config.yaml`. The tool reads this at 
 
 ---
 
-### 5. Bilingual Captions Skill — `skills/video/bilingual_captions/SKILL.md` ✅
+### 5. Teaching Caption Skill — `skills/video/bilingual_captions/SKILL.md` ✅
 
-A Hermes skill that wraps the full conversational workflow:
-- Receive video → call `caption` → present numbered EN/VI pairs
-- Handle correction requests → call `reburn`
-- Save preferences to Hermes memory after approval
+Updated (1 May) to match the teaching phonetics workflow:
+- Receive video → call `caption` → present numbered `[EN]`/`[VI]` segments with phonetics
+- Handle correction requests (text, phonetic, or lang field) → call `reburn`
+- Save phonetic preferences and vocabulary to Hermes memory after approval
 - Requirements check (faster-whisper, ffmpeg, NVIDIA_API_KEY)
-- Error handling guidance for common failure modes
+- Error handling: "all segments `[EN]`" → likely missing API key; garbled Vietnamese → Kimi corrects automatically
 
 ---
 
@@ -109,29 +123,32 @@ Comprehensive plan document covering problem statement, pipeline, stack, phases,
 ## Architecture Summary
 
 ```
-User sends video via Telegram
+User sends teaching short via Telegram
   ↓
-gateway/run.py  ←  NEW: video path injection
+gateway/run.py  ←  video path injection (NEW)
   ↓
 AIAgent receives: "[The user sent a video... saved at /path/video.mp4]"
   ↓
-skills/video/bilingual_captions/SKILL.md  ←  NEW: guides the agent
+skills/video/bilingual_captions/SKILL.md  ←  guides the agent (NEW)
   ↓
-tools/video_caption.py  ←  NEW: core tool
-  ├─ faster-whisper (transcription, local)
-  ├─ Kimi K2.5 via NVIDIA NIM (translation)
-  ├─ ASS subtitle builder (stacked EN+VI)
+tools/video_caption.py  ←  core tool (NEW)
+  ├─ faster-whisper (local, auto language detect)
+  │     → raw segments {text, start, end}
+  ├─ Kimi K2.5 via NVIDIA NIM
+  │     → classifies en/vi, fixes diacritics, adds [phonetics]
+  ├─ ASS subtitle builder
+  │     VI: Vietnamese text + [phonetic guide] below
+  │     EN: English text only
   └─ FFmpeg burn-in
   ↓
-Agent replies with MEDIA:/path/output.mp4
+Agent replies: MEDIA:/path/output.mp4
+Agent shows numbered [EN]/[VI] caption list
   ↓
-Agent shows numbered EN/VI pairs
+User corrects (text / phonetic / lang) → reburn → iterate
   ↓
-User corrects → reburn → iterate
+User approves → agent saves phonetic prefs + vocab to Hermes memory
   ↓
-User approves → agent saves style + corrections to Hermes memory
-  ↓
-Next video: corrections auto-applied
+Next video: saved preferences auto-applied
 ```
 
 ---
@@ -176,7 +193,7 @@ Next video: corrections auto-applied
 | Issue | Severity | Status |
 |---|---|---|
 | `ffmpeg` path was stale | Fixed | Current binary now resolves to `/opt/homebrew/bin/ffmpeg` |
-| Kimi `reasoning_content` quirk | Handled | Fallback guard in `translate_to_vietnamese()` |
+| Kimi `reasoning_content` quirk | Handled | Fallback guard in `generate_phonetics()` |
 | faster-whisper not yet installed | P0 | `pip install faster-whisper` |
 | CPU transcription speed | Medium | 20s video takes ~15–30s on CPU — acceptable for demo, mention it in video |
 | Telegram 50MB video limit | Low risk | 10–20s Shorts are typically 5–25MB — should be fine |

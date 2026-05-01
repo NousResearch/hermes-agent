@@ -30,6 +30,7 @@ from agent.model_metadata import (
     get_cached_context_length,
     parse_context_limit_from_error,
     save_context_length,
+    fetch_endpoint_model_metadata,
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
 )
@@ -843,6 +844,52 @@ class TestFetchModelMetadata:
 
         result = fetch_model_metadata(force_refresh=True)
         assert result == {}
+
+
+class TestFetchEndpointModelMetadataLitellm:
+    """LITELLM_KEY fallback for OpenAI-compat endpoint metadata."""
+
+    def _reset_endpoint_cache(self):
+        import agent.model_metadata as mm
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+
+    @patch("agent.model_metadata.requests.get")
+    def test_uses_litellm_key_when_api_key_empty(self, mock_get, monkeypatch):
+        monkeypatch.setenv("LITELLM_KEY", "lm-master")
+        self._reset_endpoint_cache()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"data": [{"id": "m1", "context_length": 8192}]}
+        mock_response.raise_for_status = MagicMock()
+        mock_response.ok = True
+        mock_get.return_value = mock_response
+
+        result = fetch_endpoint_model_metadata(
+            "http://127.0.0.1:4000/v1",
+            api_key="",
+            force_refresh=True,
+        )
+        assert "m1" in result
+        headers = mock_get.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer lm-master"
+
+    @patch("agent.model_metadata.requests.get")
+    def test_explicit_api_key_wins_over_litellm_env(self, mock_get, monkeypatch):
+        monkeypatch.setenv("LITELLM_KEY", "lm-master")
+        self._reset_endpoint_cache()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"data": [{"id": "m1", "context_length": 4096}]}
+        mock_response.raise_for_status = MagicMock()
+        mock_response.ok = True
+        mock_get.return_value = mock_response
+
+        fetch_endpoint_model_metadata(
+            "http://127.0.0.1:4001/v1",
+            api_key="custom-user-key",
+            force_refresh=True,
+        )
+        headers = mock_get.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer custom-user-key"
 
 
 # =========================================================================

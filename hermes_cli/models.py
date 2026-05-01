@@ -1317,6 +1317,16 @@ def _resolve_openrouter_api_key() -> str:
     return os.getenv("OPENROUTER_API_KEY", "").strip()
 
 
+def _litellm_proxy_metadata_api_key() -> str:
+    """LiteLLM proxy master key for authenticated OpenAI-compat ``/models`` probes.
+
+    Users often run a LiteLLm proxy with ``LITELLM_KEY`` while Hermes resolves an
+    empty per-endpoint API key (custom base URL only).  Re-use the same env var
+    for metadata fetches only — never override an explicit API key.
+    """
+    return os.getenv("LITELLM_KEY", "").strip()
+
+
 def _resolve_nous_pricing_credentials() -> tuple[str, str]:
     """Return ``(api_key, base_url)`` for Nous Portal pricing, or empty strings."""
     try:
@@ -2809,11 +2819,15 @@ def probe_api_models(
 
     tried: list[str] = []
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
-    if api_key and api_mode == "anthropic_messages":
-        headers["x-api-key"] = api_key
-        headers["anthropic-version"] = "2023-06-01"
-    elif api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    if api_mode == "anthropic_messages":
+        resolved = (api_key or "").strip()
+        if resolved:
+            headers["x-api-key"] = resolved
+            headers["anthropic-version"] = "2023-06-01"
+    else:
+        bearer = (api_key or "").strip() or _litellm_proxy_metadata_api_key()
+        if bearer:
+            headers["Authorization"] = f"Bearer {bearer}"
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
 

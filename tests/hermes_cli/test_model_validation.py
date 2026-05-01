@@ -304,6 +304,57 @@ class TestFetchApiModels:
         assert probe["resolved_base_url"] == "https://api.githubcopilot.com"
         assert probe["used_fallback"] is False
 
+    def test_probe_api_models_falls_back_to_litellm_key(self, monkeypatch):
+        monkeypatch.setenv("LITELLM_KEY", "lit-only")
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "proxy-model"}]}'
+
+        captured: list[dict[str, str]] = []
+
+        def _fake_urlopen(req, timeout=5.0):
+            captured.append({k.lower(): v for k, v in req.header_items()})
+            return _Resp()
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+            probe = probe_api_models("", "http://127.0.0.1:4000/v1")
+
+        assert probe["models"] == ["proxy-model"]
+        assert captured
+        assert captured[0].get("authorization") == "Bearer lit-only"
+
+    def test_probe_api_models_anthropic_mode_does_not_emit_litellm_bearer(self, monkeypatch):
+        monkeypatch.setenv("LITELLM_KEY", "lit-only")
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": []}'
+
+        captured: list[dict[str, str]] = []
+
+        def _fake_urlopen(req, timeout=5.0):
+            captured.append({k.lower(): v for k, v in req.header_items()})
+            return _Resp()
+
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+            probe_api_models("", "https://api.anthropic.com", api_mode="anthropic_messages")
+
+        for hdrs in captured:
+            assert "Bearer lit-only" not in hdrs.get("authorization", "")
+
     def test_fetch_github_model_catalog_filters_non_chat_models(self):
         class _Resp:
             def __enter__(self):

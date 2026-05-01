@@ -592,12 +592,16 @@ def fetch_endpoint_model_metadata(
     if alternate and alternate not in candidates:
         candidates.append(alternate)
 
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    effective_key = (api_key or "").strip()
+    if not effective_key:
+        effective_key = os.getenv("LITELLM_KEY", "").strip()
+
+    headers = {"Authorization": f"Bearer {effective_key}"} if effective_key else {}
     last_error: Optional[Exception] = None
 
     if is_local_endpoint(normalized):
         try:
-            if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
+            if detect_local_server_type(normalized, api_key=effective_key) == "lm-studio":
                 server_url = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized
                 response = requests.get(
                     server_url.rstrip("/") + "/api/v1/models",

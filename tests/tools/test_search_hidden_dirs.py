@@ -19,6 +19,19 @@ import subprocess
 import pytest
 
 
+def _has_real_ripgrep() -> bool:
+    """Return True only when ``rg`` is the ripgrep binary, not a PATH shim."""
+    try:
+        result = subprocess.run(
+            ["rg", "--version"],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0 and result.stdout.lower().startswith("ripgrep ")
+
+
 @pytest.fixture
 def searchable_tree(tmp_path):
     """Create a directory tree with hidden and visible directories."""
@@ -98,7 +111,7 @@ class TestRipgrepAlreadyExcludesHidden:
     """Verify ripgrep's default behavior is to skip hidden directories."""
 
     @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
+        not _has_real_ripgrep(),
         reason="ripgrep not installed",
     )
     def test_rg_skips_hub_by_default(self, searchable_tree):
@@ -111,7 +124,7 @@ class TestRipgrepAlreadyExcludesHidden:
         assert "catalog.json" not in result.stdout
 
     @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
+        not _has_real_ripgrep(),
         reason="ripgrep not installed",
     )
     def test_rg_finds_visible_content(self, searchable_tree):

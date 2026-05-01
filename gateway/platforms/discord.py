@@ -517,6 +517,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # Track threads that Hermes auto-created (via _auto_create_thread) so we
+        # know which ones are safe to rename when a title is generated.
+        self._auto_threads: set = set()
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
@@ -2840,6 +2843,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
         try:
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
+            if thread:
+                self._auto_threads.add(str(thread.id))
             return thread
         except Exception as direct_error:
             display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
@@ -2851,6 +2856,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_archive_duration=1440,
                     reason=reason,
                 )
+                if thread:
+                    self._auto_threads.add(str(thread.id))
                 return thread
             except Exception as fallback_error:
                 logger.warning(
@@ -2860,6 +2867,30 @@ class DiscordAdapter(BasePlatformAdapter):
                     fallback_error,
                 )
                 return None
+
+    def is_auto_thread(self, thread_id: str) -> bool:
+        """Return True if the given thread ID was auto-created by Hermes."""
+        return thread_id in self._auto_threads
+
+    async def rename_thread(self, thread_id: str, name: str) -> bool:
+        """Rename a Discord thread if it exists and is manageable.
+
+        Returns True on success, False otherwise.  Discord thread names are
+        capped at 100 characters.
+        """
+        if not self._client:
+            return False
+        try:
+            thread = self._client.get_channel(int(thread_id))
+            if thread is None or not hasattr(thread, "edit"):
+                return False
+            safe_name = name[:100] if name else "Hermes"
+            await thread.edit(name=safe_name)
+            logger.info("[%s] Renamed thread %s to %r", self.name, thread_id, safe_name)
+            return True
+        except Exception as e:
+            logger.debug("[%s] Failed to rename thread %s: %s", self.name, thread_id, e)
+            return False
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,

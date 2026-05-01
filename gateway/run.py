@@ -11119,6 +11119,22 @@ class GatewayRunner:
                     _title_failure_cb = getattr(
                         agent, "_emit_auxiliary_failure", None
                     )
+                    def _on_title_generated(title: str) -> None:
+                        """Rename Discord auto-created threads when a title is generated."""
+                        if source.platform.value != "discord" or not source.thread_id:
+                            return
+                        if not _status_adapter or not _run_still_current():
+                            return
+                        if not getattr(_status_adapter, "is_auto_thread", lambda _: False)(source.thread_id):
+                            return
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                _status_adapter.rename_thread(source.thread_id, title),
+                                _loop_for_step,
+                            )
+                        except Exception:
+                            pass
+
                     maybe_auto_title(
                         self._session_db,
                         effective_session_id,
@@ -11133,6 +11149,7 @@ class GatewayRunner:
                             "api_key": getattr(agent, "api_key", None),
                             "api_mode": getattr(agent, "api_mode", None),
                         } if agent else None,
+                        on_title=_on_title_generated,
                     )
                 except Exception:
                     pass

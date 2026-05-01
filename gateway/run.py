@@ -283,6 +283,16 @@ def _home_target_env_var(platform_name: str) -> str:
     )
 
 
+def _home_thread_env_var(platform_name: str) -> str:
+    """Return the optional thread/topic env var for a platform home target."""
+    return f"{_home_target_env_var(platform_name)}_THREAD_ID"
+
+
+def _restart_notification_pending() -> bool:
+    """Return True when a /restart completion marker is waiting to be delivered."""
+    return (_hermes_home / ".restart_notify.json").exists()
+
+
 _ensure_ssl_certs()
 
 # Add parent directory to path
@@ -507,6 +517,8 @@ from gateway.config import (
     Platform,
     _BUILTIN_PLATFORM_VALUES,
     GatewayConfig,
+    HomeChannel,
+    PlatformConfig,
     load_gateway_config,
 )
 from gateway.session import (
@@ -2257,15 +2269,13 @@ class GatewayRunner:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
     async def _notify_active_sessions_of_shutdown(self) -> None:
-        """Send a notification to every chat with an active agent.
+        """Send shutdown/restart notifications to active chats and home channels.
 
         Called at the very start of stop() — adapters are still connected so
-        messages can be delivered.  Best-effort: individual send failures are
+        messages can be delivered. Best-effort: individual send failures are
         logged and swallowed so they never block the shutdown sequence.
         """
         active = self._snapshot_running_agents()
-        if not active:
-            return
 
         action = "restarting" if self._restart_requested else "shutting down"
         hint = (
@@ -2276,7 +2286,7 @@ class GatewayRunner:
         )
         msg = f"⚠️ Gateway {action} — {hint}"
 
-        notified: set = set()
+        notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
             source = None
             try:
@@ -2293,7 +2303,7 @@ class GatewayRunner:
 
             if source is not None:
                 platform_str = source.platform.value
-                chat_id = source.chat_id
+                chat_id = str(source.chat_id)
                 thread_id = source.thread_id
             else:
                 # Fall back to parsing the session key when no persisted
@@ -2305,9 +2315,10 @@ class GatewayRunner:
                 chat_id = _parsed["chat_id"]
                 thread_id = _parsed.get("thread_id")
 
-            # Deduplicate: one notification per chat, even if multiple
-            # sessions (different users/threads) share the same chat.
-            dedup_key = (platform_str, chat_id)
+            # Deduplicate only identical delivery targets. Thread/topic-aware
+            # platforms can share a parent chat while still routing to distinct
+            # destinations via metadata.
+            dedup_key = (platform_str, chat_id, str(thread_id) if thread_id else None)
             if dedup_key in notified:
                 continue
 
@@ -2321,16 +2332,63 @@ class GatewayRunner:
                 # correct forum topic / thread.
                 metadata = {"thread_id": thread_id} if thread_id else None
 
-                await adapter.send(chat_id, msg, metadata=metadata)
+                result = await adapter.send(chat_id, msg, metadata=metadata)
+                if result is not None and getattr(result, "success", True) is False:
+                    logger.debug(
+                        "Failed to send shutdown notification to %s:%s: %s",
+                        platform_str,
+                        chat_id,
+                        getattr(result, "error", "send returned success=False"),
+                    )
+                    continue
+
                 notified.add(dedup_key)
                 logger.info(
-                    "Sent shutdown notification to %s:%s",
+                    "Sent shutdown notification to active chat %s:%s",
                     platform_str, chat_id,
                 )
             except Exception as e:
                 logger.debug(
                     "Failed to send shutdown notification to %s:%s: %s",
                     platform_str, chat_id, e,
+                )
+
+        for platform, adapter in self.adapters.items():
+            home = self.config.get_home_channel(platform)
+            if not home or not home.chat_id:
+                continue
+
+            dedup_key = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
+            if dedup_key in notified:
+                continue
+
+            try:
+                metadata = {"thread_id": home.thread_id} if home.thread_id else None
+                if metadata:
+                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                else:
+                    result = await adapter.send(str(home.chat_id), msg)
+                if result is not None and getattr(result, "success", True) is False:
+                    logger.debug(
+                        "Failed to send shutdown notification to home channel %s:%s: %s",
+                        platform.value,
+                        home.chat_id,
+                        getattr(result, "error", "send returned success=False"),
+                    )
+                    continue
+
+                notified.add(dedup_key)
+                logger.info(
+                    "Sent shutdown notification to home channel %s:%s",
+                    platform.value,
+                    home.chat_id,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Failed to send shutdown notification to home channel %s:%s: %s",
+                    platform.value,
+                    home.chat_id,
+                    e,
                 )
 
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
@@ -2953,8 +3011,28 @@ class GatewayRunner:
         ):
             self._schedule_update_notification_watch()
 
+        # Give freshly connected platform adapters a brief moment to settle
+        # before sending restart/startup lifecycle messages. In practice this
+        # helps Discord thread deliveries right after reconnect.
+        if connected_count > 0:
+            await asyncio.sleep(1.0)
+
         # Notify the chat that initiated /restart that the gateway is back.
-        await self._send_restart_notification()
+        restart_notification_pending = _restart_notification_pending()
+        delivered_restart_target = await self._send_restart_notification()
+
+        # Broadcast a lightweight "gateway is back" message to configured
+        # home channels only when this startup is resuming from /restart. If a
+        # /restart requester already received a direct completion notice in the
+        # same chat, skip the generic broadcast there to avoid duplicates while
+        # still allowing a home-channel fallback when the direct send fails.
+        if restart_notification_pending or delivered_restart_target is not None:
+            skip_home_targets = (
+                {delivered_restart_target} if delivered_restart_target else None
+            )
+            await self._send_home_channel_startup_notifications(
+                skip_targets=skip_home_targets,
+            )
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
@@ -7976,13 +8054,32 @@ class GatewayRunner:
         chat_name = source.chat_name or chat_id
 
         env_key = _home_target_env_var(platform_name)
+        thread_env_key = _home_thread_env_var(platform_name)
+        thread_id = source.thread_id
 
         # Save to .env so it persists across restarts
         try:
             from hermes_cli.config import save_env_value
             save_env_value(env_key, str(chat_id))
+            # Keep thread/topic routing explicit and clear stale values when
+            # /sethome is run from the parent chat instead of a thread.
+            save_env_value(thread_env_key, str(thread_id or ""))
         except Exception as e:
             return f"Failed to save home channel: {e}"
+
+        # Keep the running gateway config in sync too. The pre-restart
+        # notification path reads self.config before the process reloads env.
+        if source.platform:
+            platform_config = self.config.platforms.setdefault(
+                source.platform,
+                PlatformConfig(enabled=True),
+            )
+            platform_config.home_channel = HomeChannel(
+                platform=source.platform,
+                chat_id=str(chat_id),
+                name=chat_name,
+                thread_id=str(thread_id) if thread_id else None,
+            )
 
         return (
             f"✅ Home channel set to **{chat_name}** (ID: {chat_id}).\n"
@@ -10467,11 +10564,11 @@ class GatewayRunner:
 
         return True
 
-    async def _send_restart_notification(self) -> None:
+    async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
         notify_path = _hermes_home / ".restart_notify.json"
         if not notify_path.exists():
-            return
+            return None
 
         try:
             data = json.loads(notify_path.read_text())
@@ -10480,7 +10577,7 @@ class GatewayRunner:
             thread_id = data.get("thread_id")
 
             if not platform_str or not chat_id:
-                return
+                return None
 
             platform = Platform(platform_str)
             adapter = self.adapters.get(platform)
@@ -10489,11 +10586,11 @@ class GatewayRunner:
                     "Restart notification skipped: %s adapter not connected",
                     platform_str,
                 )
-                return
+                return None
 
             metadata = {"thread_id": thread_id} if thread_id else None
             result = await adapter.send(
-                chat_id,
+                str(chat_id),
                 "♻ Gateway restarted successfully. Your session continues.",
                 metadata=metadata,
             )
@@ -10501,23 +10598,81 @@ class GatewayRunner:
             # and returns SendResult(success=False) rather than raising, so
             # we must inspect the result before claiming success — otherwise
             # the log line is misleading and hides real delivery failures.
-            if getattr(result, "success", False):
-                logger.info(
-                    "Sent restart notification to %s:%s",
-                    platform_str,
-                    chat_id,
-                )
-            else:
+            if result is not None and getattr(result, "success", True) is False:
                 logger.warning(
                     "Restart notification to %s:%s was not delivered: %s",
                     platform_str,
                     chat_id,
-                    getattr(result, "error", "unknown error"),
+                    getattr(result, "error", "send returned success=False"),
                 )
+                return None
+
+            logger.info(
+                "Sent restart notification to %s:%s",
+                platform_str,
+                chat_id,
+            )
+            return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
+            return None
         finally:
             notify_path.unlink(missing_ok=True)
+
+    async def _send_home_channel_startup_notifications(
+        self,
+        *,
+        skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+    ) -> set[tuple[str, str, Optional[str]]]:
+        """Notify configured home channels that the gateway is back online.
+
+        The notification is best-effort and sent once per connected platform
+        home channel. ``skip_targets`` lets startup avoid duplicate messages
+        when a more specific restart notification is queued for the same chat.
+        """
+        delivered: set[tuple[str, str, Optional[str]]] = set()
+        skipped = skip_targets or set()
+        message = "♻️ Gateway online — Hermes is back and ready."
+
+        for platform, adapter in self.adapters.items():
+            home = self.config.get_home_channel(platform)
+            if not home or not home.chat_id:
+                continue
+
+            target = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
+            if target in skipped or target in delivered:
+                continue
+
+            try:
+                metadata = {"thread_id": home.thread_id} if home.thread_id else None
+                if metadata:
+                    result = await adapter.send(str(home.chat_id), message, metadata=metadata)
+                else:
+                    result = await adapter.send(str(home.chat_id), message)
+                if result is not None and getattr(result, "success", True) is False:
+                    logger.warning(
+                        "Home-channel startup notification failed for %s:%s: %s",
+                        platform.value,
+                        home.chat_id,
+                        getattr(result, "error", "send returned success=False"),
+                    )
+                    continue
+
+                delivered.add(target)
+                logger.info(
+                    "Sent home-channel startup notification to %s:%s",
+                    platform.value,
+                    home.chat_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Home-channel startup notification failed for %s:%s: %s",
+                    platform.value,
+                    home.chat_id,
+                    exc,
+                )
+
+        return delivered
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.

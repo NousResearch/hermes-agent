@@ -118,6 +118,16 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_bare_platform_delivery_preserves_home_thread_id(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "parent-42")
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL_THREAD_ID", "topic-7")
+
+        assert _resolve_delivery_target({"deliver": "discord"}) == {
+            "platform": "discord",
+            "chat_id": "parent-42",
+            "thread_id": "topic-7",
+        }
+
     def test_explicit_telegram_topic_target_with_thread_id(self):
         """deliver: 'telegram:chat_id:thread_id' parses correctly."""
         job = {

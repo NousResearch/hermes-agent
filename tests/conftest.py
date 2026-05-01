@@ -187,6 +187,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_REDACT_SECRETS",
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
+    "HERMES_CRON_SESSION",
     "HERMES_HOME_MODE",
     "TERMINAL_CWD",
     "TERMINAL_ENV",
@@ -234,6 +235,14 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SLACK_REACTIONS",
     "DISCORD_REQUIRE_MENTION",
     "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_ALLOWED_CHANNELS",
+    "DISCORD_IGNORED_CHANNELS",
+    "DISCORD_NO_THREAD_CHANNELS",
+    "DISCORD_AUTO_THREAD",
+    "DISCORD_ALLOWED_ROLES",
+    "DISCORD_ALLOW_BOTS",
+    "DISCORD_COMMAND_SYNC_POLICY",
+    "DISCORD_REACTIONS",
     "TELEGRAM_REQUIRE_MENTION",
     "WHATSAPP_REQUIRE_MENTION",
     "DINGTALK_REQUIRE_MENTION",
@@ -242,7 +251,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_environment(tmp_path, monkeypatch):
+def _hermetic_environment(tmp_path, monkeypatch, request):
     """Blank out all credential/behavioral env vars so local and CI match.
 
     Also redirects HOME and HERMES_HOME to per-test tempdirs so code that
@@ -292,6 +301,21 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_METADATA_SERVICE_TIMEOUT", "1")
     monkeypatch.setenv("AWS_METADATA_SERVICE_NUM_ATTEMPTS", "1")
 
+    # 4c. Keep local macOS Keychain credentials out of ordinary tests. The
+    #     dedicated keychain tests opt in by mocking the security command
+    #     themselves; everything else should behave like CI and use only the
+    #     temp files/env vars set inside the test.
+    if request.node.path.name != "test_anthropic_keychain.py":
+        try:
+            import agent.anthropic_adapter as _anthropic_adapter
+            monkeypatch.setattr(
+                _anthropic_adapter,
+                "_read_claude_code_credentials_from_keychain",
+                lambda: None,
+            )
+        except Exception:
+            pass
+
     # 5. Reset plugin singleton so tests don't leak plugins from
     #    ~/.hermes/plugins/ (which, per step 3, is now empty — but the
     #    singleton might still be cached from a previous test).
@@ -331,7 +355,7 @@ def _isolate_hermes_home(_hermetic_environment):
 # from one test's session into another's.
 
 @pytest.fixture(autouse=True)
-def _reset_module_state():
+def _reset_module_state(_hermetic_environment):
     """Clear module-level mutable state and ContextVars between tests.
 
     Keeps state from leaking across tests on the same xdist worker. Modules
@@ -359,6 +383,19 @@ def _reset_module_state():
         # falls through to the env var / default path, matching a fresh
         # process.
         _approval_mod._approval_session_key.set("")
+    except Exception:
+        pass
+
+    # --- cron.scheduler — module constants are computed at import time from
+    #     HERMES_HOME. If cron.scheduler was imported by an earlier test, keep
+    #     its lock path aligned with this test's isolated HERMES_HOME instead
+    #     of reusing a stale tempdir or the developer's real cron lock.
+    try:
+        from cron import scheduler as _cron_sched
+        from hermes_paths import get_hermes_home as _get_hermes_home
+        _cron_sched._hermes_home = _get_hermes_home()
+        _cron_sched._LOCK_DIR = _cron_sched._hermes_home / "cron"
+        _cron_sched._LOCK_FILE = _cron_sched._LOCK_DIR / ".tick.lock"
     except Exception:
         pass
 

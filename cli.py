@@ -5355,6 +5355,8 @@ class HermesCLI:
 
     def _prompt_text_input(self, prompt_text: str) -> str | None:
         """Prompt for free-text input safely inside or outside prompt_toolkit."""
+        import threading
+
         result = [None]
 
         def _ask():
@@ -5363,7 +5365,16 @@ class HermesCLI:
             except (KeyboardInterrupt, EOFError):
                 pass
 
-        if self._app:
+        # prompt_toolkit.run_in_terminal requires the application's asyncio
+        # event loop, which only exists in the main prompt_toolkit thread.
+        # Slash commands are processed by process_loop in a worker thread, so
+        # calling run_in_terminal there raises "There is no current event loop"
+        # and leaks an un-awaited coroutine warning.  Match _run_curses_picker:
+        # use run_in_terminal only from the main thread, otherwise read input
+        # directly.
+        in_main_thread = threading.current_thread() is threading.main_thread()
+
+        if self._app and in_main_thread:
             from prompt_toolkit.application import run_in_terminal
             was_visible = self._status_bar_visible
             self._status_bar_visible = False

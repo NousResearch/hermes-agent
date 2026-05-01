@@ -6,10 +6,11 @@ description: >
   hermes-agent's extension points (auto-discovered tools, plugin system with
   lifecycle hooks, skills, gateway adapters, env-var config), code style, and
   file layout. Use for every PR that modifies this fork's source.
-canonical_hash: c5dd4c5ac8769144
+canonical_hash: 192b2b62cf077e90
 canonical_source: rosenblatt monorepo — docs/standards/contribution/upstream-fork-contribution.md
 generated_by: rosenblatt monorepo — .claude/skills/fork-instruction-sync
 generated_at: 2026-05-01T18:10:00Z
+fork_main_sha: 3ff3dfb5ac97c7a746d2c54a9b8eefb9f6279a75
 ---
 
 > **Generated file — do not edit by hand.** Produced by the `fork-instruction-sync` skill in the Rosenblatt monorepo from the canonical standard at `docs/standards/contribution/upstream-fork-contribution.md`. Edits made directly here will be overwritten on the next sync. To change the guidance, edit the canonical doc and re-run the skill. Tier-routing rules (T1/T2/T3) live in the monorepo's `upstream-vs-harness.instructions.md` — this file only covers *how to write* a patch once you've decided it belongs in this fork.
@@ -113,13 +114,13 @@ When you must add Rosenblatt-specific code:
 
 ### 4. Match upstream conventions
 
-Inside `upstream/hermes-agent/`, **upstream's conventions win** — full stop:
+In this repo, **upstream's conventions win** — full stop:
 
 - **Style:** PEP 8 with practical exceptions; line length is not strictly enforced. No formatter is run in CI (no Black, no Ruff format, no `pre-commit-config.yaml`) — match the surrounding file's apparent style. Don't run a formatter across files you didn't otherwise touch.
 - **Comments:** Only when explaining non-obvious intent, trade-offs, or API quirks. Don't narrate what the code does.
 - **Error handling:** Catch specific exceptions. Use `logger.warning()` / `logger.error()` (Python `logging`, not `print`). Pass `exc_info=True` for unexpected errors.
 - **Cross-platform:** Never assume Unix. Test against Windows + macOS + Linux paths and processes wherever practical. Upstream values cross-platform portability highly.
-- **Tests:** Use `pytest`. Tests live under `tests/` mirroring the source layout (`tests/agent/`, `tests/cli/`, `tests/gateway/`, etc.). Mark tests requiring external services with `@pytest.mark.integration`. CI runs `pytest tests/ -q --ignore=tests/integration --ignore=tests/e2e -n auto` (verified in `.github/workflows/tests.yml`) — keep tests fast and parallelizable. The `[tool.pytest.ini_options]` `addopts` in `pyproject.toml` excludes the `integration` marker by default.
+- **Tests:** Use `pytest`. Tests live under `tests/` mirroring the source layout (`tests/agent/`, `tests/cli/`, `tests/gateway/`, etc.). Mark tests requiring external services with `@pytest.mark.integration`. CI runs `pytest tests/` against the unit-test set with `--ignore=tests/integration --ignore=tests/e2e -n auto` (see `.github/workflows/tests.yml` for the exact invocation, including any current `--tb=*` flags) — keep tests fast and parallelizable. The `[tool.pytest.ini_options]` `addopts` in `pyproject.toml` excludes the `integration` marker by default.
 - **Type annotations:** Used inconsistently across the codebase — match the surrounding file. Don't introduce `mypy` strictness or annotation backfills as part of feature work (no `[tool.mypy]` config exists).
 - **Enforced CI checks:** `tests.yml` (pytest), `contributor-check.yml`, `docker-publish.yml`, `nix.yml`, `supply-chain-audit.yml`, `docs-site-checks.yml`, `skills-index.yml`, `deploy-site.yml`. **No lint, format, or type-check workflow.** This means the burden of style consistency is on you as the patch author — read the file you're editing first.
 

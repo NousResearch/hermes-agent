@@ -1762,6 +1762,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cron_max_tokens_env = os.getenv("HERMES_CRON_MAX_TOKENS", "").strip()
         _cron_max_tokens = int(_cron_max_tokens_env) if _cron_max_tokens_env else None
 
+        # Title generation is gateway/CLI-side only; cron does not invoke maybe_auto_title (verified 2026-05-01).
         agent = AIAgent(
             model=model,
             max_tokens=_cron_max_tokens,
@@ -1791,6 +1792,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

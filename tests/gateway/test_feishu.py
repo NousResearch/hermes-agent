@@ -1819,29 +1819,26 @@ class TestAdapterBehavior(unittest.TestCase):
         event = adapter._dispatch_inbound_event.await_args.args[0]
         self.assertEqual(event.source.chat_type, "group")
 
-    @patch.dict(os.environ, {}, clear=True)
-    def test_process_inbound_message_fetches_reply_to_text(self):
+    def _process_feishu_text_message(self, *, fetched_text="引用消息内容", **message_overrides):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._dispatch_inbound_event = AsyncMock()
-        adapter.get_chat_info = AsyncMock(
-            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
-        )
-        adapter._resolve_sender_profile = AsyncMock(
-            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
-        )
-        adapter._fetch_message_text = AsyncMock(return_value="父消息内容")
-        message = SimpleNamespace(
-            chat_id="oc_chat",
-            thread_id=None,
-            parent_id="om_parent",
-            upper_message_id=None,
-            message_type="text",
-            content='{"text":"reply"}',
-            message_id="om_reply",
-        )
+        adapter.get_chat_info = AsyncMock(return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"})
+        adapter._resolve_sender_profile = AsyncMock(return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None})
+        adapter._fetch_message_text = AsyncMock(return_value=fetched_text)
+        message_fields = {
+            "chat_id": "oc_chat",
+            "thread_id": None,
+            "parent_id": None,
+            "upper_message_id": None,
+            "message_type": "text",
+            "content": '{"text":"reply"}',
+            "message_id": "om_reply",
+        }
+        message_fields.update(message_overrides)
+        message = SimpleNamespace(**message_fields)
 
         asyncio.run(
             adapter._process_inbound_message(
@@ -1850,13 +1847,31 @@ class TestAdapterBehavior(unittest.TestCase):
                 sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
                 is_bot=False,
                 chat_type="p2p",
-                message_id="om_reply",
+                message_id=message.message_id,
             )
         )
+        return adapter, adapter._dispatch_inbound_event.await_args.args[0]
 
-        event = adapter._dispatch_inbound_event.await_args.args[0]
+    @patch.dict(os.environ, {}, clear=True)
+    def test_process_inbound_message_fetches_reply_to_text(self):
+        adapter, event = self._process_feishu_text_message(parent_id="om_parent", fetched_text="父消息内容")
         self.assertEqual(event.reply_to_message_id, "om_parent")
         self.assertEqual(event.reply_to_text, "父消息内容")
+        adapter._fetch_message_text.assert_awaited_once_with("om_parent")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_process_inbound_message_fetches_reply_to_text_from_root_id(self):
+        adapter, event = self._process_feishu_text_message(root_id="om_root", fetched_text="根消息内容")
+        self.assertEqual(event.reply_to_message_id, "om_root")
+        self.assertEqual(event.reply_to_text, "根消息内容")
+        adapter._fetch_message_text.assert_awaited_once_with("om_root")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_process_inbound_message_ignores_self_root_id(self):
+        adapter, event = self._process_feishu_text_message(root_id="om_reply")
+        self.assertIsNone(event.reply_to_message_id)
+        self.assertIsNone(event.reply_to_text)
+        adapter._fetch_message_text.assert_not_awaited()
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):

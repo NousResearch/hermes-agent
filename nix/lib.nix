@@ -1,11 +1,16 @@
 # nix/lib.nix — Shared helpers for nix stuff
-{ pkgs, npm-lockfile-fix }:
+{
+  pkgs,
+  npm-lockfile-fix,
+  nodejs,
+}:
 {
   # Returns a buildNpmPackage-compatible attrs set that provides:
-  #   patchPhase          — ensures lockfile has exactly one trailing newline
-  #   nativeBuildInputs   — [ updateLockfileScript ] (list, prepend with ++ for more)
+  #   patchPhase             — ensures lockfile has exactly one trailing newline
+  #   nativeBuildInputs      — [ updateLockfileScript ] (list, prepend with ++ for more)
   #   passthru.devShellHook  — stamp-checked npm install + hash auto-update
   #   passthru.npmLockfile   — metadata for mkFixLockfiles
+  #   nodejs                 — fixed nodejs version for all packages we use in the repo
   #
   # NOTE: npmConfigHook runs `diff` between the source lockfile and the
   # npm-deps cache lockfile. fetchNpmDeps preserves whatever trailing
@@ -24,6 +29,7 @@
       nixFile ? "nix/${attr}.nix", # defaults to nix/<attr>.nix
     }:
     {
+      inherit nodejs;
       patchPhase = ''
         runHook prePatch
         # Normalize trailing newlines so source and npm-deps always match,
@@ -56,8 +62,8 @@
 
           cd "$REPO_ROOT/${folder}"
           rm -rf node_modules/
-          npm cache clean --force
-          CI=true npm install
+          ${pkgs.lib.getExe' nodejs "npm"} cache clean --force
+          CI=true ${pkgs.lib.getExe' nodejs "npm"} install
           ${pkgs.lib.getExe npm-lockfile-fix} ./package-lock.json
 
           NIX_FILE="$REPO_ROOT/${nixFile}"
@@ -83,7 +89,7 @@
           STAMP_VALUE="$(_hermes_npm_stamp)"
           if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
             echo "${pname}: installing npm dependencies..."
-            ( cd ${folder} && CI=true npm install --silent --no-fund --no-audit 2>/dev/null )
+            ( cd ${folder} && CI=true ${pkgs.lib.getExe' nodejs "npm"} install --silent --no-fund --no-audit 2>/dev/null )
 
             # Auto-update the nix hash so it stays in sync with the lockfile
             echo "${pname}: prefetching npm deps..."
@@ -92,7 +98,7 @@
               sed -i "s|hash = \"sha256-[A-Za-z0-9+/=]+\"|hash = \"$NEW_HASH\";|" "$NIX_FILE"
               echo "${pname}: updated hash to $NEW_HASH"
             else
-              echo "${pname}: warning: prefetch failed, run 'nix run .#fix-lockfiles -- --apply' manually" >&2
+              echo "${pname}: warning: prefetch failed, run 'nix run .#fix-lockfiles' manually" >&2
             fi
 
             mkdir -p .nix-stamps
@@ -112,6 +118,7 @@
   # Invocations:
   #   fix-lockfiles --check   # exit 1 if any hash is stale
   #   fix-lockfiles --apply   # rewrite stale hashes in place
+  #   fix-lockfiles           # alias of --apply
   # Writes machine-readable fields (stale, changed, report) to $GITHUB_OUTPUT
   # when set, so CI workflows can post a sticky PR comment directly.
   mkFixLockfiles =
@@ -124,7 +131,7 @@
     in
     pkgs.writeShellScriptBin "fix-lockfiles" ''
       set -uox pipefail
-      MODE="''${1:---check}"
+      MODE="''${1:---apply}"
       case "$MODE" in
         --check|--apply) ;;
         -h|--help)
@@ -156,7 +163,7 @@
       for entry in "''${ENTRIES[@]}"; do
         IFS=":" read -r ATTR FOLDER NIX_FILE <<< "$entry"
         echo "==> .#$ATTR ($FOLDER -> $NIX_FILE)"
-        OUTPUT=$(nix build ".#$ATTR.npmDeps" --no-link --rebuild --print-build-logs 2>&1)
+        OUTPUT=$(nix build ".#$ATTR.npmDeps" --no-link --print-build-logs 2>&1)
         STATUS=$?
         if [ "$STATUS" -eq 0 ]; then
           echo "    ok"
@@ -222,7 +229,7 @@
       if [ "$STALE" -eq 1 ] && [ "$MODE" = "--check" ]; then
         echo
         echo "Stale lockfile hashes detected. Run:"
-        echo "  nix run .#fix-lockfiles -- --apply"
+        echo "  nix run .#fix-lockfiles"
         exit 1
       fi
 

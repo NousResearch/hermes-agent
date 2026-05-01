@@ -298,7 +298,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         def reopen_session(self, _sid):
             return None
 
-        def get_messages_as_conversation(self, _sid):
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
             return [
                 {"role": "user", "content": "hello"},
                 {"role": "assistant", "content": "yo"},
@@ -594,6 +594,24 @@ def test_command_dispatch_returns_skill_payload(server):
     assert result["name"] == "hermes-agent-dev"
 
 
+def test_command_dispatch_awaits_async_plugin_handler(server):
+    async def _handler(arg):
+        return f"async:{arg}"
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: _handler if name == "async-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin",
+            "method": "command.dispatch",
+            "params": {"name": "async-cmd", "arg": "hello"},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {"type": "plugin", "output": "async:hello"}
+
+
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────
 
 
@@ -637,6 +655,29 @@ def test_dispatch_long_handler_does_not_block_fast_handler(server):
 
     assert fast_resp["result"] == {"pong": True}
     assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind slow handler"
+
+    released.set()
+
+
+def test_dispatch_session_compress_does_not_block_fast_handler(server):
+    """Manual TUI compaction can take minutes, so it must not block the RPC loop."""
+    released = threading.Event()
+
+    def slow_compress(rid, params):
+        released.wait(timeout=5)
+        return server._ok(rid, {"done": True})
+
+    server._methods["session.compress"] = slow_compress
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+
+    t0 = time.monotonic()
+    assert server.dispatch({"id": "slow", "method": "session.compress", "params": {}}) is None
+
+    fast_resp = server.dispatch({"id": "fast", "method": "fast.ping", "params": {}})
+    fast_elapsed = time.monotonic() - t0
+
+    assert fast_resp["result"] == {"pong": True}
+    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind session.compress"
 
     released.set()
 

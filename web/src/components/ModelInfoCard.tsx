@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Brain, Eye, Gauge, Lightbulb, Wrench } from "lucide-react";
-import { Spinner } from "@nous-research/ui";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { api } from "@/lib/api";
 import type { ModelInfoResponse } from "@/lib/api";
 import { formatTokenCount } from "@/lib/format";

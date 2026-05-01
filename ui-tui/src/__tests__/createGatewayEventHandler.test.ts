@@ -119,6 +119,46 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().todos).toEqual(todos)
   })
 
+  it('prints compaction progress status into the transcript', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { kind: 'compressing', text: 'compressing 968 messages (~123,400 tok)…' },
+      type: 'status.update'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
+  })
+
+  it('surfaces self-improvement review summaries as a persistent system line', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({
+      payload: { text: "💾 Self-improvement review: Skill 'hermes-release' patched" },
+      type: 'review.summary'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith(
+      "💾 Self-improvement review: Skill 'hermes-release' patched"
+    )
+  })
+
+  it('ignores review.summary events with empty or missing text', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: '' }, type: 'review.summary' } as any)
+    onEvent({ payload: { text: '   ' }, type: 'review.summary' } as any)
+    onEvent({ payload: undefined, type: 'review.summary' } as any)
+
+    expect(ctx.system.sys).not.toHaveBeenCalled()
+  })
+
   it('clears the visible todo list when the todo tool returns an empty list', () => {
     const appended: Msg[] = []
     const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]
@@ -291,6 +331,19 @@ describe('createGatewayEventHandler', () => {
     expect(appended[0]?.thinking).toBe(fromServer)
     expect(appended[0]?.thinkingTokens).toBe(estimateTokensRough(fromServer))
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
+  })
+
+  it('renders browser.progress events as system transcript lines as they stream in', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const handler = createGatewayEventHandler(ctx)
+
+    handler({
+      payload: { message: 'Chrome launched and listening on port 9222' },
+      type: 'browser.progress'
+    } as any)
+
+    expect(ctx.system.sys).toHaveBeenCalledWith('Chrome launched and listening on port 9222')
   })
 
   it('annotates gateway.start_timeout with stderr tail lines so users can diagnose without /logs', () => {

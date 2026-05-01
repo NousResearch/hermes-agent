@@ -758,3 +758,33 @@ class TestWeixinVoiceSending:
         assert voice_item["encode_type"] == 6
         assert voice_item["sample_rate"] == 24000
         assert voice_item["bits_per_sample"] == 16
+
+
+class TestIsStaleSessionRet:
+    """Regression test for #17228: distinguish stale-session ret=-2 from rate-limit ret=-2."""
+
+    def test_ret_minus_2_with_unknown_error_is_stale(self):
+        assert weixin._is_stale_session_ret(-2, None, "unknown error") is True
+
+    def test_errcode_minus_2_with_unknown_error_is_stale(self):
+        assert weixin._is_stale_session_ret(None, -2, "unknown error") is True
+
+    def test_unknown_error_case_insensitive(self):
+        assert weixin._is_stale_session_ret(-2, None, "Unknown Error") is True
+
+    def test_ret_minus_2_with_freq_limit_is_not_stale(self):
+        # Genuine rate limit — must NOT be treated as stale session.
+        assert weixin._is_stale_session_ret(-2, None, "freq limit") is False
+
+    def test_ret_minus_2_with_no_errmsg_is_not_stale(self):
+        assert weixin._is_stale_session_ret(-2, None, None) is False
+        assert weixin._is_stale_session_ret(-2, None, "") is False
+
+    def test_errcode_minus_14_is_not_matched_here(self):
+        # -14 is handled by the separate SESSION_EXPIRED_ERRCODE path; the
+        # helper only disambiguates -2 from a genuine rate limit.
+        assert weixin._is_stale_session_ret(-14, None, "session expired") is False
+
+    def test_success_codes_are_not_stale(self):
+        assert weixin._is_stale_session_ret(0, 0, "") is False
+        assert weixin._is_stale_session_ret(None, None, "unknown error") is False

@@ -68,6 +68,7 @@ from pathlib import Path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value
+from hermes_cli.config import cfg_get
 
 try:
     from tools.website_policy import check_website_access
@@ -192,7 +193,7 @@ def _get_command_timeout() -> int:
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
-        val = cfg.get("browser", {}).get("command_timeout")
+        val = cfg_get(cfg, "browser", "command_timeout")
         if val is not None:
             result = max(int(val), 5)  # Floor at 5s to avoid instant kills
     except Exception as e:
@@ -2245,7 +2246,7 @@ def _maybe_start_recording(task_id: str):
         from hermes_cli.config import read_raw_config
         hermes_home = get_hermes_home()
         cfg = read_raw_config()
-        record_enabled = cfg.get("browser", {}).get("record_sessions", False)
+        record_enabled = cfg_get(cfg, "browser", "record_sessions", default=False)
         
         if not record_enabled:
             return
@@ -2448,7 +2449,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         try:
             from hermes_cli.config import load_config
             _cfg = load_config()
-            _vision_cfg = _cfg.get("auxiliary", {}).get("vision", {})
+            _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
             _vt = _vision_cfg.get("timeout")
             if _vt is not None:
                 vision_timeout = float(_vt)

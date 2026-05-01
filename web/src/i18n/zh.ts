@@ -73,6 +73,8 @@ export const zh: Translations = {
       documentation: "文档",
       keys: "密钥",
       logs: "日志",
+      models: "模型",
+      profiles: "多Agent配置",
       sessions: "会话",
       skills: "技能",
     },
@@ -170,6 +172,18 @@ export const zh: Translations = {
     inOut: "输入 {input} / 输出 {output}",
   },
 
+  models: {
+    modelsUsed: "使用模型数",
+    estimatedCost: "预估费用",
+    tokens: "Token",
+    sessions: "会话",
+    avgPerSession: "平均/会话",
+    apiCalls: "API 调用",
+    toolCalls: "工具调用",
+    noModelsData: "该时间段暂无模型使用数据",
+    startSession: "开始会话后将在此显示模型数据",
+  },
+
   logs: {
     title: "日志",
     autoRefresh: "自动刷新",
@@ -205,6 +219,38 @@ export const zh: Translations = {
       slack: "Slack",
       email: "邮件",
     },
+  },
+
+  profiles: {
+    newProfile: "新建多Agent配置",
+    name: "名称",
+    namePlaceholder: "例如：coder, writer 等",
+    nameRequired: "名称必填",
+    nameRule:
+      "仅允许小写字母、数字、下划线和短横线；首字符必须是字母或数字；最多 64 个字符。",
+    invalidName: "多Agent配置名称非法",
+    cloneFromDefault: "从默认多Agent配置克隆配置",
+    allProfiles: "多Agent配置列表",
+    noProfiles: "暂无多Agent配置。",
+    defaultBadge: "默认",
+    hasEnv: "已配置 env",
+    model: "模型",
+    skills: "技能",
+    rename: "重命名",
+    editSoul: "编辑 SOUL.md",
+    soulSection: "SOUL.md（人格 / 系统提示词）",
+    soulPlaceholder: "# 这个代理应当如何工作……",
+    saveSoul: "保存 SOUL",
+    soulSaved: "SOUL.md 已保存",
+    openInTerminal: "复制 CLI 命令",
+    commandCopied: "已复制到剪贴板",
+    copyFailed: "复制失败",
+    confirmDeleteTitle: "删除多Agent配置？",
+    confirmDeleteMessage:
+      "将永久删除多Agent配置 '{name}' — 包括配置、密钥、记忆、会话、技能、定时任务。此操作无法撤销。",
+    created: "已创建",
+    deleted: "已删除",
+    renamed: "已重命名",
   },
 
   skills: {

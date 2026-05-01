@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -519,7 +520,7 @@ def _get_disabled_set() -> set:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        disabled = config.get("plugins", {}).get("disabled", [])
+        disabled = cfg_get(config, "plugins", "disabled", default=[])
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
         return set()
@@ -629,10 +630,9 @@ def _plugin_exists(name: str) -> bool:
             manifest = _read_manifest(child)
             if manifest.get("name") == name:
                 return True
-    # Bundled: <repo>/plugins/<name>/
-    from pathlib import Path as _P
-    import hermes_cli
-    repo_plugins = _P(hermes_cli.__file__).resolve().parent.parent / "plugins"
+    # Bundled: <repo>/plugins/<name>/ (or HERMES_BUNDLED_PLUGINS on Nix).
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    repo_plugins = get_bundled_plugins_dir()
     if repo_plugins.is_dir():
         candidate = repo_plugins / name
         if candidate.is_dir() and (
@@ -659,8 +659,8 @@ def _discover_all_plugins() -> list:
     seen: dict = {}  # name -> (name, version, description, source, path)
 
     # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
-    import hermes_cli
-    repo_plugins = Path(hermes_cli.__file__).resolve().parent.parent / "plugins"
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    repo_plugins = get_bundled_plugins_dir()
     for base, source in ((repo_plugins, "bundled"), (_plugins_dir(), "user")):
         if not base.is_dir():
             continue
@@ -763,7 +763,7 @@ def _get_current_memory_provider() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("memory", {}).get("provider", "") or ""
+        return cfg_get(config, "memory", "provider", default="") or ""
     except Exception:
         return ""
 
@@ -773,7 +773,7 @@ def _get_current_context_engine() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("context", {}).get("engine", "compressor") or "compressor"
+        return cfg_get(config, "context", "engine", default="compressor") or "compressor"
     except Exception:
         return "compressor"
 

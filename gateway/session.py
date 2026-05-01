@@ -176,6 +176,7 @@ class SessionContext:
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    message_timestamp: Optional[datetime] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -313,6 +314,10 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
+
+    # Message timestamp
+    if context.message_timestamp:
+        lines.append(f"**Message time:** {context.message_timestamp.strftime('%Y-%m-%d %H:%M %Z').strip()}")
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
@@ -1313,21 +1318,22 @@ class SessionStore:
 def build_session_context(
     source: SessionSource,
     config: GatewayConfig,
-    session_entry: Optional[SessionEntry] = None
+    session_entry: Optional[SessionEntry] = None,
+    message_timestamp: Optional[datetime] = None,
 ) -> SessionContext:
     """
     Build a full session context from a source and config.
-    
+
     This is used to inject context into the agent's system prompt.
     """
     connected = config.get_connected_platforms()
-    
+
     home_channels = {}
     for platform in connected:
         home = config.get_home_channel(platform)
         if home:
             home_channels[platform] = home
-    
+
     context = SessionContext(
         source=source,
         connected_platforms=connected,
@@ -1337,12 +1343,13 @@ def build_session_context(
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         ),
+        message_timestamp=message_timestamp,
     )
-    
+
     if session_entry:
         context.session_key = session_entry.session_key
         context.session_id = session_entry.session_id
         context.created_at = session_entry.created_at
         context.updated_at = session_entry.updated_at
-    
+
     return context

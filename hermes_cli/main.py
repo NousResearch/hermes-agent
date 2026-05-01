@@ -114,6 +114,16 @@ def _apply_profile_override() -> None:
             consume = 1
             break
 
+    # 1b. Reject values that can't be valid profile names (e.g. pytest's
+    # "-p no:xdist" would be misread as profile "no:xdist" otherwise).
+    # Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never call
+    # resolve_profile_env() with a value it must reject + sys.exit on.
+    if profile_name is not None and consume == 2:
+        import re as _re
+        if not _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile_name):
+            profile_name = None
+            consume = 0
+
     # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it.
     # This lets child processes (relaunch, subprocess) inherit the parent's
     # profile choice without having to pass --profile again.

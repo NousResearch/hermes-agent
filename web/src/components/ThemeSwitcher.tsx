@@ -4,16 +4,15 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Typography } from "@/components/NouiTypography";
 import { BUILTIN_THEMES, useTheme } from "@/themes";
-import type { DashboardTheme } from "@/themes/types";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 /**
  * Compact theme picker mounted next to the language switcher in the header.
- * Built-in themes render a compact chromatic icon derived from their palette
- * so users can preview the color direction before committing. User-defined
+ * Each dropdown row shows a 3-stop swatch (background / midground / warm
+ * glow) so users can preview the palette before committing. User-defined
  * themes from `~/.hermes/dashboard-themes/*.yaml` that aren't in
- * `BUILTIN_THEMES` render with a neutral placeholder.
+ * `BUILTIN_THEMES` render without swatches and apply the default palette.
  *
  * When placed at the bottom of a container (e.g. the sidebar rail), pass
  * `dropUp` so the menu opens above the trigger instead of clipping below
@@ -49,7 +48,6 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
   }, [open, close]);
 
   const current = availableThemes.find((th) => th.name === themeName);
-  const currentPreset = BUILTIN_THEMES[themeName];
   const label = current?.label ?? themeName;
 
   return (
@@ -64,11 +62,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
         aria-haspopup="listbox"
       >
         <span className="inline-flex items-center gap-1.5">
-          {currentPreset ? (
-            <ThemeToneIcon theme={currentPreset} className="h-4 w-4" />
-          ) : (
-            <Palette className="h-3.5 w-3.5" />
-          )}
+          <Palette className="h-3.5 w-3.5" />
 
           <Typography
             mondwest
@@ -116,9 +110,9 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
                 className="gap-3"
               >
                 {preset ? (
-                  <ThemeToneIcon theme={preset} />
+                  <ThemeSwatch theme={preset.name} />
                 ) : (
-                  <PlaceholderThemeIcon />
+                  <PlaceholderSwatch />
                 )}
 
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -150,36 +144,27 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
   );
 }
 
-function ThemeToneIcon({
-  className,
-  theme,
-}: {
-  className?: string;
-  theme: DashboardTheme;
-}) {
-  const { background, midground, warmGlow } = theme.palette;
-  const accent = theme.colorOverrides?.accent ?? warmGlow;
-  const primary = theme.colorOverrides?.primary ?? midground.hex;
-  const toneWheel = `conic-gradient(from 210deg, ${background.hex} 0 28%, ${accent} 28% 50%, ${midground.hex} 50% 73%, ${primary} 73% 88%, ${warmGlow} 88% 100%)`;
-
+function ThemeSwatch({ theme }: { theme: string }) {
+  const preset = BUILTIN_THEMES[theme];
+  if (!preset) return <PlaceholderSwatch />;
+  const { background, midground, warmGlow } = preset.palette;
   return (
-    <span
+    <div
       aria-hidden
-      className={cn(
-        "relative h-5 w-5 shrink-0 overflow-hidden rounded-full border border-current/25",
-        "shadow-[inset_0_0_0_1px_rgba(255,255,255,0.25)]",
-        className,
-      )}
-      style={{ background: toneWheel }}
-    />
+      className="flex h-4 w-9 shrink-0 overflow-hidden border border-current/20"
+    >
+      <span className="flex-1" style={{ background: background.hex }} />
+      <span className="flex-1" style={{ background: midground.hex }} />
+      <span className="flex-1" style={{ background: warmGlow }} />
+    </div>
   );
 }
 
-function PlaceholderThemeIcon() {
+function PlaceholderSwatch() {
   return (
-    <span
+    <div
       aria-hidden
-      className="h-5 w-5 shrink-0 rounded-full border border-dashed border-current/25"
+      className="h-4 w-9 shrink-0 border border-dashed border-current/20"
     />
   );
 }

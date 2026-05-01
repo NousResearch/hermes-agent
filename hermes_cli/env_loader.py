@@ -164,6 +164,16 @@ def load_hermes_dotenv(
     if project_env_path and project_env_path.exists():
         _sanitize_env_file_if_needed(project_env_path)
 
+    # When running under a profile or custom HERMES_HOME, load the base
+    # ~/.hermes/.env first as a fallback so secrets don't have to be
+    # duplicated across every profile.
+    base_hermes = Path.home() / ".hermes"
+    base_env = base_hermes / ".env"
+    if home_path != base_hermes and base_env.exists() and base_env != user_env:
+        _sanitize_env_file_if_needed(base_env)
+        _load_dotenv_with_fallback(base_env, override=False)
+        loaded.append(base_env)
+
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)

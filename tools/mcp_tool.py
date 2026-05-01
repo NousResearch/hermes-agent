@@ -1065,6 +1065,9 @@ class MCPServerTask:
         command = config.get("command")
         args = config.get("args", [])
         user_env = config.get("env")
+        cwd = config.get("workdir")
+        if cwd is None:
+            cwd = config.get("cwd")
 
         if not command:
             raise ValueError(
@@ -1086,6 +1089,7 @@ class MCPServerTask:
             command=command,
             args=args,
             env=safe_env if safe_env else None,
+            cwd=cwd,
         )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}

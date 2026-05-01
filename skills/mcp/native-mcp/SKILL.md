@@ -93,6 +93,7 @@ mcp_servers:
 |-------------------|--------|---------|---------------------------------------------------|
 | `command`         | string | --      | Executable to run (stdio transport, required)     |
 | `args`            | list   | `[]`    | Arguments passed to the command                   |
+| `workdir` / `cwd` | string | --      | Working directory used to spawn a stdio server    |
 | `env`             | dict   | `{}`    | Extra environment variables for the subprocess    |
 | `url`             | string | --      | Server URL (HTTP transport, required)             |
 | `headers`         | dict   | `{}`    | HTTP headers sent with every request              |

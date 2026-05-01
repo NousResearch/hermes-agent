@@ -99,6 +99,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 |---|---|---|
 | `command` | string | Executable for a stdio MCP server |
 | `args` | list | Arguments for the stdio server |
+| `workdir` / `cwd` | string | Working directory used when spawning a stdio server |
 | `env` | mapping | Environment variables passed to the stdio server |
 | `url` | string | HTTP MCP endpoint |
 | `headers` | mapping | HTTP headers for remote servers |

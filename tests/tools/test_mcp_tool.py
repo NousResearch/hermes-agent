@@ -839,6 +839,90 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_workdir_is_passed_to_stdio_server_parameters(self):
+        """Stdio MCP servers can run from a configured working directory."""
+        from tools.mcp_tool import MCPServerTask
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(
+            return_value=SimpleNamespace(tools=[])
+        )
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params, \
+                 p_stdio, p_cs:
+                server = MCPServerTask("srv")
+                await server.start({
+                    "command": "python",
+                    "args": ["-m", "mcp_server.server"],
+                    "workdir": "/srv/knowledge-rag",
+                })
+
+                assert mock_params.call_args.kwargs["cwd"] == "/srv/knowledge-rag"
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+
+    def test_cwd_alias_is_used_when_workdir_absent(self):
+        """The shorter cwd alias is honored for stdio MCP servers."""
+        from tools.mcp_tool import MCPServerTask
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(
+            return_value=SimpleNamespace(tools=[])
+        )
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params, \
+                 p_stdio, p_cs:
+                server = MCPServerTask("srv")
+                await server.start({
+                    "command": "python",
+                    "args": ["-m", "mcp_server.server"],
+                    "cwd": "/srv/alias",
+                })
+
+                assert mock_params.call_args.kwargs["cwd"] == "/srv/alias"
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+
+    def test_workdir_takes_precedence_over_cwd_alias(self):
+        """workdir is the documented spelling when both cwd aliases are present."""
+        from tools.mcp_tool import MCPServerTask
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(
+            return_value=SimpleNamespace(tools=[])
+        )
+
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as mock_params, \
+                 p_stdio, p_cs:
+                server = MCPServerTask("srv")
+                await server.start({
+                    "command": "python",
+                    "workdir": "/srv/workdir",
+                    "cwd": "/srv/cwd",
+                })
+
+                assert mock_params.call_args.kwargs["cwd"] == "/srv/workdir"
+
+                await server.shutdown()
+
+        asyncio.run(_test())
+
     def test_shutdown_signals_task_exit(self):
         """shutdown() signals the event and waits for task completion."""
         from tools.mcp_tool import MCPServerTask

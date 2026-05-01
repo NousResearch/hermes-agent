@@ -9,6 +9,9 @@ from unittest.mock import patch
 
 from tui_gateway import server
 
+# Safety: prevent this test module from being imported outside pytest.
+assert "pytest" in sys.modules, "test_tui_gateway_server must only be loaded by pytest"
+
 
 class _ChunkyStdout:
     def __init__(self):

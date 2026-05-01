@@ -2502,11 +2502,45 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # Redact secrets the vision LLM may have read from the screenshot.
         from agent.redact import redact_sensitive_text
         analysis = redact_sensitive_text(analysis)
+
+        # Delivery hint: messaging gateways (telegram/discord/etc) only forward
+        # screenshots to the user if the agent's reply contains MEDIA:<path>.
+        # We surface a ready-to-paste tag here AFTER redaction so the model can
+        # echo it verbatim. Without this, models routinely paraphrase the
+        # analysis but drop the path, leaving the user with no actual image.
+        media_tag = f"MEDIA:{screenshot_path}"
+
+        # Sanity-check the captured screenshot. A near-empty PNG (< 5 KB) is
+        # almost always a blank/unrendered page — surface a warning so the
+        # agent can re-take after waiting, instead of silently delivering blank.
+        size_warning = None
+        try:
+            _shot_bytes = screenshot_path.stat().st_size
+            if _shot_bytes < 5_000:
+                size_warning = (
+                    f"Screenshot is only {_shot_bytes} bytes — page likely "
+                    f"blank or not yet rendered. Consider waiting for content "
+                    f"(browser_wait_for_selector or a short delay) and re-taking."
+                )
+                logger.warning(
+                    "browser_vision: suspiciously small screenshot %s (%d bytes)",
+                    screenshot_path, _shot_bytes,
+                )
+        except OSError:
+            pass
+
         response_data = {
             "success": True,
             "analysis": analysis or "Vision analysis returned no content.",
             "screenshot_path": str(screenshot_path),
+            "delivery_tag": media_tag,
+            "delivery_instruction": (
+                f"To send this screenshot to the user, your reply MUST contain "
+                f"the line `{media_tag}` exactly as written."
+            ),
         }
+        if size_warning:
+            response_data["size_warning"] = size_warning
         # Include annotation data if annotated screenshot was taken
         if annotate and result.get("data", {}).get("annotations"):
             response_data["annotations"] = result["data"]["annotations"]

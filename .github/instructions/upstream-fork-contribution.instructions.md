@@ -42,10 +42,13 @@ You are writing a patch that will land in the Rosenblatt fork of `NousResearch/h
   ```
   Files excluded from auto-discovery: `__init__.py`, `registry.py`, `mcp_tool.py`. MCP tools have their own discovery path (`tools/mcp_tool.py:discover_mcp_tools()`).
 
-- **Full plugin system (auto-discovered, with lifecycle hooks).** `hermes_cli/plugins.py` implements a proper plugin system with three discovery sources:
-  1. **User plugins:** `$HERMES_HOME/plugins/<name>/` (default `~/.hermes/plugins/<name>/`)
-  2. **Project plugins:** `./.hermes/plugins/<name>/` (opt-in via `HERMES_ENABLE_PROJECT_PLUGINS`)
-  3. **Pip plugins:** Python packages exposing the `hermes_agent.plugins` entry-point group
+- **Full plugin system (auto-discovered, with lifecycle hooks).** `hermes_cli/plugins.py` implements a proper plugin system with four discovery sources, loaded in this order:
+  1. **Bundled plugins:** built-in plugins shipped with `hermes-agent` under `<repo>/plugins/<name>/` (flat) or `<repo>/plugins/<category>/<backend>/` (category, e.g. `image_gen/openai/`). `memory/` and `context_engine/` are skipped at the top level — they have their own discovery (see below).
+  2. **User plugins:** `$HERMES_HOME/plugins/<name>/` (default `~/.hermes/plugins/<name>/`)
+  3. **Project plugins:** `./.hermes/plugins/<name>/` (opt-in via `HERMES_ENABLE_PROJECT_PLUGINS`)
+  4. **Pip plugins:** Python packages exposing the `hermes_agent.plugins` entry-point group
+
+  Later sources override earlier ones on key collision (user > bundled, project > user).
 
   Each directory plugin requires `plugin.yaml` (manifest) and `__init__.py` with a `register(ctx)` function. The `PluginContext` (in `hermes_cli/plugins.py`) lets plugins register tools (delegates to `tools.registry.register`), commands, and **lifecycle hooks** spanning tool calls, LLM calls, API requests, and session events. The authoritative list is `hermes_cli/plugins.py`'s `VALID_HOOKS` set — refer to it for the current hook names; new hooks land there as they're added upstream.
 

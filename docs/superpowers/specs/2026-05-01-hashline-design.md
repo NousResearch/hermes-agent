@@ -1,7 +1,7 @@
 # Hashline Line-Anchor Editing
 
 **Date:** 2026-05-01
-**Branch:** feature/hashline
+**Branch:** feat/hashline
 **Status:** Implemented
 
 ## Summary

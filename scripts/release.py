@@ -94,6 +94,8 @@ AUTHOR_MAP = {
     "130918800+devorun@users.noreply.github.com": "devorun",
     "surat.s@itm.kmutnb.ac.th": "beesrsj2500",
     "beesr@bee.localdomain": "beesrsj2500",
+    "mind-dragon@nous.research": "Mind-Dragon",
+    "juntingpublic@gmail.com": "JustinUssuri",
     "mtf201013@gmail.com": "ma-pony",
     "sonoyuncudmr@gmail.com": "Sonoyunchu",
     "43525405+yatesjalex@users.noreply.github.com": "yatesjalex",

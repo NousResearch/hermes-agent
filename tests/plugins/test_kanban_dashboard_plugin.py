@@ -505,9 +505,11 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     kb.init_db()
 
     # Stub web_server so _check_ws_token has a token to compare against.
+    import hermes_cli
     import types
     stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz")
     monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
 
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")

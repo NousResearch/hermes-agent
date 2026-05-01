@@ -1718,7 +1718,14 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None):
             # Step 2: Upload media files if present
             file_info_list = []
             if media_files:
-                for media_file in media_files:
+                for media_item in media_files:
+                    # Handle tuple format (path, is_url) from extract_media
+                    if isinstance(media_item, tuple):
+                        media_file, is_url = media_item
+                    else:
+                        media_file = media_item
+                        is_url = False
+
                     # Determine file type: 1=image, 2=video, 3=voice, 4=file
                     file_type = 4  # default to file
                     file_ext = media_file.lower().split(".")[-1] if "." in media_file else ""
@@ -1738,27 +1745,26 @@ async def _send_qqbot(pconfig, chat_id, message, media_files=None):
                         # Guild uses channel message API, media not supported the same way
                         return _error("QQBot: Media upload for guild channels not yet supported")
 
-                    # Read file data
+                    # Read file data and encode as base64
                     try:
                         with open(media_file, "rb") as f:
-                            file_data = f.read()
+                            file_bytes = f.read()
+                        import base64
+                        file_data = base64.b64encode(file_bytes).decode("utf-8")
                     except Exception as e:
                         return _error(f"QQBot: Failed to read media file {media_file}: {e}")
 
-                    # Upload the file
-                    upload_headers = {
-                        **headers,
-                    }
-                    files_payload = {
-                        "file": (media_file.split("/")[-1], file_data),
-                        "file_type": (None, str(file_type)),
-                        "srv_send_msg": (None, "false"),
+                    # Upload the file via JSON API (not multipart)
+                    upload_body = {
+                        "file_type": file_type,
+                        "srv_send_msg": False,
+                        "file_data": file_data,
                     }
 
                     upload_resp = await client.post(
                         upload_url,
-                        headers=upload_headers,
-                        files=files_payload,
+                        headers={**headers, "Content-Type": "application/json"},
+                        json=upload_body,
                     )
                     if upload_resp.status_code not in (200, 201):
                         return _error(f"QQBot media upload failed: {upload_resp.status_code} {upload_resp.text}")

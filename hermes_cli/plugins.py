@@ -1229,13 +1229,18 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     return entry["handler"] if entry else None
 
 
+_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
+
+
 def resolve_plugin_command_result(result: Any) -> Any:
     """Resolve a plugin command return value, awaiting async handlers when needed.
 
     Sync CLI/TUI dispatch sites call plugin handlers from plain functions.
     If a handler is async, await it directly when no loop is running; if
     we're already inside an active loop, run it in a helper thread with its
-    own loop so the caller still gets a concrete result synchronously.
+    own loop so the caller still gets a concrete result synchronously. The
+    threaded path is bounded by a 30s timeout so a hung async handler cannot
+    wedge the terminal indefinitely.
     """
     if not inspect.isawaitable(result):
         return result
@@ -1263,7 +1268,11 @@ def resolve_plugin_command_result(result: Any) -> Any:
         daemon=True,
     )
     thread.start()
-    done.wait()
+    if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
+        raise TimeoutError(
+            "Plugin command async handler did not complete within "
+            f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s"
+        )
     if "exc" in failure:
         raise failure["exc"]
     return outcome.get("value")

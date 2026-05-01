@@ -567,6 +567,26 @@ class TestSecurityScanGate:
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
             assert _guard_agent_created_enabled() is False
 
+    def test_guard_flag_quoted_false_stays_disabled(self):
+        """Quoted 'false' from YAML edits must not enable the guard."""
+        from tools.skill_manager_tool import _guard_agent_created_enabled
+
+        for quoted in ("false", "False", "0", "no", "off"):
+            with patch("hermes_cli.config.load_config",
+                       return_value={"skills": {"guard_agent_created": quoted}}):
+                assert _guard_agent_created_enabled() is False, \
+                    f"guard_agent_created={quoted!r} must coerce to False"
+
+    def test_guard_flag_quoted_true_enables(self):
+        """Quoted truthy strings must enable the guard."""
+        from tools.skill_manager_tool import _guard_agent_created_enabled
+
+        for quoted in ("true", "True", "1", "yes", "on"):
+            with patch("hermes_cli.config.load_config",
+                       return_value={"skills": {"guard_agent_created": quoted}}):
+                assert _guard_agent_created_enabled() is True, \
+                    f"guard_agent_created={quoted!r} must coerce to True"
+
 
 # ---------------------------------------------------------------------------
 # External skills directories (skills.external_dirs) — mutations in place

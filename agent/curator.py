@@ -28,12 +28,28 @@ import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
 from tools import skill_usage
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_aux_credential(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+class _ReviewRuntimeBinding(NamedTuple):
+    """Provider/model for the curator review fork plus optional per-slot overrides."""
+
+    provider: str
+    model: str
+    explicit_api_key: Optional[str]
+    explicit_base_url: Optional[str]
 
 
 DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
@@ -1398,6 +1414,52 @@ def run_curator_review(
     }
 
 
+def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
+    """Resolve provider/model and per-slot credentials for the curator review fork.
+
+    Same precedence as `_resolve_review_model()`. Non-empty ``api_key`` /
+    ``base_url`` from the active slot are returned as explicit overrides so
+    ``resolve_runtime_provider`` does not silently reuse the main chat
+    credential chain for a routed auxiliary model.
+    """
+    _main = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
+    _main_provider = _main.get("provider") or "auto"
+    _main_model = _main.get("default") or _main.get("model") or ""
+
+    # 1. Canonical aux task slot
+    _aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+    _cur_task = _aux.get("curator", {}) if isinstance(_aux.get("curator"), dict) else {}
+    _task_provider = (_cur_task.get("provider") or "").strip() or None
+    _task_model = (_cur_task.get("model") or "").strip() or None
+    if _task_provider and _task_provider != "auto" and _task_model:
+        return _ReviewRuntimeBinding(
+            _task_provider,
+            _task_model,
+            _strip_aux_credential(_cur_task.get("api_key")),
+            _strip_aux_credential(_cur_task.get("base_url")),
+        )
+
+    # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
+    _cur = cfg.get("curator", {}) if isinstance(cfg.get("curator"), dict) else {}
+    _legacy = _cur.get("auxiliary", {}) if isinstance(_cur.get("auxiliary"), dict) else {}
+    _legacy_provider = _legacy.get("provider") or None
+    _legacy_model = _legacy.get("model") or None
+    if _legacy_provider and _legacy_model:
+        logger.info(
+            "curator: using deprecated curator.auxiliary.{provider,model} "
+            "config — please migrate to auxiliary.curator.{provider,model}"
+        )
+        return _ReviewRuntimeBinding(
+            str(_legacy_provider),
+            str(_legacy_model),
+            _strip_aux_credential(_legacy.get("api_key")),
+            _strip_aux_credential(_legacy.get("base_url")),
+        )
+
+    # 3. Fall through to the main chat model
+    return _ReviewRuntimeBinding(_main_provider, _main_model, None, None)
+
+
 def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
     """Pick (provider, model) for the curator review fork.
 
@@ -1413,32 +1475,8 @@ def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
       2. Legacy ``curator.auxiliary.{provider,model}`` when both are set
       3. Main ``model.{provider,default/model}`` pair
     """
-    _main = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
-    _main_provider = _main.get("provider") or "auto"
-    _main_model = _main.get("default") or _main.get("model") or ""
-
-    # 1. Canonical aux task slot
-    _aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
-    _cur_task = _aux.get("curator", {}) if isinstance(_aux.get("curator"), dict) else {}
-    _task_provider = (_cur_task.get("provider") or "").strip() or None
-    _task_model = (_cur_task.get("model") or "").strip() or None
-    if _task_provider and _task_provider != "auto" and _task_model:
-        return _task_provider, _task_model
-
-    # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
-    _cur = cfg.get("curator", {}) if isinstance(cfg.get("curator"), dict) else {}
-    _legacy = _cur.get("auxiliary", {}) if isinstance(_cur.get("auxiliary"), dict) else {}
-    _legacy_provider = _legacy.get("provider") or None
-    _legacy_model = _legacy.get("model") or None
-    if _legacy_provider and _legacy_model:
-        logger.info(
-            "curator: using deprecated curator.auxiliary.{provider,model} "
-            "config — please migrate to auxiliary.curator.{provider,model}"
-        )
-        return _legacy_provider, _legacy_model
-
-    # 3. Fall through to the main chat model
-    return _main_provider, _main_model
+    b = _resolve_review_runtime(cfg)
+    return b.provider, b.model
 
 
 def _run_llm_review(prompt: str) -> Dict[str, Any]:
@@ -1477,10 +1515,10 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     # arguments hits an auto-resolution path that fails for OAuth-only
     # providers and for pool-backed credentials.
     #
-    # `_resolve_review_model()` honors `auxiliary.curator.{provider,model}`
+    # `_resolve_review_runtime()` honors `auxiliary.curator.{provider,model,...}`
     # (canonical aux-task slot, wired through `hermes model` → auxiliary
     # picker and the dashboard Models tab), with a legacy fallback to
-    # `curator.auxiliary.{provider,model}`. See docs/user-guide/features/curator.md.
+    # `curator.auxiliary.{provider,model,...}`. See docs/user-guide/features/curator.md.
     _api_key = None
     _base_url = None
     _api_mode = None
@@ -1490,9 +1528,13 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
         _cfg = load_config()
-        _provider, _model_name = _resolve_review_model(_cfg)
+        _binding = _resolve_review_runtime(_cfg)
+        _provider, _model_name = _binding.provider, _binding.model
         _rp = resolve_runtime_provider(
-            requested=_provider, target_model=_model_name
+            requested=_provider,
+            target_model=_model_name,
+            explicit_api_key=_binding.explicit_api_key,
+            explicit_base_url=_binding.explicit_base_url,
         )
         _api_key = _rp.get("api_key")
         _base_url = _rp.get("base_url")

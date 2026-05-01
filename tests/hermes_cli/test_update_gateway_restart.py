@@ -32,17 +32,22 @@ def _norm_path_segments(s: str) -> str:
 
 @pytest.fixture(autouse=True)
 def _no_dashboard_kill_scan_during_update(monkeypatch):
-    """Avoid real ``ps``-based stale-dashboard killing at end of ``cmd_update``.
+    """Avoid stale-dashboard teardown at end of ``cmd_update`` during these tests.
 
-    Those tests assert on ``os.kill`` call counts for gateway PIDs. On busy CI
-    runners, ``_find_stale_dashboard_pids()`` can return unrelated processes
-    whose cmdlines happen to match the substring patterns, or PIDs can collide
-    with the small integers used as test fixtures — producing spurious
-    SIGTERM/SIGKILL and breaking assertions.
+    ``_kill_stale_dashboard_processes`` SIGTERMs dashboards then polls ``ps``;
+    survivors get SIGKILL.  Assertions in this module count ``os.kill`` calls
+    for *gateway* PIDs — any false-positive PID (esp. small ints like ``12345``)
+    or a flaky ``subprocess.run`` stub that lets a real ``ps`` slip through will
+    inject spurious SIGTERM/SIGKILL.  Short-circuit the whole helper.
     """
     import hermes_cli.main as main_mod
 
     monkeypatch.setattr(main_mod, "_find_stale_dashboard_pids", lambda: [])
+    monkeypatch.setattr(
+        main_mod,
+        "_kill_stale_dashboard_processes",
+        lambda *args, **kwargs: None,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -451,12 +456,15 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
-             patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
-             patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
-             patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
-             patch("os.kill") as kill:
-            cmd_update(mock_args)
+        # PID file probing in ``launchd_restart`` / ``_wait_for_gateway_exit`` is
+        # real; keep it empty so nothing escalates via gateway.status helpers.
+        with patch("gateway.status.get_running_pid", return_value=None):
+            with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+                 patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
+                 patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
+                 patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
+                 patch("os.kill") as kill:
+                cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
@@ -489,12 +497,13 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
-             patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
-             patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
-             patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=False) as graceful, \
-             patch("os.kill") as kill:
-            cmd_update(mock_args)
+        with patch("gateway.status.get_running_pid", return_value=None):
+            with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+                 patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
+                 patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
+                 patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=False) as graceful, \
+                 patch("os.kill") as kill:
+                cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
@@ -914,12 +923,13 @@ class TestServicePidExclusion:
             _exclude = exclude_pids or set()
             return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
 
-        with patch.object(
-            gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
-        ), patch.object(
-            gateway_cli, "find_gateway_pids", side_effect=fake_find,
-        ), patch("os.kill") as mock_kill:
-            cmd_update(mock_args)
+        with patch("gateway.status.get_running_pid", return_value=None):
+            with patch.object(
+                gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
+            ), patch.object(
+                gateway_cli, "find_gateway_pids", side_effect=fake_find,
+            ), patch("os.kill") as mock_kill:
+                cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         assert "Restarted" in captured

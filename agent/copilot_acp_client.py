@@ -23,6 +23,7 @@ from typing import Any
 
 from agent.file_safety import get_read_block_error, is_write_denied
 from agent.redact import redact_sensitive_text
+from tools.terminal_tool import _get_approval_callback
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
@@ -105,6 +106,18 @@ def _permission_denied(message_id: Any) -> dict[str, Any]:
         "result": {
             "outcome": {
                 "outcome": "cancelled",
+            }
+        },
+    }
+
+
+def _permission_approved(message_id: Any) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": message_id,
+        "result": {
+            "outcome": {
+                "outcome": "approved",
             }
         },
     }
@@ -592,7 +605,25 @@ class CopilotACPClient:
         params = msg.get("params") or {}
 
         if method == "session/request_permission":
-            response = _permission_denied(message_id)
+            try:
+                approval_cb = _get_approval_callback()
+            except Exception:
+                approval_cb = None
+
+            decision = "deny"
+            if callable(approval_cb):
+                try:
+                    command = str(params.get("command") or params.get("title") or "ACP tool request").strip()
+                    description = str(params.get("message") or params.get("description") or method).strip()
+                    raw = approval_cb(command, description)
+                    decision = str(raw or "").strip().lower()
+                except Exception:
+                    decision = "deny"
+
+            if decision in {"allow", "once", "approve", "approved", "yes"}:
+                response = _permission_approved(message_id)
+            else:
+                response = _permission_denied(message_id)
         elif method == "fs/read_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)

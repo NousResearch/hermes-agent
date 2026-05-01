@@ -1632,12 +1632,30 @@ class AIAgent:
         self._session_db = session_db
         self._parent_session_id = parent_session_id
         self._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
-        self._session_db_created = False  # DB row deferred to run_conversation()
-        self._session_init_model_config = {
-            "max_iterations": self.max_iterations,
-            "reasoning_config": reasoning_config,
-            "max_tokens": max_tokens,
-        }
+        if self._session_db:
+            try:
+                self._session_db.create_session(
+                    session_id=self.session_id,
+                    source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                    model=self.model,
+                    model_config={
+                        "max_iterations": self.max_iterations,
+                        "reasoning_config": reasoning_config,
+                        "max_tokens": max_tokens,
+                    },
+                    user_id=None,
+                    parent_session_id=self._parent_session_id,
+                )
+            except Exception as e:
+                # Transient SQLite lock contention (e.g. CLI and gateway writing
+                # concurrently) must NOT permanently disable session_search for
+                # this agent.  Keep _session_db alive — subsequent message
+                # flushes and session_search calls will still work once the
+                # lock clears.  The session row may be missing from the index
+                # for this run, but that is recoverable (flushes upsert rows).
+                logger.warning(
+                    "Session DB create_session failed (session_search still available): %s", e
+                )
         
         # In-memory todo list for task planning (one per agent/session)
         from tools.todo_tool import TodoStore
@@ -2151,28 +2169,6 @@ class AIAgent:
                 "anthropic_base_url": self._anthropic_base_url,
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
-
-    def _ensure_db_session(self) -> None:
-        """Create session DB row on first use. Disables _session_db on failure."""
-        if self._session_db_created or not self._session_db:
-            return
-        try:
-            self._session_db.create_session(
-                session_id=self.session_id,
-                source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=self.model,
-                model_config=self._session_init_model_config,
-                system_prompt=self._cached_system_prompt,
-                user_id=None,
-                parent_session_id=self._parent_session_id,
-            )
-            self._session_db_created = True
-        except Exception as e:
-            # Transient failure (e.g. SQLite lock). Keep _session_db alive —
-            # _session_db_created stays False so next run_conversation() retries.
-            logger.warning(
-                "Session DB creation failed (will retry next turn): %s", e
-            )
 
     def reset_session_state(self):
         """Reset all session-scoped token counters to 0 for a fresh session.
@@ -3723,9 +3719,14 @@ class AIAgent:
             return
         self._apply_persist_user_message_override(messages)
         try:
-            # Retry row creation if the earlier attempt failed transiently.
-            if not self._session_db_created:
-                self._ensure_db_session()
+            # If create_session() failed at startup (e.g. transient lock), the
+            # session row may not exist yet.  ensure_session() uses INSERT OR
+            # IGNORE so it is a no-op when the row is already there.
+            self._session_db.ensure_session(
+                self.session_id,
+                source=self.platform or "cli",
+                model=self.model,
+            )
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
             for msg in messages[flush_from:]:
@@ -7795,12 +7796,15 @@ class AIAgent:
 
     # ── End provider fallback ──────────────────────────────────────────────
 
+    # Content types that carry multimodal data (image, audio, video)
+    _MULTIMODAL_CONTENT_TYPES = {"image_url", "input_image", "input_audio", "video_url"}
+
     @staticmethod
     def _content_has_image_parts(content: Any) -> bool:
         if not isinstance(content, list):
             return False
         for part in content:
-            if isinstance(part, dict) and part.get("type") in {"image_url", "input_image"}:
+            if isinstance(part, dict) and part.get("type") in AIAgent._MULTIMODAL_CONTENT_TYPES:
                 return True
         return False
 
@@ -7926,6 +7930,28 @@ class AIAgent:
                     image_notes.append("[An image was attached but no image source was available.]")
                 continue
 
+            # Audio input - convert to text placeholder for Anthropic compatibility
+            if ptype == "input_audio":
+                audio_data = part.get("input_audio", {})
+                audio_url = audio_data.get("data", "") if isinstance(audio_data, dict) else str(audio_data or "")
+                if audio_url:
+                    image_notes.append(f"[An audio file was attached (source: {audio_url[:100]}{'...' if len(audio_url) > 100 else ''}). Audio analysis requires a multimodal-capable provider.]")
+                else:
+                    image_notes.append("[An audio file was attached but no audio source was available.]")
+                continue
+
+            # Video input - convert to text placeholder for Anthropic compatibility
+            if ptype == "video_url":
+                video_data = part.get("video_url", {})
+                video_url = video_data.get("url", "") if isinstance(video_data, dict) else str(video_data or "")
+                fps = part.get("fps", 2)
+                media_resolution = part.get("media_resolution", "default")
+                if video_url:
+                    image_notes.append(f"[A video file was attached (source: {video_url[:100]}{'...' if len(video_url) > 100 else ''}, fps={fps}, resolution={media_resolution}). Video analysis requires a multimodal-capable provider.]")
+                else:
+                    image_notes.append("[A video file was attached but no video source was available.]")
+                continue
+
             text = str(part.get("text", "") or "").strip()
             if text:
                 text_parts.append(text)
@@ -7938,7 +7964,7 @@ class AIAgent:
             return prefix
         if suffix:
             return suffix
-        return "[A multimodal message was converted to text for Anthropic compatibility.]"
+        return "[A multimodal message was converted to text for Anthropic compatibility.]" 
 
     def _get_transport(self, api_mode: str = None):
         """Return the cached transport for the given (or current) api_mode.
@@ -9055,15 +9081,12 @@ class AIAgent:
                 self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                 # Update session_log_file to point to the new session's JSON file
                 self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
-                self._session_db_created = False
                 self._session_db.create_session(
                     session_id=self.session_id,
                     source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                     model=self.model,
-                    model_config=self._session_init_model_config,
                     parent_session_id=old_session_id,
                 )
-                self._session_db_created = True
                 # Auto-number the title for the continuation session
                 if old_title:
                     try:
@@ -10352,8 +10375,6 @@ class AIAgent:
         # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
         # Installed once, transparent when streams are healthy, prevents crash on write.
         _install_safe_stdio()
-
-        self._ensure_db_session()
 
         # Tag all log records on this thread with the session ID so
         # ``hermes logs --session <id>`` can filter a single conversation.

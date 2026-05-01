@@ -449,6 +449,12 @@ def _convert_content_for_responses(content: Any) -> Any:
         elif ptype in ("input_text", "input_image"):
             # Already in Responses format — pass through
             converted.append(part)
+        elif ptype == "input_audio":
+            # Audio input — pass through as-is for providers that support it (e.g., xiaomi)
+            converted.append(part)
+        elif ptype == "video_url":
+            # Video input — pass through as-is for providers that support it (e.g., xiaomi)
+            converted.append(part)
         else:
             # Unknown content type — try to preserve as text
             text = part.get("text", "")

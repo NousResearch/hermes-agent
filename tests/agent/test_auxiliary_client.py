@@ -1818,3 +1818,78 @@ class TestBuildCallKwargsToolDedup:
             provider="openai", model="gpt-4o", messages=[], tools=None,
         )
         assert "tools" not in kwargs
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    """Strip provider env vars so each test starts clean."""
+    for key in (
+        "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+class TestOpenRouterExplicitApiKey:
+    """Test that explicit_api_key is correctly propagated to _try_openrouter()."""
+
+    def test_resolve_provider_client_passes_explicit_api_key_to_openrouter(
+        self, monkeypatch
+    ):
+        """
+        When resolve_provider_client() is called with explicit_api_key for OpenRouter,
+        the explicit key should be passed to the OpenAI client instead of falling back
+        to OPENROUTER_API_KEY env var.
+        """
+        # Set up env var as fallback (should NOT be used when explicit_api_key is provided)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "env-fallback-key")
+
+        # Mock OpenAI to capture the api_key used
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="openrouter-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="openrouter",
+                explicit_api_key="explicit-pool-key",
+            )
+
+            # Verify a client was created
+            assert client is not None
+            # Verify the explicit key was used, not the env var fallback
+            mock_openai.assert_called_once()
+            call_kwargs = mock_openai.call_args[1]
+            assert call_kwargs["api_key"] == "explicit-pool-key", (
+                f"Expected explicit_api_key to be passed, got: {call_kwargs['api_key']}"
+            )
+            assert call_kwargs["api_key"] != "env-fallback-key", (
+                "Should NOT fall back to OPENROUTER_API_KEY when explicit_api_key is provided"
+            )
+
+    def test_resolve_provider_client_without_explicit_api_key_falls_back_to_env(
+        self, monkeypatch
+    ):
+        """
+        When resolve_provider_client() is called WITHOUT explicit_api_key for OpenRouter,
+        it should fall back to OPENROUTER_API_KEY env var.
+        """
+        # Set up env var as fallback (should be used when explicit_api_key is NOT provided)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "env-fallback-key")
+
+        # Mock OpenAI to capture the api_key used
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock(name="openrouter-client")
+
+        with patch("agent.auxiliary_client.OpenAI", mock_openai):
+            client, model = resolve_provider_client(
+                provider="openrouter",
+                explicit_api_key=None,
+            )
+
+            # Verify a client was created
+            assert client is not None
+            # Verify the env var fallback was used
+            mock_openai.assert_called_once()
+            call_kwargs = mock_openai.call_args[1]
+            assert call_kwargs["api_key"] == "env-fallback-key", (
+                f"Expected env fallback key to be used when explicit_api_key is None, got: {call_kwargs['api_key']}"
+            )

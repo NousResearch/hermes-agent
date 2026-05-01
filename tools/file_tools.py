@@ -119,7 +119,10 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
 
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's live terminal cwd when possible."""
-    p = Path(filepath).expanduser()
+    # Normalize quoted Windows-style paths copied from chats (e.g. "C:\\foo\\bar")
+    # before Path() resolution.
+    _raw = (filepath or "").strip().strip('"').strip("'")
+    p = Path(_raw).expanduser()
     if not p.is_absolute():
         base = _get_live_tracking_cwd(task_id) or os.environ.get(
             "TERMINAL_CWD", os.getcwd()

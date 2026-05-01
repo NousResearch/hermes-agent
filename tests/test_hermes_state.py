@@ -1752,6 +1752,64 @@ class TestListSessionsRich:
             s["id"] for s in db.list_sessions_rich(limit=5, order_by_last_active=True)
         ] == ["old", "new"]
 
+    def test_order_by_last_active_uses_compression_tip_activity(self, db):
+        """A compression root whose tip was touched recently must rank above
+        a newer uncompressed session, even when that tip activity lives in a
+        different row and the outer LIMIT could otherwise cut it.
+
+        This is the case that forced SQL-level chain walking: a naive "cap
+        the SQL fetch at limit*K" optimization would drop the old root off
+        the SQL page before post-projection could promote it.
+        """
+        t0 = 1709500000.0
+        db.create_session("root1", "cli")
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root1"))
+            db._conn.execute(
+                "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+                (t0 + 100, "compression", "root1"),
+            )
+        db.append_message("root1", "user", "old ask")
+
+        # Continuation tip created after root ended; last activity much later.
+        db.create_session("tip1", "cli", parent_session_id="root1")
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 101, "tip1"))
+        db.append_message("tip1", "user", "latest message")
+
+        # Bunch of newer, uncompressed sessions — fresher start_at but older
+        # last activity than the tip. Explicitly pin message timestamps so
+        # they don't pick up wall-clock from append_message.
+        for i in range(5):
+            sid = f"newer{i}"
+            db.create_session(sid, "cli")
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE sessions SET started_at=? WHERE id=?",
+                    (t0 + 500 + i, sid),
+                )
+            db.append_message(sid, "user", f"msg {i}")
+            with db._lock:
+                db._conn.execute(
+                    "UPDATE messages SET timestamp=? WHERE session_id=? AND content=?",
+                    (t0 + 500 + i, sid, f"msg {i}"),
+                )
+
+        # Tip activity timestamp is the latest thing in the DB.
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=? AND content=?",
+                (t0 + 10_000, "tip1", "latest message"),
+            )
+            db._conn.commit()
+
+        # limit=1 is the stress test: the old root must win the single slot.
+        top = db.list_sessions_rich(limit=1, order_by_last_active=True)
+        assert len(top) == 1
+        # Projection surfaces the tip's id in the root's slot.
+        assert top[0]["id"] == "tip1"
+        assert top[0]["_lineage_root_id"] == "root1"
+
     def test_rich_list_includes_title(self, db):
         db.create_session("s1", "cli")
         db.set_session_title("s1", "refactoring auth")

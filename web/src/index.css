@@ -5,6 +5,9 @@
    Tailwind's JIT purge. */
 @source '../node_modules/@nous-research/ui/dist';
 
+/* Scan dashboard plugin sources so their Tailwind classes are included. */
+@source '../../plugins/phonetic-captions/dashboard/src';
+
 /* ------------------------------------------------------------------ */
 /* JetBrains Mono — bundled for the embedded TUI (/chat tab).          */
 /* Gives the terminal a proper monospace font even on systems where    */

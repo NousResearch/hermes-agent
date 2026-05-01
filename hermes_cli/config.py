@@ -457,6 +457,7 @@ DEFAULT_CONFIG = {
         # remains available as a tool regardless of this setting — the routing
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
+        "disabled_toolsets": [],
     },
     
     "terminal": {
@@ -604,6 +605,24 @@ DEFAULT_CONFIG = {
         "max_bytes": 50_000,
         "max_lines": 2000,
         "max_line_length": 2000,
+    },
+
+    # Tool loop guardrails nudge models when they repeat failed or
+    # non-progressing tool calls. Soft warnings are always-on by default;
+    # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.
+    "tool_loop_guardrails": {
+        "warnings_enabled": True,
+        "hard_stop_enabled": False,
+        "warn_after": {
+            "exact_failure": 2,
+            "same_tool_failure": 3,
+            "idempotent_no_progress": 2,
+        },
+        "hard_stop_after": {
+            "exact_failure": 5,
+            "same_tool_failure": 8,
+            "idempotent_no_progress": 5,
+        },
     },
 
     "compression": {
@@ -756,6 +775,14 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        # Auto-delete system-notice replies (e.g. "✨ New session started!",
+        # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
+        # that support message deletion (currently Telegram; other platforms
+        # ignore and leave the message in place).  Only affects slash-command
+        # replies wrapped with gateway.platforms.base.EphemeralReply — agent
+        # responses and content messages are never touched.  Default 0
+        # (disabled) preserves prior behavior.
+        "ephemeral_system_ttl": 0,
         "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders
@@ -925,7 +952,23 @@ DEFAULT_CONFIG = {
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
-    
+
+    # Goals — persistent cross-turn goals (Ralph-style loop).
+    # After every turn, a lightweight judge call asks the auxiliary model
+    # whether the active /goal is satisfied by the assistant's last
+    # response. If not, Hermes feeds a continuation prompt back into the
+    # same session and keeps working until the goal is done, the turn
+    # budget is exhausted, or the user pauses/clears it. Judge failures
+    # fail OPEN (continue) so a flaky judge never wedges progress — the
+    # turn budget is the real backstop.
+    "goals": {
+        # Max continuation turns before Hermes auto-pauses the goal and
+        # asks the user to /goal resume. Protects against judge false
+        # negatives (goal actually done but judge says continue) and
+        # unbounded model spend on fuzzy / unachievable goals.
+        "max_turns": 20,
+    },
+
     # Skills — external skill directories for sharing skills across tools/agents.
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.
@@ -2418,7 +2461,17 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
     except Exception:
         return []
 
-    all_vars = discover_all_skill_config_vars()
+    try:
+        all_vars = discover_all_skill_config_vars()
+    except Exception as e:
+        # A malformed SKILL.md, unreadable external skill dir, or similar
+        # should never break `hermes update`.  Skill-config prompting is a
+        # post-migration nicety, not a blocker.
+        import logging
+        logging.getLogger(__name__).debug(
+            "discover_all_skill_config_vars failed: %s", e
+        )
+        return []
     if not all_vars:
         return []
 

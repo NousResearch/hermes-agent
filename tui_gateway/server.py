@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
+from utils import is_truthy_value
 from tui_gateway.transport import (
     StdioTransport,
     Transport,
@@ -125,9 +126,11 @@ _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _cfg_path = None
-_SLASH_WORKER_TIMEOUT_S = max(
-    5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45)
-)
+try:
+    _slash_timeout = float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S") or "45")
+except (ValueError, TypeError):
+    _slash_timeout = 45.0
+_SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
@@ -153,8 +156,12 @@ _LONG_HANDLERS = frozenset(
     }
 )
 
+try:
+    _rpc_pool_workers = max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS") or "4"))
+except (ValueError, TypeError):
+    _rpc_pool_workers = 4
 _pool = concurrent.futures.ThreadPoolExecutor(
-    max_workers=max(2, int(os.environ.get("HERMES_TUI_RPC_POOL_WORKERS", "4") or 4)),
+    max_workers=_rpc_pool_workers,
     thread_name_prefix="tui-rpc",
 )
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
@@ -417,11 +424,35 @@ def method(name: str):
     return dec
 
 
+def _normalize_request(req: Any) -> tuple[Any, str, dict] | dict:
+    """Validate a JSON-RPC request enough for safe local dispatch."""
+    if not isinstance(req, dict):
+        return _err(None, -32600, "invalid request: expected an object")
+
+    rid = req.get("id")
+    method = req.get("method")
+    if not isinstance(method, str) or not method:
+        return _err(rid, -32600, "invalid request: method must be a non-empty string")
+
+    params = req.get("params", {})
+    if params is None:
+        params = {}
+    elif not isinstance(params, dict):
+        return _err(rid, -32602, "invalid params: expected an object")
+
+    return rid, method, params
+
+
 def handle_request(req: dict) -> dict | None:
-    fn = _methods.get(req.get("method", ""))
+    normalized = _normalize_request(req)
+    if isinstance(normalized, dict):
+        return normalized
+
+    rid, method, params = normalized
+    fn = _methods.get(method)
     if not fn:
-        return _err(req.get("id"), -32601, f"unknown method: {req.get('method')}")
-    return fn(req.get("id"), req.get("params", {}))
+        return _err(rid, -32601, f"unknown method: {method}")
+    return fn(rid, params)
 
 
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
@@ -439,7 +470,12 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     t = transport or _stdio_transport
     token = bind_transport(t)
     try:
-        if req.get("method") not in _LONG_HANDLERS:
+        normalized = _normalize_request(req)
+        if isinstance(normalized, dict):
+            return normalized
+
+        _rid, method, _params = normalized
+        if method not in _LONG_HANDLERS:
             return handle_request(req)
 
         # Snapshot the context so the pool worker sees the bound transport.
@@ -1108,7 +1144,7 @@ def _compress_session_history(
     before_messages: list | None = None,
     history_version: int | None = None,
 ) -> tuple[int, dict]:
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from agent.model_metadata import estimate_request_tokens_rough
 
     agent = session["agent"]
     # Snapshot history under the lock so the LLM-bound compression call
@@ -1124,7 +1160,13 @@ def _compress_session_history(
         usage = _get_usage(agent)
         return 0, usage
     if approx_tokens is None:
-        approx_tokens = estimate_messages_tokens_rough(history)
+        # Include system prompt + tool schemas so the figure reflects real
+        # request pressure, not a transcript-only underestimate (#6217).
+        _sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+        _tools = getattr(agent, "tools", None) or None
+        approx_tokens = estimate_request_tokens_rough(
+            history, system_prompt=_sys_prompt, tools=_tools
+        )
     # Pass system_message=None so AIAgent._compress_context rebuilds the
     # system prompt cleanly via _build_system_prompt(None). Passing the
     # cached prompt (which already contains the agent identity block)
@@ -2292,14 +2334,21 @@ def _(rid, params: dict) -> dict:
     focus_topic = str(params.get("focus_topic", "") or "").strip()
     try:
         from agent.manual_compression_feedback import summarize_manual_compression
-        from agent.model_metadata import estimate_messages_tokens_rough
+        from agent.model_metadata import estimate_request_tokens_rough
 
         with session["history_lock"]:
             before_messages = list(session.get("history", []))
             history_version = int(session.get("history_version", 0))
         before_count = len(before_messages)
+        _agent = session["agent"]
+        _sys_prompt = getattr(_agent, "_cached_system_prompt", "") or ""
+        _tools = getattr(_agent, "tools", None) or None
         before_tokens = (
-            estimate_messages_tokens_rough(before_messages) if before_count else 0
+            estimate_request_tokens_rough(
+                before_messages, system_prompt=_sys_prompt, tools=_tools
+            )
+            if before_count
+            else 0
         )
 
         if before_count >= 4:
@@ -2322,8 +2371,18 @@ def _(rid, params: dict) -> dict:
             with session["history_lock"]:
                 messages = list(session.get("history", []))
             after_count = len(messages)
+            # Re-read system prompt + tools after compression — _compress_context
+            # may have rebuilt the system prompt (_cached_system_prompt=None).
+            _sys_prompt_after = getattr(_agent, "_cached_system_prompt", "") or _sys_prompt
+            _tools_after = getattr(_agent, "tools", None) or _tools
             after_tokens = (
-                estimate_messages_tokens_rough(messages) if after_count else 0
+                estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=_sys_prompt_after,
+                    tools=_tools_after,
+                )
+                if after_count
+                else 0
             )
             agent = session["agent"]
             _sync_session_key_after_compress(sid, session)
@@ -3386,7 +3445,7 @@ def _(rid, params: dict) -> dict:
                     enable_session_yolo(session["session_key"])
                     nv = "1"
             else:
-                current = bool(os.environ.get("HERMES_YOLO_MODE"))
+                current = is_truthy_value(os.environ.get("HERMES_YOLO_MODE"))
                 if current:
                     os.environ.pop("HERMES_YOLO_MODE", None)
                     nv = "0"
@@ -4086,11 +4145,15 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"type": "alias", "target": qc.get("target", "")})
 
     try:
-        from hermes_cli.plugins import get_plugin_command_handler
+        from hermes_cli.plugins import (
+            get_plugin_command_handler,
+            resolve_plugin_command_result,
+        )
 
         handler = get_plugin_command_handler(name)
         if handler:
-            return _ok(rid, {"type": "plugin", "output": str(handler(arg) or "")})
+            result = resolve_plugin_command_result(handler(arg))
+            return _ok(rid, {"type": "plugin", "output": str(result or "")})
     except Exception:
         pass
 

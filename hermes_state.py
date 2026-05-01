@@ -933,6 +933,7 @@ class SessionDB:
         offset: int = 0,
         include_children: bool = False,
         project_compression_tips: bool = True,
+        order_by_last_active: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -952,6 +953,14 @@ class SessionDB:
         compressed continuations from being invisible to users while keeping
         delegate subagents and branches hidden. Pass ``False`` to return the
         raw root rows (useful for admin/debug UIs).
+
+        Pass ``order_by_last_active=True`` to sort by most-recent activity
+        instead of original conversation start time. For compression chains,
+        the "most-recent activity" is taken from the live tip (not the root),
+        so an old conversation that was compressed and continued recently
+        surfaces in the correct slot. Ordering is computed at SQL level via
+        a recursive CTE that walks compression-continuation edges, so LIMIT
+        and OFFSET still apply efficiently.
         """
         where_clauses = []
         params = []
@@ -979,25 +988,80 @@ class SessionDB:
             params.extend(exclude_sources)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        query = f"""
-            SELECT s.*,
-                COALESCE(
-                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
-                     FROM messages m
-                     WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                     ORDER BY m.timestamp, m.id LIMIT 1),
-                    ''
-                ) AS _preview_raw,
-                COALESCE(
-                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
-                    s.started_at
-                ) AS last_active
-            FROM sessions s
-            {where_sql}
-            ORDER BY s.started_at DESC
-            LIMIT ? OFFSET ?
-        """
-        params.extend([limit, offset])
+        if order_by_last_active:
+            # Compute effective_last_active by walking each surfaced session's
+            # compression-continuation chain forward in SQL and taking the MAX
+            # timestamp across the chain. This lets us ORDER BY + LIMIT at SQL
+            # level instead of fetching every row and sorting in Python, while
+            # still surfacing old compression roots whose live tip is fresh.
+            #
+            # The CTE seeds from rows the outer WHERE admits (roots + branch
+            # children), then recursively joins forward through
+            # compression-continuation edges using the same criteria as
+            # get_compression_tip (parent.end_reason='compression' AND
+            # child.started_at >= parent.ended_at).
+            query = f"""
+                WITH RECURSIVE chain(root_id, cur_id) AS (
+                    SELECT s.id, s.id FROM sessions s {where_sql}
+                    UNION ALL
+                    SELECT c.root_id, child.id
+                    FROM chain c
+                    JOIN sessions parent ON parent.id = c.cur_id
+                    JOIN sessions child ON child.parent_session_id = c.cur_id
+                    WHERE parent.end_reason = 'compression'
+                      AND child.started_at >= parent.ended_at
+                ),
+                chain_max AS (
+                    SELECT
+                        root_id,
+                        MAX(COALESCE(
+                            (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = cur_id),
+                            (SELECT started_at FROM sessions ss WHERE ss.id = cur_id)
+                        )) AS effective_last_active
+                    FROM chain
+                    GROUP BY root_id
+                )
+                SELECT s.*,
+                    COALESCE(
+                        (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                         FROM messages m
+                         WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                         ORDER BY m.timestamp, m.id LIMIT 1),
+                        ''
+                    ) AS _preview_raw,
+                    COALESCE(
+                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                        s.started_at
+                    ) AS last_active,
+                    COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
+                FROM sessions s
+                LEFT JOIN chain_max cm ON cm.root_id = s.id
+                {where_sql}
+                ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
+                LIMIT ? OFFSET ?
+            """
+            # WHERE params apply twice (CTE seed + outer select).
+            params = params + params + [limit, offset]
+        else:
+            query = f"""
+                SELECT s.*,
+                    COALESCE(
+                        (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                         FROM messages m
+                         WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                         ORDER BY m.timestamp, m.id LIMIT 1),
+                        ''
+                    ) AS _preview_raw,
+                    COALESCE(
+                        (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                        s.started_at
+                    ) AS last_active
+                FROM sessions s
+                {where_sql}
+                ORDER BY s.started_at DESC
+                LIMIT ? OFFSET ?
+            """
+            params.extend([limit, offset])
         with self._lock:
             cursor = self._conn.execute(query, params)
             rows = cursor.fetchall()
@@ -1011,6 +1075,8 @@ class SessionDB:
                 s["preview"] = text + ("..." if len(raw) > 60 else "")
             else:
                 s["preview"] = ""
+            # Drop the internal ordering column so callers see a clean dict.
+            s.pop("_effective_last_active", None)
             sessions.append(s)
 
         # Project compression roots forward to their tips. Each row whose
@@ -1088,6 +1154,48 @@ class SessionDB:
     # Message storage
     # =========================================================================
 
+    # Sentinel prefix used to distinguish JSON-encoded structured content
+    # (multimodal messages: lists of parts like text + image_url) from plain
+    # string content. The NUL byte is not legal in normal text, so this
+    # cannot collide with real user content.
+    _CONTENT_JSON_PREFIX = "\x00json:"
+
+    @classmethod
+    def _encode_content(cls, content: Any) -> Any:
+        """Serialize structured (list/dict) message content for sqlite.
+
+        sqlite3 can only bind ``str``, ``bytes``, ``int``, ``float``, and ``None``
+        to query parameters. Multimodal messages have ``content`` as a list of
+        parts (``[{"type": "text", ...}, {"type": "image_url", ...}]``), which
+        raises ``ProgrammingError: Error binding parameter N: type 'list' is
+        not supported`` when bound directly.
+
+        Returns the value unchanged when it's already a safe scalar, or a
+        sentinel-prefixed JSON string for lists/dicts. Paired with
+        :meth:`_decode_content` on read.
+        """
+        if content is None or isinstance(content, (str, bytes, int, float)):
+            return content
+        try:
+            return cls._CONTENT_JSON_PREFIX + json.dumps(content)
+        except (TypeError, ValueError):
+            # Last-resort fallback: stringify so persistence never fails.
+            return str(content)
+
+    @classmethod
+    def _decode_content(cls, content: Any) -> Any:
+        """Reverse :meth:`_encode_content`; returns scalars unchanged."""
+        if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
+            try:
+                return json.loads(content[len(cls._CONTENT_JSON_PREFIX):])
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    "Failed to decode JSON-encoded message content; "
+                    "returning raw string"
+                )
+                return content
+        return content
+
     def append_message(
         self,
         session_id: str,
@@ -1124,6 +1232,9 @@ class SessionDB:
             if codex_message_items else None
         )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        # Multimodal content (list of parts) must be JSON-encoded: sqlite3
+        # cannot bind list/dict parameters directly.
+        stored_content = self._encode_content(content)
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -1140,7 +1251,7 @@ class SessionDB:
                 (
                     session_id,
                     role,
-                    content,
+                    stored_content,
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
@@ -1223,7 +1334,7 @@ class SessionDB:
                     (
                         session_id,
                         role,
-                        msg.get("content"),
+                        self._encode_content(msg.get("content")),
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
@@ -1262,6 +1373,8 @@ class SessionDB:
         result = []
         for row in rows:
             msg = dict(row)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
             if msg.get("tool_calls"):
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
@@ -1351,15 +1464,15 @@ class SessionDB:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
-                "reasoning, reasoning_content, reasoning_details, codex_reasoning_items, "
-                "codex_message_items "
+                "finish_reason, reasoning, reasoning_content, reasoning_details, "
+                "codex_reasoning_items, codex_message_items "
                 f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
                 tuple(session_ids),
             ).fetchall()
 
         messages = []
         for row in rows:
-            content = row["content"]
+            content = self._decode_content(row["content"])
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
@@ -1377,6 +1490,8 @@ class SessionDB:
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
             if row["role"] == "assistant":
+                if row["finish_reason"]:
+                    msg["finish_reason"] = row["finish_reason"]
                 if row["reasoning"]:
                     msg["reasoning"] = row["reasoning"]
                 if row["reasoning_content"] is not None:
@@ -1744,10 +1859,26 @@ class SessionDB:
                            )""",
                         (match["id"], match["id"]),
                     )
-                    context_msgs = [
-                        {"role": r["role"], "content": (r["content"] or "")[:200]}
-                        for r in ctx_cursor.fetchall()
-                    ]
+                    context_msgs = []
+                    for r in ctx_cursor.fetchall():
+                        raw = r["content"]
+                        decoded = self._decode_content(raw)
+                        # Multimodal context: render a compact text-only
+                        # summary for search previews.
+                        if isinstance(decoded, list):
+                            text_parts = [
+                                p.get("text", "") for p in decoded
+                                if isinstance(p, dict) and p.get("type") == "text"
+                            ]
+                            text = " ".join(t for t in text_parts if t).strip()
+                            preview = text or "[multimodal content]"
+                        elif isinstance(decoded, str):
+                            preview = decoded
+                        else:
+                            preview = ""
+                        context_msgs.append(
+                            {"role": r["role"], "content": preview[:200]}
+                        )
                 match["context"] = context_msgs
             except Exception:
                 match["context"] = []

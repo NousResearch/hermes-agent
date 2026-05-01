@@ -35,10 +35,18 @@ import time
 from pathlib import Path
 from typing import Any
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
+try:
+    from hermes_constants import get_hermes_home
+except ImportError:
+    def get_hermes_home() -> Path:  # type: ignore[misc]
+        val = (os.environ.get("HERMES_HOME") or "").strip()
+        return Path(val) if val else Path.home() / ".hermes"
 
 DEFAULT_TUI_DIR = Path(os.environ.get("HERMES_TUI_DIR", "/home/bb/hermes-agent/ui-tui"))
-DEFAULT_LOG = Path(os.environ.get("HERMES_PERF_LOG", str(Path.home() / ".hermes" / "perf.log")))
-DEFAULT_STATE_DB = Path.home() / ".hermes" / "state.db"
+DEFAULT_LOG = Path(os.environ.get("HERMES_PERF_LOG", str(get_hermes_home() / "perf.log")))
+DEFAULT_STATE_DB = get_hermes_home() / "state.db"
 
 # Keystroke escape sequences.  Matches what xterm/VT220 send when the
 # terminal has bracketed-paste disabled and the key-repeat handler fires.

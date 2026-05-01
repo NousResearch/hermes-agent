@@ -962,6 +962,11 @@ class TestNewEndpoints:
         assert isinstance(data["daily"], list)
         assert "total_sessions" in data["totals"]
         assert "total_api_calls" in data["totals"]
+        assert data["totals"]["total_input"] == 0
+        assert data["totals"]["total_output"] == 0
+        assert data["totals"]["total_cache_read"] == 0
+        assert data["totals"]["total_reasoning"] == 0
+        assert data["totals"]["total_api_calls"] == 0
         assert data["skills"] == {
             "summary": {
                 "total_skill_loads": 0,
@@ -970,6 +975,23 @@ class TestNewEndpoints:
                 "distinct_skills_used": 0,
             },
             "top_skills": [],
+        }
+
+    def test_analytics_models_empty_totals_are_numeric(self):
+        resp = self.client.get("/api/analytics/models?days=7")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["models"] == []
+        assert data["totals"] == {
+            "distinct_models": 0,
+            "total_input": 0,
+            "total_output": 0,
+            "total_cache_read": 0,
+            "total_reasoning": 0,
+            "total_estimated_cost": 0,
+            "total_actual_cost": 0,
+            "total_sessions": 0,
+            "total_api_calls": 0,
         }
 
     def test_analytics_usage_includes_skill_breakdown(self):

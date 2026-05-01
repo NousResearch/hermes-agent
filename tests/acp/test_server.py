@@ -730,6 +730,7 @@ class TestSlashCommands:
         ]
         state.agent.compression_enabled = True
         state.agent._cached_system_prompt = "system"
+        state.agent.tools = None
         original_session_db = object()
         state.agent._session_db = original_session_db
 
@@ -746,7 +747,7 @@ class TestSlashCommands:
         with (
             patch.object(agent.session_manager, "save_session") as mock_save,
             patch(
-                "agent.model_metadata.estimate_messages_tokens_rough",
+                "agent.model_metadata.estimate_request_tokens_rough",
                 side_effect=[40, 12],
             ),
         ):

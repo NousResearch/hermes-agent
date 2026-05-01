@@ -9101,9 +9101,14 @@ class AIAgent:
 
         # Update token estimate after compaction so pressure calculations
         # use the post-compression count, not the stale pre-compression one.
-        _compressed_est = (
-            estimate_tokens_rough(new_system_prompt)
-            + estimate_messages_tokens_rough(compressed)
+        # Use estimate_request_tokens_rough() so tool schemas are included —
+        # with 50+ tools enabled, schemas alone can add 20-30K tokens, and
+        # omitting them delays the next compression cycle far past the
+        # configured threshold (issue #14695).
+        _compressed_est = estimate_request_tokens_rough(
+            compressed,
+            system_prompt=new_system_prompt or "",
+            tools=self.tools or None,
         )
         self.context_compressor.last_prompt_tokens = _compressed_est
         self.context_compressor.last_completion_tokens = 0
@@ -13223,7 +13228,13 @@ class AIAgent:
                         # causing premature compression.  (#12026)
                         _real_tokens = _compressor.last_prompt_tokens
                     else:
-                        _real_tokens = estimate_messages_tokens_rough(messages)
+                        # Include tool schemas — with 50+ tools enabled
+                        # these add 20-30K tokens the messages-only
+                        # estimate misses, which can skip compression
+                        # past the configured threshold (#14695).
+                        _real_tokens = estimate_request_tokens_rough(
+                            messages, tools=self.tools or None
+                        )
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
                         self._safe_print("  ⟳ compacting context…")

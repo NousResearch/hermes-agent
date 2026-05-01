@@ -1068,10 +1068,16 @@ class HermesACPAgent(acp.Agent):
             if not hasattr(agent, "_compress_context"):
                 return "Context compression not available for this agent."
 
-            from agent.model_metadata import estimate_messages_tokens_rough
+            from agent.model_metadata import estimate_request_tokens_rough
 
             original_count = len(state.history)
-            approx_tokens = estimate_messages_tokens_rough(state.history)
+            # Include system prompt + tool schemas so the figure reflects real
+            # request pressure, not a transcript-only underestimate (#6217).
+            _sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+            _tools = getattr(agent, "tools", None) or None
+            approx_tokens = estimate_request_tokens_rough(
+                state.history, system_prompt=_sys_prompt, tools=_tools
+            )
             original_session_db = getattr(agent, "_session_db", None)
 
             try:
@@ -1091,7 +1097,13 @@ class HermesACPAgent(acp.Agent):
             self.session_manager.save_session(state.session_id)
 
             new_count = len(state.history)
-            new_tokens = estimate_messages_tokens_rough(state.history)
+            _sys_prompt_after = getattr(agent, "_cached_system_prompt", "") or _sys_prompt
+            _tools_after = getattr(agent, "tools", None) or _tools
+            new_tokens = estimate_request_tokens_rough(
+                state.history,
+                system_prompt=_sys_prompt_after,
+                tools=_tools_after,
+            )
             return (
                 f"Context compressed: {original_count} -> {new_count} messages\n"
                 f"~{approx_tokens:,} -> ~{new_tokens:,} tokens"

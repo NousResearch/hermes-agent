@@ -8512,7 +8512,7 @@ class GatewayRunner:
         try:
             from run_agent import AIAgent
             from agent.manual_compression_feedback import summarize_manual_compression
-            from agent.model_metadata import estimate_messages_tokens_rough
+            from agent.model_metadata import estimate_request_tokens_rough
 
             session_key = self._session_key_for_source(source)
             model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -8527,7 +8527,6 @@ class GatewayRunner:
                 for m in history
                 if m.get("role") in ("user", "assistant") and m.get("content")
             ]
-            approx_tokens = estimate_messages_tokens_rough(msgs)
 
             tmp_agent = AIAgent(
                 **runtime_kwargs,
@@ -8540,6 +8539,16 @@ class GatewayRunner:
             )
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
+
+                # Estimate with system prompt + tool schemas included so the
+                # figure reflects real request pressure, not a transcript-only
+                # underestimate (#6217). Must be computed after tmp_agent is
+                # built so _cached_system_prompt/tools are populated.
+                _sys_prompt = getattr(tmp_agent, "_cached_system_prompt", "") or ""
+                _tools = getattr(tmp_agent, "tools", None) or None
+                approx_tokens = estimate_request_tokens_rough(
+                    msgs, system_prompt=_sys_prompt, tools=_tools
+                )
 
                 compressor = tmp_agent.context_compressor
                 if not compressor.has_content_to_compress(msgs):
@@ -8565,7 +8574,9 @@ class GatewayRunner:
                 self.session_store.update_session(
                     session_entry.session_key, last_prompt_tokens=0
                 )
-                new_tokens = estimate_messages_tokens_rough(compressed)
+                new_tokens = estimate_request_tokens_rough(
+                    compressed, system_prompt=_sys_prompt, tools=_tools
+                )
                 summary = summarize_manual_compression(
                     msgs,
                     compressed,

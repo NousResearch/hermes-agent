@@ -5091,11 +5091,10 @@ class GatewayRunner:
         message_text = event.text or ""
         _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
         _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
-        session_key = build_session_key(
-            source,
-            group_sessions_per_user=_group_sessions_per_user,
-            thread_sessions_per_user=_thread_sessions_per_user,
-        )
+        # Use the same helper every other call site uses so the write key here
+        # matches the consume key at the run_conversation site — even if the
+        # session store overrides build_session_key's default behavior.
+        session_key = self._session_key_for_source(source)
         # Reset only this session's per-call buffer; other sessions may be
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)

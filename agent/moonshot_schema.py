@@ -90,14 +90,20 @@ def _repair_schema(node: Any, is_schema: bool = True) -> Any:
                     if isinstance(b, dict) and b.get("type") != "null"]
         if non_null and len(non_null) < len(repaired["anyOf"]):
             # Drop the anyOf wrapper — keep only the non-null branch.
-            # If there's a single non-null branch, promote it.
+            # If there's a single non-null branch, promote it and fall
+            # through to Rules 1/3 so nullable/enum cleanup still applies
+            # to the merged node.
             if len(non_null) == 1:
                 merge = {k: v for k, v in repaired.items() if k != "anyOf"}
                 merge.update(non_null[0])
                 repaired = merge
             else:
                 repaired["anyOf"] = non_null
-        return repaired
+                return repaired
+        else:
+            # Nothing to collapse — parent type stripped, children already
+            # repaired by the recursive walk above.
+            return repaired
 
     # Moonshot also rejects non-standard keywords like ``nullable`` on
     # parameter schemas — strip it.

@@ -8,7 +8,7 @@ boto3 calls stay on AIAgent.
 
 from typing import Any, Dict, List, Optional
 
-from agent.transports.base import ProviderTransport
+from agent.transports.base import ProviderTransport, dedupe_openai_tool_definitions_for_api
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
@@ -51,6 +51,7 @@ class BedrockTransport(ProviderTransport):
         region = params.get("region", "us-east-1")
         guardrail = params.get("guardrail_config")
 
+        tools = dedupe_openai_tool_definitions_for_api(tools)
         kwargs = build_converse_kwargs(
             model=model,
             messages=messages,

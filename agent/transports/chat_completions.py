@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
-from agent.transports.base import ProviderTransport
+from agent.transports.base import ProviderTransport, dedupe_openai_tool_definitions_for_api
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
@@ -257,6 +257,7 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # Tools
         if tools:
+            tools = dedupe_openai_tool_definitions_for_api(tools)
             # Moonshot/Kimi uses a stricter flavored JSON Schema.  Rewriting
             # tool parameters here keeps aggregator routes (Nous, OpenRouter,
             # etc.) compatible, in addition to direct moonshot.ai endpoints.

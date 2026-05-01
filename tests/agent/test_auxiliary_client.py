@@ -1116,6 +1116,26 @@ class TestKimiTemperatureOmitted:
         assert "temperature" not in kwargs
 
 
+class TestAuxiliaryChatCompletionsToolDedup:
+    """Duplicate tool names must not reach strict OpenAI-compatible APIs (#18478)."""
+
+    def test_build_call_kwargs_dedupes_tool_names(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        tools = [
+            {"type": "function", "function": {"name": "x", "description": "a", "parameters": {}}},
+            {"type": "function", "function": {"name": "x", "description": "b", "parameters": {}}},
+        ]
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=tools,
+        )
+        assert len(kwargs["tools"]) == 1
+        assert kwargs["tools"][0]["function"]["description"] == "a"
+
+
 # ---------------------------------------------------------------------------
 # async_call_llm payment / connection fallback (#7512 bug 2)
 # ---------------------------------------------------------------------------

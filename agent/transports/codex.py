@@ -60,6 +60,7 @@ class ResponsesApiTransport(ProviderTransport):
             _chat_messages_to_responses_input,
             _responses_tools,
         )
+        from agent.transports.base import dedupe_openai_tool_definitions_for_api
 
         from run_agent import DEFAULT_AGENT_IDENTITY
 
@@ -93,7 +94,7 @@ class ResponsesApiTransport(ProviderTransport):
             "model": model,
             "instructions": instructions,
             "input": _chat_messages_to_responses_input(payload_messages),
-            "tools": _responses_tools(tools),
+            "tools": _responses_tools(dedupe_openai_tool_definitions_for_api(tools)),
             "tool_choice": "auto",
             "parallel_tool_calls": True,
             "store": False,

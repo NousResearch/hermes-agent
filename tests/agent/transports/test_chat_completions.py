@@ -72,6 +72,24 @@ class TestChatCompletionsBuildKwargs:
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
         assert kw["tools"] == tools
 
+    def test_tools_duplicate_names_keep_first(self, transport):
+        """Strict chat-completions providers reject duplicate function names (see #18478)."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        first = {
+            "type": "function",
+            "function": {"name": "dup", "description": "first", "parameters": {}},
+        }
+        second = {
+            "type": "function",
+            "function": {"name": "dup", "description": "second", "parameters": {}},
+        }
+        other = {"type": "function", "function": {"name": "ok", "parameters": {}}}
+        tools = [first, second, other]
+        kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
+        assert len(kw["tools"]) == 2
+        assert kw["tools"][0]["function"]["description"] == "first"
+        assert kw["tools"][1]["function"]["name"] == "ok"
+
     def test_openrouter_provider_prefs(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

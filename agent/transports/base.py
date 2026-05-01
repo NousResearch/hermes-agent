@@ -7,10 +7,56 @@ It does NOT own: client construction, streaming, credential refresh,
 prompt caching, interrupt handling, or retry logic.  Those stay on AIAgent.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 from agent.transports.types import NormalizedResponse
+
+_LOG = logging.getLogger(__name__)
+
+
+def dedupe_openai_tool_definitions_for_api(
+    tools: Optional[List[Dict[str, Any]]],
+) -> Optional[List[Dict[str, Any]]]:
+    """Keep the first OpenAI-format tool for each ``function.name``.
+
+    Several providers (Anthropic, Vertex, Bedrock, Azure, strict OpenAI-compat
+    routes) reject duplicate tool names with HTTP 400.
+    """
+    if not tools:
+        return tools
+
+    seen: set[str] = set()
+    out: List[Dict[str, Any]] = []
+    dupes = 0
+    for item in tools:
+        if not isinstance(item, dict):
+            out.append(item)
+            continue
+        fn = item.get("function")
+        name = ""
+        if isinstance(fn, dict):
+            raw = fn.get("name")
+            if isinstance(raw, str):
+                name = raw
+        key = name if name else f"__noname_{id(item)}__"
+        if key.startswith("__noname_"):
+            out.append(item)
+            continue
+        if name in seen:
+            dupes += 1
+            continue
+        seen.add(name)
+        out.append(item)
+
+    if dupes:
+        _LOG.debug(
+            "Removed %d duplicate tool definition(s) before API request "
+            "(strict providers require unique function names)",
+            dupes,
+        )
+    return tools if len(out) == len(tools) else out
 
 
 class ProviderTransport(ABC):

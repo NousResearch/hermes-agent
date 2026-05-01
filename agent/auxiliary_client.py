@@ -526,6 +526,9 @@ class _CodexCompletionsAdapter:
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")
         if tools:
+            from agent.transports.base import dedupe_openai_tool_definitions_for_api
+
+            tools = dedupe_openai_tool_definitions_for_api(tools)
             converted = []
             for t in tools:
                 fn = t.get("function", {}) if isinstance(t, dict) else {}
@@ -3237,7 +3240,9 @@ def _build_call_kwargs(
             kwargs["max_tokens"] = max_tokens
 
     if tools:
-        kwargs["tools"] = tools
+        from agent.transports.base import dedupe_openai_tool_definitions_for_api
+
+        kwargs["tools"] = dedupe_openai_tool_definitions_for_api(tools)
 
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})

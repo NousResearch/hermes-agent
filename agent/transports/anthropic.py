@@ -6,7 +6,7 @@ This transport owns format conversion and normalization — NOT client lifecycle
 
 from typing import Any, Dict, List, Optional
 
-from agent.transports.base import ProviderTransport
+from agent.transports.base import ProviderTransport, dedupe_openai_tool_definitions_for_api
 from agent.transports.types import NormalizedResponse
 
 
@@ -62,6 +62,7 @@ class AnthropicTransport(ProviderTransport):
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
+        tools = dedupe_openai_tool_definitions_for_api(tools)
         return build_anthropic_kwargs(
             model=model,
             messages=messages,

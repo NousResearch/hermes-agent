@@ -100,6 +100,26 @@ async def test_acp_steer_after_zed_interrupt_replays_interrupted_prompt_with_gui
 
 
 @pytest.mark.asyncio
+async def test_acp_steer_on_idle_session_runs_as_regular_prompt():
+    # /steer on an idle session (no running turn, nothing to salvage) should
+    # run the steer payload as a normal user prompt — NOT silently append it
+    # to state.queued_prompts. Without this, users on Zed / other ACP clients
+    # see their /steer turn into "queued for the next turn" when they never
+    # typed /queue. Matches gateway/run.py ~L4898 idle-/steer behavior.
+    acp_agent, state, fake, _conn = make_agent_and_state()
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="/steer summarize the README")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    assert fake.steers == []
+    assert fake.runs == ["summarize the README"]
+    assert state.queued_prompts == []
+
+
+@pytest.mark.asyncio
 async def test_acp_queue_slash_command_adds_next_turn_without_running_now():
     acp_agent, state, fake, _conn = make_agent_and_state()
 

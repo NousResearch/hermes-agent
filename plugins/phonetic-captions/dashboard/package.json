@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "name": "phonetic-captions-dashboard",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "lucide-react": "^0.468.0",
+    "typescript": "^5.7.0",
+    "@types/react": "^19.0.0"
+  }
+}

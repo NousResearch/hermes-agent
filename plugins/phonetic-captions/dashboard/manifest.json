@@ -1,0 +1,13 @@
+{
+  "name": "phonetic-captions",
+  "label": "Captions",
+  "description": "Bilingual EN/VI phonetic caption editor for teaching videos",
+  "icon": "FileText",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/captions",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

@@ -18,7 +18,7 @@ All three systems are non-blocking — errors in any hook are caught and logged,
 
 ## Gateway Event Hooks
 
-Gateway hooks fire automatically during gateway operation (Telegram, Discord, Slack, WhatsApp) without blocking the main agent pipeline.
+Gateway hooks fire automatically during gateway operation (Telegram, Discord, Slack, WhatsApp, Teams) without blocking the main agent pipeline.
 
 ### Creating a Hook
 
@@ -346,7 +346,7 @@ An earlier version of Hermes shipped this as a built-in hook and silently spawne
 5. Errors in any handler are caught and logged — a broken hook never crashes the agent
 
 :::info
-Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp). The CLI does not load gateway hooks. For hooks that work everywhere, use [plugin hooks](#plugin-hooks).
+Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp, Teams). The CLI does not load gateway hooks. For hooks that work everywhere, use [plugin hooks](#plugin-hooks).
 :::
 
 ## Plugin Hooks

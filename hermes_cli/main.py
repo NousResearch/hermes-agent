@@ -6673,6 +6673,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if gateway_mode
         else None
     )
+    assume_yes = bool(getattr(args, "yes", False))
 
     print("⚕ Updating Hermes Agent...")
     print()
@@ -6792,8 +6793,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
-        prompt_for_restore = auto_stash_ref is not None and (
-            gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())
+        prompt_for_restore = (
+            auto_stash_ref is not None
+            and not assume_yes
+            and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
         )
 
         # Check if there are updates
@@ -7054,7 +7057,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(f"  ℹ️  {len(missing_config)} new config option(s) available")
 
             print()
-            if gateway_mode:
+            if assume_yes:
+                print("  ℹ --yes: auto-applying config migration (skipping API-key prompts).")
+                response = "y"
+            elif gateway_mode:
                 response = (
                     _gateway_prompt(
                         "Would you like to configure new options now? [Y/n]", "n"
@@ -7080,14 +7086,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             if response in ("", "y", "yes"):
                 print()
-                # In gateway mode, run auto-migrations only (no input() prompts
-                # for API keys which would hang the detached process).
-                results = migrate_config(interactive=not gateway_mode, quiet=False)
+                # In gateway mode OR under --yes, run auto-migrations only (no
+                # input() prompts for API keys which would hang the detached
+                # process / defeat the point of --yes).
+                results = migrate_config(
+                    interactive=not (gateway_mode or assume_yes), quiet=False
+                )
 
                 if results["env_added"] or results["config_added"]:
                     print()
                     print("✓ Configuration updated!")
-                if gateway_mode and missing_env:
+                if (gateway_mode or assume_yes) and missing_env:
                     print("  ℹ API keys require manual entry: hermes config migrate")
             else:
                 print()
@@ -9892,6 +9901,13 @@ Examples:
         action="store_true",
         default=False,
         help="Force a pre-update backup for this run (off by default; overrides updates.pre_update_backup)",
+    )
+    update_parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        default=False,
+        help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
     )
     update_parser.set_defaults(func=cmd_update)
 

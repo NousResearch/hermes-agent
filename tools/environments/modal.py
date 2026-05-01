@@ -20,6 +20,7 @@ from tools.environments.base import (
     _ThreadedProcessHandle,
     _load_json_store,
     _save_json_store,
+    _update_json_store,
 )
 from tools.environments.file_sync import (
     FileSyncManager,
@@ -60,24 +61,30 @@ def _get_snapshot_restore_candidate(task_id: str) -> tuple[str | None, bool]:
 
 
 def _store_direct_snapshot(task_id: str, snapshot_id: str) -> None:
-    snapshots = _load_snapshots()
-    snapshots[_direct_snapshot_key(task_id)] = snapshot_id
-    snapshots.pop(task_id, None)
-    _save_snapshots(snapshots)
+    key = _direct_snapshot_key(task_id)
+
+    def _mutate(snapshots: dict) -> bool:
+        changed = snapshots.get(key) != snapshot_id or task_id in snapshots
+        snapshots[key] = snapshot_id
+        snapshots.pop(task_id, None)
+        return changed
+
+    _update_json_store(_SNAPSHOT_STORE, _mutate)
 
 
 def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> None:
-    snapshots = _load_snapshots()
-    updated = False
-    for key in (_direct_snapshot_key(task_id), task_id):
-        value = snapshots.get(key)
-        if value is None:
-            continue
-        if snapshot_id is None or value == snapshot_id:
-            snapshots.pop(key, None)
-            updated = True
-    if updated:
-        _save_snapshots(snapshots)
+    def _mutate(snapshots: dict) -> bool:
+        updated = False
+        for key in (_direct_snapshot_key(task_id), task_id):
+            value = snapshots.get(key)
+            if value is None:
+                continue
+            if snapshot_id is None or value == snapshot_id:
+                snapshots.pop(key, None)
+                updated = True
+        return updated
+
+    _update_json_store(_SNAPSHOT_STORE, _mutate)
 
 
 def _resolve_modal_image(image_spec: Any) -> Any:

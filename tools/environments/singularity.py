@@ -20,6 +20,7 @@ from tools.environments.base import (
     _load_json_store,
     _popen_bash,
     _save_json_store,
+    _update_json_store,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,19 @@ def _load_snapshots() -> dict:
 
 def _save_snapshots(data: dict) -> None:
     _save_json_store(_SNAPSHOT_STORE, data)
+
+
+def _store_snapshot(task_id: str, overlay_dir: str) -> None:
+    if not task_id or not overlay_dir:
+        return
+
+    def _mutate(snapshots: dict) -> bool:
+        if snapshots.get(task_id) == overlay_dir:
+            return False
+        snapshots[task_id] = overlay_dir
+        return True
+
+    _update_json_store(_SNAPSHOT_STORE, _mutate)
 
 
 def _get_scratch_dir() -> Path:
@@ -257,6 +271,4 @@ class SingularityEnvironment(BaseEnvironment):
             self._instance_started = False
 
         if self._persistent and self._overlay_dir:
-            snapshots = _load_snapshots()
-            snapshots[self._task_id] = str(self._overlay_dir)
-            _save_snapshots(snapshots)
+            _store_snapshot(self._task_id, str(self._overlay_dir))

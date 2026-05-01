@@ -107,6 +107,13 @@ def _install_modal_test_modules(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, indent=2))
 
+    def _update_json_store(path, update_fn):
+        data = _load_json_store(path)
+        changed = update_fn(data)
+        if changed:
+            _save_json_store(path, data)
+        return changed
+
     def _file_mtime_key(host_path):
         try:
             st = Path(host_path).stat()
@@ -119,6 +126,7 @@ def _install_modal_test_modules(
         _ThreadedProcessHandle=_DummyThreadedProcessHandle,
         _load_json_store=_load_json_store,
         _save_json_store=_save_json_store,
+        _update_json_store=_update_json_store,
         _file_mtime_key=_file_mtime_key,
     )
     sys.modules["tools.interrupt"] = types.SimpleNamespace(is_interrupted=lambda: False)

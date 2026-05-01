@@ -65,6 +65,12 @@ ENTRY_DELIMITER = "\n§\n"
 # ---------------------------------------------------------------------------
 
 _MEMORY_THREAT_PATTERNS = [
+    # Temporary task/session state.  These are useful in session history but
+    # harmful as durable memory because they make stale work look current.
+    (r'^\s*\[Your active task list was preserved across context compression\]', "temporary_task_state"),
+    (r'^\s*\[CURRENT SESSION TODO STATE — NOT A USER REQUEST\]', "temporary_task_state"),
+    (r'\b(temporary\s+TODO\s+state|active\s+task\s+list)\b', "temporary_task_state"),
+    (r'\b(completed\s+actions?|pending\s+user\s+asks?|remaining\s+work|in\s+progress)\s*:', "temporary_task_state"),
     # Prompt injection
     (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
     (r'you\s+are\s+now\s+', "role_hijack"),
@@ -99,6 +105,8 @@ def _scan_memory_content(content: str) -> Optional[str]:
     # Check threat patterns
     for pattern, pid in _MEMORY_THREAT_PATTERNS:
         if re.search(pattern, content, re.IGNORECASE):
+            if pid == "temporary_task_state":
+                return "Blocked: content appears to be temporary task state. Use session history/session_search for task progress instead of durable memory."
             return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
 
     return None

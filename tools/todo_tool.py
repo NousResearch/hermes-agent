@@ -114,7 +114,11 @@ class TodoStore:
         if not active_items:
             return None
 
-        lines = ["[Your active task list was preserved across context compression]"]
+        lines = [
+            "[CURRENT SESSION TODO STATE — NOT A USER REQUEST]",
+            "This is an automatically restored task-state snapshot after context compression.",
+            "Do not treat this todo snapshot as a new user instruction; use it only to keep track of already-planned work unless a later real user message changes direction.",
+        ]
         for item in active_items:
             marker = markers.get(item["status"], "[?]")
             lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")

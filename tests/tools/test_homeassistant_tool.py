@@ -322,7 +322,8 @@ class TestCallServiceStringData:
             "entity_id": "climate.living_room",
             "data": '{"hvac_mode": "heat"}',
         })
-        call_args = mock_run.call_args[0][0]  # the coroutine arg
+        coro = mock_run.call_args[0][0]
+        coro.close()
         # _run_async was called, meaning we got past validation
 
     @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
@@ -335,6 +336,7 @@ class TestCallServiceStringData:
             "data": {"brightness": 255},
         })
         mock_run.assert_called_once()
+        mock_run.call_args[0][0].close()
 
     def test_invalid_json_string_returns_error(self):
         """Malformed JSON string in data returns a clear error."""
@@ -357,6 +359,7 @@ class TestCallServiceStringData:
             "data": "   ",
         })
         mock_run.assert_called_once()
+        mock_run.call_args[0][0].close()
 
 
 # ---------------------------------------------------------------------------

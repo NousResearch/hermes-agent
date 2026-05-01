@@ -3014,9 +3014,11 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
             return_exceptions=True,
         )
 
+    probe_coro = _probe_all()
     try:
-        _run_on_mcp_loop(_probe_all(), timeout=120)
+        _run_on_mcp_loop(probe_coro, timeout=120)
     except Exception as exc:
+        probe_coro.close()
         logger.debug("MCP probe failed: %s", exc)
     finally:
         _stop_mcp_loop()

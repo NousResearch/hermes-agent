@@ -71,6 +71,16 @@ class TestFormatForInjection:
         assert "Working" in text
         assert "context compression" in text.lower()
 
+    def test_injection_is_explicit_state_not_user_request(self):
+        store = TodoStore()
+        store.write([
+            {"id": "active", "content": "Continue current repair", "status": "in_progress"},
+        ])
+        text = store.format_for_injection()
+        assert text.startswith("[CURRENT SESSION TODO STATE — NOT A USER REQUEST]")
+        assert "Do not treat this todo snapshot as a new user instruction" in text
+        assert "preserved across context compression" not in text
+
 
 class TestMergeMode:
     def test_update_existing_by_id(self):

@@ -22,6 +22,14 @@ def managed_nous_tools_enabled() -> bool:
     False — never block the agent startup path.
     """
     try:
+        if os.getenv("HERMES_DISABLE_MANAGED_NOUS_TOOLS", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return False
+
         from hermes_cli.auth import get_nous_auth_status
 
         status = get_nous_auth_status()

@@ -1,6 +1,7 @@
 """Tests for tools/checkpoint_manager.py — CheckpointManager."""
 
 import logging
+import os
 import subprocess
 import pytest
 from pathlib import Path
@@ -12,6 +13,7 @@ from tools.checkpoint_manager import (
     _init_shadow_repo,
     _run_git,
     _git_env,
+    _maybe_remove_stale_index_lock,
     _dir_file_count,
     format_checkpoint_list,
     DEFAULT_EXCLUDES,
@@ -543,6 +545,32 @@ class TestErrorResilience:
         # Should not raise
         result = mgr.ensure_checkpoint(str(work_dir), "test")
         assert result is False
+
+    def test_stale_shadow_index_lock_is_removed(self, tmp_path, monkeypatch):
+        shadow = tmp_path / "shadow"
+        shadow.mkdir()
+        lock_path = shadow / "index.lock"
+        lock_path.write_text("stale")
+        old = 1_700_000_000
+        os.utime(lock_path, (old, old))
+        monkeypatch.setattr("tools.checkpoint_manager.time.time", lambda: old + 600)
+
+        _maybe_remove_stale_index_lock(shadow)
+
+        assert not lock_path.exists()
+
+    def test_fresh_shadow_index_lock_is_preserved(self, tmp_path, monkeypatch):
+        shadow = tmp_path / "shadow"
+        shadow.mkdir()
+        lock_path = shadow / "index.lock"
+        lock_path.write_text("fresh")
+        now = 1_700_000_000
+        os.utime(lock_path, (now, now))
+        monkeypatch.setattr("tools.checkpoint_manager.time.time", lambda: now + 5)
+
+        _maybe_remove_stale_index_lock(shadow)
+
+        assert lock_path.exists()
 
 
 # =========================================================================

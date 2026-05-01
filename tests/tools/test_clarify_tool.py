@@ -177,6 +177,14 @@ class TestClarifySchema:
         assert "description" in CLARIFY_SCHEMA
         assert len(CLARIFY_SCHEMA["description"]) > 50
 
+
+    def test_schema_discourages_optional_followup_questions(self):
+        desc = CLARIFY_SCHEMA["description"]
+        assert "Use this tool only when blocked" in desc
+        assert "post-task feedback" not in desc
+        assert "offer to save a skill" not in desc
+        assert "Prefer making a reasonable default choice" in desc
+
     def test_schema_question_required(self):
         """Question parameter should be required."""
         assert "question" in CLARIFY_SCHEMA["parameters"]["required"]

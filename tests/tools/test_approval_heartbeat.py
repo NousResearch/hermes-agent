@@ -42,10 +42,14 @@ class TestApprovalHeartbeat:
         self._saved_env = {
             k: os.environ.get(k)
             for k in ("HERMES_GATEWAY_SESSION", "HERMES_YOLO_MODE",
-                      "HERMES_SESSION_KEY")
+                      "HERMES_SESSION_KEY", "TIRITH_ENABLED")
         }
         os.environ.pop("HERMES_YOLO_MODE", None)
         os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        # This test targets the gateway approval wait heartbeat, not Tirith's
+        # external binary install/scan path.  Disable Tirith so a first-run
+        # download cannot block before the approval wait even starts.
+        os.environ["TIRITH_ENABLED"] = "0"
         # The blocking wait path reads the session key via contextvar OR
         # os.environ fallback.  Contextvars don't propagate across threads
         # by default, so env var is the portable way to drive this in tests.

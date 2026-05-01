@@ -12,6 +12,8 @@ Tests cover:
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+import types
 from unittest.mock import patch
 
 import pytest
@@ -334,3 +336,24 @@ class TestResolveOpenaiAudioApiKey:
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "  voice-key  ")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         assert resolve_openai_audio_api_key() == "voice-key"
+
+def test_managed_nous_tools_can_be_disabled_without_auth_lookup(monkeypatch):
+    def fail_auth_lookup():  # pragma: no cover - should not be called
+        raise AssertionError("auth lookup should be skipped when disabled")
+
+    auth_module = types.SimpleNamespace(get_nous_auth_status=fail_auth_lookup)
+    monkeypatch.setitem(sys.modules, "hermes_cli.auth", auth_module)
+    monkeypatch.setenv("HERMES_DISABLE_MANAGED_NOUS_TOOLS", "true")
+
+    assert managed_nous_tools_enabled() is False
+
+
+def test_managed_nous_tools_disable_flag_ignores_whitespace_and_case(monkeypatch):
+    def fail_auth_lookup():  # pragma: no cover - should not be called
+        raise AssertionError("auth lookup should be skipped when disabled")
+
+    auth_module = types.SimpleNamespace(get_nous_auth_status=fail_auth_lookup)
+    monkeypatch.setitem(sys.modules, "hermes_cli.auth", auth_module)
+    monkeypatch.setenv("HERMES_DISABLE_MANAGED_NOUS_TOOLS", "  ON  ")
+
+    assert managed_nous_tools_enabled() is False

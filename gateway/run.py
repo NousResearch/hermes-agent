@@ -252,13 +252,9 @@ from hermes_constants import get_hermes_home
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
-# Load environment variables from ~/.hermes/.env first.
-# User-managed env files should override stale shell exports on restart.
-from dotenv import load_dotenv  # backward-compat for tests that monkeypatch this symbol
-from hermes_cli.env_loader import load_hermes_dotenv
+# NOTE: .env loading moved to Gateway.start() so /restart picks up new keys.
+# _env_path is still needed by per-agent credential re-read.
 _env_path = _hermes_home / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
-
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
 _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
@@ -2400,6 +2396,26 @@ class GatewayRunner:
         """
         logger.info("Starting Hermes Gateway...")
         logger.info("Session storage: %s", self.config.sessions_dir)
+        
+        # Reload .env on every start so /restart picks up new keys without
+        # requiring a full shell-level restart.
+        try:
+            from hermes_cli.env_loader import load_hermes_dotenv
+            _loaded_envs = load_hermes_dotenv(
+                hermes_home=_hermes_home,
+                project_env=Path(__file__).resolve().parents[1] / '.env',
+            )
+            logger.info("Loaded env files: %s", [str(p) for p in _loaded_envs])
+            # Drop stale check_fn results so tool availability is recalculated
+            # against the newly loaded environment (e.g. OLLAMA_API_KEY added).
+            try:
+                from tools.registry import invalidate_check_fn_cache
+                invalidate_check_fn_cache()
+            except Exception as _e:
+                logger.debug("check_fn cache invalidate failed: %s", _e)
+        except Exception as _e:
+            logger.debug("Env reload at startup failed: %s", _e)
+        
         try:
             from hermes_cli.profiles import get_active_profile_name
             _profile = get_active_profile_name()

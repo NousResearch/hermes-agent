@@ -4868,6 +4868,49 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5034, str(e))
 
 
+@method("model.disconnect")
+def _(rid, params: dict) -> dict:
+    """Remove credentials for a provider.
+
+    Params:
+        slug: provider slug (e.g. "deepseek", "xai")
+
+    Returns success status and the provider's slug.
+    """
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
+        from hermes_cli.config import remove_env_value
+
+        slug = (params.get("slug") or "").strip()
+        if not slug:
+            return _err(rid, 4001, "slug is required")
+
+        pconfig = PROVIDER_REGISTRY.get(slug)
+        cleared_env = False
+        cleared_auth = False
+
+        # Remove API key env vars from .env and process
+        if pconfig and pconfig.api_key_env_vars:
+            for ev in pconfig.api_key_env_vars:
+                if remove_env_value(ev):
+                    cleared_env = True
+
+        # Clear OAuth / credential pool state
+        cleared_auth = clear_provider_auth(slug)
+
+        if not cleared_env and not cleared_auth:
+            return _err(rid, 4005, f"no credentials found for {slug}")
+
+        provider_name = pconfig.name if pconfig else slug
+        return _ok(rid, {
+            "slug": slug,
+            "name": provider_name,
+            "disconnected": True,
+        })
+    except Exception as e:
+        return _err(rid, 5035, str(e))
+
+
 # ── Methods: slash.exec ──────────────────────────────────────────────
 
 

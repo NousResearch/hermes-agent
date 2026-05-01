@@ -435,17 +435,17 @@ export default class Ink {
   private handleResize = () => {
     const cols = this.options.stdout.columns || 80
     const rows = this.options.stdout.rows || 24
+    const dimsChanged = cols !== this.terminalColumns || rows !== this.terminalRows
 
-    // Terminals often emit 2+ resize events for one user action (window
-    // settling). Same-dimension events are no-ops; skip to avoid redundant
-    // frame resets and renders.
-    if (cols === this.terminalColumns && rows === this.terminalRows) {
+    if (!dimsChanged && !(this.altScreenActive && !this.isPaused && this.options.stdout.isTTY)) {
       return
     }
 
-    this.terminalColumns = cols
-    this.terminalRows = rows
-    this.altScreenParkPatch = makeAltScreenParkPatch(this.terminalRows)
+    if (dimsChanged) {
+      this.terminalColumns = cols
+      this.terminalRows = rows
+      this.altScreenParkPatch = makeAltScreenParkPatch(this.terminalRows)
+    }
 
     // Pending throttled/drain work captured stale dims — cancel so
     // the upcoming microtask owns the next frame.
@@ -472,26 +472,7 @@ export default class Ink {
     // doesn't exit alt-screen. Do NOT write ERASE_SCREEN: render() below
     // can take ~80ms; erasing first leaves the screen blank that whole time.
     if (this.altScreenActive && !this.isPaused && this.options.stdout.isTTY) {
-      if (this.altScreenMouseTracking) {
-        this.options.stdout.write(ENABLE_MOUSE_TRACKING)
-      }
-
-      this.resetFramesForAltScreen()
-      this.needsEraseBeforePaint = true
-
-      // One last repaint after the resize burst settles closes any host-side
-      // reflow drift the normal diff path can't see.
-      this.resizeSettleTimer = setTimeout(() => {
-        this.resizeSettleTimer = null
-
-        if (!this.canAltScreenRepaint()) {
-          return
-        }
-
-        this.resetFramesForAltScreen()
-        this.needsEraseBeforePaint = true
-        this.render(this.currentNode!)
-      }, 160)
+      this.prepareAltScreenResizeRepaint()
     }
 
     // Already queued: later events in this burst updated dims/alt-screen
@@ -522,6 +503,27 @@ export default class Ink {
       !!this.options.stdout.isTTY &&
       this.currentNode !== null
     )
+  }
+
+  private prepareAltScreenResizeRepaint(): void {
+    if (this.altScreenMouseTracking) {
+      this.options.stdout.write(ENABLE_MOUSE_TRACKING)
+    }
+
+    this.resetFramesForAltScreen()
+    this.needsEraseBeforePaint = true
+
+    this.resizeSettleTimer = setTimeout(() => {
+      this.resizeSettleTimer = null
+
+      if (!this.canAltScreenRepaint()) {
+        return
+      }
+
+      this.resetFramesForAltScreen()
+      this.needsEraseBeforePaint = true
+      this.render(this.currentNode!)
+    }, 160)
   }
 
   resolveExitPromise: () => void = () => {}
@@ -850,8 +852,9 @@ export default class Ink {
     const optimized = optimize(diff)
     const optimizeMs = performance.now() - tOptimize
     const hasDiff = optimized.length > 0
+    const needsAltScreenErase = this.altScreenActive && this.needsEraseBeforePaint
 
-    if (this.altScreenActive && hasDiff) {
+    if (this.altScreenActive && (hasDiff || needsAltScreenErase)) {
       // Prepend CSI H to anchor the physical cursor to (0,0) so
       // log-update's relative moves compute from a known spot (self-healing
       // against out-of-band cursor drift, see the ALT_SCREEN_ANCHOR_CURSOR
@@ -871,7 +874,7 @@ export default class Ink {
       // erase+paint lands, then swaps in one go. Writing ERASE_SCREEN
       // synchronously in handleResize would blank the screen for the ~80ms
       // render() takes.
-      if (this.needsEraseBeforePaint) {
+      if (needsAltScreenErase) {
         this.needsEraseBeforePaint = false
         optimized.unshift(ERASE_THEN_HOME_PATCH)
       } else {
@@ -993,7 +996,7 @@ export default class Ink {
     this.lastDrainMs = 0
 
     // Only track drain on TTY. Piped/non-TTY stdout bypasses flow control.
-    const trackDrain = this.options.stdout.isTTY && hasDiff
+    const trackDrain = this.options.stdout.isTTY && optimized.length > 0
     const drainStart = trackDrain ? tWrite : 0
 
     if (trackDrain) {

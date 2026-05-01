@@ -1,11 +1,11 @@
 ---
-name: bilingual-captions
-description: Caption Vietnamese language teaching shorts. Transcribes mixed EN/VI audio, classifies segments, generates English phonetic guides for Vietnamese words, and burns styled captions into the video. Supports correction loop and memory.
+name: phonetic-captions
+description: Caption language teaching videos with phonetic guides. Transcribes mixed-language audio, generates pronunciation guides for target language, and burns styled captions into the video. Currently optimized for Vietnamese. Supports correction loop and memory.
 version: 2.0.0
 platforms: [macos, linux]
 metadata:
   hermes:
-    tags: [video, captions, vietnamese, teaching, phonetics, ffmpeg]
+    tags: [video, captions, teaching, phonetics, ffmpeg, multilingual]
     category: creative
 ---
 

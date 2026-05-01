@@ -291,6 +291,8 @@ export const zh: Translations = {
     authRequiredHint: "运行此命令以完成认证：",
     updateGit: "git pull",
     versionBadge: "版本",
+    showInSidebar: "在侧边栏显示",
+    hideFromSidebar: "从侧边栏隐藏",
   },
 
   skills: {

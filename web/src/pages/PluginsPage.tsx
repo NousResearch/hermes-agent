@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ExternalLink, RefreshCw, Puzzle, Trash2 } from "lucide-react";
+import { ExternalLink, RefreshCw, Puzzle, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
@@ -501,6 +501,27 @@ function PluginRowCard(props: PluginRowCardProps) {
               >
                 {busy ? <Spinner /> : null}
                 {t.pluginsPage.updateGit}
+              </Button>
+            ) : null}
+
+            {row.has_dashboard_manifest ? (
+              <Button
+                disabled={busy}
+                ghost
+                size="sm"
+                title={row.user_hidden ? t.pluginsPage.showInSidebar : t.pluginsPage.hideFromSidebar}
+                onClick={() => {
+                  void setRuntimeLoading(row.name, async () => {
+                    await api.setPluginVisibility(row.name, !row.user_hidden);
+                  });
+                }}
+              >
+                {row.user_hidden ? (
+                  <EyeOff className="h-3.5 w-3.5" />
+                ) : (
+                  <Eye className="h-3.5 w-3.5" />
+                )}
+                {row.user_hidden ? t.pluginsPage.showInSidebar : t.pluginsPage.hideFromSidebar}
               </Button>
             ) : null}
 

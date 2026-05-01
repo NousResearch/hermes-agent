@@ -266,6 +266,8 @@ export interface Translations {
     authRequiredHint: string;
     updateGit: string;
     versionBadge: string;
+    showInSidebar: string;
+    hideFromSidebar: string;
   };
 
   // ── Profiles page ──

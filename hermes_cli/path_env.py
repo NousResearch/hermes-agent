@@ -46,11 +46,26 @@ def _dedupe(paths: list[str]) -> list[str]:
     return result
 
 
+def _resolve_home() -> Path | None:
+    """Return the user's home directory, preferring ``$HOME`` over passwd lookups.
+
+    ``Path.home()`` consults ``pwd.getpwuid(os.getuid()).pw_dir`` on POSIX, which
+    can ignore the current process's ``HOME`` environment variable. That makes
+    behaviour surprising for callers (and tests) that override ``HOME`` to point
+    at a sandbox directory. We honour ``HOME`` when set so non-interactive
+    launches and unit tests both see the directory the rest of the process is
+    using.
+    """
+    home_str = os.environ.get("HOME") or os.path.expanduser("~")
+    if not home_str or home_str == "~":
+        return None
+    return Path(home_str)
+
+
 def _home_tool_path_dirs() -> list[str]:
     """Return user-level tool directories managed by common version managers."""
-    try:
-        home = Path.home()
-    except RuntimeError:
+    home = _resolve_home()
+    if home is None:
         return []
 
     candidates = [

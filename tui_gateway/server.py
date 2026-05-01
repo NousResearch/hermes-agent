@@ -1085,9 +1085,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         from hermes_cli.config import get_compatible_custom_providers, load_config
 
         cfg = load_config()
-        user_provs = [
-            {"provider": k, **v} for k, v in (cfg.get("providers") or {}).items()
-        ]
+        user_provs = cfg.get("providers")
         custom_provs = get_compatible_custom_providers(cfg)
     except Exception:
         pass
@@ -4737,6 +4735,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
 
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
@@ -4750,6 +4749,127 @@ def _(rid, params: dict) -> dict:
         # provider_model_ids() — that bypasses curation and pulls in
         # non-agentic models (e.g. Nous /models returns ~400 IDs including
         # TTS, embeddings, rerankers, image/video generators).
+        user_provs = (
+            cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        )
+        custom_provs = (
+            cfg.get("custom_providers")
+            if isinstance(cfg.get("custom_providers"), list)
+            else []
+        )
+        authenticated = list_authenticated_providers(
+            current_provider=current_provider,
+            current_base_url=current_base_url,
+            current_model=current_model,
+            user_providers=user_provs,
+            custom_providers=custom_provs,
+            max_models=50,
+        )
+
+        # Mark authenticated providers and build lookup by slug
+        authed_map: dict = {}
+        authed_extra: list = []  # user-defined/custom not in CANONICAL_PROVIDERS
+        canonical_slugs = {e.slug for e in CANONICAL_PROVIDERS}
+        for p in authenticated:
+            p["authenticated"] = True
+            authed_map[p["slug"]] = p
+            if p["slug"] not in canonical_slugs:
+                authed_extra.append(p)
+
+        # Build final list in CANONICAL_PROVIDERS order, merging auth data
+        from hermes_cli.auth import PROVIDER_REGISTRY as _auth_reg
+        ordered: list = []
+        for entry in CANONICAL_PROVIDERS:
+            if entry.slug in authed_map:
+                ordered.append(authed_map[entry.slug])
+            else:
+                pconfig = _auth_reg.get(entry.slug)
+                auth_type = pconfig.auth_type if pconfig else "api_key"
+                key_env = pconfig.api_key_env_vars[0] if (pconfig and pconfig.api_key_env_vars) else ""
+                if auth_type == "api_key" and key_env:
+                    warning = f"paste {key_env} to activate"
+                else:
+                    warning = f"run `hermes model` to configure ({auth_type})"
+                ordered.append({
+                    "slug": entry.slug,
+                    "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
+                    "is_current": entry.slug == current_provider,
+                    "is_user_defined": False,
+                    "models": [],
+                    "total_models": 0,
+                    "source": "built-in",
+                    "authenticated": False,
+                    "auth_type": auth_type,
+                    "key_env": key_env,
+                    "warning": warning,
+                })
+
+        # Append user-defined/custom providers not in canonical list
+        ordered.extend(authed_extra)
+
+        return _ok(
+            rid,
+            {
+                "providers": ordered,
+                "model": current_model,
+                "provider": current_provider,
+            },
+        )
+    except Exception as e:
+        return _err(rid, 5033, str(e))
+
+
+@method("model.save_key")
+def _(rid, params: dict) -> dict:
+    """Save an API key for a provider, then return its refreshed model list.
+
+    Params:
+        slug: provider slug (e.g. "deepseek", "xai")
+        api_key: the key value to save
+
+    Returns the provider dict with models populated (same shape as
+    model.options entries) on success.
+    """
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.config import is_managed, save_env_value
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        slug = (params.get("slug") or "").strip()
+        api_key = (params.get("api_key") or "").strip()
+        if not slug or not api_key:
+            return _err(rid, 4001, "slug and api_key are required")
+
+        if is_managed():
+            return _err(rid, 4006, "managed install — credentials are read-only")
+
+        pconfig = PROVIDER_REGISTRY.get(slug)
+        if not pconfig:
+            return _err(rid, 4002, f"unknown provider: {slug}")
+        if pconfig.auth_type != "api_key":
+            return _err(
+                rid, 4003,
+                f"{pconfig.name} uses {pconfig.auth_type} auth — "
+                f"run `hermes model` to configure"
+            )
+        if not pconfig.api_key_env_vars:
+            return _err(rid, 4004, f"no env var defined for {pconfig.name}")
+
+        # Save the key to ~/.hermes/.env
+        env_var = pconfig.api_key_env_vars[0]
+        save_env_value(env_var, api_key)
+        # Also set in current process so list_authenticated_providers sees it
+        import os
+        os.environ[env_var] = api_key
+
+        # Refresh provider data
+        cfg = _load_cfg()
+        session = _sessions.get(params.get("session_id", ""))
+        agent = session.get("agent") if session else None
+        current_provider = getattr(agent, "provider", "") or ""
+        current_model = getattr(agent, "model", "") or _resolve_model()
+        current_base_url = getattr(agent, "base_url", "") or ""
+
         providers = list_authenticated_providers(
             current_provider=current_provider,
             current_base_url=current_base_url,
@@ -4764,16 +4884,72 @@ def _(rid, params: dict) -> dict:
             ),
             max_models=50,
         )
-        return _ok(
-            rid,
-            {
-                "providers": providers,
-                "model": current_model,
-                "provider": current_provider,
-            },
-        )
+
+        # Find the newly-authenticated provider
+        provider_data = None
+        for p in providers:
+            if p["slug"] == slug:
+                provider_data = p
+                break
+
+        if not provider_data:
+            # Key was saved but provider didn't appear — still return success
+            provider_data = {
+                "slug": slug,
+                "name": pconfig.name,
+                "is_current": False,
+                "models": [],
+                "total_models": 0,
+                "authenticated": True,
+            }
+
+        provider_data["authenticated"] = True
+        return _ok(rid, {"provider": provider_data})
     except Exception as e:
-        return _err(rid, 5033, str(e))
+        return _err(rid, 5034, str(e))
+
+
+@method("model.disconnect")
+def _(rid, params: dict) -> dict:
+    """Remove credentials for a provider.
+
+    Params:
+        slug: provider slug (e.g. "deepseek", "xai")
+
+    Returns success status and the provider's slug.
+    """
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
+        from hermes_cli.config import remove_env_value
+
+        slug = (params.get("slug") or "").strip()
+        if not slug:
+            return _err(rid, 4001, "slug is required")
+
+        pconfig = PROVIDER_REGISTRY.get(slug)
+        cleared_env = False
+        cleared_auth = False
+
+        # Remove API key env vars from .env and process
+        if pconfig and pconfig.api_key_env_vars:
+            for ev in pconfig.api_key_env_vars:
+                if remove_env_value(ev):
+                    cleared_env = True
+
+        # Clear OAuth / credential pool state
+        cleared_auth = clear_provider_auth(slug)
+
+        if not cleared_env and not cleared_auth:
+            return _err(rid, 4005, f"no credentials found for {slug}")
+
+        provider_name = pconfig.name if pconfig else slug
+        return _ok(rid, {
+            "slug": slug,
+            "name": provider_name,
+            "disconnected": True,
+        })
+    except Exception as e:
+        return _err(rid, 5035, str(e))
 
 
 # ── Methods: slash.exec ──────────────────────────────────────────────

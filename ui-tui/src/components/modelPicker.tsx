@@ -14,7 +14,7 @@ const VISIBLE = 12
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
 
-type Stage = 'provider' | 'key' | 'model'
+type Stage = 'provider' | 'key' | 'model' | 'disconnect'
 
 export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
@@ -73,7 +73,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   const names = useMemo(() => providerDisplayNames(providers), [providers])
 
   const back = () => {
-    if (stage === 'model' || stage === 'key') {
+    if (stage === 'model' || stage === 'key' || stage === 'disconnect') {
       setStage('provider')
       setModelIdx(0)
       setKeyInput('')
@@ -153,6 +153,53 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       return
     }
 
+    // Disconnect confirmation stage
+    if (stage === 'disconnect') {
+      if (ch.toLowerCase() === 'y' || key.return) {
+        if (!provider) {
+          setStage('provider')
+
+          return
+        }
+
+        setKeySaving(true)
+        gw.request<{ disconnected?: boolean }>('model.disconnect', {
+          slug: provider.slug,
+          ...(sessionId ? { session_id: sessionId } : {}),
+        })
+          .then(raw => {
+            const r = asRpcResult<{ disconnected?: boolean }>(raw)
+
+            if (r?.disconnected) {
+              // Mark provider as unauthenticated in local state
+              setProviders(prev =>
+                prev.map(p => p.slug === provider.slug
+                  ? { ...p, authenticated: false, models: [], total_models: 0, warning: p.key_env ? `paste ${p.key_env} to activate` : 'run `hermes model` to configure' }
+                  : p
+                )
+              )
+            }
+
+            setKeySaving(false)
+            setStage('provider')
+          })
+          .catch(() => {
+            setKeySaving(false)
+            setStage('provider')
+          })
+
+        return
+      }
+
+      if (ch.toLowerCase() === 'n' || key.escape) {
+        setStage('provider')
+
+        return
+      }
+
+      return
+    }
+
     const count = stage === 'provider' ? providers.length : models.length
     const sel = stage === 'provider' ? providerIdx : modelIdx
     const setSel = stage === 'provider' ? setProviderIdx : setModelIdx
@@ -206,6 +253,13 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
 
     if (ch.toLowerCase() === 'g') {
       setPersistGlobal(v => !v)
+
+      return
+    }
+
+    // Disconnect: only in provider stage, only for authenticated providers
+    if (ch.toLowerCase() === 'd' && stage === 'provider' && provider?.authenticated !== false) {
+      setStage('disconnect')
 
       return
     }
@@ -294,6 +348,35 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
     )
   }
 
+  // ── Disconnect confirmation stage ─────────────────────────────────────
+  if (stage === 'disconnect' && provider) {
+    return (
+      <Box flexDirection="column" width={width}>
+        <Text bold color={t.color.accent} wrap="truncate-end">
+          Disconnect {provider.name}?
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end"> </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          This removes saved credentials for {provider.name}.
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end">
+          You can re-authenticate later by selecting it again.
+        </Text>
+
+        <Text color={t.color.muted} wrap="truncate-end"> </Text>
+
+        {keySaving ? (
+          <Text color={t.color.muted} wrap="truncate-end">disconnecting…</Text>
+        ) : (
+          <OverlayHint t={t}>y/Enter confirm · n/Esc cancel</OverlayHint>
+        )}
+      </Box>
+    )
+  }
+
   // ── Provider selection stage ─────────────────────────────────────────
   if (stage === 'provider') {
     const rows = providers.map(
@@ -359,7 +442,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         <Text color={t.color.muted} wrap="truncate-end">
           persist: {persistGlobal ? 'global' : 'session'} · g toggle
         </Text>
-        <OverlayHint t={t}>↑/↓ select · Enter choose · Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>↑/↓ select · Enter choose · d disconnect · Esc/q cancel</OverlayHint>
       </Box>
     )
   }

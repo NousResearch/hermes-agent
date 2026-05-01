@@ -748,7 +748,7 @@ class TestSlashCommands:
         with (
             patch.object(agent.session_manager, "save_session") as mock_save,
             patch(
-                "agent.model_metadata.estimate_messages_tokens_rough",
+                "agent.model_metadata.estimate_request_tokens_rough",
                 side_effect=[40, 12],
             ),
         ):

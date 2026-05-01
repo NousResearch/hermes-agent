@@ -2199,7 +2199,7 @@ class TestPtyWebSocket:
                     time.sleep(0.01)
                 else:
                     raise AssertionError(
-                        "subscriber did not register on channel within 5s"
+                        f"subscriber did not register on {channel} within 5s"
                     )
 
                 with self.client.websocket_connect(pub_path) as pub:

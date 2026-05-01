@@ -1251,7 +1251,26 @@ class ShellFileOperations(FileOperations):
         
         # Exclude hidden directories (matching ripgrep's default behavior).
         # This prevents searching inside .hub/index-cache/, .git/, etc.
-        cmd_parts.append("--exclude-dir='.*'")
+        # Use grep's built-in --exclude-dir only for subdirectory filtering;
+        # it matches against every path component including the search root,
+        # so a search path like ~/.hermes/ would be entirely excluded.
+        # Instead, let grep search everything and rely on the path argument
+        # to scope the search, then post-filter hidden subdirectories.
+        # However, --exclude-dir with a bare glob only matches directory
+        # *names*, not full paths, so '.*' correctly targets only directories
+        # whose own name starts with '.'.  The real problem is that some grep
+        # implementations (GNU grep ≤ 3.11) match --exclude-dir against every
+        # component of the *search root* path as well.  Work around this by
+        # resolving the search path to an absolute realpath before invoking
+        # grep, which avoids embedded hidden components when possible, and by
+        # only adding --exclude-dir when the resolved path itself is not inside
+        # a hidden directory.
+        resolved_path = os.path.realpath(path)
+        path_components = resolved_path.split(os.sep)
+        # Check if any component of the resolved search root is hidden
+        root_has_hidden = any(c.startswith('.') and c not in ('.', '..') for c in path_components)
+        if not root_has_hidden:
+            cmd_parts.append("--exclude-dir='.*'")
         
         # Add context if requested
         if context > 0:

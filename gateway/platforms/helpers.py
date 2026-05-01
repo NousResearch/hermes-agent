@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict
 
+from utils import atomic_json_write
+
 if TYPE_CHECKING:
     from gateway.platforms.base import MessageEvent
 
@@ -237,12 +239,11 @@ class ThreadParticipationTracker:
 
     def _save(self) -> None:
         path = self._state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
         thread_list = list(self._threads)
         if len(thread_list) > self._max_tracked:
             thread_list = thread_list[-self._max_tracked:]
             self._threads = set(thread_list)
-        path.write_text(json.dumps(thread_list), encoding="utf-8")
+        atomic_json_write(path, thread_list, indent=None)
 
     def mark(self, thread_id: str) -> None:
         """Mark *thread_id* as participated and persist."""

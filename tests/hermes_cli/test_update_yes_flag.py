@@ -12,6 +12,10 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
+import hermes_cli.config as hermes_config
+import hermes_cli.main as hermes_main
 from hermes_cli.main import cmd_update
 
 
@@ -45,6 +49,16 @@ def _make_run_side_effect(
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     return side_effect
+
+
+@pytest.fixture(autouse=True)
+def _stabilize_cmd_update_wrapper(monkeypatch):
+    """Keep tests focused on update semantics, not wrapper/environment guards."""
+    # Avoid managed-mode short-circuit from CI env/markers.
+    monkeypatch.setattr(hermes_config, "is_managed", lambda: False)
+    # Avoid IO/hangup wrapper side effects interacting with mocked sys streams.
+    monkeypatch.setattr(hermes_main, "_install_hangup_protection", lambda **_: None)
+    monkeypatch.setattr(hermes_main, "_finalize_update_output", lambda _state: None)
 
 
 class TestUpdateYesConfigMigration:

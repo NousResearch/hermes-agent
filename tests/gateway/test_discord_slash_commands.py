@@ -75,7 +75,10 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from gateway.platforms.discord import (  # noqa: E402
+    DiscordAdapter,
+    _build_auto_thread_name,
+)
 
 
 class FakeTree:
@@ -97,7 +100,9 @@ class FakeTree:
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(
@@ -493,8 +498,40 @@ def test_build_slash_event_uses_group_context_for_channels(adapter):
 # ------------------------------------------------------------------
 
 
+def test_build_auto_thread_name_summarizes_request():
+    assert (
+        _build_auto_thread_name(
+            "Can you make yourself auto-retitle threads intelligently? "
+            "Based on the first message, give the thread a title that is a smart summary."
+        )
+        == "make yourself auto-retitle threads intelligently"
+    )
+
+
+def test_build_auto_thread_name_strips_polite_openers():
+    assert _build_auto_thread_name("<@123> please help me debug Discord auto-thread titles") == "debug Discord auto-thread titles"
+
+
 @pytest.mark.asyncio
-async def test_auto_create_thread_uses_message_content_as_name(adapter):
+async def test_auto_create_thread_uses_summarized_name_when_enabled(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_SMART_THREAD_TITLES", "true")
+    thread = SimpleNamespace(id=999, name="summary")
+    message = SimpleNamespace(
+        content="Can you fix our Discord auto-thread titling? It keeps using the whole message.",
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    result = await adapter._auto_create_thread(message)
+
+    assert result is thread
+    assert message.create_thread.await_args[1]["name"] == "fix our Discord auto-thread titling"
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_uses_message_content_as_name(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_SMART_THREAD_TITLES", raising=False)
     thread = SimpleNamespace(id=999, name="Hello world")
     message = SimpleNamespace(
         content="Hello world, how are you?",

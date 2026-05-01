@@ -1315,6 +1315,7 @@ DEFAULT_CONFIG = {
         "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
         "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
         "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
+        "smart_thread_titles": False,  # Summarize auto-thread titles instead of raw message slices
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
         # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES

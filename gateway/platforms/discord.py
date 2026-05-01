@@ -85,6 +85,69 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _discord_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _truncate_thread_name(name: str, limit: int = 80) -> str:
+    if len(name) <= limit:
+        return name
+    return name[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _strip_discord_noise(content: str) -> str:
+    """Remove Discord syntax that makes terrible human-facing thread names."""
+    text = content or ""
+    text = re.sub(r"<@[!&]?\d+>", "", text)
+    text = re.sub(r"<#\d+>", "", text)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"[`*_~>#]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" -–—:\t\n\r")
+    return text
+
+
+def _legacy_auto_thread_name(content: str) -> str:
+    text = _strip_discord_noise(content)
+    return _truncate_thread_name(text) if text else "Hermes"
+
+
+def _build_auto_thread_name(content: str) -> str:
+    """Build a deterministic smart title for Discord auto-created threads."""
+    text = _strip_discord_noise(content)
+    if not text:
+        return "Hermes"
+
+    # Prefer the first meaningful clause/sentence instead of the whole ramble.
+    clauses = [
+        p.strip(" -–—:")
+        for p in re.split(r"[\n.!?;]+|\s+[–—-]\s+", text)
+        if p.strip(" -–—:")
+    ]
+    if clauses:
+        text = clauses[0]
+
+    # Strip common request boilerplate, but never strip down to empty.
+    openers = [
+        r"^(?:hey|hi|hello)\s+(?:hermes|joi|bot)?[,\s:;-]*",
+        r"^(?:can|could|would)\s+you\s+",
+        r"^please\s+",
+        r"^(?:help\s+me|help)\s+(?:to\s+)?",
+        r"^what(?:'s| is)\s+the\s+next\s+step\s+for\s+",
+        r"^how\s+do\s+i\s+",
+        r"^i\s+need\s+(?:you\s+to\s+)?",
+    ]
+    candidate = text
+    for pattern in openers:
+        stripped = re.sub(pattern, "", candidate, flags=re.IGNORECASE).strip(" -–—:")
+        if stripped:
+            candidate = stripped
+
+    return _truncate_thread_name(candidate) if candidate else "Hermes"
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -3873,18 +3936,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Returns the created thread object, or ``None`` on failure.
         """
-        # Build a short thread name from the message. Strip Discord mention
-        # syntax (users / roles / channels) so thread titles don't end up
-        # showing raw <@id>, <@&id>, or <#id> markers — the ID isn't
-        # meaningful to humans glancing at the thread list (#6336).
-        content = (message.content or "").strip()
-        # <@123>, <@!123>, <@&123>, <#123> — collapse to empty; normalize spaces.
-        content = re.sub(r"<@[!&]?\d+>", "", content)
-        content = re.sub(r"<#\d+>", "", content)
-        content = re.sub(r"\s+", " ", content).strip()
-        thread_name = content[:80] if content else "Hermes"
-        if len(content) > 80:
-            thread_name = thread_name[:77] + "..."
+        content = message.content or ""
+        if _discord_bool_env("DISCORD_SMART_THREAD_TITLES", False):
+            thread_name = _build_auto_thread_name(content)
+        else:
+            thread_name = _legacy_auto_thread_name(content)
 
         try:
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)

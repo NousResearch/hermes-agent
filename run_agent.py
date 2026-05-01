@@ -12405,7 +12405,10 @@ class AIAgent:
                     if is_client_error:
                         # Try fallback before aborting — a different provider
                         # may not have the same issue (rate limit, auth, etc.)
-                        self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
+                        if classified.reason == FailoverReason.content_policy_blocked:
+                            self._emit_status("⚠️ Provider content policy blocked this request — trying fallback...")
+                        else:
+                            self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                         if self._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
@@ -12415,10 +12418,16 @@ class AIAgent:
                             self._dump_api_request_debug(
                                 api_kwargs, reason="non_retryable_client_error", error=api_error,
                             )
-                        self._emit_status(
-                            f"❌ Non-retryable error (HTTP {status_code}): "
-                            f"{self._summarize_api_error(api_error)}"
-                        )
+                        if classified.reason == FailoverReason.content_policy_blocked:
+                            self._emit_status(
+                                f"❌ Provider content policy blocked this request: "
+                                f"{self._summarize_api_error(api_error)}"
+                            )
+                        else:
+                            self._emit_status(
+                                f"❌ Non-retryable error (HTTP {status_code}): "
+                                f"{self._summarize_api_error(api_error)}"
+                            )
                         self._vprint(f"{self.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
                         self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                         self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)

@@ -44,9 +44,10 @@ class FailoverReason(enum.Enum):
     payload_too_large = "payload_too_large"  # 413 — compress payload
     image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
 
-    # Model
+    # Model / provider policy
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator (e.g. OpenRouter) blocked the only endpoint due to account data/privacy policy
+    content_policy_blocked = "content_policy_blocked"  # Provider safety policy blocked this prompt; don't retry unchanged prompt
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
@@ -233,6 +234,16 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = [
     "no endpoints available matching your guardrail",
     "no endpoints available matching your data policy",
     "no endpoints found matching your data policy",
+]
+
+# Provider content-policy / safety-filter blocks.  These are deterministic
+# policy decisions for the unchanged request, not transient transport/server
+# failures.  Retrying them several times wastes time and produces the noisy
+# "Max retries ... trying fallback" status; the agent should switch to a
+# configured fallback immediately (or surface the policy block if none exists).
+_CONTENT_POLICY_BLOCKED_PATTERNS = [
+    "flagged for possible cybersecurity risk",
+    "trusted access for cyber",
 ]
 
 # Auth patterns (non-status-code signals)
@@ -423,6 +434,17 @@ def classify_api_error(
         return ClassifiedError(**defaults)
 
     # ── 1. Provider-specific patterns (highest priority) ────────────
+
+    # Provider content-policy/safety-filter block (message may arrive without
+    # an HTTP status from provider SDKs).  This must run before normal status
+    # classification so a 400 policy block doesn't become a format_error and
+    # a status-less policy block doesn't become retryable unknown.
+    if any(p in error_msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
+        return _result(
+            FailoverReason.content_policy_blocked,
+            retryable=False,
+            should_fallback=True,
+        )
 
     # Anthropic thinking block signature invalid (400).
     # Don't gate on provider — OpenRouter proxies Anthropic errors, so the

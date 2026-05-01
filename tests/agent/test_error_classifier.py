@@ -56,7 +56,7 @@ class TestFailoverReason:
             "overloaded", "server_error", "timeout",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
-            "provider_policy_blocked",
+            "provider_policy_blocked", "content_policy_blocked",
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
             "unknown",
@@ -362,6 +362,33 @@ class TestClassifyApiError:
         )
         result = classify_api_error(e)
         assert result.reason == FailoverReason.model_not_found
+        assert result.should_fallback is True
+
+    # ── Provider content-policy block ──
+
+    def test_message_only_cyber_content_policy_blocked(self):
+        # OpenAI Codex can return this without an HTTP status. Retrying the
+        # same prompt three times only repeats the same policy decision, so it
+        # should jump directly to fallback instead of emitting "Max retries".
+        e = Exception(
+            "This content was flagged for possible cybersecurity risk. If this "
+            "seems wrong, try rephrasing your request. To get authorized for "
+            "security work, join the Trusted Access for Cyber program."
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.5")
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_compress is False
+
+    def test_status_code_cyber_content_policy_blocked(self):
+        e = MockAPIError(
+            "This content was flagged for possible cybersecurity risk",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.5")
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.retryable is False
         assert result.should_fallback is True
 
     # ── Payload too large ──

@@ -142,7 +142,7 @@ _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
 # ``provider: DeepSeek`` / ``model: deepseek-v4-flash-20260423`` when called
 # with ``model=deepseek/deepseek-v4-flash``, so these names are not aliases
 # of ``deepseek-chat`` and must not be folded into it.
-_DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+([-.].+)?$")
+_DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+.*$")
 
 
 def _normalize_for_deepseek(model_name: str) -> str:

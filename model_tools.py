@@ -23,8 +23,6 @@ Public API (signatures preserved from the original 2,400-line version):
 import json
 import asyncio
 import logging
-import os
-import sys
 import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
@@ -367,7 +365,7 @@ def _compute_tool_definitions(
     # Always apply disabled toolsets as a subtraction step at the end.
     # This ensures that even if a composite toolset (like hermes-cli)
     # is enabled, any tools belonging to a disabled toolset are strictly
-    # stripped out. See issue #15291.
+    # stripped out. See issue #17309.
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):

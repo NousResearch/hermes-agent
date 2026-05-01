@@ -44,6 +44,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -1561,22 +1562,29 @@ def _maybe_wrap_anthropic(
         )
         return client_obj
 
+    # OpenCode Zen/Go persist OpenAI-style bases ending in /v1; Anthropic SDK
+    # adds /v1/messages (matches hermes_cli.runtime_provider — avoids double /v1).
+    anthropic_base = (base_url or "").strip()
+    if anthropic_base and "opencode.ai/zen/" in anthropic_base.lower():
+        anthropic_base = re.sub(r"/v1/?$", "", anthropic_base)
+
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        real_client = build_anthropic_client(api_key, anthropic_base)
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "
-            "OpenAI-wire client.", base_url, exc,
+            "OpenAI-wire client.", anthropic_base or base_url, exc,
         )
         return client_obj
 
+    log_base = anthropic_base[:60] if anthropic_base else ""
     logger.debug(
         "Auxiliary transport: wrapping client in AnthropicAuxiliaryClient "
         "(model=%s, base_url=%s, api_mode=%s)",
-        model, base_url[:60] if base_url else "", api_mode or "auto-detected",
+        model, log_base, api_mode or "auto-detected",
     )
     return AnthropicAuxiliaryClient(
-        real_client, model, api_key, base_url, is_oauth=False,
+        real_client, model, api_key, anthropic_base, is_oauth=False,
     )
 
 

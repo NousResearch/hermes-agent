@@ -67,9 +67,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (overlay.approval) {
-      return gateway
-        .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
-        .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
+      return terminal.selection.copySelectionNoClear().then((selected) => {
+        if ((selected ?? '').trim().length > 0) {
+          return
+        }
+        return gateway
+          .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
+          .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
+      })
     }
 
     if (overlay.sudo) {

@@ -162,6 +162,13 @@ _teams_mod = load_plugin_adapter("teams")
 _teams_mod.TEAMS_SDK_AVAILABLE = True
 _teams_mod.AIOHTTP_AVAILABLE = True
 
+# Ensure SDK symbols that were None (import failed on Python <3.12) are
+# replaced with the mocked versions so runtime calls don't silently no-op.
+import sys as _sys
+_mt = _sys.modules.get("microsoft_teams.api.activities.typing")
+if _mt and _teams_mod.TypingActivityInput is None:
+    _teams_mod.TypingActivityInput = _mt.TypingActivityInput
+
 TeamsAdapter = _teams_mod.TeamsAdapter
 check_requirements = _teams_mod.check_requirements
 check_teams_requirements = _teams_mod.check_teams_requirements

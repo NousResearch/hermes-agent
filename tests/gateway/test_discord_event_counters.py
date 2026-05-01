@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+from collections import deque
 from types import SimpleNamespace
 from typing import List
 from unittest.mock import AsyncMock, MagicMock
@@ -41,10 +42,22 @@ def _payload(emoji: str = "✅", user_id: int = 42, guild_id: int = 300) -> Simp
     return p
 
 
+def _bot_authored_message(message_id: int = 200, bot_id: int = 1) -> SimpleNamespace:
+    """Build a fake Message whose author.id is the bot's user id, so that the
+    PR-D message-author filter passes."""
+    return SimpleNamespace(id=message_id, author=SimpleNamespace(id=bot_id))
+
+
 def _make_handler(skills: List[SkillEntry]) -> tuple[DiscordInteractionsHandler, MagicMock]:
     adapter = MagicMock()
     adapter._client = MagicMock()
     adapter._client.user = SimpleNamespace(id=1)
+    # PR-D cache-first author filter: seed message cache with a bot-authored
+    # message at id=200 so the existing counter tests pass through to the
+    # resolver branch (the cache is the zero-cost lookup path).
+    adapter._client._connection = SimpleNamespace(
+        _messages=deque([_bot_authored_message(message_id=200, bot_id=1)])
+    )
     adapter.handle_message = AsyncMock()
     adapter.build_source = MagicMock(return_value="<source>")
     handler = DiscordInteractionsHandler(adapter=adapter, skill_provider=lambda: skills)

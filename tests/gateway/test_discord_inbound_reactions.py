@@ -43,6 +43,15 @@ def _make_handler(skills: List[SkillEntry]) -> tuple[DiscordInteractionsHandler,
     adapter = MagicMock()
     adapter._client = MagicMock()
     adapter._client.user = SimpleNamespace(id=1)
+    # Cache-first reacted-message author lookup (commit c7b081b24): handler
+    # iterates client._connection._messages looking for the reacted message
+    # and only dispatches when the bot is its author. Inject a fake match
+    # so tests exercise the full dispatch path.
+    fake_bot_msg = MagicMock()
+    fake_bot_msg.id = 200  # matches _payload(message_id=200)
+    fake_bot_msg.author.id = 1  # matches client.user.id
+    adapter._client._connection = MagicMock()
+    adapter._client._connection._messages = [fake_bot_msg]
     adapter.handle_message = AsyncMock()
     adapter.build_source = MagicMock(return_value="<source>")
     handler = DiscordInteractionsHandler(adapter=adapter, skill_provider=lambda: skills)

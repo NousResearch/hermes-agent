@@ -207,6 +207,14 @@ async def test_handle_inbound_reaction_dispatches_on_match() -> None:
     adapter = MagicMock()
     adapter._client = MagicMock()
     adapter._client.user = SimpleNamespace(id=1)
+    # Cache-first reacted-message author lookup (commit c7b081b24): handler
+    # iterates client._connection._messages and only dispatches on bot-authored
+    # messages. Inject a fake match.
+    fake_bot_msg = MagicMock()
+    fake_bot_msg.id = 200
+    fake_bot_msg.author.id = 1
+    adapter._client._connection = MagicMock()
+    adapter._client._connection._messages = [fake_bot_msg]
     adapter.handle_message = AsyncMock()
     adapter.build_source = MagicMock(return_value="<source>")
 

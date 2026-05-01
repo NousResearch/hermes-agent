@@ -194,6 +194,44 @@ class DiscordInteractionsHandler:
             _event_counters["discord.reactions.skipped_non_bot_author"] += 1
             return  # ignore the bot's own reactions
 
+        # Reacted-message author filter: only route reactions on the bot's
+        # own messages. Try the in-memory message cache first (zero API
+        # cost) before falling back to channel.fetch_message.
+        # discord.py state._messages is a Deque[Message] (or None when
+        # max_messages=None); iterate, don't .get(). Wrapped in try/except
+        # because _connection._messages is a discord.py internal: a minor-
+        # version rename or restructure should fall through to fetch_message
+        # silently rather than break reaction routing.
+        if client is None or client.user is None:
+            return
+        reacted_msg = None
+        try:
+            connection = getattr(client, "_connection", None)
+            cache = getattr(connection, "_messages", None) if connection is not None else None
+            if cache:
+                reacted_msg = next((m for m in cache if m.id == payload.message_id), None)
+        except (AttributeError, KeyError, TypeError):
+            logger.debug(
+                "handle_inbound_reaction: message cache lookup failed; falling through to fetch_message"
+            )
+            reacted_msg = None
+
+        if reacted_msg is None:
+            try:
+                channel = client.get_channel(payload.channel_id) or await client.fetch_channel(payload.channel_id)
+                reacted_msg = await channel.fetch_message(payload.message_id)
+            except Exception:
+                logger.debug(
+                    "handle_inbound_reaction: failed to fetch message %s in channel %s; aborting",
+                    payload.message_id,
+                    payload.channel_id,
+                )
+                return  # fail-safe
+
+        if reacted_msg.author.id != client.user.id:
+            _event_counters["discord.reactions.skipped_non_bot_author"] += 1
+            return  # not bot's message
+
         try:
             skills = self._skill_provider()
         except Exception:

@@ -645,6 +645,86 @@ def test_review_model_honors_auxiliary_curator_slot(curator_env):
     )
 
 
+def test_review_runtime_passes_auxiliary_curator_credentials(curator_env):
+    """Per-slot api_key/base_url must ride into resolve_runtime_provider (not main-only creds)."""
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "custom",
+                "model": "local-mini",
+                "api_key": "sk-curator-only",
+                "base_url": "http://localhost:11434/v1",
+            },
+        },
+    }
+    binding = curator._resolve_review_runtime(cfg)
+    assert binding.provider == "custom"
+    assert binding.model == "local-mini"
+    assert binding.explicit_api_key == "sk-curator-only"
+    assert binding.explicit_base_url == "http://localhost:11434/v1"
+
+
+def test_review_runtime_strips_blank_aux_credentials(curator_env):
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "openrouter",
+                "model": "x/y",
+                "api_key": "   ",
+                "base_url": "",
+            },
+        },
+    }
+    binding = curator._resolve_review_runtime(cfg)
+    assert binding.explicit_api_key is None
+    assert binding.explicit_base_url is None
+
+
+def test_review_runtime_ignores_auxiliary_credentials_when_using_main(curator_env):
+    """Falling through to main model must not pick up stray auxiliary.curator secrets."""
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "auto",
+                "model": "",
+                "api_key": "must-not-leak",
+                "base_url": "http://curator-slot-ignored/",
+            },
+        },
+    }
+    binding = curator._resolve_review_runtime(cfg)
+    assert (binding.provider, binding.model) == ("openrouter", "openai/gpt-5.5")
+    assert binding.explicit_api_key is None
+    assert binding.explicit_base_url is None
+
+
+def test_review_runtime_legacy_auxiliary_carry_credentials(curator_env, caplog):
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "curator": {
+            "auxiliary": {
+                "provider": "custom",
+                "model": "m",
+                "api_key": "legacy-key",
+                "base_url": "http://legacy/v1",
+            },
+        },
+    }
+    import logging
+    with caplog.at_level(logging.INFO, logger="agent.curator"):
+        binding = curator._resolve_review_runtime(cfg)
+    assert binding.explicit_api_key == "legacy-key"
+    assert binding.explicit_base_url == "http://legacy/v1"
+    assert any("deprecated curator.auxiliary" in rec.message for rec in caplog.records)
+
+
 def test_review_model_auxiliary_curator_partial_override_falls_back(curator_env):
     """Only one of slot provider/model set → fall back to the main pair.
 

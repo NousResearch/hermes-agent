@@ -1,4 +1,5 @@
 """Tests for Signal messenger platform adapter."""
+import asyncio
 import base64
 import json
 import pytest
@@ -7,6 +8,16 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from urllib.parse import quote
 
 from gateway.config import Platform, PlatformConfig
+
+
+@pytest.fixture(autouse=True)
+def _reset_signal_scheduler():
+    """The attachment scheduler is process-wide; drop it between tests
+    so a fresh token bucket greets each case."""
+    from gateway.platforms.signal_rate_limit import _reset_scheduler
+    _reset_scheduler()
+    yield
+    _reset_scheduler()
 
 
 # ---------------------------------------------------------------------------
@@ -800,15 +811,23 @@ class TestSignalSendDocumentViaHelper:
 
 
 # ---------------------------------------------------------------------------
-# send() returns message_id from timestamp (#4647)
+# Signal streaming edit capability / message_id behavior
 # ---------------------------------------------------------------------------
 
+class TestSignalStreamingCapabilities:
+    """Signal must opt out of edit-based streaming behavior."""
+
+    def test_signal_declares_no_message_editing(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        assert adapter.SUPPORTS_MESSAGE_EDITING is False
+
+
 class TestSignalSendReturnsMessageId:
-    """Signal send() must return a timestamp-based message_id so the stream
-    consumer can follow its edit→fallback path correctly."""
+    """Signal send() should not pretend sent messages are editable."""
 
     @pytest.mark.asyncio
-    async def test_send_returns_timestamp_as_message_id(self, monkeypatch):
+    async def test_send_returns_none_message_id_even_with_timestamp(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
         mock_rpc, _ = _stub_rpc({"timestamp": 1712345678000})
         adapter._rpc = mock_rpc
@@ -817,7 +836,7 @@ class TestSignalSendReturnsMessageId:
         result = await adapter.send(chat_id="+155****4567", content="hello")
 
         assert result.success is True
-        assert result.message_id == "1712345678000"
+        assert result.message_id is None
 
     @pytest.mark.asyncio
     async def test_send_returns_none_message_id_when_no_timestamp(self, monkeypatch):
@@ -997,3 +1016,781 @@ class TestSignalTypingBackoff:
 
         assert "+155****4567" not in adapter._typing_failures
         assert "+155****4567" not in adapter._typing_skip_until
+
+
+# ---------------------------------------------------------------------------
+# Reply quote extraction
+# ---------------------------------------------------------------------------
+
+class TestSignalQuoteExtraction:
+    """Verify Signal reply quote fields are propagated to MessageEvent."""
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_sets_reply_context_from_quote(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "yes I agree",
+                    "quote": {
+                        "id": 99,
+                        "text": "want to grab lunch?",
+                        "author": "+15550002222",
+                    },
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.text == "yes I agree"
+        assert event.reply_to_message_id == "99"
+        assert event.reply_to_text == "want to grab lunch?"
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_without_quote_leaves_reply_fields_none(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "plain message",
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.text == "plain message"
+        assert event.reply_to_message_id is None
+        assert event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_quote_without_text_sets_only_reply_id(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "reply without quote text",
+                    "quote": {
+                        "id": 123,
+                        "author": "+15550002222",
+                    },
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.reply_to_message_id == "123"
+        assert event.reply_to_text is None
+
+# ---------------------------------------------------------------------------
+# _rpc rate-limit detection
+# ---------------------------------------------------------------------------
+
+class _FakeHttpResponse:
+    """Minimal stand-in for httpx.Response — only what _rpc touches."""
+
+    def __init__(self, json_data):
+        self._json = json_data
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._json
+
+
+def _install_fake_client(adapter, json_data):
+    """Replace adapter.client.post with an async fn returning json_data."""
+    from types import SimpleNamespace
+
+    async def _post(url, json=None, timeout=None):
+        return _FakeHttpResponse(json_data)
+
+    adapter.client = SimpleNamespace(post=_post)
+
+
+class TestSignalRpcRateLimit:
+    """_rpc opt-in 429 detection and SignalRateLimitError propagation."""
+
+    @pytest.mark.asyncio
+    async def test_raises_on_429_when_opted_in(self, monkeypatch):
+        from gateway.platforms.signal import SignalRateLimitError
+
+        adapter = _make_signal_adapter(monkeypatch)
+        _install_fake_client(adapter, {
+            "error": {"message": "Failed to send: [429] Rate Limited"},
+        })
+
+        with pytest.raises(SignalRateLimitError):
+            await adapter._rpc("send", {}, raise_on_rate_limit=True)
+
+    @pytest.mark.asyncio
+    async def test_raises_on_rate_limit_exception_substring(self, monkeypatch):
+        """Some signal-cli builds emit 'RateLimitException' without a literal [429]."""
+        from gateway.platforms.signal import SignalRateLimitError
+
+        adapter = _make_signal_adapter(monkeypatch)
+        _install_fake_client(adapter, {
+            "error": {"message": "RateLimitException occurred"},
+        })
+
+        with pytest.raises(SignalRateLimitError):
+            await adapter._rpc("send", {}, raise_on_rate_limit=True)
+
+    @pytest.mark.asyncio
+    async def test_default_swallows_rate_limit_returns_none(self, monkeypatch):
+        """Without opt-in, 429 stays swallowed — preserves backwards compat."""
+        adapter = _make_signal_adapter(monkeypatch)
+        _install_fake_client(adapter, {
+            "error": {"message": "[429] Rate Limited"},
+        })
+
+        result = await adapter._rpc("send", {})
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_non_rate_limit_error_does_not_raise_when_opted_in(self, monkeypatch):
+        """Opt-in only escalates 429s; other errors still return None."""
+        adapter = _make_signal_adapter(monkeypatch)
+        _install_fake_client(adapter, {
+            "error": {"message": "Recipient unknown (UntrustedIdentityException)"},
+        })
+
+        result = await adapter._rpc("send", {}, raise_on_rate_limit=True)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_raises_with_retry_after_from_v0_14_3_payload(self, monkeypatch):
+        """signal-cli ≥ v0.14.3 surfaces server Retry-After under
+        ``error.data.response.results[*].retryAfterSeconds`` — _rpc
+        carries that value through SignalRateLimitError.retry_after."""
+        from gateway.platforms.signal_rate_limit import (
+            SignalRateLimitError, SIGNAL_RPC_ERROR_RATELIMIT,
+        )
+
+        adapter = _make_signal_adapter(monkeypatch)
+        _install_fake_client(adapter, {
+            "error": {
+                "code": SIGNAL_RPC_ERROR_RATELIMIT,
+                "message": "Failed to send message due to rate limiting",
+                "data": {
+                    "response": {
+                        "timestamp": 0,
+                        "results": [
+                            {"type": "RATE_LIMIT_FAILURE", "retryAfterSeconds": 90},
+                        ],
+                    }
+                },
+            },
+        })
+
+        with pytest.raises(SignalRateLimitError) as exc_info:
+            await adapter._rpc("send", {}, raise_on_rate_limit=True)
+
+        assert exc_info.value.retry_after == 90.0
+
+    @pytest.mark.asyncio
+    async def test_raises_with_retry_after_none_for_old_signal_cli(self, monkeypatch):
+        """Older signal-cli builds emit only the substring; retry_after=None."""
+        from gateway.platforms.signal import SignalRateLimitError
+
+        adapter = _make_signal_adapter(monkeypatch)
+        _install_fake_client(adapter, {
+            "error": {"message": "Failed: [429] Rate Limited"},
+        })
+
+        with pytest.raises(SignalRateLimitError) as exc_info:
+            await adapter._rpc("send", {}, raise_on_rate_limit=True)
+
+        assert exc_info.value.retry_after is None
+
+    @pytest.mark.asyncio
+    async def test_raises_on_retry_later_inside_attachment_invalid(self, monkeypatch):
+        """Production case: 429 during attachment upload surfaces as
+        AttachmentInvalidException → UnexpectedErrorException (code
+        -32603), with the libsignal-net 'Retry after N seconds'
+        message embedded. _rpc must still detect this as rate-limit
+        AND parse the seconds out of the message."""
+        from gateway.platforms.signal import SignalRateLimitError
+
+        adapter = _make_signal_adapter(monkeypatch)
+        _install_fake_client(adapter, {
+            "error": {
+                "code": -32603,
+                "message": (
+                    "Failed to send message: /home/max/sync/Memes/fengshui.jpeg: "
+                    "org.signal.libsignal.net.RetryLaterException: Retry after 4 seconds "
+                    "(AttachmentInvalidException) (UnexpectedErrorException)"
+                ),
+                "data": None,
+            },
+        })
+
+        with pytest.raises(SignalRateLimitError) as exc_info:
+            await adapter._rpc("send", {}, raise_on_rate_limit=True)
+
+        assert exc_info.value.retry_after == 4.0
+
+
+# ---------------------------------------------------------------------------
+# send_multiple_images — chunking, pacing, rate-limit retry
+# ---------------------------------------------------------------------------
+
+
+def _make_image_files(tmp_path, count, prefix="img"):
+    """Materialize `count` tiny PNG files and return file:// URIs for them."""
+    uris = []
+    for i in range(count):
+        p = tmp_path / f"{prefix}_{i}.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 32)
+        uris.append((f"file://{p}", ""))
+    return uris
+
+
+def _stub_rpc_responses(responses):
+    """Build an _rpc replacement that pops a response per call.
+
+    Each entry in `responses` is either:
+      * a return value (dict / None) → returned to the caller, or
+      * an Exception subclass instance → raised.
+    Captures (params, kwargs) per call for inspection.
+    """
+    captured = []
+    queue = list(responses)
+
+    async def mock_rpc(method, params, rpc_id=None, **kwargs):
+        captured.append({"method": method, "params": dict(params), "kwargs": kwargs})
+        await asyncio.sleep(0)
+        if not queue:
+            raise AssertionError("Unexpected extra _rpc call")
+        item = queue.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    return mock_rpc, captured
+
+
+def _patch_scheduler_sleep(monkeypatch, capture: list):
+    """Capture sleeps inside the scheduler so tests don't actually wait.
+    Zero-second sleeps (e.g. event-loop yields from mock RPCs) are
+    delegated to the real asyncio.sleep so they don't pollute the
+    capture list."""
+    _real_sleep = asyncio.sleep
+    offset = [0.0]
+
+    async def fake_sleep(seconds):
+        if seconds > 0:
+            capture.append(seconds)
+            offset[0] += seconds
+        else:
+            await _real_sleep(0)
+
+    monkeypatch.setattr(
+        "gateway.platforms.signal_rate_limit.asyncio.sleep", fake_sleep
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.signal_rate_limit.time.monotonic", lambda: offset[0]
+    )
+
+
+class TestSignalSendMultipleImages:
+    @pytest.mark.asyncio
+    async def test_empty_list_is_noop(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc_responses([])
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        await adapter.send_multiple_images(chat_id="+155****4567", images=[])
+
+        assert captured == []
+        adapter._stop_typing_indicator.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_all_bad_files_no_rpc(self, monkeypatch, tmp_path):
+        """If every image is missing/invalid, no RPC fires."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc_responses([])
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        await adapter.send_multiple_images(
+            chat_id="+155****4567",
+            images=[(f"file://{tmp_path}/missing_a.png", ""),
+                    (f"file://{tmp_path}/missing_b.png", "")],
+        )
+
+        assert captured == []
+
+    @pytest.mark.asyncio
+    async def test_single_batch_under_limit(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc_responses([{"timestamp": 1}])
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        images = _make_image_files(tmp_path, 5)
+        await adapter.send_multiple_images(chat_id="+155****4567", images=images)
+
+        assert len(captured) == 1
+        params = captured[0]["params"]
+        assert params["recipient"] == ["+155****4567"]
+        assert params["message"] == ""
+        assert len(params["attachments"]) == 5
+        # raise_on_rate_limit must be opted into so the retry loop sees 429s
+        assert captured[0]["kwargs"].get("raise_on_rate_limit") is True
+
+    @pytest.mark.asyncio
+    async def test_skips_bad_images_in_mixed_batch(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc_responses([{"timestamp": 1}])
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        good = _make_image_files(tmp_path, 2, prefix="ok")
+        bad = [(f"file://{tmp_path}/missing.png", "")]
+        await adapter.send_multiple_images(
+            chat_id="+155****4567", images=good[:1] + bad + good[1:]
+        )
+
+        assert len(captured) == 1
+        assert len(captured[0]["params"]["attachments"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_429_calibrates_scheduler_then_retries(self, monkeypatch, tmp_path):
+        """Server says retry_after=27 per token. After feedback, the
+        scheduler's refill_rate becomes 1/27. Re-acquiring n=3 tokens
+        therefore waits 3 × 27 = 81s — pulled from the server's
+        authoritative rate, not a `× 32` defensive multiplier."""
+        from gateway.platforms.signal import SignalRateLimitError
+
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc_responses([
+            SignalRateLimitError("Failed: rate limit", retry_after=27.0),
+            {"timestamp": 99},
+        ])
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        sleep_calls: list = []
+        _patch_scheduler_sleep(monkeypatch, sleep_calls)
+
+        images = _make_image_files(tmp_path, 3)
+        await adapter.send_multiple_images(chat_id="+155****4567", images=images)
+
+        assert len(captured) == 2  # initial 429 + retry success
+        assert sleep_calls == [pytest.approx(3 * 27.0, abs=1.0)]
+
+    @pytest.mark.asyncio
+    async def test_429_without_retry_after_uses_default_rate(
+        self, monkeypatch, tmp_path
+    ):
+        """signal-cli < v0.14.3 doesn't surface Retry-After. The
+        scheduler keeps its default refill rate (1 token / 4s), so a
+        retry of n=3 waits 12s."""
+        from gateway.platforms.signal_rate_limit import (
+            SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER,
+            SignalRateLimitError,
+        )
+
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc_responses([
+            SignalRateLimitError("[429] Rate Limited", retry_after=None),
+            {"timestamp": 99},
+        ])
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        sleep_calls: list = []
+        _patch_scheduler_sleep(monkeypatch, sleep_calls)
+
+        await adapter.send_multiple_images(
+            chat_id="+155****4567",
+            images=_make_image_files(tmp_path, 3),
+        )
+
+        assert len(captured) == 2
+        assert sleep_calls == [
+            pytest.approx(3 * SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER, abs=1.0)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_exhaust_continues_to_next_batch(
+        self, monkeypatch, tmp_path
+    ):
+        """Both attempts on batch 0 fail; batch 1 still gets a chance.
+        The scheduler's natural pacing on the next acquire stands in for
+        the old explicit cooldown."""
+        from gateway.platforms.signal import SignalRateLimitError
+
+        adapter = _make_signal_adapter(monkeypatch)
+        responses = [
+            SignalRateLimitError("[429]", retry_after=4.0),
+            SignalRateLimitError("[429]", retry_after=4.0),
+            {"timestamp": 7},
+        ]
+        mock_rpc, captured = _stub_rpc_responses(responses)
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        sleep_calls: list = []
+        _patch_scheduler_sleep(monkeypatch, sleep_calls)
+
+        images = _make_image_files(tmp_path, 33)  # forces 2 batches
+        await adapter.send_multiple_images(chat_id="+155****4567", images=images)
+
+        # 2 attempts on batch 0 + 1 on batch 1
+        assert len(captured) == 3
+
+    @pytest.mark.asyncio
+    async def test_full_batch_emits_pacing_notice_for_followup(
+        self, monkeypatch, tmp_path
+    ):
+        """Two full batches of 32. Batch 1 needs 14 more tokens than the
+        18 remaining after batch 0, so the scheduler sleeps 56s —
+        crossing the 10s user-facing pacing-notice threshold."""
+        from gateway.platforms.signal import SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        from gateway.platforms.signal_rate_limit import (
+            SIGNAL_RATE_LIMIT_BUCKET_CAPACITY,
+            SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
+        )
+
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc_responses([
+            {"timestamp": 1}, {"timestamp": 2},
+        ])
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+        adapter._notify_batch_pacing = AsyncMock()
+
+        sleep_calls: list = []
+        _patch_scheduler_sleep(monkeypatch, sleep_calls)
+
+        images = _make_image_files(tmp_path, 64)
+        await adapter.send_multiple_images(chat_id="+155****4567", images=images)
+
+        assert len(captured) == 2
+        assert len(captured[0]["params"]["attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        assert len(captured[1]["params"]["attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
+        assert len(sleep_calls) == 1
+        # Batch 1 deficit: 32 - (50 - 32) = 14 tokens × 4s = 56s
+        expected_wait = (
+            SIGNAL_MAX_ATTACHMENTS_PER_MSG
+            - (SIGNAL_RATE_LIMIT_BUCKET_CAPACITY - SIGNAL_MAX_ATTACHMENTS_PER_MSG)
+        ) * SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
+        assert sleep_calls[0] == pytest.approx(expected_wait, abs=1.0)
+        adapter._notify_batch_pacing.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_short_followup_wait_skips_pacing_notice(
+        self, monkeypatch, tmp_path
+    ):
+        """Batch 1 only needs 1 token but 18 remain after batch 0
+        (50 capacity − 32 batch 0). No wait, no pacing notice."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc_responses([
+            {"timestamp": 1}, {"timestamp": 2},
+        ])
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+        adapter._notify_batch_pacing = AsyncMock()
+
+        sleep_calls: list = []
+        _patch_scheduler_sleep(monkeypatch, sleep_calls)
+
+        images = _make_image_files(tmp_path, 33)
+        await adapter.send_multiple_images(chat_id="+155****4567", images=images)
+
+        assert len(captured) == 2
+        assert len(sleep_calls) == 0
+        adapter._notify_batch_pacing.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_single_batch_send_does_not_pace(self, monkeypatch, tmp_path):
+        """A single-batch send (≤32 attachments) leaves the scheduler
+        with tokens to spare — no follow-up acquire, no sleep."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc_responses([{"timestamp": 1}])
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        sleep_calls: list = []
+        _patch_scheduler_sleep(monkeypatch, sleep_calls)
+
+        images = _make_image_files(tmp_path, 10)
+        await adapter.send_multiple_images(chat_id="+155****4567", images=images)
+
+        assert len(captured) == 1
+        assert sleep_calls == []
+
+
+class TestSignalRateLimitDetection:
+    """Coverage for the typed-code + substring detection helpers."""
+
+    def test_detect_typed_code(self):
+        from gateway.platforms.signal_rate_limit import (
+            _is_signal_rate_limit_error,
+            SIGNAL_RPC_ERROR_RATELIMIT,
+        )
+        err = {"code": SIGNAL_RPC_ERROR_RATELIMIT, "message": "any text"}
+        assert _is_signal_rate_limit_error(err) is True
+
+    def test_detect_substring_fallback(self):
+        from gateway.platforms.signal import _is_signal_rate_limit_error
+        err = {"code": -32603, "message": "Failed: [429] Rate Limited (RateLimitException) (UnexpectedErrorException)"}
+        assert _is_signal_rate_limit_error(err) is True
+
+    def test_detect_non_rate_limit(self):
+        from gateway.platforms.signal import _is_signal_rate_limit_error
+        err = {"code": -32603, "message": "UntrustedIdentityException"}
+        assert _is_signal_rate_limit_error(err) is False
+
+    def test_extract_retry_after_from_results(self):
+        from gateway.platforms.signal import _extract_retry_after_seconds
+        err = {
+            "code": -5,
+            "message": "Failed to send message due to rate limiting",
+            "data": {
+                "response": {
+                    "timestamp": 0,
+                    "results": [
+                        {"type": "RATE_LIMIT_FAILURE", "retryAfterSeconds": 30},
+                        {"type": "RATE_LIMIT_FAILURE", "retryAfterSeconds": 45},
+                    ],
+                }
+            },
+        }
+        assert _extract_retry_after_seconds(err) == 45.0
+
+    def test_extract_retry_after_missing(self):
+        """Old signal-cli builds don't expose retryAfterSeconds — return None."""
+        from gateway.platforms.signal import _extract_retry_after_seconds
+        err = {"code": -32603, "message": "[429] Rate Limited"}
+        assert _extract_retry_after_seconds(err) is None
+
+    def test_detect_retry_later_exception_substring(self):
+        """libsignal-net's RetryLaterException leaks through as
+        AttachmentInvalidException → UnexpectedErrorException when the
+        rate-limit fires inside attachment upload. Detect it by substring."""
+        from gateway.platforms.signal import _is_signal_rate_limit_error
+        err = {
+            "code": -32603,
+            "message": (
+                "Failed to send message: /home/max/sync/Memes/fengshui.jpeg: "
+                "org.signal.libsignal.net.RetryLaterException: Retry after 4 seconds "
+                "(AttachmentInvalidException) (UnexpectedErrorException)"
+            ),
+        }
+        assert _is_signal_rate_limit_error(err) is True
+
+    def test_extract_retry_after_parses_message_string(self):
+        """When the structured field is missing, parse the seconds out
+        of the human 'Retry after N seconds' substring."""
+        from gateway.platforms.signal import _extract_retry_after_seconds
+        err = {
+            "code": -32603,
+            "message": (
+                "Failed to send message: /home/max/sync/Memes/fengshui.jpeg: "
+                "org.signal.libsignal.net.RetryLaterException: Retry after 4 seconds "
+                "(AttachmentInvalidException) (UnexpectedErrorException)"
+            ),
+        }
+        assert _extract_retry_after_seconds(err) == 4.0
+
+
+class TestSignalSendTimeout:
+    """Timeout scaling for batched attachment sends."""
+
+    def test_zero_attachments_uses_default(self):
+        from gateway.platforms.signal import _signal_send_timeout
+        assert _signal_send_timeout(0) == 30.0
+
+    def test_floor_at_60s(self):
+        from gateway.platforms.signal import _signal_send_timeout
+        # Few attachments (would be 5×N=5s) should still get 60s floor.
+        assert _signal_send_timeout(1) == 60.0
+        assert _signal_send_timeout(5) == 60.0
+
+    def test_scales_with_batch_size(self):
+        from gateway.platforms.signal import _signal_send_timeout
+        # 32 attachments × 5s = 160s; ought to comfortably outlast a
+        # serial upload of an attachment-heavy batch.
+        assert _signal_send_timeout(32) == 160.0
+
+
+# ---------------------------------------------------------------------------
+# Contentless Envelope Filtering (profile key updates, empty messages)
+# ---------------------------------------------------------------------------
+
+class TestSignalContentlessEnvelope:
+    """Verify that profile key updates and empty Signal messages are skipped."""
+
+    @pytest.mark.asyncio
+    async def test_skips_profile_key_update_no_message_field(self, monkeypatch):
+        """Profile key updates may carry a dataMessage without 'message' field.
+        Must be skipped to avoid triggering agent turns for metadata."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Profile key update: dataMessage exists but has no "message" field
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    # No "message" field — profile key update metadata only
+                    "profileKey": "some-profile-key-data",
+                },
+            }
+        })
+
+        assert "event" not in captured, "Profile key update should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_skips_empty_message(self, monkeypatch):
+        """Empty text messages (message='') should be skipped."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "",
+                },
+            }
+        })
+
+        assert "event" not in captured, "Empty message should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_skips_whitespace_only_message(self, monkeypatch):
+        """Whitespace-only messages ('   ') should be skipped."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "   \n\t  ",
+                },
+            }
+        })
+
+        assert "event" not in captured, "Whitespace-only message should be skipped"
+
+    @pytest.mark.asyncio
+    async def test_allows_message_with_attachment_no_text(self, monkeypatch):
+        """Messages with attachments but no text should still be processed."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        # Mock attachment fetch to return a cached image
+        png_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+        b64_data = base64.b64encode(png_data).decode()
+        adapter._rpc, _ = _stub_rpc({"data": b64_data})
+
+        with patch("gateway.platforms.signal.cache_image_from_bytes", return_value="/tmp/img.png"):
+            await adapter._handle_envelope({
+                "envelope": {
+                    "sourceNumber": "+155****9999",
+                    "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                    "sourceName": "Elliott McManis",
+                    "timestamp": 1777600696077,
+                    "dataMessage": {
+                        "message": "",  # No text
+                        "attachments": [{"id": "att-123", "size": 200}],
+                    },
+                }
+            })
+
+        assert "event" in captured, "Message with attachment should NOT be skipped"
+        assert captured["event"].media_urls == ["/tmp/img.png"]
+
+    @pytest.mark.asyncio
+    async def test_allows_normal_text_message(self, monkeypatch):
+        """Normal text messages should still flow through."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceUuid": "05668cf3-8ffa-467e-9b24-f5eefa5cf475",
+                "sourceName": "Elliott McManis",
+                "timestamp": 1777600696077,
+                "dataMessage": {
+                    "message": "hello world",
+                },
+            }
+        })
+
+        assert "event" in captured, "Normal message should NOT be skipped"
+        assert captured["event"].text == "hello world"

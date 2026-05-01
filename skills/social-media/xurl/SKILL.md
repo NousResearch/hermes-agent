@@ -1,6 +1,6 @@
 ---
 name: xurl
-description: Interact with X/Twitter via xurl, the official X API CLI. Use for posting, replying, quoting, searching, timelines, mentions, likes, reposts, bookmarks, follows, DMs, media upload, and raw v2 endpoint access.
+description: "X/Twitter via xurl CLI: post, search, DM, media, v2 API."
 version: 1.1.1
 author: xdevplatform + openclaw + Hermes Agent
 license: MIT

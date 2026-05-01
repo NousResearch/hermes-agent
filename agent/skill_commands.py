@@ -234,7 +234,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
 
         for scan_dir in dirs_to_scan:
             for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
-                if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+                if any(part in ('.git', '.github', '.hub', '.archive') for part in skill_md.parts):
                     continue
                 try:
                     content = skill_md.read_text(encoding='utf-8')
@@ -284,6 +284,71 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     return _skill_commands
 
 
+def reload_skills() -> Dict[str, Any]:
+    """Re-scan the skills directory and return a diff of what changed.
+
+    Rescans ``~/.hermes/skills/`` and any ``skills.external_dirs`` so the
+    slash-command map (``agent.skill_commands._skill_commands``) reflects
+    skills added or removed on disk.
+
+    This does NOT invalidate the skills system-prompt cache. Skills are
+    called by name via ``/skill-name``, ``skills_list``, or ``skill_view``
+    — they don't need to be in the system prompt for the model to use them.
+    Keeping the prompt cache intact preserves prefix caching across the
+    reload, so a user invoking ``/reload-skills`` pays no cache-reset cost.
+
+    Returns:
+        Dict with keys::
+
+            {
+              "added":      [{"name": str, "description": str}, ...],
+              "removed":    [{"name": str, "description": str}, ...],
+              "unchanged":  [skill names present before and after],
+              "total":      total skill count after rescan,
+              "commands":   total /slash-skill count after rescan,
+            }
+
+        ``description`` is the skill's full SKILL.md frontmatter
+        ``description:`` field — the same string the system prompt renders
+        as ``    - name: description`` for pre-existing skills.
+    """
+    # Snapshot pre-reload state (name -> description) from the current
+    # slash-command cache. Using dicts lets the post-rescan diff carry
+    # descriptions for newly-visible or just-removed skills without a
+    # second disk walk.
+    def _snapshot(cmds: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+        out: Dict[str, str] = {}
+        for slash_key, info in cmds.items():
+            bare = slash_key.lstrip("/")
+            out[bare] = (info or {}).get("description") or ""
+        return out
+
+    before = _snapshot(_skill_commands)
+
+    # Rescan the skills dir. ``scan_skill_commands`` resets
+    # ``_skill_commands = {}`` internally and repopulates it.
+    new_commands = scan_skill_commands()
+
+    after = _snapshot(new_commands)
+
+    added_names = sorted(set(after) - set(before))
+    removed_names = sorted(set(before) - set(after))
+    unchanged = sorted(set(after) & set(before))
+
+    added = [{"name": n, "description": after[n]} for n in added_names]
+    # For removed skills, use the description we had cached pre-rescan
+    # (the skill file is gone so we can't re-read it).
+    removed = [{"name": n, "description": before[n]} for n in removed_names]
+
+    return {
+        "added": added,
+        "removed": removed,
+        "unchanged": unchanged,
+        "total": len(after),
+        "commands": len(new_commands),
+    }
+
+
 def resolve_skill_command_key(command: str) -> Optional[str]:
     """Resolve a user-typed /command to its canonical skill_cmds key.
 
@@ -328,8 +393,16 @@ def build_skill_invocation_message(
         return f"[Failed to load skill: {skill_info['name']}]"
 
     loaded_skill, skill_dir, skill_name = loaded
+
+    # Track active usage for Curator lifecycle management (#17782)
+    try:
+        from tools.skill_usage import bump_use
+        bump_use(skill_name)
+    except Exception:
+        pass  # Non-critical — skill invocation proceeds regardless
+
     activation_note = (
-        f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want '
+        f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
         "you to follow its instructions. The full skill content is loaded below.]"
     )
     return _build_skill_message(
@@ -367,8 +440,16 @@ def build_preloaded_skills_prompt(
             continue
 
         loaded_skill, skill_dir, skill_name = loaded
+
+        # Track active usage for Curator lifecycle management (#17782)
+        try:
+            from tools.skill_usage import bump_use
+            bump_use(skill_name)
+        except Exception:
+            pass  # Non-critical
+
         activation_note = (
-            f'[SYSTEM: The user launched this CLI session with the "{skill_name}" skill '
+            f'[IMPORTANT: The user launched this CLI session with the "{skill_name}" skill '
             "preloaded. Treat its instructions as active guidance for the duration of this "
             "session unless the user overrides them.]"
         )

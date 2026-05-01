@@ -42,6 +42,7 @@ class FailoverReason(enum.Enum):
     # Context / payload
     context_overflow = "context_overflow"  # Context too large — compress, not failover
     payload_too_large = "payload_too_large"  # 413 — compress payload
+    image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
 
     # Model
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
@@ -53,6 +54,7 @@ class FailoverReason(enum.Enum):
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
+    oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
 
     # Catch-all
     unknown = "unknown"                  # Unclassifiable — retry with backoff
@@ -90,6 +92,7 @@ class ClassifiedError:
 _BILLING_PATTERNS = [
     "insufficient credits",
     "insufficient_quota",
+    "insufficient balance",
     "credit balance",
     "credits have been exhausted",
     "top up your credits",
@@ -145,6 +148,20 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
     "request entity too large",
     "payload too large",
     "error code: 413",
+]
+
+# Image-size patterns.  Matched against 400 bodies (not 413) because most
+# providers return a 400 with a specific image-too-big message before the
+# whole request hits the 413 size limit.  Anthropic's wording is the most
+# important here (hard 5 MB per image, returned as
+# "messages.N.content.K.image.source.base64: image exceeds 5 MB maximum").
+_IMAGE_TOO_LARGE_PATTERNS = [
+    "image exceeds",        # Anthropic: "image exceeds 5 MB maximum"
+    "image too large",      # generic
+    "image_too_large",      # error_code variant
+    "image size exceeds",   # variant
+    # "request_too_large" on a request known to contain an image → image is
+    # the likely culprit; we still try the shrink path before giving up.
 ]
 
 # Context overflow patterns
@@ -434,6 +451,25 @@ def classify_api_error(
             should_compress=True,
         )
 
+    # Anthropic OAuth subscription rejects the 1M-context beta header.
+    # Observed error body: "The long context beta is not yet available for
+    # this subscription." Returned as HTTP 400 from native Anthropic when
+    # the subscription doesn't include 1M context, even though the request
+    # carries ``anthropic-beta: context-1m-2025-08-07``. The recovery path
+    # in run_agent.py rebuilds the Anthropic client with the beta stripped
+    # and retries once. Pattern is narrow enough that it won't collide with
+    # the 429 tier-gate pattern above (different status, different phrase).
+    if (
+        status_code == 400
+        and "long context beta" in error_msg
+        and "not yet available" in error_msg
+    ):
+        return _result(
+            FailoverReason.oauth_long_context_beta_forbidden,
+            retryable=True,
+            should_compress=False,
+        )
+
     # ── 2. HTTP status code classification ──────────────────────────
 
     if status_code is not None:
@@ -671,6 +707,15 @@ def _classify_400(
 ) -> ClassifiedError:
     """Classify 400 Bad Request — context overflow, format error, or generic."""
 
+    # Image-too-large from 400 (Anthropic's 5 MB per-image check fires this way).
+    # Must be checked BEFORE context_overflow because messages can trip both
+    # patterns ("exceeds" + "image") and image-shrink is a cheaper recovery.
+    if any(p in error_msg for p in _IMAGE_TOO_LARGE_PATTERNS):
+        return result_fn(
+            FailoverReason.image_too_large,
+            retryable=True,
+        )
+
     # Context overflow from 400
     if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
         return result_fn(
@@ -796,6 +841,13 @@ def _classify_by_message(
             FailoverReason.payload_too_large,
             retryable=True,
             should_compress=True,
+        )
+
+    # Image-too-large patterns (from message text when no status_code)
+    if any(p in error_msg for p in _IMAGE_TOO_LARGE_PATTERNS):
+        return result_fn(
+            FailoverReason.image_too_large,
+            retryable=True,
         )
 
     # Usage-limit patterns need the same disambiguation as 402: some providers

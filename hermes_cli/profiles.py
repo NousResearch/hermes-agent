@@ -11,7 +11,7 @@ zero migration needed.
 Usage::
 
     hermes profile create coder          # fresh profile + bundled skills
-    hermes profile create coder --clone  # also copy config, .env, SOUL.md
+    hermes profile create coder --clone  # also copy config, .env, SOUL.md, skills
     hermes profile create coder --clone-all  # full copy of source profile
     coder chat                           # use via wrapper alias
     hermes -p coder chat                 # or via flag
@@ -70,6 +70,29 @@ _CLONE_ALL_STRIP = [
     "gateway_state.json",
     "processes.json",
 ]
+
+
+def _clone_all_copytree_ignore(source_dir: Path):
+    """Ignore ``profiles/`` at the root of *source_dir* only.
+
+    ``~/.hermes`` contains ``profiles/<name>/`` for sibling named profiles.
+    ``shutil.copytree`` would otherwise duplicate that entire tree inside the
+    new profile (recursive ``.../profiles/.../profiles/...``). Export already
+    excludes ``profiles`` via ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` — match that
+    behavior for ``--clone-all``.
+    """
+    source_resolved = source_dir.resolve()
+
+    def _ignore(directory: str, names: List[str]) -> List[str]:
+        try:
+            if Path(directory).resolve() == source_resolved:
+                return [n for n in names if n == "profiles"]
+        except (OSError, ValueError):
+            pass
+        return []
+
+    return _ignore
+
 
 # Directories/files to exclude when exporting the default (~/.hermes) profile.
 # The default profile contains infrastructure (repo checkout, worktrees, DBs,
@@ -388,7 +411,8 @@ def create_profile(
     clone_all:
         If True, do a full copytree of the source (all state).
     clone_config:
-        If True, copy only config files (config.yaml, .env, SOUL.md).
+        If True, copy config files (config.yaml, .env, SOUL.md), installed
+        skills, and selected profile identity files from the source profile.
     no_alias:
         If True, skip wrapper script creation.
 
@@ -424,8 +448,12 @@ def create_profile(
             )
 
     if clone_all and source_dir:
-        # Full copy of source profile
-        shutil.copytree(source_dir, profile_dir)
+        # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
+        shutil.copytree(
+            source_dir,
+            profile_dir,
+            ignore=_clone_all_copytree_ignore(source_dir),
+        )
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
@@ -441,6 +469,14 @@ def create_profile(
                 src = source_dir / filename
                 if src.exists():
                     shutil.copy2(src, profile_dir / filename)
+
+            # Clone installed skills from the source profile. The dashboard's
+            # "clone from default" flow is expected to preserve both bundled
+            # and user-installed skills so the new profile immediately has the
+            # same agent capabilities as the source profile.
+            source_skills = source_dir / "skills"
+            if source_skills.is_dir():
+                shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
 
             # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:
@@ -954,6 +990,59 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 # Rename
 # ---------------------------------------------------------------------------
 
+def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) -> None:
+    """Rename Honcho host blocks for a renamed profile without changing peers."""
+    old_host = f"hermes.{old_name}"
+    new_host = f"hermes.{new_name}"
+
+    candidates = [
+        new_dir / "honcho.json",
+        _get_default_hermes_home() / "honcho.json",
+        Path.home() / ".honcho" / "config.json",
+    ]
+
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        if resolved in seen or not path.is_file():
+            continue
+        seen.add(resolved)
+
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        hosts = raw.get("hosts")
+        if not isinstance(hosts, dict) or old_host not in hosts:
+            continue
+
+        if new_host in hosts:
+            print(f"⚠ Honcho host block not migrated: {new_host} already exists in {path}")
+            continue
+
+        block = hosts[old_host]
+        if isinstance(block, dict) and "aiPeer" not in block:
+            bare = old_host.split(".", 1)[1] if "." in old_host else old_host
+            block["aiPeer"] = bare
+        hosts[new_host] = hosts.pop(old_host)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        try:
+            tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            tmp.replace(path)
+        except OSError:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            continue
+
+        print(f"✓ Honcho host updated: {old_host} → {new_host}")
+
+
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile.
 
@@ -984,7 +1073,10 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     old_dir.rename(new_dir)
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
 
-    # 3. Update wrapper script
+    # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
+    _migrate_honcho_profile_host(old_name, new_name, new_dir)
+
+    # 4. Update wrapper script
     remove_wrapper_script(old_name)
     collision = check_alias_collision(new_name)
     if not collision:
@@ -993,7 +1085,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     else:
         print(f"⚠ Cannot create alias '{new_name}' — {collision}")
 
-    # 4. Update active_profile if it pointed to old name
+    # 5. Update active_profile if it pointed to old name
     try:
         if get_active_profile() == old_name:
             set_active_profile(new_name)

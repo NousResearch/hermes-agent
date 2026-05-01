@@ -231,6 +231,19 @@ def _resolve_runtime_from_pool_entry(
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
                 api_mode = configured_mode
+        # Model-family inference for GPT-5.x / codex / o1-o4: Azure rejects
+        # /chat/completions on these with 400 "operation unsupported" — see
+        # azure_foundry_model_api_mode() for rationale.  Skip when the user
+        # explicitly picked anthropic_messages (Anthropic-style endpoint).
+        if effective_model and api_mode != "anthropic_messages":
+            try:
+                from hermes_cli.models import azure_foundry_model_api_mode
+
+                inferred = azure_foundry_model_api_mode(effective_model)
+            except Exception:
+                inferred = None
+            if inferred:
+                api_mode = inferred
         # For Anthropic-style endpoints, strip /v1 suffix
         if api_mode == "anthropic_messages":
             base_url = re.sub(r"/v1/?$", "", base_url)
@@ -247,11 +260,16 @@ def _resolve_runtime_from_pool_entry(
             if cfg_base_url:
                 base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-        if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-            api_mode = configured_mode
-        elif provider in ("opencode-zen", "opencode-go"):
+        if provider in ("opencode-zen", "opencode-go"):
+            # Re-derive api_mode from the effective model rather than the
+            # persisted api_mode: the opencode providers serve both
+            # anthropic_messages and chat_completions models, so the previous
+            # session's mode must not leak across /model switches.
+            # Refs #16878.
             from hermes_cli.models import opencode_model_api_mode
             api_mode = opencode_model_api_mode(provider, effective_model)
+        elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+            api_mode = configured_mode
         else:
             # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
             # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
@@ -373,7 +391,14 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
-                    api_mode = _parse_api_mode(entry.get("api_mode"))
+                    # The v11→v12 migration writes the API mode under the new
+                    # ``transport`` field, but hand-edited configs may still
+                    # use the legacy ``api_mode`` spelling.  Accept both —
+                    # the runtime normaliser ``_normalize_custom_provider_entry``
+                    # already does, so without this lift every migrated config
+                    # silently downgrades codex_responses / anthropic_messages
+                    # providers to chat_completions in the resolved runtime.
+                    api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
                     return result
@@ -391,7 +416,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
                         }
-                        api_mode = _parse_api_mode(entry.get("api_mode"))
+                        api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
                         return result
@@ -451,6 +476,30 @@ def _resolve_named_custom_runtime(
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
+    # Bare `provider="custom"` with an explicit base_url (e.g. propagated
+    # from a `model_aliases:` direct-alias resolution) — build a runtime
+    # directly so the alias's base_url actually takes effect.
+    requested_norm = (requested_provider or "").strip().lower()
+    if requested_norm == "custom" and explicit_base_url:
+        base_url = explicit_base_url.strip().rstrip("/")
+        api_key_candidates = [
+            (explicit_api_key or "").strip(),
+            os.getenv("OPENAI_API_KEY", "").strip(),
+            os.getenv("OPENROUTER_API_KEY", "").strip(),
+        ]
+        api_key = next(
+            (c for c in api_key_candidates if has_usable_secret(c)),
+            "",
+        ) or "no-key-required"
+        return {
+            "provider": "custom",
+            "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
+            "base_url": base_url,
+            "api_key": api_key,
+            "source": "direct-alias",
+            "requested_provider": requested_provider,
+        }
+
     custom_provider = _get_named_custom_provider(requested_provider)
     if not custom_provider:
         return None
@@ -608,6 +657,7 @@ def _resolve_azure_foundry_runtime(
     model_cfg: Dict[str, Any],
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Resolve an Azure Foundry runtime entry.
 
@@ -627,6 +677,22 @@ def _resolve_azure_foundry_runtime(
     if cfg_provider == "azure-foundry":
         cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
         cfg_api_mode = _parse_api_mode(model_cfg.get("api_mode")) or "chat_completions"
+
+    # Model-family inference: Azure Foundry deploys GPT-5.x / codex / o1-o4
+    # reasoning models as Responses-API-only.  Calling /chat/completions
+    # against them returns 400 "The requested operation is unsupported."
+    # Upgrade api_mode when the model name matches, unless the user has
+    # explicitly chosen anthropic_messages (Anthropic-style endpoint).
+    effective_model = str(target_model or model_cfg.get("default") or "").strip()
+    if effective_model and cfg_api_mode != "anthropic_messages":
+        try:
+            from hermes_cli.models import azure_foundry_model_api_mode
+
+            inferred = azure_foundry_model_api_mode(effective_model)
+        except Exception:
+            inferred = None
+        if inferred:
+            cfg_api_mode = inferred
 
     env_base_url = os.getenv("AZURE_FOUNDRY_BASE_URL", "").strip().rstrip("/")
     base_url = explicit_base_url_clean or cfg_base_url or env_base_url
@@ -864,6 +930,7 @@ def resolve_runtime_provider(
             model_cfg=_get_model_config(),
             explicit_api_key=explicit_api_key,
             explicit_base_url=explicit_base_url,
+            target_model=target_model,
         )
         return azure_runtime
 
@@ -1010,6 +1077,20 @@ def resolve_runtime_provider(
             logger.info("Qwen OAuth credentials failed; "
                         "falling through to next provider.")
 
+    if provider == "minimax-oauth":
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        if pconfig and pconfig.auth_type == "oauth_minimax":
+            from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+            creds = resolve_minimax_oauth_runtime_credentials()
+            return {
+                "provider": provider,
+                "api_mode": "anthropic_messages",
+                "base_url": creds["base_url"],
+                "api_key": creds["api_key"],
+                "source": creds.get("source", "oauth"),
+                "requested_provider": requested_provider,
+            }
+
     if provider == "google-gemini-cli":
         try:
             creds = resolve_gemini_oauth_runtime_credentials()
@@ -1064,13 +1145,34 @@ def resolve_runtime_provider(
             cfg_base_url and "azure.com" in cfg_base_url.lower()
         )
         if _is_azure_endpoint:
-            token = (
-                os.getenv("AZURE_ANTHROPIC_KEY", "").strip()
-                or os.getenv("ANTHROPIC_API_KEY", "").strip()
-            )
+            # Honor user-specified env var hints on the model config before
+            # falling back to the built-in AZURE_ANTHROPIC_KEY / ANTHROPIC_API_KEY
+            # chain.  Accept both `key_env` (Hermes canonical — matches the
+            # custom_providers field name) and `api_key_env` (documented in the
+            # Azure Foundry guide and read by most Hermes-compatible importers).
+            # Matches the config.yaml examples in website/docs/guides/azure-foundry.md.
+            token = ""
+            for hint_key in ("key_env", "api_key_env"):
+                env_var = str(model_cfg.get(hint_key) or "").strip()
+                if env_var:
+                    token = os.getenv(env_var, "").strip()
+                    if token:
+                        break
+            # Next: an inline api_key on the model config (useful in multi-profile
+            # setups that want to avoid env-var juggling).
+            if not token:
+                token = str(model_cfg.get("api_key") or "").strip()
+            # Finally fall back to the historical fixed names.
+            if not token:
+                token = (
+                    os.getenv("AZURE_ANTHROPIC_KEY", "").strip()
+                    or os.getenv("ANTHROPIC_API_KEY", "").strip()
+                )
             if not token:
                 raise AuthError(
-                    "No Azure Anthropic API key found. Set AZURE_ANTHROPIC_KEY or ANTHROPIC_API_KEY."
+                    "No Azure Anthropic API key found. Set AZURE_ANTHROPIC_KEY or "
+                    "ANTHROPIC_API_KEY, or point key_env/api_key_env in your "
+                    "config.yaml model section at a custom env var."
                 )
         else:
             from agent.anthropic_adapter import resolve_anthropic_token
@@ -1181,15 +1283,20 @@ def resolve_runtime_provider(
             configured_provider = str(model_cfg.get("provider") or "").strip().lower()
             # Only honor persisted api_mode when it belongs to the same provider family.
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-                api_mode = configured_mode
-            elif provider in ("opencode-zen", "opencode-go"):
+            if provider in ("opencode-zen", "opencode-go"):
+                # opencode-zen/go must always re-derive api_mode from the
+                # target model (not the stale persisted api_mode), because
+                # the same provider serves both anthropic_messages
+                # (e.g. minimax-m2.7) and chat_completions (e.g.
+                # deepseek-v4-flash) and switching models via /model would
+                # otherwise carry the previous mode forward, stripping /v1
+                # from base_url for chat_completions models and 404'ing.
+                # Refs #16878.
                 from hermes_cli.models import opencode_model_api_mode
-                # Prefer the target_model from the caller (explicit mid-session
-                # switch) over the stale model.default; see _resolve_runtime_from_pool_entry
-                # for the same rationale.
                 _effective = target_model or model_cfg.get("default", "")
                 api_mode = opencode_model_api_mode(provider, _effective)
+            elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+                api_mode = configured_mode
             else:
                 # Auto-detect Anthropic-compatible endpoints by URL convention
                 # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)

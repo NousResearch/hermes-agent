@@ -49,14 +49,13 @@ import json
 import logging
 import os
 import secrets
-import socket
 import stat
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -98,6 +97,7 @@ _DEFAULT_CLIENT_SECRET = f"GOCSPX-{_PUBLIC_CLIENT_SECRET_SUFFIX}"
 
 # Regex patterns for fallback scraping from an installed gemini-cli.
 import re as _re
+from utils import atomic_replace
 _CLIENT_ID_PATTERN = _re.compile(
     r"OAUTH_CLIENT_ID\s*=\s*['\"]([0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com)['\"]"
 )
@@ -499,7 +499,7 @@ def save_credentials(creds: GoogleCredentials) -> Path:
                 fh.flush()
                 os.fsync(fh.fileno())
             os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
-            os.replace(tmp_path, path)
+            atomic_replace(tmp_path, path)
         finally:
             try:
                 if tmp_path.exists():

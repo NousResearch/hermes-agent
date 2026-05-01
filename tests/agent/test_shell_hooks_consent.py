@@ -240,3 +240,74 @@ class TestAllowlistOps:
             and e.get("command") == str(script)
         ]
         assert len(matching) == 1
+
+
+# ── hooks_auto_accept config parsing ──────────────────────────────────────
+
+
+class TestHooksAutoAcceptParsing:
+    """Regression guard: YAML-string values must not silently auto-accept.
+
+    ``bool("false")`` is ``True`` in Python, so the old ``return bool(cfg_val)``
+    path treated ``hooks_auto_accept: "false"`` (quoted YAML string) as a
+    truthy opt-in, silently bypassing user consent for every shell hook.
+    """
+
+    def test_bool_true_accepts(self):
+        assert shell_hooks._resolve_effective_accept(
+            {"hooks_auto_accept": True}, accept_hooks_arg=False,
+        ) is True
+
+    def test_bool_false_rejects(self):
+        assert shell_hooks._resolve_effective_accept(
+            {"hooks_auto_accept": False}, accept_hooks_arg=False,
+        ) is False
+
+    def test_string_false_rejects(self):
+        # The bug: bool("false") is True. Must be parsed, not coerced.
+        assert shell_hooks._resolve_effective_accept(
+            {"hooks_auto_accept": "false"}, accept_hooks_arg=False,
+        ) is False
+
+    def test_string_no_rejects(self):
+        assert shell_hooks._resolve_effective_accept(
+            {"hooks_auto_accept": "no"}, accept_hooks_arg=False,
+        ) is False
+
+    def test_string_true_accepts(self):
+        assert shell_hooks._resolve_effective_accept(
+            {"hooks_auto_accept": "true"}, accept_hooks_arg=False,
+        ) is True
+
+    def test_string_true_case_insensitive(self):
+        assert shell_hooks._resolve_effective_accept(
+            {"hooks_auto_accept": "  TRUE  "}, accept_hooks_arg=False,
+        ) is True
+
+    def test_string_yes_on_one_accept(self):
+        for val in ("yes", "on", "1"):
+            assert shell_hooks._resolve_effective_accept(
+                {"hooks_auto_accept": val}, accept_hooks_arg=False,
+            ) is True, val
+
+    def test_missing_key_rejects(self):
+        assert shell_hooks._resolve_effective_accept(
+            {}, accept_hooks_arg=False,
+        ) is False
+
+    def test_none_rejects(self):
+        assert shell_hooks._resolve_effective_accept(
+            {"hooks_auto_accept": None}, accept_hooks_arg=False,
+        ) is False
+
+    def test_integer_ignored(self):
+        # Only bool and str are honored; anything else (including 1) is False.
+        assert shell_hooks._resolve_effective_accept(
+            {"hooks_auto_accept": 1}, accept_hooks_arg=False,
+        ) is False
+
+    def test_cli_arg_overrides_config(self):
+        assert shell_hooks._resolve_effective_accept(
+            {"hooks_auto_accept": "false"}, accept_hooks_arg=True,
+        ) is True
+

@@ -289,6 +289,7 @@ def exchange_auth_code(code: str):
         sys.exit(1)
 
     pending_auth = _load_pending_auth()
+    raw_callback = code
     code, returned_state = _extract_code_and_state(code)
     if returned_state and returned_state != pending_auth["state"]:
         print("ERROR: OAuth state mismatch. Run --auth-url again to start a fresh session.")
@@ -298,19 +299,13 @@ def exchange_auth_code(code: str):
     from google_auth_oauthlib.flow import Flow
     from urllib.parse import parse_qs, urlparse
 
-    # Extract granted scopes from the callback URL if present
-    if returned_state and "scope" in parse_qs(urlparse(code).query if isinstance(code, str) and code.startswith("http") else {}):
-        granted_scopes = parse_qs(urlparse(code).query)["scope"][0].split()
-    else:
-        # Try to extract from code_or_url parameter
-        if isinstance(code, str) and code.startswith("http"):
-            params = parse_qs(urlparse(code).query)
-            if "scope" in params:
-                granted_scopes = params["scope"][0].split()
-            else:
-                granted_scopes = SCOPES
-        else:
-            granted_scopes = SCOPES
+    # Extract granted scopes from the callback URL if the user pasted the full redirect URL.
+    granted_scopes = list(SCOPES)
+    if isinstance(raw_callback, str) and raw_callback.startswith("http"):
+        params = parse_qs(urlparse(raw_callback).query)
+        scope_val = (params.get("scope") or [""])[0].strip()
+        if scope_val:
+            granted_scopes = scope_val.split()
 
     flow = Flow.from_client_secrets_file(
         str(CLIENT_SECRET_PATH),

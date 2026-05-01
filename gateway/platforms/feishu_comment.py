@@ -974,7 +974,6 @@ def build_whole_comment_prompt(
 
 def _resolve_model_and_runtime() -> Tuple[str, dict]:
     """Resolve model and provider credentials, same as gateway message handling."""
-    import os
     from gateway.run import _load_gateway_config, _resolve_gateway_model
 
     user_config = _load_gateway_config()

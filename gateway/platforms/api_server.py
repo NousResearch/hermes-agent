@@ -34,6 +34,7 @@ import re
 import sqlite3
 import time
 import uuid
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 try:
@@ -688,6 +689,69 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------
+    # Session reset policy for externally-controlled session IDs
+    # ------------------------------------------------------------------
+
+    def _should_reset_api_session(self, session_id: str) -> Optional[str]:
+        """Check whether an api_server session has expired per the configured
+        ``SessionResetPolicy``.
+
+        Ports the date-math from ``SessionStore._should_reset()``
+        (gateway/session.py) to the api_server adapter so sessions created
+        via ``X-Hermes-Session-Id`` respect the same daily boundary and idle-
+        timeout rules as gateway-managed sessions.
+
+        Returns ``"daily"``, ``"idle"``, or ``None`` (not expired).
+
+        Uses ``started_at`` from the SessionDB row as the activity timestamp.
+        The gateway's in-memory ``SessionEntry.updated_at`` is not available
+        here; ``started_at`` is a reasonable proxy — if a session was started
+        before today's reset hour it crosses the daily boundary regardless of
+        recent activity, and the idle check is approximate for the same reason.
+        """
+        try:
+            from gateway.config import GatewayConfig, Platform
+            from gateway.run import _load_gateway_config
+            cfg = _load_gateway_config()
+            policy = cfg.get_reset_policy(
+                platform=Platform.API_SERVER,
+                session_type="dm",
+            )
+        except Exception:
+            logger.debug("Could not load reset policy for api_server session")
+            return None
+
+        if policy.mode == "none":
+            return None
+
+        db = self._ensure_session_db()
+        if db is None:
+            return None
+
+        row = db.get_session(session_id)
+        if row is None:
+            return None  # session doesn't exist yet — nothing to reset
+
+        started_at = datetime.fromtimestamp(row["started_at"])
+        now = datetime.now()
+
+        if policy.mode in ("idle", "both"):
+            deadline = started_at + timedelta(minutes=policy.idle_minutes)
+            if now > deadline:
+                return "idle"
+
+        if policy.mode in ("daily", "both"):
+            today_reset = now.replace(
+                hour=policy.at_hour, minute=0, second=0, microsecond=0,
+            )
+            if now.hour < policy.at_hour:
+                today_reset -= timedelta(days=1)
+            if started_at < today_reset:
+                return "daily"
+
+        return None
+
+    # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
 
@@ -945,7 +1009,27 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 db = self._ensure_session_db()
                 if db is not None:
-                    history = db.get_messages_as_conversation(session_id)
+                    # Respect the configured SessionResetPolicy so sessions
+                    # that cross daily boundaries (or idle timeouts) get a
+                    # fresh system prompt and clean history, matching the
+                    # gateway's behaviour for Telegram/Discord/etc.
+                    reset_reason = self._should_reset_api_session(session_id)
+                    if reset_reason:
+                        logger.info(
+                            "api_server session %s expired (%s) — resetting",
+                            session_id[:20], reset_reason,
+                        )
+                        try:
+                            db.end_session(session_id, "session_reset")
+                        except Exception:
+                            pass
+                        # New session_id forces _build_system_prompt() to
+                        # run fresh (no cached stale system prompt from a
+                        # prior day).  Format matches /v1/responses convention.
+                        session_id = str(uuid.uuid4())
+                        history = []
+                    else:
+                        history = db.get_messages_as_conversation(session_id)
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []

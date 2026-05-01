@@ -504,7 +504,20 @@ def _classify_by_status(
         )
 
     if status_code in (500, 502):
-        return result_fn(FailoverReason.server_error, retryable=True)
+        # Some providers (e.g. Alibaba/DashScope) return 500 when the context
+        # is too large for their backend, instead of a standard context overflow
+        # error.  Detect this by checking if the session is already large —
+        # compression is worth trying when a 500 co-occurs with a big context.
+        _compress_on_500 = (
+            approx_tokens > context_length * 0.3
+            or approx_tokens > 30000
+            or num_messages > 40
+        )
+        return result_fn(
+            FailoverReason.server_error,
+            retryable=True,
+            should_compress=_compress_on_500,
+        )
 
     if status_code in (503, 529):
         return result_fn(FailoverReason.overloaded, retryable=True)

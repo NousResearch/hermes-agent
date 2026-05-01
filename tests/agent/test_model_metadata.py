@@ -904,6 +904,11 @@ class TestParseContextLimitFromError:
         msg = "context_length_exceeded: maximum context length is 131072"
         assert parse_context_limit_from_error(msg) == 131072
 
+    def test_context_length_exceeded_short_form(self):
+        """Test the documented short form 'context_length_exceeded: 131072'."""
+        msg = "context_length_exceeded: 131072"
+        assert parse_context_limit_from_error(msg) == 131072
+
     def test_context_size_exceeded(self):
         msg = "Maximum context size 65536 exceeded"
         assert parse_context_limit_from_error(msg) == 65536

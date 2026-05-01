@@ -815,6 +815,7 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     error_lower = error_msg.lower()
     # Pattern: look for numbers near context-related keywords
     patterns = [
+        r'context_length_exceeded:\s*(\d{4,})',  # Short form "context_length_exceeded: 131072"
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',

@@ -399,6 +399,27 @@ class TestMessageStorage:
         assert msg["reasoning"] == "Thinking about what to say"
         assert msg["reasoning_details"] == details
 
+    def test_finish_reason_restored_by_get_messages_as_conversation(self, db):
+        """finish_reason on assistant messages must survive conversation replay.
+
+        Without this, /branch copies and other transcript round-trips silently
+        drop the provider's stop signal.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Done",
+            finish_reason="tool_calls",
+        )
+        db.append_message("s1", role="user", content="next")
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv[0]["role"] == "assistant"
+        assert conv[0]["finish_reason"] == "tool_calls"
+        # Non-assistant rows should not have a finish_reason key added.
+        assert "finish_reason" not in conv[1]
+
     def test_reasoning_content_persisted_and_restored(self, db):
         """reasoning_content must survive session replay as its own field."""
         db.create_session(session_id="s1", source="cli")

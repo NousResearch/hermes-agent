@@ -83,6 +83,7 @@ AUTHOR_MAP = {
     # Slack ephemeral slash-ack salvage (May 2026)
     "probepark@users.noreply.github.com": "probepark",
     # Slack batch salvage (May 2026)
+    "me@promplate.dev": "CNSeniorious000",
     "280484231+prive-fe-bot@users.noreply.github.com": "priveperfumes",
     "amr@ghanem.sa": "amroessam",
     "paperlantern.agent@gmail.com": "Hinotoi-agent",

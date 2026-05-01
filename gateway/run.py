@@ -8470,9 +8470,9 @@ class GatewayRunner:
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
         session_key = watcher.get("session_key", "")
-        platform_name = watcher.get("platform", "")
-        chat_id = watcher.get("chat_id", "")
-        thread_id = watcher.get("thread_id", "")
+        platform_name = session.watcher_platform
+        chat_id = session.watcher_chat_id
+        thread_id = session.watcher_thread_id
         user_id = watcher.get("user_id", "")
         user_name = watcher.get("user_name", "")
         agent_notify = watcher.get("notify_on_complete", False)

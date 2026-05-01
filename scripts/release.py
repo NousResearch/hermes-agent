@@ -427,6 +427,8 @@ AUTHOR_MAP = {
     "ogzerber@users.noreply.github.com": "ogzerber",
     "cola-runner@users.noreply.github.com": "cola-runner",
     "ygd58@users.noreply.github.com": "ygd58",
+    "45554392+warabe1122@users.noreply.github.com": "warabe1122",
+    "187001140+willy-scr@users.noreply.github.com": "willy-scr",
     "vominh1919@users.noreply.github.com": "vominh1919",
     "iamagenius00@users.noreply.github.com": "iamagenius00",
     "9219265+cresslank@users.noreply.github.com": "cresslank",

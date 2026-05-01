@@ -2718,6 +2718,65 @@ class GatewayRunner:
         # forwarded it to the user; now the user's reply goes back via
         # .update_response so the update process can continue.
         _quick_key = self._session_key_for_source(source)
+
+        # Per-event provider/model override (currently populated by the
+        # webhook adapter from per-subscription config).  Resolve via the
+        # same ``switch_model`` pipeline the /model command uses, so OAuth
+        # providers (openai-codex) get correct base_url + api_mode rather
+        # than inheriting whatever the gateway default left in place.
+        # The override auto-clears when the session ends (existing pop
+        # calls in this file).
+        _ev_override = getattr(event, "provider_override", None)
+        if _ev_override and isinstance(_ev_override, dict):
+            try:
+                from hermes_cli.model_switch import switch_model as _ev_switch
+                _user_cfg = _load_gateway_config()
+                _cur_model = _resolve_gateway_model(_user_cfg)
+                _cur_provider = _user_cfg.get("provider", "") or ""
+                _ev_provider = (_ev_override.get("provider") or "").strip()
+                _ev_model = (_ev_override.get("model") or "").strip()
+                # Use the requested model if given, else the gateway default
+                # (switch_model will auto-detect on the target provider).
+                _raw_input = _ev_model or _cur_model
+                _result = _ev_switch(
+                    raw_input=_raw_input,
+                    current_provider=_cur_provider,
+                    current_model=_cur_model,
+                    current_base_url="",
+                    current_api_key="",
+                    is_global=False,
+                    explicit_provider=_ev_provider,
+                    user_providers=_user_cfg.get("providers", {}),
+                    custom_providers=_user_cfg.get("custom_providers"),
+                )
+                if getattr(_result, "success", False):
+                    self._session_model_overrides[_quick_key] = {
+                        "model": _result.new_model,
+                        "provider": _result.target_provider,
+                        "api_key": getattr(_result, "api_key", "") or "",
+                        "base_url": getattr(_result, "base_url", "") or "",
+                        "api_mode": getattr(_result, "api_mode", "") or "",
+                    }
+                    logger.info(
+                        "Per-event provider override applied: session=%s provider=%s model=%s base_url=%s",
+                        _quick_key[:30],
+                        _result.target_provider,
+                        _result.new_model,
+                        getattr(_result, "base_url", "") or "(default)",
+                    )
+                    if hasattr(self, "_evict_cached_agent"):
+                        try:
+                            self._evict_cached_agent(_quick_key)
+                        except Exception:
+                            pass
+                else:
+                    logger.warning(
+                        "Per-event provider override failed to resolve: provider=%s model=%s error=%s",
+                        _ev_provider, _ev_model,
+                        getattr(_result, "error_message", "(unknown)"),
+                    )
+            except Exception as _e:
+                logger.warning("Failed to apply event provider override: %s", _e, exc_info=True)
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()

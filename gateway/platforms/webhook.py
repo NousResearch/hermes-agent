@@ -445,21 +445,43 @@ class WebhookAdapter(BasePlatformAdapter):
             user_id=f"webhook:{route_name}",
             user_name=route_name,
         )
+        # Per-subscription provider/model override.  When set on the
+        # subscription, the gateway runner installs this as a session-scoped
+        # override before the agent runs, so this webhook's dispatch uses
+        # the requested provider regardless of the global default.  This is
+        # how PaperClip / external-orchestrator integrations route specific
+        # webhooks through the OAuth-backed openai-codex provider so Hermes'
+        # native MCP tools fire (rather than the bridge text-relay path).
+        provider_override: Optional[Dict[str, Any]] = None
+        sub_provider = (route_config.get("provider") or "").strip()
+        sub_model = (route_config.get("model") or "").strip()
+        if sub_provider or sub_model:
+            provider_override = {}
+            if sub_provider:
+                provider_override["provider"] = sub_provider
+            if sub_model:
+                provider_override["model"] = sub_model
+
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,
             source=source,
             raw_message=payload,
             message_id=delivery_id,
+            provider_override=provider_override,
         )
 
         logger.info(
-            "[webhook] %s event=%s route=%s prompt_len=%d delivery=%s",
+            "[webhook] %s event=%s route=%s prompt_len=%d delivery=%s%s",
             request.method,
             event_type,
             route_name,
             len(prompt),
             delivery_id,
+            (
+                f" override=provider:{sub_provider or '-'},model:{sub_model or '-'}"
+                if provider_override else ""
+            ),
         )
 
         # Non-blocking — return 202 Accepted immediately

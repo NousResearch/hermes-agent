@@ -687,6 +687,18 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Per-event LLM provider/model override.
+    # When set, the gateway runner installs this as a session-scoped override
+    # in ``_session_model_overrides`` BEFORE the agent runs, so the dispatched
+    # task uses the requested provider regardless of the global default.
+    # Currently populated by the webhook adapter from per-subscription config
+    # (``hermes webhook subscribe --provider <p> --model <m>``); other adapters
+    # may opt in later.  Keys mirror the existing override schema:
+    #   {"model": str, "provider": str, "api_key": str?, "base_url": str?, "api_mode": str?}
+    # ``model``/``provider`` are required when set; the rest are optional and
+    # resolved from env / OAuth state when omitted (e.g. openai-codex).
+    provider_override: Optional[Dict[str, Any]] = None
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     

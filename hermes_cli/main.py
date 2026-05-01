@@ -5014,6 +5014,18 @@ For more help on a command:
     wh_sub.add_argument("--deliver", default="log", help="Delivery target: log, telegram, discord, slack, etc.")
     wh_sub.add_argument("--deliver-chat-id", default="", help="Target chat ID for cross-platform delivery")
     wh_sub.add_argument("--secret", default="", help="HMAC secret (auto-generated if omitted)")
+    wh_sub.add_argument(
+        "--provider",
+        default="",
+        help="Override LLM provider for this webhook (e.g. openai-codex, anthropic). "
+             "Defaults to the gateway's auto-selected provider.",
+    )
+    wh_sub.add_argument(
+        "--model",
+        default="",
+        help="Override model for this webhook (e.g. gpt-5.4, claude-sonnet-4-6). "
+             "Used together with --provider; defaults to the provider's default model.",
+    )
 
     webhook_subparsers.add_parser("list", aliases=["ls"], help="List all dynamic subscriptions")
 

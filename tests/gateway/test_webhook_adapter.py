@@ -434,6 +434,145 @@ class TestIdempotency:
 
 
 # ===================================================================
+# Per-subscription provider/model override
+# ===================================================================
+
+
+class TestProviderOverride:
+    """A subscription's ``provider``/``model`` config rides the dispatched
+    ``MessageEvent`` so the gateway runner can install a session-scoped
+    override before the agent runs.  The webhook adapter itself stays out
+    of provider resolution — it only forwards the hint."""
+
+    @pytest.mark.asyncio
+    async def test_override_attached_when_subscription_has_provider(self):
+        """When the subscription declares ``provider``, the dispatched
+        MessageEvent.provider_override carries the value."""
+        routes = {
+            "ovr": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "task",
+                "provider": "openai-codex",
+                "model": "gpt-5.4",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        captured = {}
+
+        async def _capture(event):
+            captured["event"] = event
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/ovr", json={"x": 1})
+            assert resp.status == 202
+            # Let the dispatched task run.
+            for _ in range(20):
+                if captured.get("event") is not None:
+                    break
+                await asyncio.sleep(0.01)
+
+        evt = captured["event"]
+        assert evt is not None, "handle_message was never invoked"
+        assert evt.provider_override == {
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+        }
+
+    @pytest.mark.asyncio
+    async def test_override_partial_provider_only(self):
+        """Provider without model still carries through (gateway uses provider
+        default model when ``model`` is absent)."""
+        routes = {
+            "ovr-p": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "task",
+                "provider": "openai-codex",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        captured = {}
+
+        async def _capture(event):
+            captured["event"] = event
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/ovr-p", json={})
+            assert resp.status == 202
+            for _ in range(20):
+                if captured.get("event") is not None:
+                    break
+                await asyncio.sleep(0.01)
+
+        evt = captured["event"]
+        assert evt is not None
+        assert evt.provider_override == {"provider": "openai-codex"}
+
+    @pytest.mark.asyncio
+    async def test_no_override_when_subscription_silent(self):
+        """A subscription without ``provider``/``model`` produces no override
+        (gateway uses its global default)."""
+        routes = {"plain": {"secret": _INSECURE_NO_AUTH, "prompt": "task"}}
+        adapter = _make_adapter(routes=routes)
+        captured = {}
+
+        async def _capture(event):
+            captured["event"] = event
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/plain", json={})
+            assert resp.status == 202
+            for _ in range(20):
+                if captured.get("event") is not None:
+                    break
+                await asyncio.sleep(0.01)
+
+        evt = captured["event"]
+        assert evt is not None
+        assert evt.provider_override is None
+
+    @pytest.mark.asyncio
+    async def test_override_empty_strings_treated_as_absent(self):
+        """Empty-string provider/model fields don't produce an override."""
+        routes = {
+            "ovr-empty": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "task",
+                "provider": "",
+                "model": "  ",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        captured = {}
+
+        async def _capture(event):
+            captured["event"] = event
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/webhooks/ovr-empty", json={})
+            assert resp.status == 202
+            for _ in range(20):
+                if captured.get("event") is not None:
+                    break
+                await asyncio.sleep(0.01)
+
+        evt = captured["event"]
+        assert evt is not None
+        assert evt.provider_override is None
+
+
+# ===================================================================
 # Rate limiting
 # ===================================================================
 

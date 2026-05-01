@@ -3237,7 +3237,26 @@ def _build_call_kwargs(
             kwargs["max_tokens"] = max_tokens
 
     if tools:
-        kwargs["tools"] = tools
+        # Defensive dedup: providers like Google Vertex, Azure, and Bedrock
+        # reject requests with duplicate tool names (HTTP 400).  The upstream
+        # injection paths (run_agent.py) already dedup, but this guard
+        # converts a hard API failure into a warning if an upstream regression
+        # reintroduces duplicates.  See: #18478
+        _seen: set = set()
+        _deduped: list = []
+        for _t in tools:
+            _tname = (_t.get("function") or {}).get("name", "")
+            if _tname and _tname in _seen:
+                logger.warning(
+                    "_build_call_kwargs: duplicate tool name '%s' removed "
+                    "(provider=%s model=%s)",
+                    _tname, provider, model,
+                )
+                continue
+            if _tname:
+                _seen.add(_tname)
+            _deduped.append(_t)
+        kwargs["tools"] = _deduped
 
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})

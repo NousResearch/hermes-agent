@@ -1241,10 +1241,24 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     if not tools:
         return []
     result = []
+    seen_names: set = set()
     for t in tools:
         fn = t.get("function", {})
+        name = fn.get("name", "")
+        # Defensive dedup: Anthropic rejects requests with duplicate tool
+        # names.  Upstream injection paths already dedup, but this guard
+        # converts a hard API failure into a warning.  See: #18478
+        if name and name in seen_names:
+            logger.warning(
+                "convert_tools_to_anthropic: duplicate tool name '%s' "
+                "— dropping second occurrence",
+                name,
+            )
+            continue
+        if name:
+            seen_names.add(name)
         result.append({
-            "name": fn.get("name", ""),
+            "name": name,
             "description": fn.get("description", ""),
             "input_schema": _normalize_tool_input_schema(
                 fn.get("parameters", {"type": "object", "properties": {}})

@@ -16,6 +16,7 @@ from agent.auxiliary_client import (
     auxiliary_max_tokens_param,
     call_llm,
     async_call_llm,
+    _build_call_kwargs,
     _read_codex_access_token,
     _get_provider_chain,
     _is_payment_error,
@@ -1752,3 +1753,68 @@ class TestVisionAutoSkipsKimiCoding:
             "kimi-coding",
             "kimi-coding-cn",
         })
+
+
+# ---------------------------------------------------------------------------
+# _build_call_kwargs — tool dedup at API boundary
+# ---------------------------------------------------------------------------
+
+class TestBuildCallKwargsToolDedup:
+    """_build_call_kwargs must deduplicate tool names before passing to API.
+
+    Providers like Google Vertex, Azure, and Bedrock reject requests with
+    duplicate tool names (HTTP 400).  This guard converts a hard failure into
+    a warning log so agent turns succeed even if an upstream injection path
+    regresses.  See: https://github.com/NousResearch/hermes-agent/issues/18478
+    """
+
+    def _make_tool(self, name: str) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": f"Tool {name}",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+    def test_unique_tools_pass_through_unchanged(self):
+        tools = [self._make_tool("alpha"), self._make_tool("beta")]
+        kwargs = _build_call_kwargs(
+            provider="openai", model="gpt-4o", messages=[], tools=tools,
+        )
+        assert len(kwargs["tools"]) == 2
+        names = [t["function"]["name"] for t in kwargs["tools"]]
+        assert names == ["alpha", "beta"]
+
+    def test_duplicate_tool_names_are_deduplicated(self):
+        """RED test — must fail until dedup guard is added."""
+        tools = [
+            self._make_tool("lcm_grep"),
+            self._make_tool("lcm_describe"),
+            self._make_tool("lcm_grep"),  # duplicate
+            self._make_tool("lcm_expand"),
+            self._make_tool("lcm_describe"),  # duplicate
+        ]
+        kwargs = _build_call_kwargs(
+            provider="google", model="gemini-2.5-pro", messages=[], tools=tools,
+        )
+        result_tools = kwargs["tools"]
+        names = [t["function"]["name"] for t in result_tools]
+        # Must be deduplicated — no repeated names
+        assert len(names) == len(set(names)), (
+            f"Duplicate tool names found: {names}"
+        )
+        assert len(result_tools) == 3  # lcm_grep, lcm_describe, lcm_expand
+
+    def test_empty_tools_unchanged(self):
+        kwargs = _build_call_kwargs(
+            provider="openai", model="gpt-4o", messages=[], tools=[],
+        )
+        assert kwargs.get("tools") == [] or "tools" not in kwargs
+
+    def test_none_tools_unchanged(self):
+        kwargs = _build_call_kwargs(
+            provider="openai", model="gpt-4o", messages=[], tools=None,
+        )
+        assert "tools" not in kwargs

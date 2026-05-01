@@ -8,6 +8,16 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 
+def _make_compression_child(parent_sid: str, child_sid: str):
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    db.create_session(parent_sid, source="cli")
+    db.end_session(parent_sid, "compression")
+    db.create_session(child_sid, source="cli", parent_session_id=parent_sid)
+    return db
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Fixtures
 # ──────────────────────────────────────────────────────────────────────
@@ -333,7 +343,60 @@ class TestGoalManager:
         prompt = mgr.next_continuation_prompt()
         assert prompt is not None
         assert "port goal command to hermes" in prompt
-        assert prompt.strip()  # non-empty
+        assert prompt.strip()
+
+    def test_goal_follows_compression_child_session(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        _make_compression_child("parent-sid", "child-sid")
+        parent_mgr = GoalManager(session_id="parent-sid", default_max_turns=5)
+        parent_mgr.set("finish the migration")
+
+        child_mgr = GoalManager(session_id="child-sid", default_max_turns=5)
+
+        assert child_mgr.state is not None
+        assert child_mgr.state.goal == "finish the migration"
+        assert child_mgr.is_active()
+        assert child_mgr.status_line().startswith("⊙ Goal")
+
+    def test_evaluate_after_turn_uses_resolved_goal_owner_across_compression(self, hermes_home):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager, load_goal
+
+        _make_compression_child("parent-sid-2", "child-sid-2")
+        parent_mgr = GoalManager(session_id="parent-sid-2", default_max_turns=5)
+        parent_mgr.set("ship the fix")
+
+        child_mgr = GoalManager(session_id="child-sid-2", default_max_turns=5)
+        with patch.object(goals, "judge_goal", return_value=("continue", "keep going")):
+            decision = child_mgr.evaluate_after_turn("made progress")
+
+        assert decision["should_continue"] is True
+        assert child_mgr.state is not None
+        assert child_mgr.state.turns_used == 1
+        assert load_goal("parent-sid-2") is not None
+        assert load_goal("parent-sid-2").turns_used == 1
+        assert load_goal("parent-sid-2").goal == "ship the fix"
+
+    def test_goal_resolves_across_multiple_compression_hops(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        db.create_session("root-sid", source="cli")
+        db.end_session("root-sid", "compression")
+        db.create_session("mid-sid", source="cli", parent_session_id="root-sid")
+        db.end_session("mid-sid", "compression")
+        db.create_session("tip-sid", source="cli", parent_session_id="mid-sid")
+
+        root_mgr = GoalManager(session_id="root-sid", default_max_turns=5)
+        root_mgr.set("finish the long job")
+
+        tip_mgr = GoalManager(session_id="tip-sid", default_max_turns=5)
+
+        assert tip_mgr.state is not None
+        assert tip_mgr.state.goal == "finish the long job"
+        assert tip_mgr.is_active()
 
 
 # ──────────────────────────────────────────────────────────────────────

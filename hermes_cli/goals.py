@@ -204,6 +204,76 @@ def clear_goal(session_id: str) -> None:
     save_goal(session_id, state)
 
 
+def _goal_visible(state: Optional[GoalState]) -> bool:
+    return state is not None and state.status != "cleared"
+
+
+def resolve_goal_owner_session_id(session_id: str) -> Optional[str]:
+    """Find the session row that owns the active goal for this conversation.
+
+    Goals are stored in ``state_meta`` under ``goal:<session_id>``. Compression,
+    however, forks the logical conversation into a child session linked via
+    ``parent_session_id``. When a child has no direct goal row, walk backward
+    through compression ancestors and return the nearest ancestor that does.
+
+    We only follow true compression chains: each ancestor we adopt from must
+    itself have ended with ``end_reason='compression'``. This avoids borrowing
+    a goal from unrelated branch/new-session lineages that merely happen to use
+    ``parent_session_id``.
+    """
+    if not session_id:
+        return None
+
+    direct = load_goal(session_id)
+    if _goal_visible(direct):
+        return session_id
+
+    db = _get_session_db()
+    if db is None:
+        return None
+
+    current = session_id
+    seen = {current}
+    for _ in range(32):
+        try:
+            row = db.get_session(current)
+        except Exception as exc:
+            logger.debug("GoalManager: get_session(%s) failed: %s", current, exc)
+            return None
+        if not row:
+            return None
+        parent_id = row.get("parent_session_id") if isinstance(row, dict) else None
+        if not parent_id or parent_id in seen:
+            return None
+        try:
+            parent_row = db.get_session(parent_id)
+        except Exception as exc:
+            logger.debug("GoalManager: get_session(%s) failed: %s", parent_id, exc)
+            return None
+        if not parent_row or parent_row.get("end_reason") != "compression":
+            return None
+        parent_state = load_goal(parent_id)
+        if _goal_visible(parent_state):
+            return parent_id
+        seen.add(parent_id)
+        current = parent_id
+    return None
+
+
+def load_goal_for_session(session_id: str) -> Tuple[Optional[str], Optional[GoalState]]:
+    """Load the goal visible from ``session_id``.
+
+    Returns ``(owner_session_id, state)``. When the current session has no goal
+    row of its own, this may resolve to a compression ancestor.
+    """
+    if not session_id:
+        return None, None
+    owner_session_id = resolve_goal_owner_session_id(session_id)
+    if not owner_session_id:
+        return session_id, None
+    return owner_session_id, load_goal(owner_session_id)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Judge
 # ──────────────────────────────────────────────────────────────────────
@@ -356,8 +426,11 @@ class GoalManager:
 
     def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
         self.session_id = session_id
+        self.requested_session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
-        self._state: Optional[GoalState] = load_goal(session_id)
+        owner_session_id, state = load_goal_for_session(session_id)
+        self.owner_session_id = owner_session_id or session_id
+        self._state: Optional[GoalState] = state
 
     # --- introspection ------------------------------------------------
 
@@ -391,6 +464,8 @@ class GoalManager:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
+        if self.owner_session_id and self.owner_session_id != self.session_id and self._state is not None:
+            clear_goal(self.owner_session_id)
         state = GoalState(
             goal=goal,
             status="active",
@@ -399,8 +474,9 @@ class GoalManager:
             created_at=time.time(),
             last_turn_at=0.0,
         )
+        self.owner_session_id = self.session_id
         self._state = state
-        save_goal(self.session_id, state)
+        save_goal(self.owner_session_id, state)
         return state
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
@@ -408,7 +484,7 @@ class GoalManager:
             return None
         self._state.status = "paused"
         self._state.paused_reason = reason
-        save_goal(self.session_id, self._state)
+        save_goal(self.owner_session_id, self._state)
         return self._state
 
     def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
@@ -418,14 +494,14 @@ class GoalManager:
         self._state.paused_reason = None
         if reset_budget:
             self._state.turns_used = 0
-        save_goal(self.session_id, self._state)
+        save_goal(self.owner_session_id, self._state)
         return self._state
 
     def clear(self) -> None:
         if self._state is None:
             return
         self._state.status = "cleared"
-        save_goal(self.session_id, self._state)
+        save_goal(self.owner_session_id, self._state)
         self._state = None
 
     def mark_done(self, reason: str) -> None:
@@ -434,7 +510,7 @@ class GoalManager:
         self._state.status = "done"
         self._state.last_verdict = "done"
         self._state.last_reason = reason
-        save_goal(self.session_id, self._state)
+        save_goal(self.owner_session_id, self._state)
 
     # --- the main entry point called after every turn -----------------
 
@@ -479,7 +555,7 @@ class GoalManager:
 
         if verdict == "done":
             state.status = "done"
-            save_goal(self.session_id, state)
+            save_goal(self.owner_session_id, state)
             return {
                 "status": "done",
                 "should_continue": False,
@@ -492,7 +568,7 @@ class GoalManager:
         if state.turns_used >= state.max_turns:
             state.status = "paused"
             state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
-            save_goal(self.session_id, state)
+            save_goal(self.owner_session_id, state)
             return {
                 "status": "paused",
                 "should_continue": False,
@@ -505,7 +581,7 @@ class GoalManager:
                 ),
             }
 
-        save_goal(self.session_id, state)
+        save_goal(self.owner_session_id, state)
         return {
             "status": "active",
             "should_continue": True,

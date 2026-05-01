@@ -615,7 +615,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and trueconf"
         )
 
     last_result = None

@@ -2776,7 +2776,7 @@ _PLATFORMS = [
             "4. To find your user ID: message @userinfobot — it replies with your numeric ID",
         ],
         "vars": [
-            {"name": "TRUECONF_USERNAME", "prompt": "Full TrueConf ID (user login), e.g. user@example.com", "password": False,
+            {"name": "TRUECONF_USERNAME", "prompt": "Full TrueConf ID (user login), e.g. user@example.com. See https://trueconf.com/docs/server/en/admin/users/ for more info.", "password": False,
              "help": "Paste the TrueConf ID for bot (see step 2 above)."},
             {"name": "TRUECONF_PASSWORD", "prompt": "Password for bot account", "password": True,
              "help": "Paste the password for the bot."},
@@ -2785,6 +2785,8 @@ _PLATFORMS = [
              "help": "Paste your user ID from step 3 above."},
             {"name": "TRUECONF_HOME_CHANNEL", "prompt": "Home channel ID (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
              "help": "For DMs, this is your user ID. You can set it later by typing /set-home in chat."},
+            {"name": "TRUECONF_VERIFY_SSL", "prompt": "Use SSL verifying for messaging platfotm (default true). Type 0 to disable.", "password": False,
+             "help": "May be usufel for some reasons (self-signed SSL cert, problems while authorizing etc.)."},
         ],
     },
 ]

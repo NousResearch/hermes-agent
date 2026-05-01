@@ -460,7 +460,7 @@ TOOLSETS = {
     },
 
     "hermes-trueconf": {
-        "description": "TrueConf platform toolset - send messages via TrueConf Bot SDK",
+        "description": "TrueConf platform toolset - send messages via TrueConf Chatbot Connector API",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },

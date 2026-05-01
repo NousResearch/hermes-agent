@@ -2303,7 +2303,7 @@ def _setup_trueconf():
     print_info("The bot connects via the TrueConf WebSocket API.")
     print()
 
-    server = prompt("TrueConf server address (e.g. demo.trueconf.com or 192.168.1.100)")
+    server = prompt("TrueConf server address (e.g. messaging.example.com or 192.168.1.100)")
     if not server:
         return
     server = server.strip()
@@ -2468,6 +2468,10 @@ def setup_gateway(config: dict):
             get_env_value("QQBOT_HOME_CHANNEL") or get_env_value("QQ_HOME_CHANNEL")
         ):
             missing_home.append("QQBot")
+        if get_env_value("TRUECONF_SERVER") and not (
+            get_env_value("TRUECONF_HOME_CHANNEL")
+        ):
+            missing_home.append("TrueConf")
 
         if missing_home:
             print()

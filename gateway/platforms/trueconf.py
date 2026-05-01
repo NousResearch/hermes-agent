@@ -4,13 +4,13 @@ Uses the python-trueconf-bot SDK for receiving and sending messages
 via persistent WebSocket connection.
 
 Env vars:
-  - TRUECONF_SERVER         TrueConf server address (e.g. demo.trueconf.com)
+  - TRUECONF_SERVER         TrueConf server address (e.g. message.example.com)
   - TRUECONF_USERNAME       Bot username
   - TRUECONF_PASSWORD       Bot password
   - TRUECONF_ALLOWED_USERS  Comma-separated list of allowed user emails
   - TRUECONF_ALLOW_ALL_USERS Set to "true" to allow all users
   - TRUECONF_HOME_CHANNEL  Default chat ID for cron delivery
-  - TRUECONF_VERIFY_SSL     Set to "false" to skip SSL verification
+  - TRUECONF_VERIFY_SSL     Set to "false" or "0" to skip SSL verification
 """
 
 import asyncio
@@ -141,7 +141,7 @@ class TrueConfAdapter(BasePlatformAdapter):
         self._server: str = os.getenv("TRUECONF_SERVER", "").strip()
         self._username: str = os.getenv("TRUECONF_USERNAME", "").strip()
         self._password: str = os.getenv("TRUECONF_PASSWORD", "").strip()
-        self._verify_ssl: bool = os.getenv("TRUECONF_VERIFY_SSL", "").lower() not in (
+        self._verify_ssl: bool = os.getenv("TRUECONF_VERIFY_SSL", True).lower() not in (
             "false", "0", "no"
         )
 

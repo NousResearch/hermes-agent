@@ -37,9 +37,9 @@ teams status --verbose
 
 ---
 
-## Step 2: Expose Port 3978
+## Step 2: Expose the Webhook Port
 
-Teams cannot deliver messages to `localhost`. For local development, use any tunnel tool to get a public HTTPS URL:
+Teams cannot deliver messages to `localhost`. For local development, use any tunnel tool to get a public HTTPS URL. The default port is `3978` — change it with `TEAMS_PORT` if needed.
 
 ```bash
 # devtunnel (Microsoft)
@@ -95,7 +95,7 @@ TEAMS_ALLOWED_USERS=<your-aad-object-id>
 HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d gateway
 ```
 
-This starts the gateway and maps port 3978 on your host to the container. Check that it's running:
+This starts the gateway. The default webhook port is `3978` (override with `TEAMS_PORT`). Check that it's running:
 
 ```bash
 curl http://localhost:3978/health   # should return: ok
@@ -129,6 +129,7 @@ The `teamsAppId` was printed by `teams app create` in Step 3. After installing, 
 | `TEAMS_CLIENT_SECRET` | Azure AD client secret |
 | `TEAMS_TENANT_ID` | Azure AD tenant ID |
 | `TEAMS_ALLOWED_USERS` | Comma-separated AAD object IDs allowed to use the bot |
+| `TEAMS_ALLOW_ALL_USERS` | Set `true` to skip the allowlist and allow anyone |
 | `TEAMS_HOME_CHANNEL` | Conversation ID for cron/proactive message delivery |
 | `TEAMS_HOME_CHANNEL_NAME` | Display name for the home channel |
 | `TEAMS_PORT` | Webhook port (default: `3978`) |
@@ -181,7 +182,7 @@ If you've already created the bot and just need to update the endpoint:
 teams app update --id <teamsAppId> --endpoint "https://your-domain.com/api/messages"
 ```
 
-Make sure port 3978 (or your configured `TEAMS_PORT`) is reachable from the internet and that your TLS certificate is valid — Teams rejects self-signed certificates.
+Make sure your configured port (`TEAMS_PORT`, default `3978`) is reachable from the internet and that your TLS certificate is valid — Teams rejects self-signed certificates.
 
 ---
 

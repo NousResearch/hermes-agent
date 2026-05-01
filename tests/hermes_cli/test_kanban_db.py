@@ -23,6 +23,18 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def test_kanban_db_path_uses_install_root_under_profile(monkeypatch, tmp_path):
+    """Board DB stays at the install root (~/.hermes) when a profile tweaks HERMES_HOME."""
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    profile_home = root / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    assert kb.kanban_db_path() == root / "kanban.db"
+    assert kb.kanban_db_path().resolve() != (profile_home / "kanban.db").resolve()
+
+
 # ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------

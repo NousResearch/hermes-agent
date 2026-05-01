@@ -62,9 +62,15 @@ _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # 2 KB per comment
 # ---------------------------------------------------------------------------
 
 def kanban_db_path() -> Path:
-    """Return the path to ``kanban.db`` inside the active HERMES_HOME."""
-    from hermes_constants import get_hermes_home
-    return get_hermes_home() / "kanban.db"
+    """Return the canonical ``kanban.db`` path shared by all profiles.
+
+    Boards are anchored at :func:`hermes_constants.get_default_hermes_root` per
+    the Kanban spec (coordination primitive must not fracture under
+    ``HERMES_HOME=<root>/profiles/<name>``).
+    """
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "kanban.db"
 
 
 def workspaces_root() -> Path:

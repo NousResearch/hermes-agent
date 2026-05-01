@@ -1,7 +1,24 @@
 # Hackathon Build Status
 
-**Last updated**: 1 May 2026 (evening)  
+**Last updated**: 1 May 2026 (late evening)  
 **Deadline**: EOD Sunday 3 May 2026 (2 days remaining)
+
+---
+
+## Architecture
+
+```
+Telegram (trigger only)
+  → Agent: transcribe (Whisper) + generate phonetics (Kimi K2.5, once)
+  → Saves job JSON to ~/.hermes/caption-jobs/{id}.json
+  → Burns initial draft video (FFmpeg)
+  → Returns: draft video + "Edit at http://localhost:9119/captions/{id}"
+        ↓
+Dashboard /captions/:id  (no LLM, no tokens, visual editing)
+  [video player]  |  [editable segment list: text / phonetic / EN-VI toggle]
+                  |  [style panel: font, size, color, margin]
+                  |  [Re-burn → FFmpeg only]  [Download]
+```
 
 ---
 
@@ -104,54 +121,53 @@ Users can override any field in `~/.hermes/config.yaml`. The tool reads this at 
 
 ---
 
-### 5. Teaching Caption Skill — `skills/video/phonetic-captions/SKILL.md` ✅
+### 5. Teaching Caption Skill — `skills/video/phonetic_captions/SKILL.md` ✅
 
-Renamed (1 May) from `bilingual_captions` to `phonetic-captions` for clarity and scalability.
-Updated to match the teaching phonetics workflow:
-- Receive video → call `caption` → present numbered `[EN]`/`[VI]` segments with phonetics
-- Handle correction requests (text, phonetic, or lang field) → call `reburn`
-- Save phonetic preferences and vocabulary to Hermes memory after approval
-- Requirements check (faster-whisper, ffmpeg, NVIDIA_API_KEY)
-- Error handling: "all segments `[EN]`" → likely missing API key; garbled Vietnamese → Kimi corrects automatically
+Renamed (1 May) from `bilingual_captions` to `phonetic_captions` for clarity and scalability.
+Updated to surface dashboard link after generation and explain visual editor workflow.
+Chat correction loop retained as fallback for mobile/no-dashboard users.
 
 ---
 
-### 6. Hackathon Plan — `hackathon-docs/PLAN.md` ✅
+### 6. Dashboard Visual Caption Editor ✅
 
-Comprehensive plan document covering problem statement, pipeline, stack, phases, demo story, risks.
+> **Added 1 May (evening)**: Replaces Telegram chat as primary editing surface.
+> Key insight: user wants to replace CapCut's visual editing workflow — chat corrections are slow, expensive, and imprecise for visual media.
+
+**Backend** (`hermes_cli/web_server.py` — 7 new endpoints):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/caption/jobs` | List all jobs |
+| `GET /api/caption/jobs/{id}` | Get full job (segments, style, paths) |
+| `PUT /api/caption/jobs/{id}/segments` | Save edited segments |
+| `PUT /api/caption/jobs/{id}/style` | Save style changes |
+| `POST /api/caption/jobs/{id}/burn` | Re-burn via FFmpeg (no LLM, runs in `asyncio.to_thread`) |
+| `GET /api/caption/jobs/{id}/video` | Stream video for in-browser player |
+| `GET /api/caption/jobs/{id}/download` | Download final output |
+
+**Job persistence** (`tools/video_caption.py` — `save_caption_job()`):
+- After `caption` op: saves job to `~/.hermes/caption-jobs/{id}.json`
+- Response includes `job_id` + `dashboard_url` (e.g. `http://localhost:9119/captions/abc123`)
+
+**Frontend** (`web/src/pages/CaptionEditorPage.tsx` — new file):
+- Two-column layout: video player left, segment editor + style panel right
+- Per-segment: text input, phonetic input (VI only), EN/VI badge toggle
+- Style panel: font, font size, text/outline color pickers, margin
+- Re-burn button (calls burn endpoint, auto-reloads video on completion)
+- Download button (fetch with auth header, creates blob URL)
+
+**Routes** (`web/src/App.tsx`):
+- `/captions` → `CaptionJobsPage` (job list)
+- `/captions/:id` → `CaptionEditorPage` (visual editor)
+- "Captions" nav entry added to sidebar
 
 ---
 
-## Architecture Summary
+### 7. Hackathon Plans — `hackathon-docs/` ✅
 
-```
-User sends teaching short via Telegram
-  ↓
-gateway/run.py  ←  video path injection (NEW)
-  ↓
-AIAgent receives: "[The user sent a video... saved at /path/video.mp4]"
-  ↓
-skills/video/phonetic-captions/SKILL.md  ←  guides the agent (NEW)
-  ↓
-tools/video_caption.py  ←  core tool (NEW, registered as `video-caption`)
-  ├─ faster-whisper (local, auto language detect)
-  │     → raw segments {text, start, end}
-  ├─ Kimi K2.5 via NVIDIA NIM
-  │     → classifies en/vi, fixes diacritics, adds [phonetics]
-  ├─ ASS subtitle builder
-  │     VI: Vietnamese text + [phonetic guide] below
-  │     EN: English text only
-  └─ FFmpeg burn-in
-  ↓
-Agent replies: MEDIA:/path/output.mp4
-Agent shows numbered [EN]/[VI] caption list
-  ↓
-User corrects (text / phonetic / lang) → reburn → iterate
-  ↓
-User approves → agent saves phonetic prefs + vocab to Hermes memory
-  ↓
-Next video: saved preferences auto-applied
-```
+- `PLAN_v1.md` — original Telegram-native plan (executed, backend pipeline complete)
+- `PLAN.md` — v2 revised plan (dashboard editor, current direction)
 
 ---
 

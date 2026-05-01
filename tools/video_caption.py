@@ -384,6 +384,34 @@ def _check_ffmpeg() -> None:
         )
 
 
+def save_caption_job(
+    job_id: str,
+    video_path: str,
+    output_path: str,
+    segments: list[dict],
+    style: dict,
+) -> Path:
+    """Persist caption job state to ~/.hermes/caption-jobs/{job_id}.json.
+
+    This enables the dashboard visual editor to load, edit, and re-burn
+    the job without any LLM involvement.
+    """
+    jobs_dir = get_hermes_home() / "caption-jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    job_path = jobs_dir / f"{job_id}.json"
+    job = {
+        "id": job_id,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "video_path": str(video_path),
+        "output_path": str(output_path),
+        "style": style,
+        "segments": segments,
+    }
+    job_path.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("Caption job saved: %s", job_path)
+    return job_path
+
+
 def check_requirements() -> bool:
     try:
         import faster_whisper  # noqa: F401  # type: ignore
@@ -414,8 +442,14 @@ def _handle_caption(args: dict, **kw: Any) -> str:
             if not segments:
                 return json.dumps({"error": "No speech detected in video"})
             segments = generate_phonetics(segments)
+            style = _load_style()
             ass_path = build_ass(segments)
             out = burn(video_path, ass_path, output_path)
+
+            # Persist job for dashboard visual editor
+            job_id = uuid.uuid4().hex[:12]
+            save_caption_job(job_id, video_path, out, segments, style)
+            dashboard_url = f"http://localhost:9119/captions/{job_id}"
 
             vi_count = sum(1 for s in segments if s.get("lang") == "vi")
             en_count = sum(1 for s in segments if s.get("lang") == "en")
@@ -430,6 +464,8 @@ def _handle_caption(args: dict, **kw: Any) -> str:
                 "success": True,
                 "output_video": out,
                 "ass_file": ass_path,
+                "job_id": job_id,
+                "dashboard_url": dashboard_url,
                 "segments": segments,
                 "segment_count": len(segments),
                 "vi_segments": vi_count,
@@ -437,7 +473,9 @@ def _handle_caption(args: dict, **kw: Any) -> str:
                 "message": (
                     f"Done! {len(segments)} segments ({vi_count} Vietnamese, {en_count} English).\n"
                     f"Output: MEDIA:{out}\n\n"
-                    f"Review the captions below — tell me what to fix:\n\n{caption_display}"
+                    f"Open the caption editor to visually edit text, phonetics, and style:\n"
+                    f"{dashboard_url}\n\n"
+                    f"Or review below and tell me what to fix:\n\n{caption_display}"
                 ),
             })
 

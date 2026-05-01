@@ -37,11 +37,13 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 try:
-    from aiohttp import web
+    from aiohttp import web, ClientSession, ClientTimeout
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
+    ClientSession = None  # type: ignore[assignment]
+    ClientTimeout = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -2764,6 +2766,60 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_statuses.pop(run_id, None)
 
     # ------------------------------------------------------------------
+    # Memos webUI reverse proxy
+    # ------------------------------------------------------------------
+
+    _memos_target = "http://127.0.0.1:18902"
+    _memos_fallback = "http://127.0.0.1:18901"
+
+    async def _handle_memos_proxy(self, request: "web.Request") -> "web.StreamResponse":
+        """Reverse proxy to MemOS local viewer (port 18902, fallback 18901)."""
+        timeout = ClientTimeout(total=30, connect=5)
+
+        # Strip the /memos route prefix so the backend receives clean paths.
+        path_and_query = request.path_qs
+        if path_and_query.startswith("/memos"):
+            path_and_query = path_and_query[len("/memos"):] or "/"
+
+        last_error = None
+        for target in (self._memos_target, self._memos_fallback):
+            target_url = f"{target}{path_and_query}"
+            try:
+                async with ClientSession(timeout=timeout) as session:
+                    headers = {k: v for k, v in request.headers.items()
+                               if k.lower() not in ("host", "content-length")}
+                    body = await request.read() if request.method in ("POST", "PUT", "PATCH") else None
+
+                    async with session.request(
+                        request.method, target_url,
+                        headers=headers, data=body,
+                        allow_redirects=True,
+                    ) as upstream:
+                        resp = web.StreamResponse(
+                            status=upstream.status,
+                            headers={
+                                k: v for k, v in upstream.headers.items()
+                                if k.lower() not in ("transfer-encoding", "content-encoding")
+                            },
+                        )
+                        resp.headers.setdefault("Access-Control-Allow-Origin", "*")
+                        await resp.prepare(request)
+                        async for chunk in upstream.content.iter_chunked(65536):
+                            await resp.write(chunk)
+                        await resp.write_eof()
+                        return resp
+            except Exception as e:
+                last_error = e
+                continue
+
+        logger.debug("Memos proxy failed: %s", last_error, exc_info=True)
+        return web.Response(
+            status=502,
+            text="Memos viewer is not running. The gateway heartbeat will restart it shortly.\n"
+                 "If this persists, check that ~/.hermes/memos-plugin is installed correctly.",
+        )
+
+    # ------------------------------------------------------------------
     # BasePlatformAdapter interface
     # ------------------------------------------------------------------
 
@@ -2800,6 +2856,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+            # Memos webUI reverse proxy — proxies /memos/* to the local viewer
+            self._app.router.add_route("*", "/memos/{tail:.*}", self._handle_memos_proxy)
+            self._app.router.add_route("*", "/memos/api/{tail:.*}", self._handle_memos_proxy)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

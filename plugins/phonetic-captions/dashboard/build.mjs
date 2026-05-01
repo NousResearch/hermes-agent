@@ -61,7 +61,9 @@ await build({
   outfile: join(__dirname, "dist", "index.js"),
   minify: true,
   target: "es2020",
-  jsx: "automatic",
+  jsx: "transform",
+  jsxFactory: "React.createElement",
+  jsxFragment: "React.Fragment",
   alias: {
     react: join(shimDir, "react.js"),
     "react/jsx-runtime": join(shimDir, "react-jsx-runtime.js"),

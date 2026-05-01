@@ -850,7 +850,8 @@ def _read_user_profile(user_id: str) -> dict:
         return {}
     try:
         return json.loads(profile_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Could not read profile %s: %s", profile_path, exc)
         return {}
 
 
@@ -1039,7 +1040,9 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     if project_context:
         sections.append(project_context)
 
-    # SOUL.md from HERMES_HOME only — skip when already loaded as identity
+    # SOUL.md from HERMES_HOME only — skip when already loaded as identity.
+    # No user_id here: this is the context-files fallback path, where we don't
+    # have a session and shouldn't apply a per-user persona overlay.
     if not skip_soul:
         soul_content = load_soul_md()
         if soul_content:

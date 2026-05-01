@@ -184,7 +184,16 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
     Gates:
       - curator.enabled == True
       - not paused
-      - last_run_at missing, OR older than interval_hours
+      - last_run_at present AND older than interval_hours
+
+    First-run behavior: when there is no ``last_run_at`` (fresh install, or
+    install that predates the curator), we DO NOT run immediately. The
+    curator is designed to run after at least ``interval_hours`` (7 days by
+    default) of skill activity, not on the first background tick after
+    ``hermes update``. On first observation we seed ``last_run_at`` to "now"
+    and defer the first real pass by one full interval. Users who want to
+    run it sooner can always invoke ``hermes curator run`` (with or without
+    ``--dry-run``) explicitly — that path bypasses this gate.
 
     The idle check (min_idle_hours) is applied at the call site where we know
     whether an agent is actively running — here we only enforce the static
@@ -198,7 +207,21 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
     state = load_state()
     last = _parse_iso(state.get("last_run_at"))
     if last is None:
-        return True
+        # Never run before. Seed state so we wait a full interval before the
+        # first real pass. Report-only; do not auto-mutate the library the
+        # very first time a gateway ticks after an update.
+        if now is None:
+            now = datetime.now(timezone.utc)
+        try:
+            state["last_run_at"] = now.isoformat()
+            state["last_run_summary"] = (
+                "deferred first run — curator seeded, will run after one "
+                "interval; use `hermes curator run --dry-run` to preview now"
+            )
+            save_state(state)
+        except Exception as e:  # pragma: no cover — best-effort persistence
+            logger.debug("Failed to seed curator last_run_at: %s", e)
+        return False
 
     if now is None:
         now = datetime.now(timezone.utc)
@@ -258,6 +281,33 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
 # ---------------------------------------------------------------------------
 # Review prompt for the forked agent
 # ---------------------------------------------------------------------------
+
+CURATOR_DRY_RUN_BANNER = (
+    "═══════════════════════════════════════════════════════════════\n"
+    "DRY-RUN — REPORT ONLY. DO NOT MUTATE THE SKILL LIBRARY.\n"
+    "═══════════════════════════════════════════════════════════════\n"
+    "\n"
+    "This is a PREVIEW pass. Follow every instruction below EXCEPT:\n"
+    "\n"
+    "  • DO NOT call skill_manage with action=patch, create, delete, "
+    "write_file, or remove_file.\n"
+    "  • DO NOT call terminal to mv skill directories into .archive/.\n"
+    "  • DO NOT call terminal to mv, cp, rm, or rewrite any file under "
+    "~/.hermes/skills/.\n"
+    "  • skills_list and skill_view are FINE — read as much as you need.\n"
+    "\n"
+    "Your output IS the deliverable. Produce the exact same "
+    "human-readable summary and structured YAML block you would "
+    "produce on a live run — but describe the actions you WOULD take, "
+    "not actions you took. A downstream reviewer will read the report "
+    "and decide whether to approve a live run with "
+    "`hermes curator run` (no flag).\n"
+    "\n"
+    "If you accidentally take a mutating action, say so explicitly in "
+    "the summary so the reviewer can revert it.\n"
+    "═══════════════════════════════════════════════════════════════"
+)
+
 
 CURATOR_REVIEW_PROMPT = (
     "You are running as Hermes' background skill CURATOR. This is an "
@@ -1072,6 +1122,7 @@ def _render_candidate_list() -> str:
 def run_curator_review(
     on_summary: Optional[Callable[[str], None]] = None,
     synchronous: bool = False,
+    dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Execute a single curator review pass.
 
@@ -1084,9 +1135,43 @@ def run_curator_review(
 
     If *synchronous* is True, the LLM review runs in the calling thread; the
     default is to spawn a daemon thread so the caller returns immediately.
+
+    If *dry_run* is True, the automatic stale/archive transitions are SKIPPED
+    and the LLM review pass is instructed to produce a report only — no
+    skill_manage mutations, no terminal archive moves. The REPORT.md still
+    gets written and ``state.last_report_path`` still records it so users
+    can read what the curator WOULD have done.
     """
     start = datetime.now(timezone.utc)
-    counts = apply_automatic_transitions(now=start)
+    if dry_run:
+        # Count candidates without mutating state.
+        try:
+            report = skill_usage.agent_created_report()
+            counts = {
+                "checked": len(report),
+                "marked_stale": 0,
+                "archived": 0,
+                "reactivated": 0,
+            }
+        except Exception:
+            counts = {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0}
+    else:
+        # Pre-mutation snapshot — best-effort, never blocks the run. A
+        # failed snapshot logs at debug and continues (the alternative is
+        # that a transient disk issue silently disables curator forever,
+        # which is worse). Users who want to require snapshots can disable
+        # curator entirely until they can fix disk space.
+        try:
+            from agent import curator_backup
+            snap = curator_backup.snapshot_skills(reason="pre-curator-run")
+            if snap is not None and on_summary:
+                try:
+                    on_summary(f"curator: snapshot created ({snap.name})")
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
+        counts = apply_automatic_transitions(now=start)
 
     auto_summary_parts = []
     if counts["marked_stale"]:
@@ -1098,11 +1183,16 @@ def run_curator_review(
     auto_summary = ", ".join(auto_summary_parts) if auto_summary_parts else "no changes"
 
     # Persist state before the LLM pass so a crash mid-review still records
-    # the run and doesn't immediately re-trigger.
+    # the run and doesn't immediately re-trigger. In dry-run we do NOT bump
+    # last_run_at or run_count — a preview shouldn't push the next scheduled
+    # real pass out. We still record a summary so `hermes curator status`
+    # shows that a preview ran.
     state = load_state()
-    state["last_run_at"] = start.isoformat()
-    state["run_count"] = int(state.get("run_count", 0)) + 1
-    state["last_run_summary"] = f"auto: {auto_summary}"
+    if not dry_run:
+        state["last_run_at"] = start.isoformat()
+        state["run_count"] = int(state.get("run_count", 0)) + 1
+    prefix = "dry-run auto: " if dry_run else "auto: "
+    state["last_run_summary"] = f"{prefix}{auto_summary}"
     save_state(state)
 
     def _llm_pass():
@@ -1118,7 +1208,7 @@ def run_curator_review(
         try:
             candidate_list = _render_candidate_list()
             if "No agent-created skills" in candidate_list:
-                final_summary = f"auto: {auto_summary}; llm: skipped (no candidates)"
+                final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
                 llm_meta = {
                     "final": "",
                     "summary": "skipped (no candidates)",
@@ -1128,14 +1218,21 @@ def run_curator_review(
                     "error": None,
                 }
             else:
-                prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
+                if dry_run:
+                    prompt = (
+                        f"{CURATOR_DRY_RUN_BANNER}\n\n"
+                        f"{CURATOR_REVIEW_PROMPT}\n\n"
+                        f"{candidate_list}"
+                    )
+                else:
+                    prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
                 llm_meta = _run_llm_review(prompt)
                 final_summary = (
-                    f"auto: {auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
+                    f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
                 )
         except Exception as e:
             logger.debug("Curator LLM pass failed: %s", e, exc_info=True)
-            final_summary = f"auto: {auto_summary}; llm: error ({e})"
+            final_summary = f"{prefix}{auto_summary}; llm: error ({e})"
             llm_meta = {
                 "final": "",
                 "summary": f"error ({e})",

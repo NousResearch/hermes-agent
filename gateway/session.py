@@ -458,6 +458,15 @@ class SessionEntry:
     was_auto_reset: bool = False
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
+
+    # Set by reset_session() when the user explicitly sends /new or /reset.
+    # Consumed once by _handle_message_with_agent to trigger topic/channel
+    # skill re-injection on the first message of the new session.  We can't
+    # reuse was_auto_reset for this because that flag fires the "session
+    # expired due to inactivity" user-facing notice and a misleading
+    # context-note prepend — both wrong for an explicit manual reset.
+    # See issue #6508.
+    is_fresh_reset: bool = False
     
     # Set by the background expiry watcher after it finalizes an expired
     # session (invoking on_session_finalize hooks and evicting the cached
@@ -508,6 +517,7 @@ class SessionEntry:
                 if self.last_resume_marked_at
                 else None
             ),
+            "is_fresh_reset": self.is_fresh_reset,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -556,6 +566,7 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            is_fresh_reset=data.get("is_fresh_reset", False),
         )
 
 
@@ -1132,6 +1143,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                is_fresh_reset=True,
             )
 
             self._entries[session_key] = new_entry

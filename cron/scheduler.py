@@ -83,7 +83,7 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
 # Platforms that support a configured cron/notification home target, mapped to
 # the environment variable used by gateway setup/runtime config.
 _HOME_TARGET_ENV_VARS = {
-    "matrix": "MATRIX_HOME_ROOM",
+    "matrix": "MATRIX_HOME_CHANNEL",
     "telegram": "TELEGRAM_HOME_CHANNEL",
     "discord": "DISCORD_HOME_CHANNEL",
     "slack": "SLACK_HOME_CHANNEL",
@@ -105,6 +105,7 @@ _HOME_TARGET_ENV_VARS = {
 # old name before the rename keep working until they migrate.
 _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
+    "MATRIX_HOME_CHANNEL": "MATRIX_HOME_ROOM",
 }
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run

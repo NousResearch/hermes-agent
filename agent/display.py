@@ -14,7 +14,6 @@ from difflib import unified_diff
 from pathlib import Path
 
 from utils import safe_json_loads
-from agent.tool_guardrails import classify_tool_failure
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
@@ -809,7 +808,30 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     like ``" [exit 1]"`` for terminal failures, or ``" [error]"`` for generic
     failures.  On success, returns ``(False, "")``.
     """
-    return classify_tool_failure(tool_name, result)
+    if result is None:
+        return False, ""
+
+    if tool_name == "terminal":
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
+            exit_code = data.get("exit_code")
+            if exit_code is not None and exit_code != 0:
+                return True, f" [exit {exit_code}]"
+        return False, ""
+
+    # Memory-specific: distinguish "full" from real errors
+    if tool_name == "memory":
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
+            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
+                return True, " [full]"
+
+    # Generic heuristic for non-terminal tools
+    lower = result[:500].lower()
+    if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
+        return True, " [error]"
+
+    return False, ""
 
 
 def get_cute_tool_message(

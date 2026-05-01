@@ -9,6 +9,18 @@
   width: 100%;
 }
 
+.hermes-kanban ::selection {
+  background: rgba(127, 127, 127, 0.35);
+  background: color-mix(in srgb, var(--color-ring) 35%, transparent);
+  color: var(--color-foreground);
+}
+
+.hermes-kanban ::-moz-selection {
+  background: rgba(127, 127, 127, 0.35);
+  background: color-mix(in srgb, var(--color-ring) 35%, transparent);
+  color: var(--color-foreground);
+}
+
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {
@@ -411,11 +423,15 @@
   min-width: 6rem;
 }
 .hermes-kanban-event-payload {
-  color: var(--color-muted-foreground);
+  color: var(--color-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 280px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+  background: color-mix(in srgb, var(--color-card) 92%, var(--color-foreground) 8%);
+  padding: 0.05rem 0.25rem;
 }
 
 .hermes-kanban-drawer-comment-row {
@@ -752,8 +768,12 @@
 .hermes-kanban-run-meta {
   display: block;
   font-size: 0.65rem;
-  padding: 0.15rem 0 0;
-  color: var(--color-muted-foreground);
+  margin-top: 0.2rem;
+  padding: 0.2rem 0.3rem;
+  color: var(--color-foreground);
+  background: color-mix(in srgb, var(--color-card) 92%, var(--color-foreground) 8%);
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--font-mono, ui-monospace, monospace);

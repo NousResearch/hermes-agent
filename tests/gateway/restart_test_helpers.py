@@ -12,6 +12,7 @@ class RestartTestAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
         self.sent: list[str] = []
+        self.sent_calls: list[tuple[str, str, object]] = []
 
     async def connect(self):
         return True
@@ -21,6 +22,7 @@ class RestartTestAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         self.sent.append(content)
+        self.sent_calls.append((chat_id, content, metadata))
         return SendResult(success=True, message_id="1")
 
     async def send_typing(self, chat_id, metadata=None):
@@ -30,12 +32,17 @@ class RestartTestAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
-def make_restart_source(chat_id: str = "123456", chat_type: str = "dm") -> SessionSource:
+def make_restart_source(
+    chat_id: str = "123456",
+    chat_type: str = "dm",
+    thread_id: str | None = None,
+) -> SessionSource:
     return SessionSource(
         platform=Platform.TELEGRAM,
         chat_id=chat_id,
         chat_type=chat_type,
         user_id="u1",
+        thread_id=thread_id,
     )
 
 
@@ -80,6 +87,15 @@ def make_restart_runner(
     )
     runner._handle_restart_command = GatewayRunner._handle_restart_command.__get__(
         runner, GatewayRunner
+    )
+    runner._handle_set_home_command = GatewayRunner._handle_set_home_command.__get__(
+        runner, GatewayRunner
+    )
+    runner._send_restart_notification = GatewayRunner._send_restart_notification.__get__(
+        runner, GatewayRunner
+    )
+    runner._send_home_channel_startup_notifications = (
+        GatewayRunner._send_home_channel_startup_notifications.__get__(runner, GatewayRunner)
     )
     runner._status_action_label = GatewayRunner._status_action_label.__get__(
         runner, GatewayRunner

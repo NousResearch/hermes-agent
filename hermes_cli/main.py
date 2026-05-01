@@ -800,6 +800,8 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
 
         title = db.get_session_title(target)
         message_count = int(session.get("message_count") or 0)
+        if message_count == 0:
+            return  # No real conversation — don't show resume info
         input_tokens = int(session.get("input_tokens") or 0)
         output_tokens = int(session.get("output_tokens") or 0)
         cache_read_tokens = int(session.get("cache_read_tokens") or 0)

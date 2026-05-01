@@ -136,6 +136,49 @@ class TestGptLiteralFamily:
         assert p["image_size"] == "1024x1536"
 
 
+class TestGptImage2Presets:
+    """GPT Image 2 uses preset enum sizes (not literal strings like 1.5).
+    Mapped to 4:3 variants so we stay above the 655,360 min-pixel floor
+    (16:9 presets at 1024x576 = 589,824 would be rejected)."""
+
+    def test_gpt2_landscape_uses_4_3_preset(self, image_tool):
+        p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hello", "landscape")
+        assert p["image_size"] == "landscape_4_3"
+
+    def test_gpt2_square_uses_square_hd(self, image_tool):
+        p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hello", "square")
+        assert p["image_size"] == "square_hd"
+
+    def test_gpt2_portrait_uses_4_3_preset(self, image_tool):
+        p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hello", "portrait")
+        assert p["image_size"] == "portrait_4_3"
+
+    def test_gpt2_quality_pinned_to_medium(self, image_tool):
+        p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hi", "square")
+        assert p["quality"] == "medium"
+
+    def test_gpt2_strips_byok_and_unsupported_overrides(self, image_tool):
+        """openai_api_key (BYOK) is deliberately not in supports — all users
+        route through shared FAL billing. guidance_scale/num_inference_steps
+        aren't in the model's API surface either."""
+        p = image_tool._build_fal_payload(
+            "fal-ai/gpt-image-2", "hi", "square",
+            overrides={
+                "openai_api_key": "sk-...",
+                "guidance_scale": 7.5,
+                "num_inference_steps": 50,
+            },
+        )
+        assert "openai_api_key" not in p
+        assert "guidance_scale" not in p
+        assert "num_inference_steps" not in p
+
+    def test_gpt2_strips_seed_even_if_passed(self, image_tool):
+        # seed isn't in the GPT Image 2 API surface either.
+        p = image_tool._build_fal_payload("fal-ai/gpt-image-2", "hi", "square", seed=42)
+        assert "seed" not in p
+
+
 # ---------------------------------------------------------------------------
 # Supports whitelist — the main safety property
 # ---------------------------------------------------------------------------
@@ -231,10 +274,11 @@ class TestGptQualityPinnedToMedium:
         assert p["quality"] == "medium"
 
     def test_non_gpt_model_never_gets_quality(self, image_tool):
-        """quality is only meaningful for gpt-image-1.5 — other models should
-        never have it in their payload."""
+        """quality is only meaningful for GPT-Image models (1.5, 2) — other
+        models should never have it in their payload."""
+        gpt_models = {"fal-ai/gpt-image-1.5", "fal-ai/gpt-image-2"}
         for mid in image_tool.FAL_MODELS:
-            if mid == "fal-ai/gpt-image-1.5":
+            if mid in gpt_models:
                 continue
             p = image_tool._build_fal_payload(mid, "hi", "square")
             assert "quality" not in p, f"{mid} unexpectedly has 'quality' in payload"

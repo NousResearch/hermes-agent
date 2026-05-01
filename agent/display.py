@@ -225,9 +225,11 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             content = _oneline(args.get("content", ""))
             return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
         elif action == "replace":
-            return f"~{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
+            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+            return f"~{target}: \"{old[:20]}\""
         elif action == "remove":
-            return f"-{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
+            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+            return f"-{target}: \"{old[:20]}\""
         return action
 
     if tool_name == "send_message":
@@ -939,9 +941,13 @@ def get_cute_tool_message(
         if action == "add":
             return _wrap(f"┊ 🧠 memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")
         elif action == "replace":
-            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(args.get('old_text', ''), 20)}\"  {dur}")
+            old = args.get("old_text") or ""
+            old = old if old else "<missing old_text>"
+            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(old, 20)}\"  {dur}")
         elif action == "remove":
-            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(args.get('old_text', ''), 20)}\"  {dur}")
+            old = args.get("old_text") or ""
+            old = old if old else "<missing old_text>"
+            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(old, 20)}\"  {dur}")
         return _wrap(f"┊ 🧠 memory    {action}  {dur}")
     if tool_name == "skills_list":
         return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")

@@ -31,6 +31,31 @@ def _isolate_env(tmp_path, monkeypatch):
     monkeypatch.delenv("RETAINDB_PROJECT", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _cap_retaindb_sleeps(monkeypatch):
+    """Cap production-code sleeps so background-thread tests run fast.
+
+    The retaindb ``_WriteQueue._flush_row`` does ``time.sleep(2)`` after
+    errors. Across multiple tests that trigger the retry path, that adds
+    up. Cap the module's bound ``time.sleep`` to 0.05s — tests don't care
+    about the exact retry delay, only that it happens. The test file's
+    own ``time.sleep`` stays real since it uses a different reference.
+    """
+    try:
+        from plugins.memory import retaindb as _retaindb
+    except ImportError:
+        return
+
+    real_sleep = _retaindb.time.sleep
+
+    def _capped_sleep(seconds):
+        return real_sleep(min(float(seconds), 0.05))
+
+    import types as _types
+    fake_time = _types.SimpleNamespace(sleep=_capped_sleep, time=_retaindb.time.time)
+    monkeypatch.setattr(_retaindb, "time", fake_time)
+
+
 # We need the repo root on sys.path so the plugin can import agent.memory_provider
 import sys
 _repo_root = str(Path(__file__).resolve().parents[2])
@@ -130,16 +155,18 @@ class TestWriteQueue:
     def test_enqueue_creates_row(self, tmp_path):
         q, client, db_path = self._make_queue(tmp_path)
         q.enqueue("user1", "sess1", [{"role": "user", "content": "hi"}])
-        # Give the writer thread a moment to process
-        time.sleep(1)
+        # shutdown() blocks until the writer thread drains the queue — no need
+        # to pre-sleep (the old 1s sleep was a just-in-case wait, but shutdown
+        # does the right thing).
         q.shutdown()
         # If ingest succeeded, the row should be deleted
         client.ingest_session.assert_called_once()
 
     def test_enqueue_persists_to_sqlite(self, tmp_path):
         client = MagicMock()
-        # Make ingest hang so the row stays in SQLite
-        client.ingest_session = MagicMock(side_effect=lambda *a, **kw: time.sleep(5))
+        # Make ingest slow so the row is still in SQLite when we peek.
+        # 0.5s is plenty — the test just needs the flush to still be in-flight.
+        client.ingest_session = MagicMock(side_effect=lambda *a, **kw: time.sleep(0.5))
         db_path = tmp_path / "test_queue.db"
         q = _WriteQueue(client, db_path)
         q.enqueue("user1", "sess1", [{"role": "user", "content": "test"}])
@@ -154,8 +181,7 @@ class TestWriteQueue:
     def test_flush_deletes_row_on_success(self, tmp_path):
         q, client, db_path = self._make_queue(tmp_path)
         q.enqueue("user1", "sess1", [{"role": "user", "content": "hi"}])
-        time.sleep(1)
-        q.shutdown()
+        q.shutdown()  # blocks until drain
         # Row should be gone
         conn = sqlite3.connect(str(db_path))
         rows = conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
@@ -168,14 +194,20 @@ class TestWriteQueue:
         db_path = tmp_path / "test_queue.db"
         q = _WriteQueue(client, db_path)
         q.enqueue("user1", "sess1", [{"role": "user", "content": "hi"}])
-        time.sleep(3)  # Allow retry + sleep(2) in _flush_row
+        # Poll for the error to be recorded (max 2s), instead of a fixed 3s wait.
+        deadline = time.time() + 2.0
+        last_error = None
+        while time.time() < deadline:
+            conn = sqlite3.connect(str(db_path))
+            row = conn.execute("SELECT last_error FROM pending").fetchone()
+            conn.close()
+            if row and row[0]:
+                last_error = row[0]
+                break
+            time.sleep(0.05)
         q.shutdown()
-        # Row should still exist with error recorded
-        conn = sqlite3.connect(str(db_path))
-        row = conn.execute("SELECT last_error FROM pending").fetchone()
-        conn.close()
-        assert row is not None
-        assert "API down" in row[0]
+        assert last_error is not None
+        assert "API down" in last_error
 
     def test_thread_local_connection_reuse(self, tmp_path):
         q, _, _ = self._make_queue(tmp_path)
@@ -193,14 +225,27 @@ class TestWriteQueue:
         client1.ingest_session = MagicMock(side_effect=RuntimeError("fail"))
         q1 = _WriteQueue(client1, db_path)
         q1.enqueue("user1", "sess1", [{"role": "user", "content": "lost turn"}])
-        time.sleep(3)
+        # Wait until the error is recorded (poll with short interval).
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            conn = sqlite3.connect(str(db_path))
+            row = conn.execute("SELECT last_error FROM pending").fetchone()
+            conn.close()
+            if row and row[0]:
+                break
+            time.sleep(0.05)
         q1.shutdown()
 
         # Now create a new queue — it should replay the pending rows
         client2 = MagicMock()
         client2.ingest_session = MagicMock(return_value={"status": "ok"})
         q2 = _WriteQueue(client2, db_path)
-        time.sleep(2)
+        # Poll for the replay to happen.
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if client2.ingest_session.called:
+                break
+            time.sleep(0.05)
         q2.shutdown()
 
         # The replayed row should have been ingested via client2

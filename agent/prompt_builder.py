@@ -141,6 +141,12 @@ DEFAULT_AGENT_IDENTITY = (
     "Be targeted and efficient in your exploration and investigations."
 )
 
+HERMES_AGENT_HELP_GUIDANCE = (
+    "If the user asks about configuring, setting up, or using Hermes Agent "
+    "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
+    "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
+)
+
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
     "tool: user preferences, environment details, tool quirks, and stable conventions. "
@@ -152,7 +158,13 @@ MEMORY_GUIDANCE = (
     "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
     "state to memory; use session_search to recall those from past transcripts. "
     "If you've discovered a new way to do something, solved a problem that could be "
-    "necessary later, save it as a skill with the skill tool."
+    "necessary later, save it as a skill with the skill tool.\n"
+    "Write memories as declarative facts, not instructions to yourself. "
+    "'User prefers concise responses' ✓ — 'Always respond concisely' ✗. "
+    "'Project uses pytest with xdist' ✓ — 'Run tests with pytest -n 4' ✗. "
+    "Imperative phrasing gets re-read as a directive in later sessions and can "
+    "cause repeated work or override the user's current request. Procedures and "
+    "workflows belong in skills, not memory."
 )
 
 SESSION_SEARCH_GUIDANCE = (
@@ -168,6 +180,64 @@ SKILLS_GUIDANCE = (
     "When using a skill and finding it outdated, incomplete, or wrong, "
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
     "Skills that aren't maintained become liabilities."
+)
+
+KANBAN_GUIDANCE = (
+    "# You are a Kanban worker\n"
+    "You were spawned by the Hermes Kanban dispatcher to execute ONE task from "
+    "the shared board at `~/.hermes/kanban.db`. Your task id is in "
+    "`$HERMES_KANBAN_TASK`; your workspace is `$HERMES_KANBAN_WORKSPACE`. "
+    "The `kanban_*` tools in your schema are your primary coordination surface — "
+    "they write directly to the shared SQLite DB and work regardless of terminal "
+    "backend (local/docker/modal/ssh).\n"
+    "\n"
+    "## Lifecycle\n"
+    "\n"
+    "1. **Orient.** Call `kanban_show()` first (no args — it defaults to your "
+    "task). The response includes title, body, parent-task handoffs (summary + "
+    "metadata), any prior attempts on this task if you're a retry, the full "
+    "comment thread, and a pre-formatted `worker_context` you can treat as "
+    "ground truth.\n"
+    "2. **Work inside the workspace.** `cd $HERMES_KANBAN_WORKSPACE` before "
+    "any file operations. The workspace is yours for this run. Don't modify "
+    "files outside it unless the task explicitly asks.\n"
+    "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
+    "every few minutes during long subprocesses (training, encoding, crawling). "
+    "Skip heartbeats for short tasks.\n"
+    "4. **Block on genuine ambiguity.** If you need a human decision you cannot "
+    "infer (missing credentials, UX choice, paywalled source, peer output you "
+    "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
+    "The user will unblock with context and the dispatcher will respawn you.\n"
+    "5. **Complete with structured handoff.** Call `kanban_complete(summary=..., "
+    "metadata=...)`. `summary` is 1–3 human-readable sentences naming concrete "
+    "artifacts. `metadata` is machine-readable facts "
+    "(`{changed_files: [...], tests_run: N, decisions: [...]}`). Downstream "
+    "workers read both via their own `kanban_show`. Never put secrets / "
+    "tokens / raw PII in either field — run rows are durable forever.\n"
+    "6. **If follow-up work appears, create it; don't do it.** Use "
+    "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
+    "to spawn a child task for the appropriate specialist profile instead of "
+    "scope-creeping into the next thing.\n"
+    "\n"
+    "## Orchestrator mode\n"
+    "\n"
+    "If your task is itself a decomposition task (e.g. a planner profile given "
+    "a high-level goal), use `kanban_create` to fan out into child tasks — one "
+    "per specialist, each with an explicit `assignee` and `parents=[...]` to "
+    "express dependencies. Then `kanban_complete` your own task with a summary "
+    "of the decomposition. Do NOT execute the work yourself; your job is "
+    "routing, not implementation.\n"
+    "\n"
+    "## Do NOT\n"
+    "\n"
+    "- Do not shell out to `hermes kanban <verb>` for board operations. Use "
+    "the `kanban_*` tools — they work across all terminal backends.\n"
+    "- Do not complete a task you didn't actually finish. Block it.\n"
+    "- Do not assign follow-up work to yourself. Assign it to the right "
+    "specialist profile.\n"
+    "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
+    "for short reasoning subtasks inside your own run; board tasks are for "
+    "cross-agent handoffs that outlive one API loop."
 )
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
@@ -298,6 +368,10 @@ PLATFORM_HINTS = {
         "Standard markdown is automatically converted to Telegram format. "
         "Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, "
         "`inline code`, ```code blocks```, [links](url), and ## headers. "
+        "Telegram has NO table syntax — prefer bullet lists or labeled "
+        "key: value pairs over pipe tables (any tables you do emit are "
+        "auto-rewritten into row-group bullets, which you can produce "
+        "directly for cleaner output). "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
@@ -344,7 +418,13 @@ PLATFORM_HINTS = {
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
-        "renderable inside a terminal."
+        "renderable inside a terminal. "
+        "File delivery: there is no attachment channel — the user reads your "
+        "response directly in their terminal. Do NOT emit MEDIA:/path tags "
+        "(those are only intercepted on messaging platforms like Telegram, "
+        "Discord, Slack, etc.; on the CLI they render as literal text). "
+        "When referring to a file you created or changed, just state its "
+        "absolute path in plain text; the user can open it from there."
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "
@@ -357,6 +437,32 @@ PLATFORM_HINTS = {
         "appear as text messages. You can send media files natively: include "
         "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
         ".heic) appear as photos and other files arrive as attachments."
+    ),
+    "mattermost": (
+        "You are in a Mattermost workspace communicating with your user. "
+        "Mattermost renders standard Markdown — headings, bold, italic, code "
+        "blocks, and tables all work. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are uploaded as photo "
+        "attachments, audio and video as file attachments. "
+        "Image URLs in markdown format ![alt](url) are rendered as inline previews automatically."
+    ),
+    "matrix": (
+        "You are in a Matrix room communicating with your user. "
+        "Matrix renders Markdown — bold, italic, code blocks, and links work; "
+        "the adapter converts your Markdown to HTML for rich display. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are sent as inline photos, "
+        "audio (.ogg, .mp3) as voice/audio messages, video (.mp4) inline, "
+        "and other files as downloadable attachments."
+    ),
+    "feishu": (
+        "You are in a Feishu (Lark) workspace communicating with your user. "
+        "Feishu renders Markdown in messages — bold, italic, code blocks, and "
+        "links are supported. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are uploaded and displayed "
+        "inline, audio files as voice messages, and other files as attachments."
     ),
     "weixin": (
         "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when "
@@ -383,6 +489,29 @@ PLATFORM_HINTS = {
         "and emoji. You can send media files natively: include MEDIA:/absolute/path/to/file in "
         "your response. Images are sent as native photos, and other files arrive as downloadable "
         "documents."
+    ),
+    "yuanbao": (
+        "You are on Yuanbao (腾讯元宝), a Chinese AI assistant platform. "
+        "Markdown formatting is supported (code blocks, tables, bold/italic). "
+        "You CAN send media files natively — to deliver a file to the user, include "
+        "MEDIA:/absolute/path/to/file in your response. The file will be sent as a native "
+        "Yuanbao attachment: images (.jpg, .png, .webp, .gif) are sent as photos, "
+        "and other files (.pdf, .docx, .txt, .zip, etc.) arrive as downloadable documents "
+        "(max 50 MB). You can also include image URLs in markdown format ![alt](url) and "
+        "they will be downloaded and sent as native photos. "
+        "Do NOT tell the user you lack file-sending capability — use MEDIA: syntax "
+        "whenever a file delivery is appropriate.\n\n"
+        "Stickers (贴纸 / 表情包 / TIM face): Yuanbao has a built-in sticker catalogue. "
+        "When the user sends a sticker (you see '[emoji: 名称]' in their message) or asks "
+        "you to send/reply-with a 贴纸/表情/表情包, you MUST use the sticker tools:\n"
+        "  1. Call yb_search_sticker with a Chinese keyword (e.g. '666', '比心', '吃瓜', "
+        "     '捂脸', '合十') to discover matching sticker_ids.\n"
+        "  2. Call yb_send_sticker with the chosen sticker_id or name — this sends a real "
+        "     TIMFaceElem that renders as a native sticker in the chat.\n"
+        "DO NOT draw sticker-like PNGs with execute_code/Pillow/matplotlib and then send "
+        "them via MEDIA: or send_image_file. That produces a fake low-quality 'sticker' "
+        "image and is the WRONG path. Bare Unicode emoji in text is also not a substitute "
+        "— when a sticker is the right response, use yb_send_sticker."
     ),
 }
 
@@ -613,20 +742,20 @@ def build_skills_system_prompt(
         or get_session_env("HERMES_SESSION_PLATFORM")
         or ""
     )
+    disabled = get_disabled_skill_names()
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
+        tuple(sorted(disabled)),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
         if cached is not None:
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
-
-    disabled = get_disabled_skill_names()
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
     snapshot = _load_skills_snapshot(skills_dir)
@@ -654,7 +783,7 @@ def build_skills_system_prompt(
             ):
                 continue
             skills_by_category.setdefault(category, []).append(
-                (skill_name, entry.get("description", ""))
+                (frontmatter_name, entry.get("description", ""))
             )
         category_descriptions = {
             str(k): str(v)
@@ -679,7 +808,7 @@ def build_skills_system_prompt(
             ):
                 continue
             skills_by_category.setdefault(entry["category"], []).append(
-                (skill_name, entry["description"])
+                (entry["frontmatter_name"], entry["description"])
             )
 
         # Read category-level DESCRIPTION.md files
@@ -722,9 +851,10 @@ def build_skills_system_prompt(
                     continue
                 entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
                 skill_name = entry["skill_name"]
-                if skill_name in seen_skill_names:
+                frontmatter_name = entry["frontmatter_name"]
+                if frontmatter_name in seen_skill_names:
                     continue
-                if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                if frontmatter_name in disabled or skill_name in disabled:
                     continue
                 if not _skill_should_show(
                     extract_skill_conditions(frontmatter),
@@ -732,9 +862,9 @@ def build_skills_system_prompt(
                     available_toolsets,
                 ):
                     continue
-                seen_skill_names.add(skill_name)
+                seen_skill_names.add(frontmatter_name)
                 skills_by_category.setdefault(entry["category"], []).append(
-                    (skill_name, entry["description"])
+                    (frontmatter_name, entry["description"])
                 )
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
@@ -786,6 +916,11 @@ def build_skills_system_prompt(
             "Skills also encode the user's preferred approach, conventions, and quality standards "
             "for tasks like code review, planning, and testing — load them even for tasks you "
             "already know how to do, because the skill defines how it should be done here.\n"
+            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
+            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
+            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
+            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
+            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
             "If a skill has issues, fix it with skill_manage(action='patch').\n"
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "

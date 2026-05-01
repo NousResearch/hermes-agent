@@ -20,6 +20,7 @@ test runner at ``scripts/run_tests.sh``.
 """
 
 import asyncio
+import logging
 import os
 import re
 import signal
@@ -174,7 +175,10 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_SESSION_KEY",
     "HERMES_GATEWAY_SESSION",
     "HERMES_PLATFORM",
+    "HERMES_MODEL",
+    "HERMES_INFERENCE_MODEL",
     "HERMES_INFERENCE_PROVIDER",
+    "HERMES_TUI_PROVIDER",
     "HERMES_MANAGED",
     "HERMES_DEV",
     "HERMES_CONTAINER",
@@ -184,6 +188,56 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
+    "TERMINAL_CWD",
+    "TERMINAL_ENV",
+    "TERMINAL_VERCEL_RUNTIME",
+    "TERMINAL_CONTAINER_CPU",
+    "TERMINAL_CONTAINER_DISK",
+    "TERMINAL_CONTAINER_MEMORY",
+    "TERMINAL_CONTAINER_PERSISTENT",
+    "TERMINAL_DOCKER_RUN_AS_HOST_USER",
+    "BROWSER_CDP_URL",
+    "CAMOFOX_URL",
+    # Platform allowlists — not credentials, but if set from any source
+    # (user shell, earlier leaky test, CI env), they change gateway auth
+    # behavior and flake button-authorization tests.
+    "TELEGRAM_ALLOWED_USERS",
+    "DISCORD_ALLOWED_USERS",
+    "WHATSAPP_ALLOWED_USERS",
+    "SLACK_ALLOWED_USERS",
+    "SIGNAL_ALLOWED_USERS",
+    "SIGNAL_GROUP_ALLOWED_USERS",
+    "EMAIL_ALLOWED_USERS",
+    "SMS_ALLOWED_USERS",
+    "MATTERMOST_ALLOWED_USERS",
+    "MATRIX_ALLOWED_USERS",
+    "DINGTALK_ALLOWED_USERS",
+    "FEISHU_ALLOWED_USERS",
+    "WECOM_ALLOWED_USERS",
+    "GATEWAY_ALLOWED_USERS",
+    "GATEWAY_ALLOW_ALL_USERS",
+    "TELEGRAM_ALLOW_ALL_USERS",
+    "DISCORD_ALLOW_ALL_USERS",
+    "WHATSAPP_ALLOW_ALL_USERS",
+    "SLACK_ALLOW_ALL_USERS",
+    "SIGNAL_ALLOW_ALL_USERS",
+    "EMAIL_ALLOW_ALL_USERS",
+    "SMS_ALLOW_ALL_USERS",
+    # Platform gating — set by load_gateway_config() as a side effect when
+    # a config.yaml is present, so individual test bodies that call the
+    # loader leak these values into later tests on the same xdist worker.
+    # Force-clear on every test setup so the leak can't happen.
+    "SLACK_REQUIRE_MENTION",
+    "SLACK_STRICT_MENTION",
+    "SLACK_FREE_RESPONSE_CHANNELS",
+    "SLACK_ALLOW_BOTS",
+    "SLACK_REACTIONS",
+    "DISCORD_REQUIRE_MENTION",
+    "DISCORD_FREE_RESPONSE_CHANNELS",
+    "TELEGRAM_REQUIRE_MENTION",
+    "WHATSAPP_REQUIRE_MENTION",
+    "DINGTALK_REQUIRE_MENTION",
+    "MATRIX_REQUIRE_MENTION",
 })
 
 
@@ -229,6 +283,15 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("LC_ALL", "C.UTF-8")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
 
+    # 4b. Disable AWS IMDS lookups. Without this, any test that ends up
+    #     calling has_aws_credentials() / resolve_aws_auth_env_var()
+    #     (e.g. provider auto-detect, status command, cron run_job) burns
+    #     ~2s waiting for the metadata service at 169.254.169.254 to time
+    #     out. Tests don't run on EC2 — IMDS is always unreachable here.
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    monkeypatch.setenv("AWS_METADATA_SERVICE_TIMEOUT", "1")
+    monkeypatch.setenv("AWS_METADATA_SERVICE_NUM_ATTEMPTS", "1")
+
     # 5. Reset plugin singleton so tests don't leak plugins from
     #    ~/.hermes/plugins/ (which, per step 3, is now empty — but the
     #    singleton might still be cached from a previous test).
@@ -237,6 +300,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
     except Exception:
         pass
+    # Explicitly clear provider-specific base URL overrides that don't match
+    # the generic credential-shaped env-var filter above.
+    monkeypatch.delenv("GMI_API_KEY", raising=False)
+    monkeypatch.delenv("GMI_BASE_URL", raising=False)
 
 
 # Backward-compat alias — old tests reference this fixture name. Keep it
@@ -245,6 +312,135 @@ def _hermetic_environment(tmp_path, monkeypatch):
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
     return None
+
+
+# ── Module-level state reset ───────────────────────────────────────────────
+#
+# Python modules are singletons per process, and pytest-xdist workers are
+# long-lived. Module-level dicts/sets (tool registries, approval state,
+# interrupt flags) and ContextVars persist across tests in the same worker,
+# causing tests that pass alone to fail when run with siblings.
+#
+# Each entry in this fixture clears state that belongs to a specific module.
+# New state buckets go here too — this is the single gate that prevents
+# "works alone, flakes in CI" bugs from state leakage.
+#
+# The skill `test-suite-cascade-diagnosis` documents the concrete patterns
+# this closes; the running example was `test_command_guards` failing 12/15
+# CI runs because ``tools.approval._session_approved`` carried approvals
+# from one test's session into another's.
+
+@pytest.fixture(autouse=True)
+def _reset_module_state():
+    """Clear module-level mutable state and ContextVars between tests.
+
+    Keeps state from leaking across tests on the same xdist worker. Modules
+    that don't exist yet (test collection before production import) are
+    skipped silently — production import later creates fresh empty state.
+    """
+    # --- logging — quiet/one-shot paths mutate process-global logger state ---
+    logging.disable(logging.NOTSET)
+    for _logger_name in ("tools", "run_agent", "trajectory_compressor", "cron", "hermes_cli"):
+        _logger = logging.getLogger(_logger_name)
+        _logger.disabled = False
+        _logger.setLevel(logging.NOTSET)
+        _logger.propagate = True
+
+    # --- tools.approval — the single biggest source of cross-test pollution ---
+    try:
+        from tools import approval as _approval_mod
+        _approval_mod._session_approved.clear()
+        _approval_mod._session_yolo.clear()
+        _approval_mod._permanent_approved.clear()
+        _approval_mod._pending.clear()
+        _approval_mod._gateway_queues.clear()
+        _approval_mod._gateway_notify_cbs.clear()
+        # ContextVar: reset to empty string so get_current_session_key()
+        # falls through to the env var / default path, matching a fresh
+        # process.
+        _approval_mod._approval_session_key.set("")
+    except Exception:
+        pass
+
+    # --- tools.interrupt — per-thread interrupt flag set ---
+    try:
+        from tools import interrupt as _interrupt_mod
+        with _interrupt_mod._lock:
+            _interrupt_mod._interrupted_threads.clear()
+    except Exception:
+        pass
+
+    # --- gateway.session_context — 9 ContextVars that represent
+    #     the active gateway session. If set in one test and not reset,
+    #     the next test's get_session_env() reads stale values.
+    try:
+        from gateway import session_context as _sc_mod
+        for _cv in (
+            _sc_mod._SESSION_PLATFORM,
+            _sc_mod._SESSION_CHAT_ID,
+            _sc_mod._SESSION_CHAT_NAME,
+            _sc_mod._SESSION_THREAD_ID,
+            _sc_mod._SESSION_USER_ID,
+            _sc_mod._SESSION_USER_NAME,
+            _sc_mod._SESSION_KEY,
+            _sc_mod._CRON_AUTO_DELIVER_PLATFORM,
+            _sc_mod._CRON_AUTO_DELIVER_CHAT_ID,
+            _sc_mod._CRON_AUTO_DELIVER_THREAD_ID,
+        ):
+            _cv.set(_sc_mod._UNSET)
+    except Exception:
+        pass
+
+    # --- tools.env_passthrough — ContextVar<set[str]> with no default ---
+    # LookupError is normal if the test never set it. Setting it to an
+    # empty set unconditionally normalizes the starting state.
+    try:
+        from tools import env_passthrough as _envp_mod
+        _envp_mod._allowed_env_vars_var.set(set())
+    except Exception:
+        pass
+
+    # --- tools.terminal_tool — active environment/cwd cache ---
+    # File tools prefer a live terminal cwd when one is cached for the task.
+    # Clear terminal environments between tests so a prior terminal call can't
+    # override TERMINAL_CWD in path-resolution tests.
+    try:
+        from tools import terminal_tool as _term_mod
+        _envs_to_cleanup = []
+        with _term_mod._env_lock:
+            _envs_to_cleanup = list(_term_mod._active_environments.values())
+            _term_mod._active_environments.clear()
+            _term_mod._last_activity.clear()
+            _term_mod._creation_locks.clear()
+        for _env in _envs_to_cleanup:
+            try:
+                _env.cleanup()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # --- tools.credential_files — ContextVar<dict> ---
+    try:
+        from tools import credential_files as _credf_mod
+        _credf_mod._registered_files_var.set({})
+    except Exception:
+        pass
+
+    # --- tools.file_tools — per-task read history + file-ops cache ---
+    # _read_tracker accumulates per-task_id read history for loop detection,
+    # capped by _READ_HISTORY_CAP. If entries from a prior test persist, the
+    # cap is hit faster than expected and capacity-related tests flake.
+    try:
+        from tools import file_tools as _ft_mod
+        with _ft_mod._read_tracker_lock:
+            _ft_mod._read_tracker.clear()
+        with _ft_mod._file_ops_lock:
+            _ft_mod._file_ops_cache.clear()
+    except Exception:
+        pass
+
+    yield
 
 
 @pytest.fixture()
@@ -324,3 +520,29 @@ def _enforce_test_timeout():
     yield
     signal.alarm(0)
     signal.signal(signal.SIGALRM, old)
+
+
+@pytest.fixture(autouse=True)
+def _reset_tool_registry_caches():
+    """Clear tool-registry-level caches between tests.
+
+    The production registry caches ``check_fn()`` results for 30 s
+    (see tools/registry.py) and :func:`get_tool_definitions` memoizes
+    its result (see model_tools.py). Both are keyed on state that tests
+    routinely mutate (env vars, registry._generation, config.yaml mtime)
+    — but a stale result from test A can still be served to test B
+    because 30 s covers the entire suite, and xdist worker reuse means
+    one test's cache lands in another's process. Clearing before every
+    test keeps hermetic behavior.
+    """
+    try:
+        from tools.registry import invalidate_check_fn_cache
+        invalidate_check_fn_cache()
+    except ImportError:
+        pass
+    try:
+        from model_tools import _clear_tool_defs_cache
+        _clear_tool_defs_cache()
+    except ImportError:
+        pass
+    yield

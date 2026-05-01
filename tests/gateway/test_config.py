@@ -9,6 +9,7 @@ from gateway.config import (
     Platform,
     PlatformConfig,
     SessionResetPolicy,
+    StreamingConfig,
     _apply_env_overrides,
     load_gateway_config,
 )
@@ -51,6 +52,10 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict(d)
         assert restored.enabled is False
         assert restored.token is None
+
+    def test_from_dict_coerces_quoted_false_enabled(self):
+        restored = PlatformConfig.from_dict({"enabled": "false"})
+        assert restored.enabled is False
 
 
 class TestGetConnectedPlatforms:
@@ -140,6 +145,28 @@ class TestSessionResetPolicy:
         assert restored.at_hour == 4
         assert restored.idle_minutes == 1440
 
+    def test_from_dict_coerces_quoted_false_notify(self):
+        restored = SessionResetPolicy.from_dict({"notify": "false"})
+        assert restored.notify is False
+
+
+class TestStreamingConfig:
+    def test_from_dict_coerces_quoted_false_enabled(self):
+        restored = StreamingConfig.from_dict({"enabled": "false"})
+        assert restored.enabled is False
+
+    def test_from_dict_malformed_numeric_values_fall_back_to_defaults(self):
+        restored = StreamingConfig.from_dict(
+            {
+                "edit_interval": "oops",
+                "buffer_threshold": "oops",
+                "fresh_final_after_seconds": "oops",
+            }
+        )
+        assert restored.edit_interval == 1.0
+        assert restored.buffer_threshold == 40
+        assert restored.fresh_final_after_seconds == 60.0
+
 
 class TestGatewayConfigRoundtrip:
     def test_full_roundtrip(self):
@@ -181,6 +208,10 @@ class TestGatewayConfigRoundtrip:
 
         assert restored.unauthorized_dm_behavior == "ignore"
         assert restored.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
+    def test_from_dict_coerces_quoted_false_always_log_local(self):
+        restored = GatewayConfig.from_dict({"always_log_local": "false"})
+        assert restored.always_log_local is False
 
 
 class TestLoadGatewayConfig:
@@ -237,6 +268,55 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.thread_sessions_per_user is False
+
+    def test_bridges_quoted_false_platform_enabled_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  api_server:\n"
+            "    enabled: \"false\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.API_SERVER].enabled is False
+        assert Platform.API_SERVER not in config.get_connected_platforms()
+
+    def test_bridges_quoted_false_session_notify_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "session_reset:\n"
+            "  notify: \"false\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.default_reset_policy.notify is False
+
+    def test_bridges_quoted_false_always_log_local_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "always_log_local: \"false\"\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.always_log_local is False
 
     def test_bridges_discord_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -298,6 +378,38 @@ class TestLoadGatewayConfig:
         assert config.platforms[Platform.SLACK].extra["channel_prompts"] == {
             "C01ABC": "Code review mode",
         }
+
+    def test_bridges_feishu_allow_bots_from_config_yaml_to_env(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n  allow_bots: mentions\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("FEISHU_ALLOW_BOTS", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("FEISHU_ALLOW_BOTS") == "mentions"
+
+    def test_feishu_allow_bots_env_takes_precedence_over_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n  allow_bots: all\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("FEISHU_ALLOW_BOTS", "none")
+
+        load_gateway_config()
+
+        assert os.environ.get("FEISHU_ALLOW_BOTS") == "none"
 
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -393,6 +505,15 @@ class TestHomeChannelEnvOverrides:
                 PlatformConfig(enabled=True, token="xoxb-from-config"),
                 {"SLACK_HOME_CHANNEL": "C123", "SLACK_HOME_CHANNEL_NAME": "Ops"},
                 ("C123", "Ops"),
+            ),
+            (
+                Platform.WHATSAPP,
+                PlatformConfig(enabled=True),
+                {
+                    "WHATSAPP_HOME_CHANNEL": "1234567890@lid",
+                    "WHATSAPP_HOME_CHANNEL_NAME": "Owner DM",
+                },
+                ("1234567890@lid", "Owner DM"),
             ),
             (
                 Platform.SIGNAL,

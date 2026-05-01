@@ -14,16 +14,33 @@ import copy
 import json
 import logging
 import os
+import platform
+import subprocess
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
+from utils import base_url_host_matches, normalize_proxy_env_vars
 
-try:
-    import anthropic as _anthropic_sdk
-except ImportError:
-    _anthropic_sdk = None  # type: ignore[assignment]
+# NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
+# ~220 ms of imports (anthropic.types, anthropic.lib.tools._beta_runner, etc.)
+# and the 3 usage sites (build_anthropic_client, build_anthropic_bedrock_client,
+# read_claude_code_credentials_from_keychain) are all on cold user-triggered
+# paths. Access via the `_get_anthropic_sdk()` accessor below, which caches
+# the module after the first call and returns None on ImportError.
+_anthropic_sdk: Any = ...  # sentinel — None means "tried and missing"
+
+
+def _get_anthropic_sdk():
+    """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
+    global _anthropic_sdk
+    if _anthropic_sdk is ...:
+        try:
+            import anthropic as _sdk
+            _anthropic_sdk = _sdk
+        except ImportError:
+            _anthropic_sdk = None
+    return _anthropic_sdk
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +133,63 @@ def _get_anthropic_max_output(model: str) -> int:
     return best_val
 
 
+def _resolve_positive_anthropic_max_tokens(value) -> Optional[int]:
+    """Return ``value`` floored to a positive int, or ``None`` if it is not a
+    finite positive number. Ported from openclaw/openclaw#66664.
+
+    Anthropic's Messages API rejects ``max_tokens`` values that are 0,
+    negative, non-integer, or non-finite with HTTP 400. Python's ``or``
+    idiom (``max_tokens or fallback``) correctly catches ``0`` but lets
+    negative ints and fractional floats (``-1``, ``0.5``) through to the
+    API, producing a user-visible failure instead of a local error.
+    """
+    # Booleans are a subclass of int — exclude explicitly so ``True`` doesn't
+    # silently become 1 and ``False`` doesn't become 0.
+    if isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    try:
+        import math
+        if not math.isfinite(value):
+            return None
+    except Exception:
+        return None
+    floored = int(value)  # truncates toward zero for floats
+    return floored if floored > 0 else None
+
+
+def _resolve_anthropic_messages_max_tokens(
+    requested,
+    model: str,
+    context_length: Optional[int] = None,
+) -> int:
+    """Resolve the ``max_tokens`` budget for an Anthropic Messages call.
+
+    Prefers ``requested`` when it is a positive finite number; otherwise
+    falls back to the model's output ceiling. Raises ``ValueError`` if no
+    positive budget can be resolved (should not happen with current model
+    table defaults, but guards against a future regression where
+    ``_get_anthropic_max_output`` could return ``0``).
+
+    Separately, callers apply a context-window clamp — this resolver does
+    not, to keep the positive-value contract independent of endpoint
+    specifics.
+
+    Ported from openclaw/openclaw#66664 (resolveAnthropicMessagesMaxTokens).
+    """
+    resolved = _resolve_positive_anthropic_max_tokens(requested)
+    if resolved is not None:
+        return resolved
+    fallback = _get_anthropic_max_output(model)
+    if fallback > 0:
+        return fallback
+    raise ValueError(
+        f"Anthropic Messages adapter requires a positive max_tokens value for "
+        f"model {model!r}; got {requested!r} and no model default resolved."
+    )
+
+
 def _supports_adaptive_thinking(model: str) -> bool:
     """Return True for Claude 4.6+ models that support adaptive thinking."""
     return any(v in model for v in _ADAPTIVE_THINKING_SUBSTRINGS)
@@ -143,19 +217,33 @@ def _forbids_sampling_params(model: str) -> bool:
 
 
 # Beta headers for enhanced features (sent with ALL auth types).
-# As of Opus 4.7 (2026-04-16), both of these are GA on Claude 4.6+ — the
+# As of Opus 4.7 (2026-04-16), the first two are GA on Claude 4.6+ — the
 # beta headers are still accepted (harmless no-op) but not required. Kept
 # here so older Claude (4.5, 4.1) + third-party Anthropic-compat endpoints
 # that still gate on the headers continue to get the enhanced features.
-# Migration guide: remove these if you no longer support ≤4.5 models.
+#
+# ``context-1m-2025-08-07`` unlocks the 1M context window on Claude Opus 4.6/4.7
+# and Sonnet 4.6 when served via AWS Bedrock or Azure AI Foundry. 1M is GA on
+# native Anthropic (api.anthropic.com) for Opus 4.6+, but Bedrock/Azure still
+# gate it behind this beta header as of 2026-04 — without it Bedrock caps Opus
+# at 200K even though model_metadata.py advertises 1M. The header is a harmless
+# no-op on endpoints where 1M is GA.
+#
+# Migration guide: remove these if you no longer support ≤4.5 models or once
+# Bedrock/Azure promote 1M to GA.
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
+    "context-1m-2025-08-07",
 ]
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
 # fall back to the provider's default response path.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
+# 1M context beta — see comment on _COMMON_BETAS above. Stripped for
+# Bearer-auth (MiniMax) endpoints since they host their own models and
+# unknown Anthropic beta headers risk request rejection.
+_CONTEXT_1M_BETA = "context-1m-2025-08-07"
 
 # Fast mode beta — enables the ``speed: "fast"`` request parameter for
 # significantly higher output token throughput on Opus 4.6 (~2.5x).
@@ -220,8 +308,9 @@ def _is_oauth_token(key: str) -> bool:
     Positively identifies Anthropic OAuth tokens by their key format:
     - ``sk-ant-`` prefix (but NOT ``sk-ant-api``) → setup tokens, managed keys
     - ``eyJ`` prefix → JWTs from the Anthropic OAuth flow
+    - ``cc-`` prefix → Claude Code OAuth access tokens (from CLAUDE_CODE_OAUTH_TOKEN)
 
-    Non-Anthropic keys (MiniMax, Alibaba, etc.) don't match either pattern
+    Non-Anthropic keys (MiniMax, Alibaba, etc.) don't match any pattern
     and correctly return False.
     """
     if not key:
@@ -234,6 +323,9 @@ def _is_oauth_token(key: str) -> bool:
         return True
     # JWTs from Anthropic OAuth flow
     if key.startswith("eyJ"):
+        return True
+    # Claude Code OAuth access tokens (opaque, from CLAUDE_CODE_OAUTH_TOKEN)
+    if key.startswith("cc-"):
         return True
     return False
 
@@ -265,6 +357,96 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     return True  # Any other endpoint is a third-party proxy
 
 
+def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
+    """Return True for Kimi's /coding endpoint that requires claude-code UA."""
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
+
+
+# Model-name prefixes that identify the Kimi / Moonshot family.  Covers
+# - official slugs: ``kimi-k2.5``, ``kimi_thinking``, ``moonshot-v1-8k``
+# - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``
+# Matched case-insensitively against the post-``normalize_model_name`` form,
+# so a caller's ``provider/vendor/model`` slug is handled the same as a
+# bare name.
+_KIMI_FAMILY_MODEL_PREFIXES = (
+    "kimi-", "kimi_",
+    "moonshot-", "moonshot_",
+    "k1.", "k1-",
+    "k2.", "k2-",
+    "k25", "k2.5",
+)
+
+
+def _model_name_is_kimi_family(model: str | None) -> bool:
+    if not isinstance(model, str):
+        return False
+    m = model.strip().lower()
+    if not m:
+        return False
+    # Strip vendor prefix (e.g. ``moonshotai/kimi-k2.5`` → ``kimi-k2.5``)
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    return m.startswith(_KIMI_FAMILY_MODEL_PREFIXES)
+
+
+def _is_kimi_family_endpoint(base_url: str | None, model: str | None = None) -> bool:
+    """Return True for any Kimi / Moonshot Anthropic-Messages-speaking endpoint.
+
+    Broader than ``_is_kimi_coding_endpoint`` — matches:
+
+    - Kimi's official ``/coding`` URL (legacy check, preserved)
+    - Any ``api.kimi.com`` / ``moonshot.ai`` / ``moonshot.cn`` host
+    - Custom or proxied endpoints whose *model* name is in the Kimi / Moonshot
+      family (``kimi-*``, ``moonshot-*``, ``k1.*``, ``k2.*``, …).  Users with
+      ``api_mode: anthropic_messages`` on a private gateway fronting Kimi
+      fall into this branch — the upstream still enforces Kimi's thinking
+      semantics (reasoning_content required on every replayed tool-call
+      message) regardless of the gateway's hostname.
+
+    Used to decide whether to drop Anthropic's ``thinking`` kwarg and to
+    preserve unsigned reasoning_content-derived thinking blocks on replay.
+    See hermes-agent#13848, #17057.
+    """
+    if _is_kimi_coding_endpoint(base_url):
+        return True
+    for _domain in ("api.kimi.com", "moonshot.ai", "moonshot.cn"):
+        if base_url_host_matches(base_url or "", _domain):
+            return True
+    if _model_name_is_kimi_family(model):
+        return True
+    return False
+
+
+def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for DeepSeek's Anthropic-compatible endpoint.
+
+    DeepSeek's ``/anthropic`` route speaks the Anthropic Messages protocol
+    but, when thinking mode is enabled, requires the ``thinking`` blocks
+    from prior assistant turns to round-trip on subsequent requests — the
+    generic third-party path strips them and triggers HTTP 400::
+
+        The content[].thinking in the thinking mode must be passed back
+        to the API.
+
+    Per DeepSeek's published compatibility matrix the blocks are unsigned
+    (no Anthropic-proprietary signature, no ``redacted_thinking`` support),
+    so this endpoint is handled with the same strip-signed / keep-unsigned
+    policy used for Kimi's ``/coding`` endpoint.  The match is pinned to
+    the ``/anthropic`` path so the OpenAI-compatible ``api.deepseek.com``
+    base URL (which never reaches this adapter) is not misclassified.
+    See hermes-agent#16748.
+    """
+    if not base_url_host_matches(base_url or "", "api.deepseek.com"):
+        return False
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    return "/anthropic" in normalized.rstrip("/").lower()
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
@@ -279,42 +461,105 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
 
 
-def _common_betas_for_base_url(base_url: str | None) -> list[str]:
+def _common_betas_for_base_url(
+    base_url: str | None,
+    *,
+    drop_context_1m_beta: bool = False,
+) -> list[str]:
     """Return the beta headers that are safe for the configured endpoint.
 
     MiniMax's Anthropic-compatible endpoints (Bearer-auth) reject requests
     that include Anthropic's ``fine-grained-tool-streaming`` beta — every
     tool-use message triggers a connection error.  Strip that beta for
     Bearer-auth endpoints while keeping all other betas intact.
+
+    The ``context-1m-2025-08-07`` beta is also stripped for Bearer-auth
+    endpoints — MiniMax hosts its own models, not Claude, so the header is
+    irrelevant at best and risks request rejection at worst.
+
+    ``drop_context_1m_beta=True`` additionally strips the 1M-context beta on
+    otherwise-unrelated endpoints. The OAuth retry path flips this flag after
+    a subscription rejects the beta with
+    "The long context beta is not yet available for this subscription" so
+    subsequent requests in the same session don't repeat the probe. See the
+    reactive recovery loop in ``run_agent.py`` and issue-comment history on
+    PR #17680 for the full rationale.
     """
     if _requires_bearer_auth(base_url):
-        return [b for b in _COMMON_BETAS if b != _TOOL_STREAMING_BETA]
+        _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
+        return [b for b in _COMMON_BETAS if b not in _stripped]
+    if drop_context_1m_beta:
+        return [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA]
     return _COMMON_BETAS
 
 
-def build_anthropic_client(api_key: str, base_url: str = None):
+def build_anthropic_client(
+    api_key: str,
+    base_url: str = None,
+    timeout: float = None,
+    *,
+    drop_context_1m_beta: bool = False,
+):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
+
+    If *timeout* is provided it overrides the default 900s read timeout.  The
+    connect timeout stays at 10s.  Callers pass this from the per-provider /
+    per-model ``request_timeout_seconds`` config so Anthropic-native and
+    Anthropic-compatible providers respect the same knob as OpenAI-wire
+    providers.
+
+    ``drop_context_1m_beta=True`` strips ``context-1m-2025-08-07`` from the
+    client-level ``anthropic-beta`` header. Used by the reactive OAuth retry
+    path in ``run_agent.py`` when a subscription rejects the beta; leave at
+    its default on fresh clients so 1M-capable subscriptions keep the
+    capability.
 
     Returns an anthropic.Anthropic instance.
     """
+    _anthropic_sdk = _get_anthropic_sdk()
     if _anthropic_sdk is None:
         raise ImportError(
             "The 'anthropic' package is required for the Anthropic provider. "
             "Install it with: pip install 'anthropic>=0.39.0'"
         )
+
+    normalize_proxy_env_vars()
+
     from httpx import Timeout
 
     normalized_base_url = _normalize_base_url_text(base_url)
+    _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
-        "timeout": Timeout(timeout=900.0, connect=10.0),
+        "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
     }
     if normalized_base_url:
-        kwargs["base_url"] = normalized_base_url
-    common_betas = _common_betas_for_base_url(normalized_base_url)
+        # Azure Anthropic endpoints require an ``api-version`` query parameter.
+        # Pass it via default_query so the SDK appends it to every request URL
+        # without corrupting the base_url (appending it directly produces
+        # malformed paths like /anthropic?api-version=.../v1/messages).
+        _is_azure_endpoint = "azure.com" in normalized_base_url.lower()
+        if _is_azure_endpoint and "api-version" not in normalized_base_url:
+            kwargs["base_url"] = normalized_base_url.rstrip("/")
+            kwargs["default_query"] = {"api-version": "2025-04-15"}
+        else:
+            kwargs["base_url"] = normalized_base_url
+    common_betas = _common_betas_for_base_url(
+        normalized_base_url,
+        drop_context_1m_beta=drop_context_1m_beta,
+    )
 
-    if _requires_bearer_auth(normalized_base_url):
+    if _is_kimi_coding_endpoint(base_url):
+        # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
+        # to be recognized as a valid Coding Agent. Without it, returns 403.
+        # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
+        kwargs["api_key"] = api_key
+        kwargs["default_headers"] = {
+            "User-Agent": "claude-code/0.1.0",
+            **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
+        }
+    elif _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
-        # Authorization: Bearer even for regular API keys. Route those endpoints
+        # Authorization: Bearer *** for regular API keys. Route those endpoints
         # through auth_token so the SDK sends Bearer auth instead of x-api-key.
         # Check this before OAuth token shape detection because MiniMax secrets do
         # not use Anthropic's sk-ant-api prefix and would otherwise be misread as
@@ -357,8 +602,16 @@ def build_anthropic_bedrock_client(region: str):
     Claude feature parity: prompt caching, thinking budgets, adaptive
     thinking, fast mode — features not available via the Converse API.
 
+    Attaches the common Anthropic beta headers as client-level defaults so
+    that Bedrock-hosted Claude models get the same enhanced features as
+    native Anthropic. The ``context-1m-2025-08-07`` beta in particular
+    unlocks the 1M context window for Opus 4.6/4.7 on Bedrock — without
+    it, Bedrock caps these models at 200K even though the Anthropic API
+    serves them with 1M natively.
+
     Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
     """
+    _anthropic_sdk = _get_anthropic_sdk()
     if _anthropic_sdk is None:
         raise ImportError(
             "The 'anthropic' package is required for the Bedrock provider. "
@@ -374,11 +627,73 @@ def build_anthropic_bedrock_client(region: str):
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,
         timeout=Timeout(timeout=900.0, connect=10.0),
+        default_headers={"anthropic-beta": ",".join(_COMMON_BETAS)},
     )
 
 
+def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
+    """Read Claude Code OAuth credentials from the macOS Keychain.
+
+    Claude Code >=2.1.114 stores credentials in the macOS Keychain under the
+    service name "Claude Code-credentials" rather than (or in addition to)
+    the JSON file at ~/.claude/.credentials.json.
+
+    The password field contains a JSON string with the same claudeAiOauth
+    structure as the JSON file.
+
+    Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
+    """
+    if platform.system() != "Darwin":
+        return None
+
+    try:
+        # Read the "Claude Code-credentials" generic password entry
+        result = subprocess.run(
+            ["security", "find-generic-password",
+             "-s", "Claude Code-credentials",
+             "-w"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.debug("Keychain: security command not available or timed out")
+        return None
+
+    if result.returncode != 0:
+        logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
+        return None
+
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.debug("Keychain: credentials payload is not valid JSON")
+        return None
+
+    oauth_data = data.get("claudeAiOauth")
+    if oauth_data and isinstance(oauth_data, dict):
+        access_token = oauth_data.get("accessToken", "")
+        if access_token:
+            return {
+                "accessToken": access_token,
+                "refreshToken": oauth_data.get("refreshToken", ""),
+                "expiresAt": oauth_data.get("expiresAt", 0),
+                "source": "macos_keychain",
+            }
+
+    return None
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
-    """Read refreshable Claude Code OAuth credentials from ~/.claude/.credentials.json.
+    """Read refreshable Claude Code OAuth credentials.
+
+    Checks two sources in order:
+      1. macOS Keychain (Darwin only) — "Claude Code-credentials" entry
+      2. ~/.claude/.credentials.json file
 
     This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
     subscription flow is OAuth/setup-token based with refreshable credentials,
@@ -387,6 +702,12 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
+    # Try macOS Keychain first (covers Claude Code >=2.1.114)
+    kc_creds = _read_claude_code_credentials_from_keychain()
+    if kc_creds:
+        return kc_creds
+
+    # Fall back to JSON file
     cred_path = Path.home() / ".claude" / ".credentials.json"
     if cred_path.exists():
         try:
@@ -557,7 +878,9 @@ def _write_claude_code_credentials(
         existing["claudeAiOauth"] = oauth_data
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
-        cred_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        _tmp_cred = cred_path.with_suffix(".tmp")
+        _tmp_cred.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        _tmp_cred.replace(cred_path)
         # Restrict permissions (credentials file)
         cred_path.chmod(0o600)
     except (OSError, IOError) as e:
@@ -824,6 +1147,26 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _is_bedrock_model_id(model: str) -> bool:
+    """Detect AWS Bedrock model IDs that use dots as namespace separators.
+
+    Bedrock model IDs come in two forms:
+    - Bare:    ``anthropic.claude-opus-4-7``
+    - Regional (inference profiles): ``us.anthropic.claude-sonnet-4-5-v1:0``
+
+    In both cases the dots separate namespace components, not version
+    numbers, and must be preserved verbatim for the Bedrock API.
+    """
+    lower = model.lower()
+    # Regional inference-profile prefixes
+    if any(lower.startswith(p) for p in ("global.", "us.", "eu.", "ap.", "jp.")):
+        return True
+    # Bare Bedrock model IDs: provider.model-family
+    if lower.startswith("anthropic."):
+        return True
+    return False
+
+
 def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     """Normalize a model name for the Anthropic API.
 
@@ -831,14 +1174,25 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     - Converts dots to hyphens in version numbers (OpenRouter uses dots,
       Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6), unless
       preserve_dots is True (e.g. for Alibaba/DashScope: qwen3.5-plus).
+    - Preserves Bedrock model IDs (``anthropic.claude-opus-4-7``) and
+      regional inference profiles (``us.anthropic.claude-*``) whose dots
+      are namespace separators, not version separators.
     """
     lower = model.lower()
     if lower.startswith("anthropic/"):
         model = model[len("anthropic/"):]
     if not preserve_dots:
-        # OpenRouter uses dots for version separators (claude-opus-4.6),
-        # Anthropic uses hyphens (claude-opus-4-6). Convert dots to hyphens.
-        model = model.replace(".", "-")
+        # Bedrock model IDs use dots as namespace separators
+        # (e.g. "anthropic.claude-opus-4-7", "us.anthropic.claude-*").
+        # These must not be converted to hyphens.  See issue #12295.
+        if _is_bedrock_model_id(model):
+            return model
+        # Only convert dots to hyphens for Anthropic/Claude models.
+        # Non-Anthropic models (gpt-5.4, gemini-2.5, etc.) use dots
+        # as part of their canonical names.  See issue #17171.
+        _lower = model.lower()
+        if _lower.startswith("claude-") or _lower.startswith("anthropic/"):
+            model = model.replace(".", "-")
     return model
 
 
@@ -855,6 +1209,33 @@ def _sanitize_tool_id(tool_id: str) -> str:
     return sanitized or "tool_0"
 
 
+def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
+    """Normalize tool schemas before sending them to Anthropic.
+
+    Anthropic's tool schema validator rejects nullable unions such as
+    ``anyOf: [{"type": "string"}, {"type": "null"}]`` that Pydantic/MCP
+    commonly emits for optional fields. Tool optionality is represented by
+    the parent ``required`` array, so we delegate to the shared
+    ``strip_nullable_unions`` helper to collapse nullable unions to the
+    non-null branch while preserving metadata like description/default.
+
+    ``keep_nullable_hint=False`` because the Anthropic validator does not
+    recognize the OpenAPI-style ``nullable: true`` extension and strict
+    schema-to-grammar converters may reject unknown keywords.
+    """
+    if not schema:
+        return {"type": "object", "properties": {}}
+
+    from tools.schema_sanitizer import strip_nullable_unions
+
+    normalized = strip_nullable_unions(schema, keep_nullable_hint=False)
+    if not isinstance(normalized, dict):
+        return {"type": "object", "properties": {}}
+    if normalized.get("type") == "object" and not isinstance(normalized.get("properties"), dict):
+        normalized = {**normalized, "properties": {}}
+    return normalized
+
+
 def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     """Convert OpenAI tool definitions to Anthropic format."""
     if not tools:
@@ -865,7 +1246,9 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
         result.append({
             "name": fn.get("name", ""),
             "description": fn.get("description", ""),
-            "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+            "input_schema": _normalize_tool_input_schema(
+                fn.get("parameters", {"type": "object", "properties": {}})
+            ),
         })
     return result
 
@@ -996,6 +1379,7 @@ def _convert_content_to_anthropic(content: Any) -> Any:
 def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
+    model: str | None = None,
 ) -> Tuple[Optional[Any], List[Dict]]:
     """Convert OpenAI-format messages to Anthropic format.
 
@@ -1007,6 +1391,12 @@ def convert_messages_to_anthropic(
     endpoint, all thinking block signatures are stripped.  Signatures are
     Anthropic-proprietary — third-party endpoints cannot validate them and will
     reject them with HTTP 400 "Invalid signature in thinking block".
+
+    When *model* is provided and matches the Kimi / Moonshot family (or
+    *base_url* is a Kimi / Moonshot host), unsigned thinking blocks
+    synthesised from ``reasoning_content`` are preserved on replayed
+    assistant tool-call messages — Kimi requires the field to exist, even
+    if empty.
     """
     system = None
     result = []
@@ -1055,6 +1445,31 @@ def convert_messages_to_anthropic(
                     "name": fn.get("name", ""),
                     "input": parsed_args,
                 })
+            # Kimi's /coding endpoint (Anthropic protocol) requires assistant
+            # tool-call messages to carry reasoning_content when thinking is
+            # enabled server-side.  Preserve it as a thinking block so Kimi
+            # can validate the message history.  See hermes-agent#13848.
+            #
+            # Accept empty string "" — _copy_reasoning_content_for_api()
+            # injects "" as a tier-3 fallback for Kimi tool-call messages
+            # that had no reasoning.  Kimi requires the field to exist, even
+            # if empty.
+            #
+            # Prepend (not append): Anthropic protocol requires thinking
+            # blocks before text and tool_use blocks.
+            #
+            # Guard: only add when reasoning_details didn't already contribute
+            # thinking blocks.  On native Anthropic, reasoning_details produces
+            # signed thinking blocks — adding another unsigned one from
+            # reasoning_content would create a duplicate (same text) that gets
+            # downgraded to a spurious text block on the last assistant message.
+            reasoning_content = m.get("reasoning_content")
+            _already_has_thinking = any(
+                isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking")
+                for b in blocks
+            )
+            if isinstance(reasoning_content, str) and not _already_has_thinking:
+                blocks.insert(0, {"type": "thinking", "thinking": reasoning_content})
             # Anthropic rejects empty assistant content
             effective = blocks or content
             if not effective or effective == "":
@@ -1210,6 +1625,16 @@ def convert_messages_to_anthropic(
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
+    # Kimi /coding and DeepSeek /anthropic share a contract: both speak the
+    # Anthropic Messages protocol upstream but require that thinking blocks
+    # synthesised from reasoning_content round-trip on subsequent turns when
+    # thinking is enabled.  Signed Anthropic blocks still have to be stripped
+    # (neither endpoint can validate Anthropic's signatures); unsigned blocks
+    # are preserved.  See hermes-agent#13848 (Kimi) and #16748 (DeepSeek).
+    _preserve_unsigned_thinking = (
+        _is_kimi_family_endpoint(base_url, model)
+        or _is_deepseek_anthropic_endpoint(base_url)
+    )
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -1221,7 +1646,25 @@ def convert_messages_to_anthropic(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if _is_third_party or idx != last_assistant_idx:
+        if _preserve_unsigned_thinking:
+            # Kimi's /coding and DeepSeek's /anthropic endpoints both enable
+            # thinking server-side and require unsigned thinking blocks on
+            # replayed assistant tool-call messages.  Strip signed Anthropic
+            # blocks (neither upstream can validate Anthropic signatures) but
+            # preserve the unsigned ones we synthesised from reasoning_content.
+            new_content = []
+            for b in m["content"]:
+                if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
+                    new_content.append(b)
+                    continue
+                if b.get("signature") or b.get("data"):
+                    # Anthropic-signed block — upstream can't validate, strip
+                    continue
+                # Unsigned thinking (synthesised from reasoning_content) —
+                # keep it: the upstream needs it for message-history validation.
+                new_content.append(b)
+            m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
+        elif _is_third_party or idx != last_assistant_idx:
             # Third-party endpoint: strip ALL thinking blocks from every
             # assistant message — signatures are Anthropic-proprietary.
             # Direct Anthropic: strip from non-latest assistant messages only.
@@ -1275,6 +1718,7 @@ def build_anthropic_kwargs(
     context_length: Optional[int] = None,
     base_url: str | None = None,
     fast_mode: bool = False,
+    drop_context_1m_beta: bool = False,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -1314,12 +1758,19 @@ def build_anthropic_kwargs(
     Currently only supported on native Anthropic endpoints (not third-party
     compatible ones).
     """
-    system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url)
+    system, anthropic_messages = convert_messages_to_anthropic(
+        messages, base_url=base_url, model=model
+    )
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
     # effective_max_tokens = output cap for this call (≠ total context window)
-    effective_max_tokens = max_tokens or _get_anthropic_max_output(model)
+    # Use the resolver helper so non-positive values (negative ints,
+    # fractional floats, NaN, non-numeric) fail locally with a clear error
+    # rather than 400-ing at the Anthropic API. See openclaw/openclaw#66664.
+    effective_max_tokens = _resolve_anthropic_messages_max_tokens(
+        max_tokens, model, context_length=context_length
+    )
 
     # Clamp output cap to fit inside the total context window.
     # Only matters for small custom endpoints where context_length < native
@@ -1398,11 +1849,25 @@ def build_anthropic_kwargs(
     # MiniMax Anthropic-compat endpoints support thinking (manual mode only,
     # not adaptive).  Haiku does NOT support extended thinking — skip entirely.
     #
+    # Kimi's /coding endpoint speaks the Anthropic Messages protocol but has
+    # its own thinking semantics: when ``thinking.enabled`` is sent, Kimi
+    # validates the message history and requires every prior assistant
+    # tool-call message to carry OpenAI-style ``reasoning_content``.  The
+    # Anthropic path never populates that field, and
+    # ``convert_messages_to_anthropic`` strips all Anthropic thinking blocks
+    # on third-party endpoints — so the request fails with HTTP 400
+    # "thinking is enabled but reasoning_content is missing in assistant
+    # tool call message at index N".  Kimi's reasoning is driven server-side
+    # on the /coding route, so skip Anthropic's thinking parameter entirely
+    # for that host.  (Kimi on chat_completions enables thinking via
+    # extra_body in the ChatCompletionsTransport — see #13503.)
+    #
     # On 4.7+ the `thinking.display` field defaults to "omitted", which
     # silently hides reasoning text that Hermes surfaces in its CLI. We
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
-    if reasoning_config and isinstance(reasoning_config, dict):
+    _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
+    if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
@@ -1427,9 +1892,9 @@ def build_anthropic_kwargs(
 
     # ── Strip sampling params on 4.7+ ─────────────────────────────────
     # Opus 4.7 rejects any non-default temperature/top_p/top_k with a 400.
-    # Callers (auxiliary_client, flush_memories, etc.) may set these for
-    # older models; drop them here as a safety net so upstream 4.6 → 4.7
-    # migrations don't require coordinated edits everywhere.
+    # Callers (auxiliary_client, etc.) may set these for older models;
+    # drop them here as a safety net so upstream 4.6 → 4.7 migrations
+    # don't require coordinated edits everywhere.
     if _forbids_sampling_params(model):
         for _sampling_key in ("temperature", "top_p", "top_k"):
             kwargs.pop(_sampling_key, None)
@@ -1442,7 +1907,10 @@ def build_anthropic_kwargs(
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
         # Build extra_headers with ALL applicable betas (the per-request
         # extra_headers override the client-level anthropic-beta header).
-        betas = list(_common_betas_for_base_url(base_url))
+        betas = list(_common_betas_for_base_url(
+            base_url,
+            drop_context_1m_beta=drop_context_1m_beta,
+        ))
         if is_oauth:
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)
@@ -1451,70 +1919,3 @@ def build_anthropic_kwargs(
     return kwargs
 
 
-def normalize_anthropic_response(
-    response,
-    strip_tool_prefix: bool = False,
-) -> Tuple[SimpleNamespace, str]:
-    """Normalize Anthropic response to match the shape expected by AIAgent.
-
-    Returns (assistant_message, finish_reason) where assistant_message has
-    .content, .tool_calls, and .reasoning attributes.
-
-    When *strip_tool_prefix* is True, removes the ``mcp_`` prefix that was
-    added to tool names for OAuth Claude Code compatibility.
-    """
-    text_parts = []
-    reasoning_parts = []
-    reasoning_details = []
-    tool_calls = []
-
-    for block in response.content:
-        if block.type == "text":
-            text_parts.append(block.text)
-        elif block.type == "thinking":
-            reasoning_parts.append(block.thinking)
-            block_dict = _to_plain_data(block)
-            if isinstance(block_dict, dict):
-                reasoning_details.append(block_dict)
-        elif block.type == "tool_use":
-            name = block.name
-            if strip_tool_prefix and name.startswith(_MCP_TOOL_PREFIX):
-                name = name[len(_MCP_TOOL_PREFIX):]
-            tool_calls.append(
-                SimpleNamespace(
-                    id=block.id,
-                    type="function",
-                    function=SimpleNamespace(
-                        name=name,
-                        arguments=json.dumps(block.input),
-                    ),
-                )
-            )
-
-    # Map Anthropic stop_reason to OpenAI finish_reason.
-    # Newer stop reasons added in Claude 4.5+ / 4.7:
-    #   - refusal: the model declined to answer (cyber safeguards, CSAM, etc.)
-    #   - model_context_window_exceeded: hit context limit (not max_tokens)
-    # Both need distinct handling upstream — a refusal should surface to the
-    # user with a clear message, and a context-window overflow should trigger
-    # compression/truncation rather than be treated as normal end-of-turn.
-    stop_reason_map = {
-        "end_turn": "stop",
-        "tool_use": "tool_calls",
-        "max_tokens": "length",
-        "stop_sequence": "stop",
-        "refusal": "content_filter",
-        "model_context_window_exceeded": "length",
-    }
-    finish_reason = stop_reason_map.get(response.stop_reason, "stop")
-
-    return (
-        SimpleNamespace(
-            content="\n".join(text_parts) if text_parts else None,
-            tool_calls=tool_calls or None,
-            reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,
-            reasoning_content=None,
-            reasoning_details=reasoning_details or None,
-        ),
-        finish_reason,
-    )

@@ -5,7 +5,15 @@
 
 # Dependencies
 node_modules
+**/node_modules
 .venv
+**/.venv
+
+# Built artifacts that are regenerated inside the image.  Excluded so local
+# rebuilds on the developer's machine don't invalidate the npm-install layer
+# that now depends on the full ui-tui/packages/hermes-ink/ tree being present.
+ui-tui/dist/
+ui-tui/packages/hermes-ink/dist/
 
 # CI/CD
 .github
@@ -14,3 +22,6 @@ node_modules
 .env
 
 *.md
+
+# Runtime data (bind-mounted at /opt/data; must not leak into build context)
+data/

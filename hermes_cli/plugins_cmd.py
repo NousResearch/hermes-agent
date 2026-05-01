@@ -15,8 +15,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -281,8 +283,16 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def cmd_install(identifier: str, force: bool = False) -> None:
-    """Install a plugin from a Git URL or owner/repo shorthand."""
+def cmd_install(
+    identifier: str,
+    force: bool = False,
+    enable: Optional[bool] = None,
+) -> None:
+    """Install a plugin from a Git URL or owner/repo shorthand.
+
+    After install, prompt "Enable now? [y/N]" unless *enable* is provided
+    (True = auto-enable without prompting, False = install disabled).
+    """
     import tempfile
     from rich.console import Console
 
@@ -391,6 +401,40 @@ def cmd_install(identifier: str, force: bool = False) -> None:
 
     _display_after_install(target, identifier)
 
+    # Determine the canonical plugin name for enable-list bookkeeping.
+    installed_name = installed_manifest.get("name") or target.name
+
+    # Decide whether to enable: explicit flag > interactive prompt > default off
+    should_enable = enable
+    if should_enable is None:
+        # Interactive prompt unless stdin isn't a TTY (scripted install).
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            try:
+                answer = input(
+                    f"  Enable '{installed_name}' now? [y/N]: "
+                ).strip().lower()
+                should_enable = answer in ("y", "yes")
+            except (EOFError, KeyboardInterrupt):
+                should_enable = False
+        else:
+            should_enable = False
+
+    if should_enable:
+        enabled = _get_enabled_set()
+        disabled = _get_disabled_set()
+        enabled.add(installed_name)
+        disabled.discard(installed_name)
+        _save_enabled_set(enabled)
+        _save_disabled_set(disabled)
+        console.print(
+            f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled."
+        )
+    else:
+        console.print(
+            f"[dim]Plugin installed but not enabled. "
+            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]"
+        )
+
     console.print("[dim]Restart the gateway for the plugin to take effect:[/dim]")
     console.print("[dim]  hermes gateway restart[/dim]")
     console.print()
@@ -468,11 +512,15 @@ def cmd_remove(name: str) -> None:
 
 
 def _get_disabled_set() -> set:
-    """Read the disabled plugins set from config.yaml."""
+    """Read the disabled plugins set from config.yaml.
+
+    An explicit deny-list. A plugin name here never loads, even if also
+    listed in ``plugins.enabled``.
+    """
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        disabled = config.get("plugins", {}).get("disabled", [])
+        disabled = cfg_get(config, "plugins", "disabled", default=[])
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
         return set()
@@ -488,103 +536,195 @@ def _save_disabled_set(disabled: set) -> None:
     save_config(config)
 
 
+def _get_enabled_set() -> set:
+    """Read the enabled plugins allow-list from config.yaml.
+
+    Plugins are opt-in: only names here are loaded. Returns ``set()`` if
+    the key is missing (same behaviour as "nothing enabled yet").
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        plugins_cfg = config.get("plugins", {})
+        if not isinstance(plugins_cfg, dict):
+            return set()
+        enabled = plugins_cfg.get("enabled", [])
+        return set(enabled) if isinstance(enabled, list) else set()
+    except Exception:
+        return set()
+
+
+def _save_enabled_set(enabled: set) -> None:
+    """Write the enabled plugins list to config.yaml."""
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    if "plugins" not in config:
+        config["plugins"] = {}
+    config["plugins"]["enabled"] = sorted(enabled)
+    save_config(config)
+
+
 def cmd_enable(name: str) -> None:
-    """Enable a previously disabled plugin."""
+    """Add a plugin to the enabled allow-list (and remove it from disabled)."""
     from rich.console import Console
 
     console = Console()
-    plugins_dir = _plugins_dir()
-
-    # Verify the plugin exists
-    target = plugins_dir / name
-    if not target.is_dir():
-        console.print(f"[red]Plugin '{name}' is not installed.[/red]")
+    # Discover the plugin — check installed (user) AND bundled.
+    if not _plugin_exists(name):
+        console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
 
+    enabled = _get_enabled_set()
     disabled = _get_disabled_set()
-    if name not in disabled:
+
+    if name in enabled and name not in disabled:
         console.print(f"[dim]Plugin '{name}' is already enabled.[/dim]")
         return
 
+    enabled.add(name)
     disabled.discard(name)
+    _save_enabled_set(enabled)
     _save_disabled_set(disabled)
-    console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] enabled. Takes effect on next session.")
+    console.print(
+        f"[green]✓[/green] Plugin [bold]{name}[/bold] enabled. "
+        "Takes effect on next session."
+    )
 
 
 def cmd_disable(name: str) -> None:
-    """Disable a plugin without removing it."""
+    """Remove a plugin from the enabled allow-list (and add to disabled)."""
     from rich.console import Console
 
     console = Console()
-    plugins_dir = _plugins_dir()
-
-    # Verify the plugin exists
-    target = plugins_dir / name
-    if not target.is_dir():
-        console.print(f"[red]Plugin '{name}' is not installed.[/red]")
+    if not _plugin_exists(name):
+        console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
 
+    enabled = _get_enabled_set()
     disabled = _get_disabled_set()
-    if name in disabled:
+
+    if name not in enabled and name in disabled:
         console.print(f"[dim]Plugin '{name}' is already disabled.[/dim]")
         return
 
+    enabled.discard(name)
     disabled.add(name)
+    _save_enabled_set(enabled)
     _save_disabled_set(disabled)
-    console.print(f"[yellow]\u2298[/yellow] Plugin [bold]{name}[/bold] disabled. Takes effect on next session.")
+    console.print(
+        f"[yellow]\u2298[/yellow] Plugin [bold]{name}[/bold] disabled. "
+        "Takes effect on next session."
+    )
 
 
-def cmd_list() -> None:
-    """List installed plugins."""
-    from rich.console import Console
-    from rich.table import Table
+def _plugin_exists(name: str) -> bool:
+    """Return True if a plugin with *name* is installed (user) or bundled."""
+    # Installed: directory name or manifest name match in user plugins dir
+    user_dir = _plugins_dir()
+    if user_dir.is_dir():
+        if (user_dir / name).is_dir():
+            return True
+        for child in user_dir.iterdir():
+            if not child.is_dir():
+                continue
+            manifest = _read_manifest(child)
+            if manifest.get("name") == name:
+                return True
+    # Bundled: <repo>/plugins/<name>/ (or HERMES_BUNDLED_PLUGINS on Nix).
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    repo_plugins = get_bundled_plugins_dir()
+    if repo_plugins.is_dir():
+        candidate = repo_plugins / name
+        if candidate.is_dir() and (
+            (candidate / "plugin.yaml").exists()
+            or (candidate / "plugin.yml").exists()
+        ):
+            return True
+    return False
 
+
+def _discover_all_plugins() -> list:
+    """Return a list of (name, version, description, source, dir_path) for
+    every plugin the loader can see — user + bundled + project.
+
+    Matches the ordering/dedup of ``PluginManager.discover_and_load``:
+    bundled first, then user, then project; user overrides bundled on
+    name collision.
+    """
     try:
         import yaml
     except ImportError:
         yaml = None
 
-    console = Console()
-    plugins_dir = _plugins_dir()
+    seen: dict = {}  # name -> (name, version, description, source, path)
 
-    dirs = sorted(d for d in plugins_dir.iterdir() if d.is_dir())
-    if not dirs:
+    # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    repo_plugins = get_bundled_plugins_dir()
+    for base, source in ((repo_plugins, "bundled"), (_plugins_dir(), "user")):
+        if not base.is_dir():
+            continue
+        for d in sorted(base.iterdir()):
+            if not d.is_dir():
+                continue
+            if source == "bundled" and d.name in ("memory", "context_engine"):
+                continue
+            manifest_file = d / "plugin.yaml"
+            if not manifest_file.exists():
+                manifest_file = d / "plugin.yml"
+            if not manifest_file.exists():
+                continue
+            name = d.name
+            version = ""
+            description = ""
+            if yaml:
+                try:
+                    with open(manifest_file) as f:
+                        manifest = yaml.safe_load(f) or {}
+                    name = manifest.get("name", d.name)
+                    version = manifest.get("version", "")
+                    description = manifest.get("description", "")
+                except Exception:
+                    pass
+            # User plugins override bundled on name collision.
+            if name in seen and source == "bundled":
+                continue
+            src_label = source
+            if source == "user" and (d / ".git").exists():
+                src_label = "git"
+            seen[name] = (name, version, description, src_label, d)
+    return list(seen.values())
+
+
+def cmd_list() -> None:
+    """List all plugins (bundled + user) with enabled/disabled state."""
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    entries = _discover_all_plugins()
+    if not entries:
         console.print("[dim]No plugins installed.[/dim]")
         console.print("[dim]Install with:[/dim] hermes plugins install owner/repo")
         return
 
+    enabled = _get_enabled_set()
     disabled = _get_disabled_set()
 
-    table = Table(title="Installed Plugins", show_lines=False)
+    table = Table(title="Plugins", show_lines=False)
     table.add_column("Name", style="bold")
     table.add_column("Status")
     table.add_column("Version", style="dim")
     table.add_column("Description")
     table.add_column("Source", style="dim")
 
-    for d in dirs:
-        manifest_file = d / "plugin.yaml"
-        name = d.name
-        version = ""
-        description = ""
-        source = "local"
-
-        if manifest_file.exists() and yaml:
-            try:
-                with open(manifest_file) as f:
-                    manifest = yaml.safe_load(f) or {}
-                name = manifest.get("name", d.name)
-                version = manifest.get("version", "")
-                description = manifest.get("description", "")
-            except Exception:
-                pass
-
-        # Check if it's a git repo (installed via hermes plugins install)
-        if (d / ".git").exists():
-            source = "git"
-
-        is_disabled = name in disabled or d.name in disabled
-        status = "[red]disabled[/red]" if is_disabled else "[green]enabled[/green]"
+    for name, version, description, source, _dir in entries:
+        if name in disabled:
+            status = "[red]disabled[/red]"
+        elif name in enabled:
+            status = "[green]enabled[/green]"
+        else:
+            status = "[yellow]not enabled[/yellow]"
         table.add_row(name, status, str(version), description, source)
 
     console.print()
@@ -592,6 +732,7 @@ def cmd_list() -> None:
     console.print()
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")
     console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
+    console.print("[dim]Plugins are opt-in by default — only 'enabled' plugins load.[/dim]")
 
 
 # ---------------------------------------------------------------------------
@@ -622,7 +763,7 @@ def _get_current_memory_provider() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("memory", {}).get("provider", "") or ""
+        return cfg_get(config, "memory", "provider", default="") or ""
     except Exception:
         return ""
 
@@ -632,7 +773,7 @@ def _get_current_context_engine() -> str:
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("context", {}).get("engine", "compressor") or "compressor"
+        return cfg_get(config, "context", "engine", default="compressor") or "compressor"
     except Exception:
         return "compressor"
 
@@ -742,41 +883,25 @@ def cmd_toggle() -> None:
     """Interactive composite UI — general plugins + provider plugin categories."""
     from rich.console import Console
 
-    try:
-        import yaml
-    except ImportError:
-        yaml = None
-
     console = Console()
-    plugins_dir = _plugins_dir()
 
-    # -- General plugins discovery --
-    dirs = sorted(d for d in plugins_dir.iterdir() if d.is_dir())
-    disabled = _get_disabled_set()
+    # -- General plugins discovery (bundled + user) --
+    entries = _discover_all_plugins()
+    enabled_set = _get_enabled_set()
+    disabled_set = _get_disabled_set()
 
     plugin_names = []
     plugin_labels = []
     plugin_selected = set()
 
-    for i, d in enumerate(dirs):
-        manifest_file = d / "plugin.yaml"
-        name = d.name
-        description = ""
-
-        if manifest_file.exists() and yaml:
-            try:
-                with open(manifest_file) as f:
-                    manifest = yaml.safe_load(f) or {}
-                name = manifest.get("name", d.name)
-                description = manifest.get("description", "")
-            except Exception:
-                pass
-
-        plugin_names.append(name)
+    for i, (name, _version, description, source, _d) in enumerate(entries):
         label = f"{name} \u2014 {description}" if description else name
+        if source == "bundled":
+            label = f"{label} [bundled]"
+        plugin_names.append(name)
         plugin_labels.append(label)
-
-        if name not in disabled and d.name not in disabled:
+        # Selected (enabled) when in enabled-set AND not in disabled-set
+        if name in enabled_set and name not in disabled_set:
             plugin_selected.add(i)
 
     # -- Provider categories --
@@ -804,10 +929,10 @@ def cmd_toggle() -> None:
     try:
         import curses
         _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
-                          disabled, categories, console)
+                          disabled_set, categories, console)
     except ImportError:
         _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
-                                disabled, categories, console)
+                                disabled_set, categories, console)
 
 
 def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
@@ -874,7 +999,6 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
             # We need to map logical cursor positions to screen rows
             # accounting for non-navigable separator/headers
 
-            draw_row = 0  # tracks navigable item index
 
             # --- General Plugins section ---
             if n_plugins > 0:
@@ -1020,18 +1144,29 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
     curses.wrapper(_draw)
     flush_stdin()
 
-    # Persist general plugin changes
-    new_disabled = set()
+    # Persist general plugin changes. The new allow-list is the set of
+    # plugin names that were checked; anything not checked is explicitly
+    # disabled (written to disabled-list) so it remains off even if the
+    # plugin code does something clever like auto-enable in the future.
+    new_enabled: set = set()
+    new_disabled: set = set(disabled)  # preserve existing disabled state for unseen plugins
     for i, name in enumerate(plugin_names):
-        if i not in chosen:
+        if i in chosen:
+            new_enabled.add(name)
+            new_disabled.discard(name)
+        else:
             new_disabled.add(name)
 
-    if new_disabled != disabled:
+    prev_enabled = _get_enabled_set()
+    enabled_changed = new_enabled != prev_enabled
+    disabled_changed = new_disabled != disabled
+
+    if enabled_changed or disabled_changed:
+        _save_enabled_set(new_enabled)
         _save_disabled_set(new_disabled)
-        enabled_count = len(plugin_names) - len(new_disabled)
         console.print(
-            f"\n[green]\u2713[/green] General plugins: {enabled_count} enabled, "
-            f"{len(new_disabled)} disabled."
+            f"\n[green]\u2713[/green] General plugins: {len(new_enabled)} enabled, "
+            f"{len(plugin_names) - len(new_enabled)} disabled."
         )
     elif n_plugins > 0:
         console.print("\n[dim]General plugins unchanged.[/dim]")
@@ -1078,11 +1213,17 @@ def _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
                 return
             print()
 
-        new_disabled = set()
+        new_enabled: set = set()
+        new_disabled: set = set(disabled)
         for i, name in enumerate(plugin_names):
-            if i not in chosen:
+            if i in chosen:
+                new_enabled.add(name)
+                new_disabled.discard(name)
+            else:
                 new_disabled.add(name)
-        if new_disabled != disabled:
+        prev_enabled = _get_enabled_set()
+        if new_enabled != prev_enabled or new_disabled != disabled:
+            _save_enabled_set(new_enabled)
             _save_disabled_set(new_disabled)
 
     # Provider categories
@@ -1108,7 +1249,17 @@ def plugins_command(args) -> None:
     action = getattr(args, "plugins_action", None)
 
     if action == "install":
-        cmd_install(args.identifier, force=getattr(args, "force", False))
+        # Map argparse tri-state: --enable=True, --no-enable=False, neither=None (prompt)
+        enable_arg = None
+        if getattr(args, "enable", False):
+            enable_arg = True
+        elif getattr(args, "no_enable", False):
+            enable_arg = False
+        cmd_install(
+            args.identifier,
+            force=getattr(args, "force", False),
+            enable=enable_arg,
+        )
     elif action == "update":
         cmd_update(args.name)
     elif action in ("remove", "rm", "uninstall"):

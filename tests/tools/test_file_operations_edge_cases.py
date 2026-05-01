@@ -146,3 +146,61 @@ class TestCheckLintBracePaths:
 
         assert result.success is False
         assert "SyntaxError" in result.output
+
+
+# =========================================================================
+# Pagination bounds
+# =========================================================================
+
+
+class TestPaginationBounds:
+    """Invalid pagination inputs should not leak into shell commands."""
+
+    def test_read_file_clamps_offset_and_limit_before_building_sed_range(self):
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+        commands = []
+
+        def fake_exec(command, *args, **kwargs):
+            commands.append(command)
+            if command.startswith("wc -c"):
+                return MagicMock(exit_code=0, stdout="12")
+            if command.startswith("head -c"):
+                return MagicMock(exit_code=0, stdout="line1\nline2\n")
+            if command.startswith("sed -n"):
+                return MagicMock(exit_code=0, stdout="line1\n")
+            if command.startswith("wc -l"):
+                return MagicMock(exit_code=0, stdout="2")
+            return MagicMock(exit_code=0, stdout="")
+
+        with patch.object(ops, "_exec", side_effect=fake_exec):
+            result = ops.read_file("notes.txt", offset=0, limit=0)
+
+        assert result.error is None
+        assert "     1|line1" in result.content
+        sed_commands = [cmd for cmd in commands if cmd.startswith("sed -n")]
+        assert sed_commands == ["sed -n '1,1p' 'notes.txt'"]
+
+    def test_search_clamps_offset_and_limit_before_building_head_pipeline(self):
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+        commands = []
+
+        def fake_exec(command, *args, **kwargs):
+            commands.append(command)
+            if command.startswith("test -e"):
+                return MagicMock(exit_code=0, stdout="exists")
+            if command.startswith("rg --files"):
+                return MagicMock(exit_code=0, stdout="a.py\n")
+            return MagicMock(exit_code=0, stdout="")
+
+        with patch.object(ops, "_has_command", side_effect=lambda cmd: cmd == "rg"), \
+             patch.object(ops, "_exec", side_effect=fake_exec):
+            result = ops.search("*.py", target="files", path=".", offset=-4, limit=-2)
+
+        assert result.files == ["a.py"]
+        rg_commands = [cmd for cmd in commands if cmd.startswith("rg --files")]
+        assert rg_commands
+        assert "| head -n 1" in rg_commands[0]

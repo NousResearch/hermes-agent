@@ -18,11 +18,12 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from typing import Callable, Dict, Optional, Any
+from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+_DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 
 try:
     import discord
@@ -304,7 +305,7 @@ class VoiceReceiver:
         encrypted = bytes(payload_with_nonce[:-4])
 
         try:
-            import nacl.secret  # noqa: delayed import – only in voice path
+            import nacl.secret  # noqa: E402 — delayed import, only in voice path
             box = nacl.secret.Aead(self._secret_key)
             decrypted = box.decrypt(encrypted, header, bytes(nonce))
         except Exception as e:
@@ -498,6 +499,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
+        self._voice_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> serialize join/leave
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "0.6"))
         self._text_batch_split_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
@@ -526,6 +528,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        self._slash_commands: bool = self.config.extra.get("slash_commands", True)
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -540,7 +543,6 @@ class DiscordAdapter(BasePlatformAdapter):
             # ctypes.util.find_library fails on macOS with Homebrew-installed libs,
             # so fall back to known Homebrew paths if needed.
             if not opus_path:
-                import sys
                 _homebrew_paths = (
                     "/opt/homebrew/lib/libopus.dylib",  # Apple Silicon
                     "/usr/local/lib/libopus.dylib",     # Intel Mac
@@ -636,6 +638,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_message(message: DiscordMessage):
+                # Block until _resolve_allowed_usernames has swapped
+                # any raw usernames in DISCORD_ALLOWED_USERS for numeric
+                # IDs (otherwise on_message's author.id lookup can miss).
+                if not adapter_self._ready_event.is_set():
+                    try:
+                        await asyncio.wait_for(adapter_self._ready_event.wait(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        pass
+
                 # Dedup: Discord RESUME replays events after reconnects (#4777)
                 if adapter_self._dedup.is_duplicate(str(message.id)):
                     return
@@ -735,7 +746,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
 
             # Register slash commands
-            self._register_slash_commands()
+            if self._slash_commands:
+                self._register_slash_commands()
 
             # Start the bot in background
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
@@ -791,14 +803,221 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return
         try:
-            synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
-            logger.info("[%s] Synced %d slash command(s)", self.name, len(synced))
+            sync_policy = self._get_discord_command_sync_policy()
+            if sync_policy == "off":
+                logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
+                return
+
+            if sync_policy == "bulk":
+                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
+                logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
+                return
+
+            # Discord's per-app command-management bucket is ~5 writes / 20 s,
+            # so a mass-prune-plus-upsert reconcile (e.g. 77 orphans + 30
+            # desired = 107 writes) takes several minutes of forced waits.
+            # A flat 30 s budget blew up reliably under bucket pressure and
+            # left slash commands broken for ~60 min until the bucket fully
+            # recovered. Use a wide ceiling; the cap still guards against a
+            # true hang. (#16713)
+            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=600)
+            logger.info(
+                "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
+                self.name,
+                summary["total"],
+                summary["unchanged"],
+                summary["updated"],
+                summary["recreated"],
+                summary["created"],
+                summary["deleted"],
+            )
         except asyncio.TimeoutError:
-            logger.warning("[%s] Slash command sync timed out after 30s", self.name)
+            logger.warning(
+                "[%s] Slash command sync timed out — Discord rate-limit bucket "
+                "may be saturated; will retry on next reconnect",
+                self.name,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
+
+    def _get_discord_command_sync_policy(self) -> str:
+        raw = str(os.getenv("DISCORD_COMMAND_SYNC_POLICY", "safe") or "").strip().lower()
+        if raw in _DISCORD_COMMAND_SYNC_POLICIES:
+            return raw
+        if raw:
+            logger.warning(
+                "[%s] Invalid DISCORD_COMMAND_SYNC_POLICY=%r; falling back to 'safe'",
+                self.name,
+                raw,
+            )
+        return "safe"
+
+    def _canonicalize_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Reduce command payloads to the semantic fields Hermes manages."""
+        contexts = payload.get("contexts")
+        integration_types = payload.get("integration_types")
+        return {
+            "type": int(payload.get("type", 1) or 1),
+            "name": str(payload.get("name", "") or ""),
+            "description": str(payload.get("description", "") or ""),
+            "default_member_permissions": self._normalize_permissions(
+                payload.get("default_member_permissions")
+            ),
+            "dm_permission": bool(payload.get("dm_permission", True)),
+            "nsfw": bool(payload.get("nsfw", False)),
+            "contexts": sorted(int(c) for c in contexts) if contexts else None,
+            "integration_types": (
+                sorted(int(i) for i in integration_types) if integration_types else None
+            ),
+            "options": [
+                self._canonicalize_app_command_option(item)
+                for item in payload.get("options", []) or []
+                if isinstance(item, dict)
+            ],
+        }
+
+    @staticmethod
+    def _normalize_permissions(value: Any) -> Optional[str]:
+        """Discord emits default_member_permissions as str server-side but discord.py
+        sets it as int locally. Normalize to str-or-None so the comparison is stable."""
+        if value is None:
+            return None
+        return str(value)
+
+    def _existing_command_to_payload(self, command: Any) -> Dict[str, Any]:
+        """Build a canonical-ready dict from an AppCommand.
+
+        discord.py's AppCommand.to_dict() does NOT include nsfw,
+        dm_permission, or default_member_permissions (they live only on the
+        attributes). Pull them from the attributes so the canonicalizer sees
+        the real server-side values instead of defaults — otherwise any
+        command using non-default permissions would diff on every startup.
+        """
+        payload = dict(command.to_dict())
+        nsfw = getattr(command, "nsfw", None)
+        if nsfw is not None:
+            payload["nsfw"] = bool(nsfw)
+        guild_only = getattr(command, "guild_only", None)
+        if guild_only is not None:
+            payload["dm_permission"] = not bool(guild_only)
+        default_permissions = getattr(command, "default_member_permissions", None)
+        if default_permissions is not None:
+            payload["default_member_permissions"] = getattr(
+                default_permissions, "value", default_permissions
+            )
+        return payload
+
+    def _canonicalize_app_command_option(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "type": int(payload.get("type", 0) or 0),
+            "name": str(payload.get("name", "") or ""),
+            "description": str(payload.get("description", "") or ""),
+            "required": bool(payload.get("required", False)),
+            "autocomplete": bool(payload.get("autocomplete", False)),
+            "choices": [
+                {
+                    "name": str(choice.get("name", "") or ""),
+                    "value": choice.get("value"),
+                }
+                for choice in payload.get("choices", []) or []
+                if isinstance(choice, dict)
+            ],
+            "channel_types": list(payload.get("channel_types", []) or []),
+            "min_value": payload.get("min_value"),
+            "max_value": payload.get("max_value"),
+            "min_length": payload.get("min_length"),
+            "max_length": payload.get("max_length"),
+            "options": [
+                self._canonicalize_app_command_option(item)
+                for item in payload.get("options", []) or []
+                if isinstance(item, dict)
+            ],
+        }
+
+    def _patchable_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Fields supported by discord.py's edit_global_command route."""
+        canonical = self._canonicalize_app_command_payload(payload)
+        return {
+            "name": canonical["name"],
+            "description": canonical["description"],
+            "options": canonical["options"],
+        }
+
+    async def _safe_sync_slash_commands(self) -> Dict[str, int]:
+        """Diff existing global commands and only mutate the commands that changed."""
+        if not self._client:
+            return {
+                "total": 0,
+                "unchanged": 0,
+                "updated": 0,
+                "recreated": 0,
+                "created": 0,
+                "deleted": 0,
+            }
+
+        tree = self._client.tree
+        app_id = getattr(self._client, "application_id", None) or getattr(getattr(self._client, "user", None), "id", None)
+        if not app_id:
+            raise RuntimeError("Discord application ID is unavailable for slash command sync")
+
+        desired_payloads = [command.to_dict(tree) for command in tree.get_commands()]
+        desired_by_key = {
+            (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): payload
+            for payload in desired_payloads
+        }
+        existing_commands = await tree.fetch_commands()
+        existing_by_key = {
+            (
+                int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1),
+                str(command.name or "").lower(),
+            ): command
+            for command in existing_commands
+        }
+
+        unchanged = 0
+        updated = 0
+        recreated = 0
+        created = 0
+        deleted = 0
+        http = self._client.http
+
+        for key, desired in desired_by_key.items():
+            current = existing_by_key.pop(key, None)
+            if current is None:
+                await http.upsert_global_command(app_id, desired)
+                created += 1
+                continue
+
+            current_existing_payload = self._existing_command_to_payload(current)
+            current_payload = self._canonicalize_app_command_payload(current_existing_payload)
+            desired_payload = self._canonicalize_app_command_payload(desired)
+            if current_payload == desired_payload:
+                unchanged += 1
+                continue
+
+            if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
+                await http.delete_global_command(app_id, current.id)
+                await http.upsert_global_command(app_id, desired)
+                recreated += 1
+                continue
+
+            await http.edit_global_command(app_id, current.id, desired)
+            updated += 1
+
+        for current in existing_by_key.values():
+            await http.delete_global_command(app_id, current.id)
+            deleted += 1
+
+        return {
+            "total": len(desired_payloads),
+            "unchanged": unchanged,
+            "updated": updated,
+            "recreated": recreated,
+            "created": created,
+            "deleted": deleted,
+        }
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""
@@ -857,6 +1076,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
         When metadata contains a thread_id, the message is sent to that
         thread instead of the parent channel identified by chat_id.
+
+        Forum channels (type 15) reject direct messages — a thread post is
+        created automatically.
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
@@ -881,6 +1103,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     channel = await self._client.fetch_channel(int(chat_id))
                 if not channel:
                     return SendResult(success=False, error=f"Channel {chat_id} not found")
+
+            # Forum channels reject channel.send() — create a thread post instead.
+            if self._is_forum_parent(channel):
+                return await self._send_to_forum(channel, content)
 
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -945,11 +1171,127 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
+        """Create a thread post in a forum channel with the message as starter content.
+
+        Forum channels (type 15) don't support direct messages.  Instead we
+        POST to /channels/{forum_id}/threads with a thread name derived from
+        the first line of the message.  Any follow-up chunk failures are
+        reported in ``raw_response['warnings']`` so the caller can surface
+        partial-send issues.
+        """
+        from tools.send_message_tool import _derive_forum_thread_name
+
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+        thread_name = _derive_forum_thread_name(content)
+
+        starter_content = chunks[0] if chunks else thread_name
+
+        try:
+            thread = await forum_channel.create_thread(
+                name=thread_name,
+                content=starter_content,
+            )
+        except Exception as e:
+            logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
+            return SendResult(success=False, error=f"Forum thread creation failed: {e}")
+
+        thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
+        thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
+        starter_msg = getattr(thread, "message", None)
+        message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
+
+        # Send remaining chunks into the newly created thread.  Track any
+        # per-chunk failures so the caller sees partial-send outcomes.
+        message_ids = [message_id]
+        warnings: list[str] = []
+        for chunk in chunks[1:]:
+            try:
+                msg = await thread_channel.send(content=chunk)
+                message_ids.append(str(msg.id))
+            except Exception as e:
+                warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
+                logger.warning("[%s] %s", self.name, warning)
+                warnings.append(warning)
+
+        raw_response: Dict[str, Any] = {"message_ids": message_ids, "thread_id": thread_id}
+        if warnings:
+            raw_response["warnings"] = warnings
+
+        return SendResult(
+            success=True,
+            message_id=message_ids[0],
+            raw_response=raw_response,
+        )
+
+    async def _forum_post_file(
+        self,
+        forum_channel: Any,
+        *,
+        thread_name: Optional[str] = None,
+        content: str = "",
+        file: Any = None,
+        files: Optional[list] = None,
+    ) -> SendResult:
+        """Create a forum thread whose starter message carries file attachments.
+
+        Used by the send_voice / send_image_file / send_document paths when
+        the target channel is a forum (type 15).  ``create_thread`` on a
+        ForumChannel accepts the same file/files/content kwargs as
+        ``channel.send``, creating the thread and starter message atomically.
+        """
+        from tools.send_message_tool import _derive_forum_thread_name
+
+        if not thread_name:
+            # Prefer the text content, fall back to the first attached
+            # filename, fall back to the generic default.
+            hint = content or ""
+            if not hint.strip():
+                if file is not None:
+                    hint = getattr(file, "filename", "") or ""
+                elif files:
+                    hint = getattr(files[0], "filename", "") or ""
+            thread_name = _derive_forum_thread_name(hint) if hint.strip() else "New Post"
+
+        kwargs: Dict[str, Any] = {"name": thread_name}
+        if content:
+            kwargs["content"] = content
+        if file is not None:
+            kwargs["file"] = file
+        if files:
+            kwargs["files"] = files
+
+        try:
+            thread = await forum_channel.create_thread(**kwargs)
+        except Exception as e:
+            logger.error(
+                "[%s] Failed to create forum thread with file in %s: %s",
+                self.name,
+                getattr(forum_channel, "id", "?"),
+                e,
+            )
+            return SendResult(success=False, error=f"Forum thread creation failed: {e}")
+
+        thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
+        thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
+        starter_msg = getattr(thread, "message", None)
+        message_id = str(getattr(starter_msg, "id", thread_id)) if starter_msg else thread_id
+
+        return SendResult(
+            success=True,
+            message_id=message_id,
+            raw_response={"thread_id": thread_id},
+        )
+
     async def edit_message(
         self,
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
         """Edit a previously sent Discord message."""
         if not self._client:
@@ -975,7 +1317,11 @@ class DiscordAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
     ) -> SendResult:
-        """Send a local file as a Discord attachment."""
+        """Send a local file as a Discord attachment.
+
+        Forum channels (type 15) get a new thread whose starter message
+        carries the file — they reject direct POST /messages.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
@@ -988,8 +1334,142 @@ class DiscordAdapter(BasePlatformAdapter):
         filename = file_name or os.path.basename(file_path)
         with open(file_path, "rb") as fh:
             file = discord.File(fh, filename=filename)
+            if self._is_forum_parent(channel):
+                return await self._forum_post_file(
+                    channel,
+                    content=(caption or "").strip(),
+                    file=file,
+                )
             msg = await channel.send(content=caption if caption else None, file=file)
         return SendResult(success=True, message_id=str(msg.id))
+
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images as a single Discord message with multiple attachments.
+
+        Discord permits up to 10 file attachments per message. Batches are
+        chunked accordingly. URL images are downloaded into memory and
+        uploaded as inline attachments (same pattern as ``send_image`` so
+        they render inline, not as bare links). Local files are opened
+        directly. On per-chunk failure the remaining images in that chunk
+        fall back to the base per-image loop.
+        """
+        if not self._client:
+            return
+        if not images:
+            return
+
+        try:
+            import discord as _discord_mod
+            import io as _io
+            from urllib.parse import unquote as _unquote
+        except Exception:  # pragma: no cover
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return
+
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            if not channel:
+                logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
+                return
+        except Exception as e:
+            logger.warning("[%s] Failed to resolve channel for multi-image send: %s", self.name, e)
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return
+
+        CHUNK = 10
+        chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
+
+        for chunk_idx, chunk in enumerate(chunks):
+            if human_delay > 0 and chunk_idx > 0:
+                await asyncio.sleep(human_delay)
+
+            files: List[Any] = []
+            captions: List[str] = []
+            aiohttp_session = None
+            try:
+                for image_url, alt_text in chunk:
+                    if alt_text:
+                        captions.append(alt_text)
+                    if image_url.startswith("file://"):
+                        local_path = _unquote(image_url[7:])
+                        if not os.path.exists(local_path):
+                            logger.warning("[%s] Skipping missing image: %s", self.name, local_path)
+                            continue
+                        files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
+                    else:
+                        if not is_safe_url(image_url):
+                            logger.warning("[%s] Blocked unsafe image URL in batch", self.name)
+                            continue
+                        # Download to BytesIO so it renders inline
+                        try:
+                            import aiohttp as _aiohttp
+                            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+                            _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+                            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+                            if aiohttp_session is None:
+                                aiohttp_session = _aiohttp.ClientSession(**_sess_kw)
+                            async with aiohttp_session.get(
+                                image_url, timeout=_aiohttp.ClientTimeout(total=30), **_req_kw,
+                            ) as resp:
+                                if resp.status != 200:
+                                    logger.warning(
+                                        "[%s] Failed to download image (HTTP %d) in batch: %s",
+                                        self.name, resp.status, image_url[:80],
+                                    )
+                                    continue
+                                data = await resp.read()
+                                ct = resp.headers.get("content-type", "image/png")
+                                ext = "png"
+                                if "jpeg" in ct or "jpg" in ct:
+                                    ext = "jpg"
+                                elif "gif" in ct:
+                                    ext = "gif"
+                                elif "webp" in ct:
+                                    ext = "webp"
+                                files.append(_discord_mod.File(_io.BytesIO(data), filename=f"image_{len(files)}.{ext}"))
+                        except Exception as dl_err:
+                            logger.warning("[%s] Download failed for %s: %s", self.name, image_url[:80], dl_err)
+                            continue
+
+                if not files:
+                    continue
+
+                # Use the first caption if any (Discord only has one message body for the group)
+                content = captions[0] if captions else None
+                logger.info(
+                    "[%s] Sending %d image(s) as single Discord message (chunk %d/%d)",
+                    self.name, len(files), chunk_idx + 1, len(chunks),
+                )
+
+                if self._is_forum_parent(channel):
+                    await self._forum_post_file(
+                        channel,
+                        content=(content or "").strip(),
+                        files=files,
+                    )
+                else:
+                    await channel.send(content=content, files=files)
+            except Exception as e:
+                logger.warning(
+                    "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
+                    self.name, chunk_idx + 1, len(chunks), e,
+                    exc_info=True,
+                )
+                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+            finally:
+                if aiohttp_session is not None:
+                    try:
+                        await aiohttp_session.close()
+                    except Exception:
+                        pass
 
     async def play_tts(
         self,
@@ -1035,6 +1515,18 @@ class DiscordAdapter(BasePlatformAdapter):
 
             with open(audio_path, "rb") as f:
                 file_data = f.read()
+
+            # Forum channels (type 15) reject direct POST /messages — the
+            # native voice flag path also targets /messages so it would fail
+            # too.  Create a thread post with the audio as the starter
+            # attachment instead.
+            if self._is_forum_parent(channel):
+                forum_file = discord.File(io.BytesIO(file_data), filename=filename)
+                return await self._forum_post_file(
+                    channel,
+                    content=(caption or "").strip(),
+                    file=forum_file,
+                )
 
             # Try sending as a native voice message via raw API (flags=8192).
             try:
@@ -1094,51 +1586,53 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
         guild_id = channel.guild.id
 
-        # Already connected in this guild?
-        existing = self._voice_clients.get(guild_id)
-        if existing and existing.is_connected():
-            if existing.channel.id == channel.id:
+        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            # Already connected in this guild?
+            existing = self._voice_clients.get(guild_id)
+            if existing and existing.is_connected():
+                if existing.channel.id == channel.id:
+                    self._reset_voice_timeout(guild_id)
+                    return True
+                await existing.move_to(channel)
                 self._reset_voice_timeout(guild_id)
                 return True
-            await existing.move_to(channel)
+
+            vc = await channel.connect()
+            self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
+
+            # Start voice receiver (Phase 2: listen to users)
+            try:
+                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                receiver.start()
+                self._voice_receivers[guild_id] = receiver
+                self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
+                    self._voice_listen_loop(guild_id)
+                )
+            except Exception as e:
+                logger.warning("Voice receiver failed to start: %s", e)
+
             return True
-
-        vc = await channel.connect()
-        self._voice_clients[guild_id] = vc
-        self._reset_voice_timeout(guild_id)
-
-        # Start voice receiver (Phase 2: listen to users)
-        try:
-            receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
-            receiver.start()
-            self._voice_receivers[guild_id] = receiver
-            self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
-                self._voice_listen_loop(guild_id)
-            )
-        except Exception as e:
-            logger.warning("Voice receiver failed to start: %s", e)
-
-        return True
 
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
-        # Stop voice receiver first
-        receiver = self._voice_receivers.pop(guild_id, None)
-        if receiver:
-            receiver.stop()
-        listen_task = self._voice_listen_tasks.pop(guild_id, None)
-        if listen_task:
-            listen_task.cancel()
+        async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            # Stop voice receiver first
+            receiver = self._voice_receivers.pop(guild_id, None)
+            if receiver:
+                receiver.stop()
+            listen_task = self._voice_listen_tasks.pop(guild_id, None)
+            if listen_task:
+                listen_task.cancel()
 
-        vc = self._voice_clients.pop(guild_id, None)
-        if vc and vc.is_connected():
-            await vc.disconnect()
-        task = self._voice_timeout_tasks.pop(guild_id, None)
-        if task:
-            task.cancel()
-        self._voice_text_channels.pop(guild_id, None)
-        self._voice_sources.pop(guild_id, None)
+            vc = self._voice_clients.pop(guild_id, None)
+            if vc and vc.is_connected():
+                await vc.disconnect()
+            task = self._voice_timeout_tasks.pop(guild_id, None)
+            if task:
+                task.cancel()
+            self._voice_text_channels.pop(guild_id, None)
+            self._voice_sources.pop(guild_id, None)
 
     # Maximum seconds to wait for voice playback before giving up
     PLAYBACK_TIMEOUT = 120
@@ -1265,8 +1759,7 @@ class DiscordAdapter(BasePlatformAdapter):
         speaking_user_ids: set = set()
         receiver = self._voice_receivers.get(guild_id)
         if receiver:
-            import time as _time
-            now = _time.monotonic()
+            now = time.monotonic()
             with receiver._lock:
                 for ssrc, last_t in receiver._last_packet_time.items():
                     # Consider "speaking" if audio received within last 2 seconds
@@ -1488,6 +1981,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     import io
                     file = discord.File(io.BytesIO(image_data), filename=f"image.{ext}")
 
+                    if self._is_forum_parent(channel):
+                        return await self._forum_post_file(
+                            channel,
+                            content=(caption or "").strip(),
+                            file=file,
+                        )
+
                     msg = await channel.send(
                         content=caption if caption else None,
                         file=file,
@@ -1549,6 +2049,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
                     import io
                     file = discord.File(io.BytesIO(animation_data), filename="animation.gif")
+
+                    if self._is_forum_parent(channel):
+                        return await self._forum_post_file(
+                            channel,
+                            content=(caption or "").strip(),
+                            file=file,
+                        )
 
                     msg = await channel.send(
                         content=caption if caption else None,
@@ -1776,6 +2283,24 @@ class DiscordAdapter(BasePlatformAdapter):
         the "thinking..." indicator is replaced with that text; otherwise it
         is deleted so the channel isn't cluttered.
         """
+        # Log the invoker so ghost-command reports can be triaged.  Discord
+        # native slash invocations are always user-initiated (no bot can fire
+        # them), but mobile autocomplete / keyboard shortcuts / other users
+        # in the same channel are easy to miss in post-mortems.
+        try:
+            _user = interaction.user
+            _chan_id = getattr(interaction.channel, "id", None) or getattr(interaction, "channel_id", None)
+            logger.info(
+                "[Discord] slash '%s' invoked by user=%s id=%s channel=%s guild=%s",
+                command_text,
+                getattr(_user, "name", "?"),
+                getattr(_user, "id", "?"),
+                _chan_id,
+                getattr(interaction, "guild_id", None),
+            )
+        except Exception:
+            pass  # logging must never block command dispatch
+
         await interaction.response.defer(ephemeral=True)
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
@@ -1837,6 +2362,11 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_stop(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/stop", "Stop requested~")
 
+        @tree.command(name="steer", description="Inject a message after the next tool call (no interrupt)")
+        @discord.app_commands.describe(prompt="Text to inject into the agent's next tool result")
+        async def slash_steer(interaction: discord.Interaction, prompt: str):
+            await self._run_simple_slash(interaction, f"/steer {prompt}".strip())
+
         @tree.command(name="compress", description="Compress conversation context")
         async def slash_compress(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/compress")
@@ -1855,10 +2385,6 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_usage(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/usage")
 
-        @tree.command(name="provider", description="Show available providers")
-        async def slash_provider(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/provider")
-
         @tree.command(name="help", description="Show available commands")
         async def slash_help(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/help")
@@ -1871,6 +2397,10 @@ class DiscordAdapter(BasePlatformAdapter):
         @tree.command(name="reload-mcp", description="Reload MCP servers from config")
         async def slash_reload_mcp(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/reload-mcp")
+
+        @tree.command(name="reload-skills", description="Re-scan ~/.hermes/skills/ for new or removed skills")
+        async def slash_reload_skills(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/reload-skills")
 
         @tree.command(name="voice", description="Toggle voice reply mode")
         @discord.app_commands.describe(mode="Voice mode: on, off, tts, channel, leave, or status")
@@ -1928,19 +2458,46 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
 
-        @tree.command(name="btw", description="Ephemeral side question using session context")
-        @discord.app_commands.describe(question="Your side question (no tools, not persisted)")
-        async def slash_btw(interaction: discord.Interaction, question: str):
-            await self._run_simple_slash(interaction, f"/btw {question}")
-
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash
         # commands without needing a manual entry here.
+        def _build_auto_slash_command(_name: str, _description: str, _args_hint: str = ""):
+            """Build a discord.app_commands.Command that proxies to _run_simple_slash."""
+            discord_name = _name.lower()[:32]
+            desc = (_description or f"Run /{_name}")[:100]
+            has_args = bool(_args_hint)
+
+            if has_args:
+                def _make_args_handler(__name: str, __hint: str):
+                    @discord.app_commands.describe(args=f"Arguments: {__hint}"[:100])
+                    async def _handler(interaction: discord.Interaction, args: str = ""):
+                        await self._run_simple_slash(
+                            interaction, f"/{__name} {args}".strip()
+                        )
+                    _handler.__name__ = f"auto_slash_{__name.replace('-', '_')}"
+                    return _handler
+
+                handler = _make_args_handler(_name, _args_hint)
+            else:
+                def _make_simple_handler(__name: str):
+                    async def _handler(interaction: discord.Interaction):
+                        await self._run_simple_slash(interaction, f"/{__name}")
+                    _handler.__name__ = f"auto_slash_{__name.replace('-', '_')}"
+                    return _handler
+
+                handler = _make_simple_handler(_name)
+
+            return discord.app_commands.Command(
+                name=discord_name,
+                description=desc,
+                callback=handler,
+            )
+
+        already_registered: set[str] = set()
         try:
             from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
 
-            already_registered = set()
             try:
                 already_registered = {cmd.name for cmd in tree.get_commands()}
             except Exception:
@@ -1955,38 +2512,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 discord_name = cmd_def.name.lower()[:32]
                 if discord_name in already_registered:
                     continue
-                # Skip aliases that overlap with already-registered names
-                # (aliases for explicitly registered commands are handled above).
-                desc = (cmd_def.description or f"Run /{cmd_def.name}")[:100]
-                has_args = bool(cmd_def.args_hint)
-
-                if has_args:
-                    # Command takes optional arguments — create handler with
-                    # an optional ``args`` string parameter.
-                    def _make_args_handler(_name: str, _hint: str):
-                        @discord.app_commands.describe(args=f"Arguments: {_hint}"[:100])
-                        async def _handler(interaction: discord.Interaction, args: str = ""):
-                            await self._run_simple_slash(
-                                interaction, f"/{_name} {args}".strip()
-                            )
-                        _handler.__name__ = f"auto_slash_{_name.replace('-', '_')}"
-                        return _handler
-
-                    handler = _make_args_handler(cmd_def.name, cmd_def.args_hint)
-                else:
-                    # Parameterless command.
-                    def _make_simple_handler(_name: str):
-                        async def _handler(interaction: discord.Interaction):
-                            await self._run_simple_slash(interaction, f"/{_name}")
-                        _handler.__name__ = f"auto_slash_{_name.replace('-', '_')}"
-                        return _handler
-
-                    handler = _make_simple_handler(cmd_def.name)
-
-                auto_cmd = discord.app_commands.Command(
-                    name=discord_name,
-                    description=desc,
-                    callback=handler,
+                auto_cmd = _build_auto_slash_command(
+                    cmd_def.name,
+                    cmd_def.description,
+                    cmd_def.args_hint,
                 )
                 try:
                     tree.add_command(auto_cmd)
@@ -2002,6 +2531,35 @@ class DiscordAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.warning("Discord auto-register from COMMAND_REGISTRY failed: %s", e)
+
+        # ── Plugin-registered slash commands ──
+        # Plugins register via PluginContext.register_command(); we mirror
+        # those into Discord's native slash picker so users get the same
+        # autocomplete UX as for built-in commands. No per-platform plugin
+        # API needed — plugin commands are platform-agnostic.
+        try:
+            from hermes_cli.commands import _iter_plugin_command_entries
+
+            for plugin_name, plugin_desc, plugin_args_hint in _iter_plugin_command_entries():
+                discord_name = plugin_name.lower()[:32]
+                if discord_name in already_registered:
+                    continue
+                auto_cmd = _build_auto_slash_command(
+                    plugin_name,
+                    plugin_desc,
+                    plugin_args_hint,
+                )
+                try:
+                    tree.add_command(auto_cmd)
+                    already_registered.add(discord_name)
+                except Exception:
+                    # Silently skip commands that fail registration (e.g.
+                    # name conflict with a subcommand group).
+                    pass
+        except Exception as e:
+            logger.warning(
+                "Discord auto-register from plugin commands failed: %s", e
+            )
 
         # Register skills under a single /skill command group with category
         # subcommand groups.  This uses 1 top-level slot instead of N,
@@ -2264,21 +2822,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 skills: ["skill-a", "skill-b"]
         Also checks parent_id so forum threads inherit the forum's bindings.
         """
-        bindings = self.config.extra.get("channel_skill_bindings", [])
-        if not bindings:
-            return None
-        ids_to_check = {channel_id}
-        if parent_id:
-            ids_to_check.add(parent_id)
-        for entry in bindings:
-            entry_id = str(entry.get("id", ""))
-            if entry_id in ids_to_check:
-                skills = entry.get("skills") or entry.get("skill")
-                if isinstance(skills, str):
-                    return [skills]
-                if isinstance(skills, list) and skills:
-                    return list(dict.fromkeys(skills))  # dedup, preserve order
-        return None
+        from gateway.platforms.base import resolve_channel_skills
+        return resolve_channel_skills(self.config.extra, channel_id, parent_id)
 
     def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
         """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
@@ -2295,7 +2840,12 @@ class DiscordAdapter(BasePlatformAdapter):
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
     def _discord_free_response_channels(self) -> set:
-        """Return Discord channel IDs where no bot mention is required."""
+        """Return Discord channel IDs where no bot mention is required.
+
+        A single ``"*"`` entry (either from a list or a comma-separated
+        string) is preserved in the returned set so callers can short-circuit
+        on wildcard membership, consistent with ``allowed_channels``.
+        """
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
@@ -2488,9 +3038,47 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_slash_confirm(
+        self, chat_id: str, title: str, message: str, session_key: str,
+        confirm_id: str, metadata: Optional[dict] = None,
+    ) -> SendResult:
+        """Send a three-button slash-command confirmation prompt."""
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+
+            # Embed description limit is 4096; message usually fits easily.
+            max_desc = 4088
+            body = message if len(message) <= max_desc else message[: max_desc - 3] + "..."
+            embed = discord.Embed(
+                title=title or "Confirm",
+                description=body,
+                color=discord.Color.orange(),
+            )
+
+            view = SlashConfirmView(
+                session_key=session_key,
+                confirm_id=confirm_id,
+                allowed_user_ids=self._allowed_user_ids,
+            )
+
+            msg = await channel.send(embed=embed, view=view)
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an interactive button-based update prompt (Yes / No).
 
@@ -2500,9 +3088,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
         try:
-            channel = self._client.get_channel(int(chat_id))
+            target_id = metadata.get("thread_id") if metadata and metadata.get("thread_id") else chat_id
+            channel = self._client.get_channel(int(target_id))
             if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+                channel = await self._client.fetch_channel(int(target_id))
 
             default_hint = f" (default: {default})" if default else ""
             embed = discord.Embed(
@@ -2768,6 +3357,17 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
         is_voice_linked_channel = False
+
+        # Save mention-stripped text before auto-threading since create_thread()
+        # can clobber message.content, breaking /command detection in channels.
+        raw_content = message.content.strip()
+        normalized_content = raw_content
+        mention_prefix = False
+        if self._client.user and self._client.user in message.mentions:
+            mention_prefix = True
+            normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
+            normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
@@ -2777,14 +3377,14 @@ class DiscordAdapter(BasePlatformAdapter):
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
             if allowed_channels_raw:
                 allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if not (channel_ids & allowed_channels):
+                if "*" not in allowed_channels and not (channel_ids & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
                     return
 
             # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
             ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
-            if channel_ids & ignored_channels:
+            if "*" in ignored_channels or (channel_ids & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return
 
@@ -2798,20 +3398,19 @@ class DiscordAdapter(BasePlatformAdapter):
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
             current_channel_id = str(message.channel.id)
             is_voice_linked_channel = current_channel_id in voice_linked_ids
-            is_free_channel = bool(channel_ids & free_channels) or is_voice_linked_channel
+            is_free_channel = (
+                "*" in free_channels
+                or bool(channel_ids & free_channels)
+                or is_voice_linked_channel
+            )
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
             in_bot_thread = is_thread and thread_id in self._threads
 
             if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions:
+                if self._client.user not in message.mentions and not mention_prefix:
                     return
-
-            if self._client.user and self._client.user in message.mentions:
-                message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
-                message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
-
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
@@ -2826,6 +3425,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
                 if thread:
+                    parent_channel_id = str(message.channel.id)
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
@@ -2833,7 +3433,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Determine message type
         msg_type = MessageType.TEXT
-        if message.content.startswith("/"):
+        if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif message.attachments:
             # Check attachment types
@@ -2876,6 +3476,7 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
 
         # Build source
+        guild = getattr(message, "guild", None)
         source = self.build_source(
             chat_id=str(effective_channel.id),
             chat_name=chat_name,
@@ -2885,6 +3486,9 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             chat_topic=chat_topic,
             is_bot=getattr(message.author, "bot", False),
+            guild_id=str(guild.id) if guild else None,
+            parent_chat_id=parent_channel_id,
+            message_id=str(message.id),
         )
 
         # Build media URLs -- download image attachments to local cache so the
@@ -2973,7 +3577,9 @@ class DiscordAdapter(BasePlatformAdapter):
                                 att.filename, e, exc_info=True,
                             )
 
-        event_text = message.content
+        # Use normalized_content (saved before auto-threading) instead of message.content,
+        # to detect /slash commands in channel messages.
+        event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 
@@ -3085,7 +3691,20 @@ class DiscordAdapter(BasePlatformAdapter):
                 "[Discord] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
-            await self.handle_message(event)
+            # Shield the downstream dispatch so that a subsequent chunk
+            # arriving while handle_message is mid-flight cannot cancel
+            # the running agent turn.  _enqueue_text_event always cancels
+            # the prior flush task when a new chunk lands; without this
+            # shield, CancelledError would propagate from our task down
+            # into handle_message → the agent's streaming request,
+            # aborting the response the user was waiting on.  The new
+            # chunk is handled by the fresh flush task regardless.
+            await asyncio.shield(self.handle_message(event))
+        except asyncio.CancelledError:
+            # Only reached if cancel landed before the pop — the shielded
+            # handle_message is unaffected either way.  Let the task exit
+            # cleanly so the finally block cleans up.
+            pass
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
@@ -3187,6 +3806,103 @@ if DISCORD_AVAILABLE:
 
         async def on_timeout(self):
             """Handle view timeout -- disable buttons and mark as expired."""
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+
+    class SlashConfirmView(discord.ui.View):
+        """Three-button view for generic slash-command confirmations.
+
+        Used by ``/reload-mcp`` and any future slash command routed through
+        ``GatewayRunner._request_slash_confirm``.  Buttons map to the
+        gateway's three choices:
+
+          * "Approve Once"   → ``choice="once"``
+          * "Always Approve" → ``choice="always"``
+          * "Cancel"         → ``choice="cancel"``
+
+        Clicking calls the module-level
+        ``tools.slash_confirm.resolve(session_key, confirm_id, choice)``
+        which runs the handler the runner stored for this ``session_key``.
+        Only users in the adapter's allowlist can click.  Times out after
+        5 minutes (matches the gateway primitive's timeout).
+        """
+
+        def __init__(self, session_key: str, confirm_id: str, allowed_user_ids: set):
+            super().__init__(timeout=300)
+            self.session_key = session_key
+            self.confirm_id = confirm_id
+            self.allowed_user_ids = allowed_user_ids
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            if not self.allowed_user_ids:
+                return True
+            return str(interaction.user.id) in self.allowed_user_ids
+
+        async def _resolve(
+            self, interaction: discord.Interaction, choice: str,
+            color: discord.Color, label: str,
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This prompt has already been resolved~", ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to answer this prompt~", ephemeral=True,
+                )
+                return
+
+            self.resolved = True
+
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+
+            for child in self.children:
+                child.disabled = True
+
+            await interaction.response.edit_message(embed=embed, view=self)
+
+            # Resolve via the module-level primitive.  If the handler
+            # returns a follow-up message, post it in the same channel.
+            try:
+                from tools import slash_confirm as _slash_confirm_mod
+                result_text = await _slash_confirm_mod.resolve(
+                    self.session_key, self.confirm_id, choice,
+                )
+                if result_text:
+                    await interaction.followup.send(result_text)
+                logger.info(
+                    "Discord button resolved slash-confirm for session %s "
+                    "(choice=%s, user=%s)",
+                    self.session_key, choice, interaction.user.display_name,
+                )
+            except Exception as exc:
+                logger.error("Discord slash-confirm resolve failed: %s", exc, exc_info=True)
+
+        @discord.ui.button(label="Approve Once", style=discord.ButtonStyle.green)
+        async def approve_once(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "once", discord.Color.green(), "Approved once")
+
+        @discord.ui.button(label="Always Approve", style=discord.ButtonStyle.blurple)
+        async def approve_always(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "always", discord.Color.purple(), "Always approved")
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
+        async def cancel(
+            self, interaction: discord.Interaction, button: discord.ui.Button,
+        ):
+            await self._resolve(interaction, "cancel", discord.Color.greyple(), "Cancelled")
+
+        async def on_timeout(self):
             self.resolved = True
             for child in self.children:
                 child.disabled = True
@@ -3421,6 +4137,15 @@ if DISCORD_AVAILABLE:
 
             self.resolved = True
             model_id = interaction.data["values"][0]
+            self.clear_items()
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Switching Model",
+                    description=f"Switching to `{model_id}`...",
+                    color=discord.Color.blue(),
+                ),
+                view=None,
+            )
 
             try:
                 result_text = await self.on_model_selected(
@@ -3431,14 +4156,13 @@ if DISCORD_AVAILABLE:
             except Exception as exc:
                 result_text = f"Error switching model: {exc}"
 
-            self.clear_items()
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=discord.Embed(
                     title="⚙ Model Switched",
                     description=result_text,
                     color=discord.Color.green(),
                 ),
-                view=self,
+                view=None,
             )
 
         async def _on_back(self, interaction: discord.Interaction):

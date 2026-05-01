@@ -3,10 +3,12 @@
 import contextlib
 import io
 import json
+import time
 from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch
 
+from acp_adapter import session as acp_session
 from acp_adapter.session import SessionManager, SessionState
 from hermes_state import SessionDB
 
@@ -41,6 +43,27 @@ class TestCreateSession:
         state = manager.create_session(cwd="/tmp/work")
         assert calls == [(state.session_id, "/tmp/work")]
 
+
+    def test_register_task_cwd_translates_windows_drive_for_wsl_tools(self, monkeypatch):
+        captured = {}
+
+        def fake_register_task_env_overrides(task_id, overrides):
+            captured["task_id"] = task_id
+            captured["overrides"] = overrides
+
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        monkeypatch.setattr(
+            "tools.terminal_tool.register_task_env_overrides",
+            fake_register_task_env_overrides,
+        )
+
+        acp_session._register_task_cwd("session-1", r"E:\Projects\AI\paperclip")
+
+        assert captured == {
+            "task_id": "session-1",
+            "overrides": {"cwd": "/mnt/e/Projects/AI/paperclip"},
+        }
+
     def test_session_ids_are_unique(self, manager):
         s1 = manager.create_session()
         s2 = manager.create_session()
@@ -54,6 +77,59 @@ class TestCreateSession:
     def test_get_nonexistent_session_returns_none(self, manager):
         assert manager.get_session("does-not-exist") is None
 
+
+
+
+# ---------------------------------------------------------------------------
+# WSL cwd translation
+# ---------------------------------------------------------------------------
+
+
+class TestWslCwdTranslation:
+    def test_translate_acp_cwd_converts_windows_drive_path_when_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+
+        assert acp_session._translate_acp_cwd(r"E:\Projects\AI\paperclip") == "/mnt/e/Projects/AI/paperclip"
+
+    def test_translate_acp_cwd_handles_forward_slashes_when_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+
+        assert acp_session._translate_acp_cwd("D:/work/project") == "/mnt/d/work/project"
+
+    def test_translate_acp_cwd_leaves_windows_drive_path_unchanged_off_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", False)
+
+        assert acp_session._translate_acp_cwd(r"E:\Projects\AI\paperclip") == r"E:\Projects\AI\paperclip"
+
+    def test_translate_acp_cwd_leaves_posix_path_unchanged_on_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+
+        assert acp_session._translate_acp_cwd("/mnt/e/Projects/AI/paperclip") == "/mnt/e/Projects/AI/paperclip"
+
+    def test_create_session_stores_translated_cwd_on_wsl(self, manager, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+
+        state = manager.create_session(cwd=r"E:\Projects\AI\paperclip")
+
+        assert state.cwd == "/mnt/e/Projects/AI/paperclip"
+
+    def test_fork_session_stores_translated_cwd_on_wsl(self, manager, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        original = manager.create_session(cwd="/tmp/base")
+
+        forked = manager.fork_session(original.session_id, cwd=r"D:\work\project")
+
+        assert forked is not None
+        assert forked.cwd == "/mnt/d/work/project"
+
+    def test_update_cwd_stores_translated_cwd_on_wsl(self, manager, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        state = manager.create_session(cwd="/tmp/old")
+
+        updated = manager.update_cwd(state.session_id, cwd=r"C:\Users\foo\project")
+
+        assert updated is not None
+        assert updated.cwd == "/mnt/c/Users/foo/project"
 
 # ---------------------------------------------------------------------------
 # fork
@@ -100,15 +176,23 @@ class TestListAndCleanup:
     def test_list_sessions_returns_created(self, manager):
         s1 = manager.create_session(cwd="/a")
         s2 = manager.create_session(cwd="/b")
+        s1.history.append({"role": "user", "content": "hello from a"})
+        s2.history.append({"role": "user", "content": "hello from b"})
         listing = manager.list_sessions()
         ids = {s["session_id"] for s in listing}
         assert s1.session_id in ids
         assert s2.session_id in ids
         assert len(listing) == 2
 
+    def test_list_sessions_hides_empty_threads(self, manager):
+        manager.create_session(cwd="/empty")
+        assert manager.list_sessions() == []
+
     def test_cleanup_clears_all(self, manager):
-        manager.create_session()
-        manager.create_session()
+        s1 = manager.create_session()
+        s2 = manager.create_session()
+        s1.history.append({"role": "user", "content": "one"})
+        s2.history.append({"role": "user", "content": "two"})
         assert len(manager.list_sessions()) == 2
         manager.cleanup()
         assert manager.list_sessions() == []
@@ -128,6 +212,43 @@ class TestListAndCleanup:
 
 class TestPersistence:
     """Verify that sessions are persisted to SessionDB and can be restored."""
+
+    def test_create_session_includes_registered_mcp_toolsets(self, tmp_path, monkeypatch):
+        captured = {}
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "***",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(model=kwargs.get("model"), enabled_toolsets=kwargs.get("enabled_toolsets"))
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"},
+            "mcp_servers": {
+                "olympus": {"command": "python", "enabled": True},
+                "exa": {"url": "https://exa.ai/mcp"},
+                "disabled": {"command": "python", "enabled": False},
+            },
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            manager.create_session(cwd="/work")
+
+        assert captured["enabled_toolsets"] == ["hermes-acp", "mcp-olympus", "mcp-exa"]
 
     def test_create_session_writes_to_db(self, manager):
         state = manager.create_session(cwd="/project")
@@ -194,6 +315,8 @@ class TestPersistence:
     def test_list_sessions_includes_db_only(self, manager):
         """Sessions only in DB (not in memory) appear in list_sessions."""
         state = manager.create_session(cwd="/db-only")
+        state.history.append({"role": "user", "content": "database only thread"})
+        manager.save_session(state.session_id)
         sid = state.session_id
 
         # Drop from memory.
@@ -203,6 +326,53 @@ class TestPersistence:
         listing = manager.list_sessions()
         ids = {s["session_id"] for s in listing}
         assert sid in ids
+
+    def test_list_sessions_filters_by_cwd(self, manager):
+        keep = manager.create_session(cwd="/keep")
+        drop = manager.create_session(cwd="/drop")
+        keep.history.append({"role": "user", "content": "keep me"})
+        drop.history.append({"role": "user", "content": "drop me"})
+
+        listing = manager.list_sessions(cwd="/keep")
+        ids = {s["session_id"] for s in listing}
+        assert keep.session_id in ids
+        assert drop.session_id not in ids
+
+    def test_list_sessions_matches_windows_and_wsl_paths(self, manager):
+        state = manager.create_session(cwd="/mnt/e/Projects/AI/browser-link-3")
+        state.history.append({"role": "user", "content": "same project from WSL"})
+
+        listing = manager.list_sessions(cwd=r"E:\Projects\AI\browser-link-3")
+        ids = {s["session_id"] for s in listing}
+        assert state.session_id in ids
+
+    def test_list_sessions_prefers_title_then_preview(self, manager):
+        state = manager.create_session(cwd="/named")
+        state.history.append({"role": "user", "content": "Investigate broken ACP history in Zed"})
+        manager.save_session(state.session_id)
+        db = manager._get_db()
+        db.set_session_title(state.session_id, "Fix Zed ACP history")
+
+        listing = manager.list_sessions(cwd="/named")
+        assert listing[0]["title"] == "Fix Zed ACP history"
+
+        db.set_session_title(state.session_id, "")
+        listing = manager.list_sessions(cwd="/named")
+        assert listing[0]["title"].startswith("Investigate broken ACP history")
+
+    def test_list_sessions_sorted_by_most_recent_activity(self, manager):
+        older = manager.create_session(cwd="/ordered")
+        older.history.append({"role": "user", "content": "older"})
+        manager.save_session(older.session_id)
+        time.sleep(0.02)
+        newer = manager.create_session(cwd="/ordered")
+        newer.history.append({"role": "user", "content": "newer"})
+        manager.save_session(newer.session_id)
+
+        listing = manager.list_sessions(cwd="/ordered")
+        assert [item["session_id"] for item in listing[:2]] == [newer.session_id, older.session_id]
+        assert listing[0]["updated_at"]
+        assert listing[1]["updated_at"]
 
     def test_fork_restores_source_from_db(self, manager):
         """Forking a session that is only in DB should work."""

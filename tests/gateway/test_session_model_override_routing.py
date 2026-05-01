@@ -54,6 +54,7 @@ def _make_runner():
     runner._background_tasks = set()
     runner._session_db = None
     runner._session_model_overrides = {}
+    runner._session_reasoning_overrides = {}
     runner._pending_model_notes = {}
     runner._pending_approvals = {}
     runner._agent_cache = {}
@@ -102,6 +103,7 @@ def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     )
     session_key = "agent:main:local:dm"
     runner._session_model_overrides[session_key] = _codex_override()
+    runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
 
     result = asyncio.run(
         runner._run_agent(
@@ -121,6 +123,7 @@ def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     assert _CapturingAgent.last_init["api_mode"] == "codex_responses"
     assert _CapturingAgent.last_init["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert _CapturingAgent.last_init["api_key"] == "***"
+    assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}
 
 
 @pytest.mark.asyncio
@@ -149,6 +152,7 @@ async def test_background_task_prefers_session_override_over_global_runtime(monk
     )
     session_key = runner._session_key_for_source(source)
     runner._session_model_overrides[session_key] = _codex_override()
+    runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
 
     await runner._run_background_task("say hello", source, "bg_test")
 
@@ -158,3 +162,4 @@ async def test_background_task_prefers_session_override_over_global_runtime(monk
     assert _CapturingAgent.last_init["api_mode"] == "codex_responses"
     assert _CapturingAgent.last_init["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert _CapturingAgent.last_init["api_key"] == "***"
+    assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "high"}

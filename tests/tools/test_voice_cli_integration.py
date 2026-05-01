@@ -933,6 +933,58 @@ class TestEnableVoiceModeReal:
         assert cli._voice_mode is True
 
 
+class TestVoiceBeepConfigReal:
+    """Tests the CLI voice beep toggle."""
+
+    @patch("hermes_cli.config.load_config", return_value={"voice": {}})
+    def test_beeps_enabled_by_default(self, _cfg):
+        cli = _make_voice_cli()
+        assert cli._voice_beeps_enabled() is True
+
+    @patch("hermes_cli.config.load_config", return_value={"voice": {"beep_enabled": False}})
+    def test_beeps_can_be_disabled(self, _cfg):
+        cli = _make_voice_cli()
+        assert cli._voice_beeps_enabled() is False
+
+    @patch("cli._cprint")
+    @patch("cli.threading.Thread")
+    @patch("tools.voice_mode.play_beep")
+    @patch("tools.voice_mode.create_audio_recorder")
+    @patch(
+        "tools.voice_mode.check_voice_requirements",
+        return_value={
+            "available": True,
+            "audio_available": True,
+            "stt_available": True,
+            "details": "OK",
+            "missing_packages": [],
+        },
+    )
+    @patch(
+        "hermes_cli.config.load_config",
+        return_value={
+            "voice": {
+                "beep_enabled": False,
+                "silence_threshold": 200,
+                "silence_duration": 3.0,
+            }
+        },
+    )
+    def test_start_recording_skips_beep_when_disabled(
+        self, _cfg, _req, mock_create, mock_beep, mock_thread, _cp
+    ):
+        recorder = MagicMock()
+        recorder.supports_silence_autostop = True
+        mock_create.return_value = recorder
+        mock_thread.return_value = MagicMock(start=MagicMock())
+
+        cli = _make_voice_cli()
+        cli._voice_start_recording()
+
+        recorder.start.assert_called_once()
+        mock_beep.assert_not_called()
+
+
 class TestDisableVoiceModeReal:
     """Tests _disable_voice_mode with real CLI instance."""
 
@@ -1086,6 +1138,16 @@ class TestVoiceStopAndTranscribeReal:
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()
         assert cli._pending_input.empty()
+
+    @patch("cli._cprint")
+    @patch("hermes_cli.config.load_config", return_value={"voice": {"beep_enabled": False}})
+    @patch("tools.voice_mode.play_beep")
+    def test_no_speech_detected_skips_beep_when_disabled(self, mock_beep, _cfg, _cp):
+        recorder = MagicMock()
+        recorder.stop.return_value = None
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+        cli._voice_stop_and_transcribe()
+        mock_beep.assert_not_called()
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")

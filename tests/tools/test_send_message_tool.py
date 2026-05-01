@@ -8,11 +8,25 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_signal_scheduler():
+    """Drop the process-wide attachment scheduler so each test gets a
+    fresh token bucket."""
+    from gateway.platforms.signal_rate_limit import _reset_scheduler
+    _reset_scheduler()
+    yield
+    _reset_scheduler()
+
 from gateway.config import Platform
 from tools.send_message_tool import (
+    _derive_forum_thread_name,
     _parse_target_ref,
     _send_discord,
     _send_matrix_via_adapter,
+    _send_signal,
     _send_telegram,
     _send_to_platform,
     send_message_tool,
@@ -99,112 +113,6 @@ class TestSendMessageTool:
         send_mock.assert_not_awaited()
         mirror_mock.assert_not_called()
 
-    def test_cron_different_target_still_sends(self):
-        config, telegram_cfg = _make_config()
-
-        with patch.dict(
-            os.environ,
-            {
-                "HERMES_CRON_AUTO_DELIVER_PLATFORM": "telegram",
-                "HERMES_CRON_AUTO_DELIVER_CHAT_ID": "-1001",
-            },
-            clear=False,
-        ), \
-             patch("gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
-            result = json.loads(
-                send_message_tool(
-                    {
-                        "action": "send",
-                        "target": "telegram:-1002",
-                        "message": "hello",
-                    }
-                )
-            )
-
-        assert result["success"] is True
-        assert result.get("skipped") is not True
-        send_mock.assert_awaited_once_with(
-            Platform.TELEGRAM,
-            telegram_cfg,
-            "-1002",
-            "hello",
-            thread_id=None,
-            media_files=[],
-        )
-        mirror_mock.assert_called_once_with("telegram", "-1002", "hello", source_label="cli", thread_id=None)
-
-    def test_cron_same_chat_different_thread_still_sends(self):
-        config, telegram_cfg = _make_config()
-
-        with patch.dict(
-            os.environ,
-            {
-                "HERMES_CRON_AUTO_DELIVER_PLATFORM": "telegram",
-                "HERMES_CRON_AUTO_DELIVER_CHAT_ID": "-1001",
-                "HERMES_CRON_AUTO_DELIVER_THREAD_ID": "17585",
-            },
-            clear=False,
-        ), \
-             patch("gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
-            result = json.loads(
-                send_message_tool(
-                    {
-                        "action": "send",
-                        "target": "telegram:-1001:99999",
-                        "message": "hello",
-                    }
-                )
-            )
-
-        assert result["success"] is True
-        assert result.get("skipped") is not True
-        send_mock.assert_awaited_once_with(
-            Platform.TELEGRAM,
-            telegram_cfg,
-            "-1001",
-            "hello",
-            thread_id="99999",
-            media_files=[],
-        )
-        mirror_mock.assert_called_once_with("telegram", "-1001", "hello", source_label="cli", thread_id="99999")
-
-    def test_sends_to_explicit_telegram_topic_target(self):
-        config, telegram_cfg = _make_config()
-
-        with patch("gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
-             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
-            result = json.loads(
-                send_message_tool(
-                    {
-                        "action": "send",
-                        "target": "telegram:-1001:17585",
-                        "message": "hello",
-                    }
-                )
-            )
-
-        assert result["success"] is True
-        send_mock.assert_awaited_once_with(
-            Platform.TELEGRAM,
-            telegram_cfg,
-            "-1001",
-            "hello",
-            thread_id="17585",
-            media_files=[],
-        )
-        mirror_mock.assert_called_once_with("telegram", "-1001", "hello", source_label="cli", thread_id="17585")
-
     def test_resolved_telegram_topic_name_preserves_thread_id(self):
         config, telegram_cfg = _make_config()
 
@@ -272,39 +180,37 @@ class TestSendMessageTool:
             media_files=[],
         )
 
-    def test_media_only_message_uses_placeholder_for_mirroring(self):
-        config, telegram_cfg = _make_config()
+    def test_mirror_receives_current_session_user_id(self):
+        config, _telegram_cfg = _make_config()
 
         with patch("gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.session_context.get_session_env") as get_session_env_mock, \
              patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            get_session_env_mock.side_effect = lambda name, default="": {
+                "HERMES_SESSION_PLATFORM": "telegram",
+                "HERMES_SESSION_USER_ID": "user-123",
+            }.get(name, default)
             result = json.loads(
                 send_message_tool(
                     {
                         "action": "send",
-                        "target": "telegram:-1001",
-                        "message": "MEDIA:/tmp/example.ogg",
+                        "target": "telegram:12345",
+                        "message": "hello",
                     }
                 )
             )
 
         assert result["success"] is True
-        send_mock.assert_awaited_once_with(
-            Platform.TELEGRAM,
-            telegram_cfg,
-            "-1001",
-            "",
-            thread_id=None,
-            media_files=[("/tmp/example.ogg", False)],
-        )
         mirror_mock.assert_called_once_with(
             "telegram",
-            "-1001",
-            "[Sent audio attachment]",
-            source_label="cli",
+            "12345",
+            "hello",
+            source_label="telegram",
             thread_id=None,
+            user_id="user-123",
         )
 
     def test_top_level_send_failure_redacts_query_token(self):
@@ -910,6 +816,84 @@ class TestParseTargetRefMatrix:
         assert is_explicit is False
 
 
+class TestParseTargetRefE164:
+    """_parse_target_ref accepts E.164 phone numbers for phone-based platforms."""
+
+    def test_signal_e164_preserves_plus_prefix(self):
+        """signal:+E164 is explicit and preserves the leading '+' for signal-cli."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", "+41791234567")
+        assert chat_id == "+41791234567"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_sms_e164_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref("sms", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+    def test_whatsapp_e164_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+    def test_signal_bare_digits_still_work(self):
+        """Bare digit strings continue to match the generic numeric branch."""
+        chat_id, _, is_explicit = _parse_target_ref("signal", "15551234567")
+        assert chat_id == "15551234567"
+        assert is_explicit is True
+
+    def test_signal_invalid_e164_rejected(self):
+        """Too-short, too-long, and non-numeric E.164 strings are not explicit."""
+        assert _parse_target_ref("signal", "+123")[2] is False
+        assert _parse_target_ref("signal", "+1234567890123456")[2] is False
+        assert _parse_target_ref("signal", "+12abc4567890")[2] is False
+        assert _parse_target_ref("signal", "+")[2] is False
+
+    def test_e164_prefix_only_matches_phone_platforms(self):
+        """'+' prefix must NOT be treated as explicit for non-phone platforms."""
+        assert _parse_target_ref("telegram", "+15551234567")[2] is False
+        assert _parse_target_ref("discord", "+15551234567")[2] is False
+        assert _parse_target_ref("matrix", "+15551234567")[2] is False
+
+
+class TestParseTargetRefSlack:
+    """_parse_target_ref recognizes Slack channel/user IDs as explicit."""
+
+    def test_public_channel_id_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "C0B0QV5434G")
+        assert chat_id == "C0B0QV5434G"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_private_channel_id_is_explicit(self):
+        assert _parse_target_ref("slack", "G123ABCDEF")[2] is True
+
+    def test_dm_id_is_explicit(self):
+        assert _parse_target_ref("slack", "D123ABCDEF")[2] is True
+
+    def test_user_id_is_not_explicit(self):
+        """Slack user IDs (U...) and workspace IDs (W...) are NOT explicit send
+        targets. chat.postMessage rejects them — a DM must be opened first via
+        conversations.open to obtain a D... conversation ID.
+        """
+        assert _parse_target_ref("slack", "U123ABCDEF")[2] is False
+        assert _parse_target_ref("slack", "W123ABCDEF")[2] is False
+
+    def test_whitespace_is_stripped(self):
+        chat_id, _, is_explicit = _parse_target_ref("slack", "  C0B0QV5434G  ")
+        assert chat_id == "C0B0QV5434G"
+        assert is_explicit is True
+
+    def test_lowercase_or_short_id_is_not_explicit(self):
+        assert _parse_target_ref("slack", "c0b0qv5434g")[2] is False
+        assert _parse_target_ref("slack", "C123")[2] is False
+        assert _parse_target_ref("slack", "X0B0QV5434G")[2] is False
+
+    def test_slack_id_not_explicit_for_other_platforms(self):
+        assert _parse_target_ref("discord", "C0B0QV5434G")[2] is False
+        assert _parse_target_ref("telegram", "C0B0QV5434G")[2] is False
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 
@@ -1234,3 +1218,777 @@ class TestSendMatrixUrlEncoding:
         put_url = mock_session.put.call_args[0][0]
         assert "%21HLOQwxYGgFPMPJUSNR%3Amatrix.org" in put_url
         assert "!HLOQwxYGgFPMPJUSNR:matrix.org" not in put_url
+
+
+# ---------------------------------------------------------------------------
+# Tests for _derive_forum_thread_name
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveForumThreadName:
+    def test_single_line_message(self):
+        assert _derive_forum_thread_name("Hello world") == "Hello world"
+
+    def test_multi_line_uses_first_line(self):
+        assert _derive_forum_thread_name("First line\nSecond line") == "First line"
+
+    def test_strips_markdown_heading(self):
+        assert _derive_forum_thread_name("## My Heading") == "My Heading"
+
+    def test_strips_multiple_hash_levels(self):
+        assert _derive_forum_thread_name("### Deep heading") == "Deep heading"
+
+    def test_empty_message_falls_back_to_default(self):
+        assert _derive_forum_thread_name("") == "New Post"
+
+    def test_whitespace_only_falls_back(self):
+        assert _derive_forum_thread_name("   \n  ") == "New Post"
+
+    def test_hash_only_falls_back(self):
+        assert _derive_forum_thread_name("###") == "New Post"
+
+    def test_truncates_to_100_chars(self):
+        long_title = "A" * 200
+        result = _derive_forum_thread_name(long_title)
+        assert len(result) == 100
+
+    def test_strips_whitespace_around_first_line(self):
+        assert _derive_forum_thread_name("  Title  \nBody") == "Title"
+
+
+# ---------------------------------------------------------------------------
+# Tests for _send_discord with forum channel support
+# ---------------------------------------------------------------------------
+
+
+class TestSendDiscordForum:
+    """_send_discord creates thread posts for forum channels."""
+
+    @staticmethod
+    def _build_mock(response_status, response_data=None, response_text="error body"):
+        mock_resp = MagicMock()
+        mock_resp.status = response_status
+        mock_resp.json = AsyncMock(return_value=response_data or {})
+        mock_resp.text = AsyncMock(return_value=response_text)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_resp)
+        mock_session.get = MagicMock(return_value=mock_resp)
+
+        return mock_session, mock_resp
+
+    def test_directory_forum_creates_thread(self):
+        """Directory says 'forum' — creates a thread post."""
+        thread_data = {
+            "id": "t123",
+            "message": {"id": "m456"},
+        }
+        mock_session, _ = self._build_mock(200, response_data=thread_data)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session), \
+             patch("gateway.channel_directory.lookup_channel_type", return_value="forum"):
+            result = asyncio.run(
+                _send_discord("tok", "forum_ch", "Hello forum")
+            )
+
+        assert result["success"] is True
+        assert result["thread_id"] == "t123"
+        assert result["message_id"] == "m456"
+        # Should POST to threads endpoint, not messages
+        call_url = mock_session.post.call_args.args[0]
+        assert "/threads" in call_url
+        assert "/messages" not in call_url
+
+    def test_directory_forum_skips_probe(self):
+        """When directory says 'forum', no GET probe is made."""
+        thread_data = {"id": "t123", "message": {"id": "m456"}}
+        mock_session, _ = self._build_mock(200, response_data=thread_data)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session), \
+             patch("gateway.channel_directory.lookup_channel_type", return_value="forum"):
+            asyncio.run(
+                _send_discord("tok", "forum_ch", "Hello")
+            )
+
+        # get() should never be called — directory resolved the type
+        mock_session.get.assert_not_called()
+
+    def test_directory_channel_skips_forum(self):
+        """When directory says 'channel', sends via normal messages endpoint."""
+        mock_session, _ = self._build_mock(200, response_data={"id": "msg1"})
+
+        with patch("aiohttp.ClientSession", return_value=mock_session), \
+             patch("gateway.channel_directory.lookup_channel_type", return_value="channel"):
+            result = asyncio.run(
+                _send_discord("tok", "ch1", "Hello")
+            )
+
+        assert result["success"] is True
+        call_url = mock_session.post.call_args.args[0]
+        assert "/messages" in call_url
+        assert "/threads" not in call_url
+
+    def test_directory_none_probes_and_detects_forum(self):
+        """When directory has no entry, probes GET /channels/{id} and detects type 15."""
+        probe_resp = MagicMock()
+        probe_resp.status = 200
+        probe_resp.json = AsyncMock(return_value={"type": 15})
+        probe_resp.__aenter__ = AsyncMock(return_value=probe_resp)
+        probe_resp.__aexit__ = AsyncMock(return_value=None)
+
+        thread_data = {"id": "t999", "message": {"id": "m888"}}
+        thread_resp = MagicMock()
+        thread_resp.status = 200
+        thread_resp.json = AsyncMock(return_value=thread_data)
+        thread_resp.text = AsyncMock(return_value="")
+        thread_resp.__aenter__ = AsyncMock(return_value=thread_resp)
+        thread_resp.__aexit__ = AsyncMock(return_value=None)
+
+        probe_session = MagicMock()
+        probe_session.__aenter__ = AsyncMock(return_value=probe_session)
+        probe_session.__aexit__ = AsyncMock(return_value=None)
+        probe_session.get = MagicMock(return_value=probe_resp)
+
+        thread_session = MagicMock()
+        thread_session.__aenter__ = AsyncMock(return_value=thread_session)
+        thread_session.__aexit__ = AsyncMock(return_value=None)
+        thread_session.post = MagicMock(return_value=thread_resp)
+
+        session_iter = iter([probe_session, thread_session])
+
+        with patch("aiohttp.ClientSession", side_effect=lambda **kw: next(session_iter)), \
+             patch("gateway.channel_directory.lookup_channel_type", return_value=None):
+            result = asyncio.run(
+                _send_discord("tok", "forum_ch", "Hello probe")
+            )
+
+        assert result["success"] is True
+        assert result["thread_id"] == "t999"
+
+    def test_directory_lookup_exception_falls_through_to_probe(self):
+        """When lookup_channel_type raises, falls through to API probe."""
+        mock_session, _ = self._build_mock(200, response_data={"id": "msg1"})
+
+        with patch("aiohttp.ClientSession", return_value=mock_session), \
+             patch("gateway.channel_directory.lookup_channel_type", side_effect=Exception("io error")):
+            result = asyncio.run(
+                _send_discord("tok", "ch1", "Hello")
+            )
+
+        assert result["success"] is True
+        # Falls through to probe (GET)
+        mock_session.get.assert_called_once()
+
+    def test_forum_thread_creation_error(self):
+        """Forum thread creation returning non-200/201 returns an error dict."""
+        mock_session, _ = self._build_mock(403, response_text="Forbidden")
+
+        with patch("aiohttp.ClientSession", return_value=mock_session), \
+             patch("gateway.channel_directory.lookup_channel_type", return_value="forum"):
+            result = asyncio.run(
+                _send_discord("tok", "forum_ch", "Hello")
+            )
+
+        assert "error" in result
+        assert "403" in result["error"]
+
+
+
+class TestSendToPlatformDiscordForum:
+    """_send_to_platform delegates forum detection to _send_discord."""
+
+    def test_send_to_platform_discord_delegates_to_send_discord(self):
+        """Discord messages are routed through _send_discord, which handles forum detection."""
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_discord", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "forum_ch",
+                    "Hello forum",
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            "tok", "forum_ch", "Hello forum", media_files=[], thread_id=None,
+        )
+
+    def test_send_to_platform_discord_with_thread_id(self):
+        """Thread ID is still passed through when sending to Discord."""
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_discord", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "ch1",
+                    "Hello thread",
+                    thread_id="17585",
+                )
+            )
+
+        assert result["success"] is True
+        _, call_kwargs = send_mock.await_args
+        assert call_kwargs["thread_id"] == "17585"
+
+
+# ---------------------------------------------------------------------------
+# Tests for _send_discord forum + media multipart upload
+# ---------------------------------------------------------------------------
+
+
+class TestSendDiscordForumMedia:
+    """_send_discord uploads media as part of the starter message when the target is a forum."""
+
+    @staticmethod
+    def _build_thread_resp(thread_id="th_999", msg_id="msg_500"):
+        resp = MagicMock()
+        resp.status = 201
+        resp.json = AsyncMock(return_value={"id": thread_id, "message": {"id": msg_id}})
+        resp.text = AsyncMock(return_value="")
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=None)
+        return resp
+
+    def test_forum_with_media_uses_multipart(self, tmp_path, monkeypatch):
+        """Forum + media → single multipart POST to /threads carrying the starter + files."""
+        from tools import send_message_tool as smt
+
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNGbytes")
+
+        monkeypatch.setattr(smt, "lookup_channel_type", lambda p, cid: "forum", raising=False)
+        monkeypatch.setattr(
+            "gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
+        )
+
+        thread_resp = self._build_thread_resp()
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.post = MagicMock(return_value=thread_resp)
+
+        post_calls = []
+        orig_post = session.post
+
+        def track_post(url, **kwargs):
+            post_calls.append({"url": url, "kwargs": kwargs})
+            return thread_resp
+
+        session.post = MagicMock(side_effect=track_post)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(
+                _send_discord("tok", "forum_ch", "Thread title\nbody", media_files=[(str(img), False)])
+            )
+
+        assert result["success"] is True
+        assert result["thread_id"] == "th_999"
+        assert result["message_id"] == "msg_500"
+        # Exactly one POST — the combined thread-creation + attachments call
+        assert len(post_calls) == 1
+        assert post_calls[0]["url"].endswith("/threads")
+        # Multipart form, not JSON
+        assert post_calls[0]["kwargs"].get("data") is not None
+        assert post_calls[0]["kwargs"].get("json") is None
+
+    def test_forum_without_media_still_json_only(self, tmp_path, monkeypatch):
+        """Forum + no media → JSON POST (no multipart overhead)."""
+        monkeypatch.setattr(
+            "gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
+        )
+
+        thread_resp = self._build_thread_resp("t1", "m1")
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+
+        post_calls = []
+
+        def track_post(url, **kwargs):
+            post_calls.append({"url": url, "kwargs": kwargs})
+            return thread_resp
+
+        session.post = MagicMock(side_effect=track_post)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_discord("tok", "forum_ch", "Hello forum"))
+
+        assert result["success"] is True
+        assert len(post_calls) == 1
+        # JSON path, no multipart
+        assert post_calls[0]["kwargs"].get("json") is not None
+        assert post_calls[0]["kwargs"].get("data") is None
+
+    def test_forum_missing_media_file_collected_as_warning(self, tmp_path, monkeypatch):
+        """Missing media files produce warnings but the thread is still created."""
+        monkeypatch.setattr(
+            "gateway.channel_directory.lookup_channel_type", lambda p, cid: "forum"
+        )
+
+        thread_resp = self._build_thread_resp()
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.post = MagicMock(return_value=thread_resp)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(
+                _send_discord(
+                    "tok", "forum_ch", "hi",
+                    media_files=[("/nonexistent/does-not-exist.png", False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any("not found" in w for w in result["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# Tests for the process-local forum-probe cache
+# ---------------------------------------------------------------------------
+
+
+class TestForumProbeCache:
+    """_DISCORD_CHANNEL_TYPE_PROBE_CACHE memoizes forum detection results."""
+
+    def setup_method(self):
+        from tools import send_message_tool as smt
+        smt._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
+
+    def test_cache_round_trip(self):
+        from tools.send_message_tool import (
+            _probe_is_forum_cached,
+            _remember_channel_is_forum,
+        )
+        assert _probe_is_forum_cached("xyz") is None
+        _remember_channel_is_forum("xyz", True)
+        assert _probe_is_forum_cached("xyz") is True
+        _remember_channel_is_forum("xyz", False)
+        assert _probe_is_forum_cached("xyz") is False
+
+    def test_probe_result_is_memoized(self, monkeypatch):
+        """An API-probed channel type is cached so subsequent sends skip the probe."""
+        monkeypatch.setattr(
+            "gateway.channel_directory.lookup_channel_type", lambda p, cid: None
+        )
+
+        # First probe response: type=15 (forum)
+        probe_resp = MagicMock()
+        probe_resp.status = 200
+        probe_resp.json = AsyncMock(return_value={"type": 15})
+        probe_resp.__aenter__ = AsyncMock(return_value=probe_resp)
+        probe_resp.__aexit__ = AsyncMock(return_value=None)
+
+        thread_resp = MagicMock()
+        thread_resp.status = 201
+        thread_resp.json = AsyncMock(return_value={"id": "t1", "message": {"id": "m1"}})
+        thread_resp.__aenter__ = AsyncMock(return_value=thread_resp)
+        thread_resp.__aexit__ = AsyncMock(return_value=None)
+
+        probe_session = MagicMock()
+        probe_session.__aenter__ = AsyncMock(return_value=probe_session)
+        probe_session.__aexit__ = AsyncMock(return_value=None)
+        probe_session.get = MagicMock(return_value=probe_resp)
+
+        thread_session = MagicMock()
+        thread_session.__aenter__ = AsyncMock(return_value=thread_session)
+        thread_session.__aexit__ = AsyncMock(return_value=None)
+        thread_session.post = MagicMock(return_value=thread_resp)
+
+        # Two _send_discord calls: first does probe + thread-create; second should skip probe
+        from tools import send_message_tool as smt
+
+        sessions_created = []
+
+        def session_factory(**kwargs):
+            # Alternate: each new ClientSession() call returns a probe_session, thread_session pair
+            idx = len(sessions_created)
+            sessions_created.append(idx)
+            # Returns the same mocks; the real code opens a probe session then a thread session.
+            # Hand out probe_session if this is the first time called within _send_discord,
+            # otherwise thread_session.
+            if idx % 2 == 0:
+                return probe_session
+            return thread_session
+
+        with patch("aiohttp.ClientSession", side_effect=session_factory):
+            result1 = asyncio.run(_send_discord("tok", "ch1", "first"))
+        assert result1["success"] is True
+        assert smt._probe_is_forum_cached("ch1") is True
+
+        # Second call: cache hits, no new probe session needed. We need to only
+        # return thread_session now since probe is skipped.
+        sessions_created.clear()
+        with patch("aiohttp.ClientSession", return_value=thread_session):
+            result2 = asyncio.run(_send_discord("tok", "ch1", "second"))
+        assert result2["success"] is True
+        # Only one session opened (thread creation) — no probe session this time
+        # (verified by not raising from our side_effect exhaustion)
+
+
+# ---------------------------------------------------------------------------
+# _send_signal — chunking + 429 retry (mirrors gateway adapter behavior)
+# ---------------------------------------------------------------------------
+
+
+class _FakeSignalHttp:
+    """Stand-in for httpx.AsyncClient used as an async context manager.
+
+    Pops a response from the queue per `post` call. Each entry is either
+    a dict (returned from .json()) or an exception instance (raised).
+    Captures (url, payload) per call.
+    """
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def __call__(self, *_a, **_kw):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_a):
+        return False
+
+    async def post(self, url, json=None):
+        self.calls.append({"url": url, "payload": json})
+        if not self.responses:
+            raise AssertionError("Unexpected extra POST")
+        item = self.responses.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        resp = SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda data=item: data,
+        )
+        return resp
+
+
+def _install_signal_http(monkeypatch, fake):
+    """Patch httpx.AsyncClient at the module level so the lazy import in
+    _send_signal picks it up.
+    """
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", fake)
+
+
+def _patch_sendmsg_sleep_and_time(monkeypatch, capture: list):
+    """Mock asyncio.sleep + time.monotonic in the signal_rate_limit
+    module so the scheduler's acquire loop sees synthetic time advancing
+    during sleep calls, and report_rpc_duration sees the same clock.
+
+    Zero-second sleeps (event-loop yields from fake HTTP posts) are
+    delegated to the real asyncio.sleep so they don't pollute the
+    capture list.
+    """
+    import asyncio as _aio
+    _real_sleep = _aio.sleep
+    offset = [0.0]
+
+    async def fake_sleep(seconds):
+        if seconds > 0:
+            capture.append(seconds)
+            offset[0] += seconds
+        else:
+            await _real_sleep(0)
+
+    monkeypatch.setattr(
+        "gateway.platforms.signal_rate_limit.asyncio.sleep", fake_sleep
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.signal_rate_limit.time.monotonic", lambda: offset[0]
+    )
+
+
+class TestSendSignalChunking:
+    def test_text_only_single_rpc(self, monkeypatch):
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "hello",
+            )
+        )
+
+        assert result == {"success": True, "platform": "signal", "chat_id": "+15557654321"}
+        assert len(fake.calls) == 1
+        params = fake.calls[0]["payload"]["params"]
+        assert params["message"] == "hello"
+        assert "attachments" not in params
+
+    def test_chunks_attachments_above_max(self, tmp_path, monkeypatch):
+        """33 attachments → 2 batches; text only on first batch. Batch 1
+        only needs 1 token and 18 remain after batch 0, so no sleep."""
+        from gateway.platforms.signal_rate_limit import (
+            SIGNAL_MAX_ATTACHMENTS_PER_MSG,
+        )
+
+        paths = []
+        for i in range(33):
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            paths.append((str(p), False))
+
+        fake = _FakeSignalHttp([
+            {"result": {"timestamp": 1}},   # batch 0
+            {"result": {"timestamp": 2}},   # batch 1
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "Caption goes here",
+                media_files=paths,
+            )
+        )
+
+        assert result["success"] is True
+        assert len(fake.calls) == 2
+        assert len(sleep_calls) == 0
+
+        first = fake.calls[0]["payload"]["params"]
+        assert first["message"] == "Caption goes here"
+        assert len(first["attachments"]) == SIGNAL_MAX_ATTACHMENTS_PER_MSG
+
+        second = fake.calls[1]["payload"]["params"]
+        assert second["message"] == ""  # caption only on batch 0
+        assert len(second["attachments"]) == 33 - SIGNAL_MAX_ATTACHMENTS_PER_MSG
+
+    def test_full_followup_batch_emits_pacing_notice(self, tmp_path, monkeypatch):
+        """64 attachments → 2 full batches. Batch 1 needs 14 more tokens
+        than the 18 remaining after batch 0 — 56s wait crossing the 10s
+        notice threshold."""
+        from gateway.platforms.signal_rate_limit import (
+            SIGNAL_MAX_ATTACHMENTS_PER_MSG,
+            SIGNAL_RATE_LIMIT_BUCKET_CAPACITY,
+            SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER,
+        )
+
+        paths = []
+        for i in range(64):
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            paths.append((str(p), False))
+
+        fake = _FakeSignalHttp([
+            {"result": {"timestamp": 1}},   # batch 0
+            {"result": {"timestamp": 99}},  # pacing notice
+            {"result": {"timestamp": 2}},   # batch 1
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "",
+                media_files=paths,
+            )
+        )
+
+        assert result["success"] is True
+        assert len(fake.calls) == 3
+        notice = fake.calls[1]["payload"]["params"]
+        assert "More images coming" in notice["message"]
+        assert "attachments" not in notice
+        # Batch 1 deficit: 32 - (50 - 32) = 14 tokens × 4s = 56s
+        expected = (
+            SIGNAL_MAX_ATTACHMENTS_PER_MSG
+            - (SIGNAL_RATE_LIMIT_BUCKET_CAPACITY - SIGNAL_MAX_ATTACHMENTS_PER_MSG)
+        ) * SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
+        assert sleep_calls == [pytest.approx(expected, abs=1.0)]
+
+    def test_429_with_retry_after_drives_exact_backoff(self, tmp_path, monkeypatch):
+        """signal-cli ≥ v0.14.3 surfaces Retry-After under
+        error.data.response.results[*].retryAfterSeconds. The scheduler
+        calibrates its refill rate from that value; the retry of n=1
+        sleeps the per-token interval."""
+        from gateway.platforms.signal_rate_limit import SIGNAL_RPC_ERROR_RATELIMIT
+
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([
+            {
+                "error": {
+                    "code": SIGNAL_RPC_ERROR_RATELIMIT,
+                    "message": "Failed to send message due to rate limiting",
+                    "data": {
+                        "response": {
+                            "timestamp": 0,
+                            "results": [
+                                {"type": "RATE_LIMIT_FAILURE", "retryAfterSeconds": 42},
+                            ],
+                        }
+                    },
+                }
+            },
+            {"result": {"timestamp": 7}},
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "",
+                media_files=[(str(p), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert len(fake.calls) == 2  # initial + retry
+        assert sleep_calls == [pytest.approx(42.0, abs=1.0)]
+
+    def test_429_without_retry_after_falls_back_to_default(self, tmp_path, monkeypatch):
+        """Older signal-cli (< v0.14.3) doesn't surface Retry-After.
+        The scheduler keeps its default rate (1 token / 4s)."""
+        from gateway.platforms.signal_rate_limit import SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER
+
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([
+            {"error": {"message": "Failed: [429] Rate Limited"}},
+            {"result": {"timestamp": 7}},
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "",
+                media_files=[(str(p), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert sleep_calls == [pytest.approx(SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER, abs=1.0)]
+
+    def test_429_retry_exhaust_continues_to_next_batch(self, tmp_path, monkeypatch):
+        """Both attempts on batch 0 fail; batch 1 still gets a chance.
+        The scheduler's natural pacing (no more cooldown gate) lets the
+        second batch through after its acquire wait."""
+        from gateway.platforms.signal_rate_limit import SIGNAL_RPC_ERROR_RATELIMIT
+
+        paths = []
+        for i in range(33):  # forces 2 batches
+            p = tmp_path / f"img_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+            paths.append((str(p), False))
+
+        rate_limit_err = {
+            "error": {
+                "code": SIGNAL_RPC_ERROR_RATELIMIT,
+                "message": "Failed to send message due to rate limiting",
+                "data": {
+                    "response": {
+                        "timestamp": 0,
+                        "results": [
+                            {"type": "RATE_LIMIT_FAILURE", "retryAfterSeconds": 4},
+                        ],
+                    }
+                },
+            }
+        }
+
+        fake = _FakeSignalHttp([
+            rate_limit_err,                  # batch 0, attempt 1
+            rate_limit_err,                  # batch 0, attempt 2 (exhaust)
+            {"result": {"timestamp": 9}},    # batch 1 succeeds
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        sleep_calls = []
+        _patch_sendmsg_sleep_and_time(monkeypatch, sleep_calls)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "many",
+                media_files=paths,
+            )
+        )
+
+        # Partial success: batch 0 lost but batch 1 went through.
+        assert result["success"] is True
+        assert "warnings" in result
+        assert any("rate-limited" in w for w in result["warnings"])
+        # 2 attempts on batch 0 + 1 successful batch 1 = 3 calls
+        assert len(fake.calls) == 3
+
+    def test_non_rate_limit_error_returns_immediately(self, tmp_path, monkeypatch):
+        """A non-429 RPC error should not retry — it returns an error result."""
+        p = tmp_path / "img.png"
+        p.write_bytes(b"\x89PNG" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([
+            {"error": {"message": "UntrustedIdentityException"}},
+        ])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "",
+                media_files=[(str(p), False)],
+            )
+        )
+
+        assert "error" in result
+        assert "UntrustedIdentityException" in result["error"]
+        assert len(fake.calls) == 1  # no retry on non-429
+
+    def test_skipped_missing_files_reported_in_warnings(self, tmp_path, monkeypatch):
+        good = tmp_path / "ok.png"
+        good.write_bytes(b"\x89PNG" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+15551234567"},
+                "+15557654321",
+                "msg",
+                media_files=[(str(good), False), (str(tmp_path / "missing.png"), False)],
+            )
+        )
+
+        assert result["success"] is True
+        assert "warnings" in result
+        # Only the existing file made it into the RPC
+        params = fake.calls[0]["payload"]["params"]
+        assert len(params["attachments"]) == 1

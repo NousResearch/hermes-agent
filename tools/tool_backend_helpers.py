@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from utils import is_truthy_value
+
 
 _DEFAULT_BROWSER_PROVIDER = "local"
 _DEFAULT_MODAL_MODE = "auto"
@@ -115,7 +117,28 @@ def prefers_gateway(config_section: str) -> bool:
         from hermes_cli.config import load_config
         section = (load_config() or {}).get(config_section)
         if isinstance(section, dict):
-            return bool(section.get("use_gateway"))
+            return is_truthy_value(section.get("use_gateway"), default=False)
     except Exception:
         pass
     return False
+
+
+def fal_key_is_configured() -> bool:
+    """Return True when FAL_KEY is set to a non-whitespace value.
+
+    Consults both ``os.environ`` and ``~/.hermes/.env`` (via
+    ``hermes_cli.config.get_env_value`` when available) so tool-side
+    checks and CLI setup-time checks agree.  A whitespace-only value
+    is treated as unset everywhere.
+    """
+    value = os.getenv("FAL_KEY")
+    if value is None:
+        # Fall back to the .env file for CLI paths that may run before
+        # dotenv is loaded into os.environ.
+        try:
+            from hermes_cli.config import get_env_value
+
+            value = get_env_value("FAL_KEY")
+        except Exception:
+            value = None
+    return bool(value and value.strip())

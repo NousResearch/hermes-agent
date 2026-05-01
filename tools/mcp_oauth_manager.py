@@ -111,6 +111,131 @@ def _make_hermes_provider_class() -> Optional[type]:
             super().__init__(*args, **kwargs)
             self._hermes_server_name = server_name
 
+        async def _initialize(self) -> None:
+            """Load stored tokens + client info AND seed token_expiry_time.
+
+            Also eagerly fetches OAuth authorization-server metadata (PRM +
+            ASM) when we have stored tokens but no cached metadata, so the
+            SDK's ``_refresh_token`` can build the correct token_endpoint
+            URL on the preemptive-refresh path. Without this, the SDK
+            falls back to ``{mcp_server_url}/token`` (wrong for providers
+            whose AS is a different origin — BetterStack's MCP lives at
+            ``https://mcp.betterstack.com`` but its token endpoint is at
+            ``https://betterstack.com/oauth/token``), the refresh 404s, and
+            we drop through to full browser reauth.
+
+            The SDK's base ``_initialize`` populates ``current_tokens`` but
+            does NOT call ``update_token_expiry``, so ``token_expiry_time``
+            stays ``None`` and ``is_token_valid()`` returns True for any
+            loaded token regardless of actual age. After a process restart
+            this ships stale Bearer tokens to the server; some providers
+            return HTTP 401 (caught by the 401 handler), others return 200
+            with an app-level auth error (invisible to the transport layer,
+            e.g. BetterStack returning "No teams found. Please check your
+            authentication.").
+
+            Seeding ``token_expiry_time`` from the reloaded token fixes that:
+            ``is_token_valid()`` correctly reports False for expired tokens,
+            ``async_auth_flow`` takes the ``can_refresh_token()`` branch,
+            and the SDK quietly refreshes before the first real request.
+
+            Paired with :class:`HermesTokenStorage` persisting an absolute
+            ``expires_at`` timestamp (``mcp_oauth.py:set_tokens``) so the
+            remaining TTL we compute here reflects real wall-clock age.
+            """
+            await super()._initialize()
+            tokens = self.context.current_tokens
+            if tokens is not None and tokens.expires_in is not None:
+                self.context.update_token_expiry(tokens)
+
+            # Pre-flight OAuth AS discovery so ``_refresh_token`` has a
+            # correct ``token_endpoint`` before the first refresh attempt.
+            # Only runs when we have tokens on cold-load but no cached
+            # metadata — i.e. the exact scenario where the SDK's built-in
+            # 401-branch discovery hasn't had a chance to run yet.
+            if (
+                tokens is not None
+                and self.context.oauth_metadata is None
+            ):
+                try:
+                    await self._prefetch_oauth_metadata()
+                except Exception as exc:  # pragma: no cover — defensive
+                    # Non-fatal: if discovery fails, the SDK's normal 401-
+                    # branch discovery will run on the next request.
+                    logger.debug(
+                        "MCP OAuth '%s': pre-flight metadata discovery "
+                        "failed (non-fatal): %s",
+                        self._hermes_server_name, exc,
+                    )
+
+        async def _prefetch_oauth_metadata(self) -> None:
+            """Fetch PRM + ASM from the well-known endpoints, cache on context.
+
+            Mirrors the SDK's 401-branch discovery (oauth2.py ~line 511-551)
+            but runs synchronously before the first request instead of
+            inside the httpx auth_flow generator. Uses the SDK's own URL
+            builders and response handlers so we track whatever the SDK
+            version we're pinned to expects.
+            """
+            import httpx  # local import: httpx is an MCP SDK dependency
+            from mcp.client.auth.utils import (
+                build_oauth_authorization_server_metadata_discovery_urls,
+                build_protected_resource_metadata_discovery_urls,
+                create_oauth_metadata_request,
+                handle_auth_metadata_response,
+                handle_protected_resource_response,
+            )
+
+            server_url = self.context.server_url
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Step 1: PRM discovery to learn the authorization_server URL.
+                for url in build_protected_resource_metadata_discovery_urls(
+                    None, server_url
+                ):
+                    req = create_oauth_metadata_request(url)
+                    try:
+                        resp = await client.send(req)
+                    except httpx.HTTPError as exc:
+                        logger.debug(
+                            "MCP OAuth '%s': PRM discovery to %s failed: %s",
+                            self._hermes_server_name, url, exc,
+                        )
+                        continue
+                    prm = await handle_protected_resource_response(resp)
+                    if prm:
+                        self.context.protected_resource_metadata = prm
+                        if prm.authorization_servers:
+                            self.context.auth_server_url = str(
+                                prm.authorization_servers[0]
+                            )
+                        break
+
+                # Step 2: ASM discovery against the auth_server_url (or
+                # server_url fallback for legacy providers).
+                for url in build_oauth_authorization_server_metadata_discovery_urls(
+                    self.context.auth_server_url, server_url
+                ):
+                    req = create_oauth_metadata_request(url)
+                    try:
+                        resp = await client.send(req)
+                    except httpx.HTTPError as exc:
+                        logger.debug(
+                            "MCP OAuth '%s': ASM discovery to %s failed: %s",
+                            self._hermes_server_name, url, exc,
+                        )
+                        continue
+                    ok, asm = await handle_auth_metadata_response(resp)
+                    if not ok:
+                        break
+                    if asm:
+                        self.context.oauth_metadata = asm
+                        logger.debug(
+                            "MCP OAuth '%s': pre-flight ASM discovered "
+                            "token_endpoint=%s",
+                            self._hermes_server_name, asm.token_endpoint,
+                        )
+                        break
+
         async def async_auth_flow(self, request):  # type: ignore[override]
             # Pre-flow hook: ask the manager to refresh from disk if needed.
             # Any failure here is non-fatal — we just log and proceed with
@@ -125,9 +250,28 @@ def _make_hermes_provider_class() -> Optional[type]:
                     self._hermes_server_name, exc,
                 )
 
-            # Delegate to the SDK's auth flow
-            async for item in super().async_auth_flow(request):
-                yield item
+            # Manually bridge the bidirectional generator protocol. httpx's
+            # auth_flow driver (httpx._client._send_handling_auth) calls
+            # ``auth_flow.asend(response)`` to feed HTTP responses back into
+            # the generator. A naive wrapper using ``async for item in inner:
+            # yield item`` DISCARDS those .asend(response) values and resumes
+            # the inner generator with None, so the SDK's
+            # ``response = yield request`` branch in
+            # mcp/client/auth/oauth2.py sees response=None and crashes at
+            # ``if response.status_code == 401`` with AttributeError.
+            #
+            # The bridge below forwards each .asend() value into the inner
+            # generator via inner.asend(incoming), preserving the bidirectional
+            # contract. Regression from PR #11383 caught by
+            # tests/tools/test_mcp_oauth_bidirectional.py.
+            inner = super().async_auth_flow(request)
+            try:
+                outgoing = await inner.__anext__()
+                while True:
+                    incoming = yield outgoing
+                    outgoing = await inner.asend(incoming)
+            except StopAsyncIteration:
+                return
 
     return HermesMCPOAuthProvider
 
@@ -218,7 +362,6 @@ class MCPOAuthManager:
             _configure_callback_port,
             _is_interactive,
             _maybe_preregister_client,
-            _parse_base_url,
             _redirect_handler,
             _wait_for_callback,
         )
@@ -243,7 +386,7 @@ class MCPOAuthManager:
 
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
-            server_url=_parse_base_url(entry.server_url),
+            server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,
             redirect_handler=_redirect_handler,

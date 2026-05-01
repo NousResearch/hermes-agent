@@ -5,7 +5,14 @@ from unittest.mock import AsyncMock
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
-def _make_adapter(require_mention=None, free_response_chats=None, mention_patterns=None, ignored_threads=None):
+def _make_adapter(
+    require_mention=None,
+    free_response_chats=None,
+    mention_patterns=None,
+    ignored_threads=None,
+    allow_from=None,
+    group_allow_from=None,
+):
     from gateway.platforms.telegram import TelegramAdapter
 
     extra = {}
@@ -17,6 +24,10 @@ def _make_adapter(require_mention=None, free_response_chats=None, mention_patter
         extra["mention_patterns"] = mention_patterns
     if ignored_threads is not None:
         extra["ignored_threads"] = ignored_threads
+    if allow_from is not None:
+        extra["allow_from"] = allow_from
+    if group_allow_from is not None:
+        extra["group_allow_from"] = group_allow_from
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -34,6 +45,7 @@ def _group_message(
     text="hello",
     *,
     chat_id=-100,
+    from_user_id=111,
     thread_id=None,
     reply_to_bot=False,
     entities=None,
@@ -50,13 +62,38 @@ def _group_message(
         caption_entities=caption_entities or [],
         message_thread_id=thread_id,
         chat=SimpleNamespace(id=chat_id, type="group"),
+        from_user=SimpleNamespace(id=from_user_id),
         reply_to_message=reply_to_message,
+    )
+
+
+def _dm_message(text="hello", *, from_user_id=111):
+    return SimpleNamespace(
+        text=text,
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=None,
+        chat=SimpleNamespace(id=from_user_id, type="private"),
+        from_user=SimpleNamespace(id=from_user_id),
+        reply_to_message=None,
     )
 
 
 def _mention_entity(text, mention="@hermes_bot"):
     offset = text.index(mention)
     return SimpleNamespace(type="mention", offset=offset, length=len(mention))
+
+
+def _bot_command_entity(text, command):
+    """Entity Telegram emits for a ``/cmd`` or ``/cmd@botname`` token.
+
+    Telegram parses slash commands server-side. For ``/cmd@botname`` the
+    client does NOT emit a separate ``mention`` entity — the whole span
+    is a single ``bot_command`` entity.
+    """
+    offset = text.index(command)
+    return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
 
 
 def test_group_messages_can_be_opened_via_config():
@@ -71,7 +108,39 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter._should_process_message(_group_message("hello everyone")) is False
     assert adapter._should_process_message(_group_message("hi @hermes_bot", entities=[_mention_entity("hi @hermes_bot")])) is True
     assert adapter._should_process_message(_group_message("replying", reply_to_bot=True)) is True
-    assert adapter._should_process_message(_group_message("/status"), is_command=True) is True
+    # Commands must also respect require_mention when it is enabled
+    assert adapter._should_process_message(_group_message("/status"), is_command=True) is False
+    # Telegram's group command menu sends ``/cmd@botname`` as a single
+    # ``bot_command`` entity spanning the whole token (no separate mention
+    # entity). We must accept it so the menu works when require_mention is on.
+    assert adapter._should_process_message(
+        _group_message(
+            "/status@hermes_bot",
+            entities=[_bot_command_entity("/status@hermes_bot", "/status@hermes_bot")],
+        ),
+        is_command=True,
+    ) is True
+    # A bot_command entity addressed at a different bot must not satisfy
+    # the mention gate — Telegram groups can host multiple bots that
+    # register the same command name.
+    assert adapter._should_process_message(
+        _group_message(
+            "/status@other_bot",
+            entities=[_bot_command_entity("/status@other_bot", "/status@other_bot")],
+        ),
+        is_command=True,
+    ) is False
+    # Bare ``/status`` (no @botname) must still be dropped in groups with
+    # require_mention=True — Telegram delivers it only when the bot's
+    # privacy mode is off, and even then we should not respond unless the
+    # user explicitly addressed the bot.
+    assert adapter._should_process_message(
+        _group_message("/status", entities=[_bot_command_entity("/status", "/status")]),
+        is_command=True,
+    ) is False
+    # And commands still pass unconditionally when require_mention is disabled
+    adapter_no_mention = _make_adapter(require_mention=False)
+    assert adapter_no_mention._should_process_message(_group_message("/status"), is_command=True) is True
 
 
 def test_free_response_chats_bypass_mention_requirement():
@@ -128,6 +197,68 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert __import__("os").environ["TELEGRAM_REQUIRE_MENTION"] == "true"
     assert json.loads(__import__("os").environ["TELEGRAM_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
+
+
+def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  allow_from:\n"
+        "    - \"111\"\n"
+        "    - \"222\"\n"
+        "  group_allow_from:\n"
+        "    - \"333\"\n"
+        "  group_allowed_chats:\n"
+        "    - \"-100\"\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_CHATS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ["TELEGRAM_ALLOWED_USERS"] == "111,222"
+    assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_USERS"] == "333"
+    assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_CHATS"] == "-100"
+
+
+def test_config_env_overrides_telegram_user_allowlists(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "telegram:\n"
+        "  allow_from: \"111\"\n"
+        "  group_allow_from: \"222\"\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "999")
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "888")
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ["TELEGRAM_ALLOWED_USERS"] == "999"
+    assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_USERS"] == "888"
+
+
+def test_dm_allow_from_is_enforced_by_gateway_authorization_not_trigger_gate():
+    adapter = _make_adapter(allow_from=["111", "222"])
+
+    assert adapter._should_process_message(_dm_message("hello", from_user_id=111)) is True
+    assert adapter._should_process_message(_dm_message("hello", from_user_id=333)) is True
+
+
+def test_group_allow_from_is_enforced_by_gateway_authorization_not_trigger_gate():
+    adapter = _make_adapter(group_allow_from=["111"])
+
+    assert adapter._should_process_message(_group_message("hello", from_user_id=333)) is True
 
 
 def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):

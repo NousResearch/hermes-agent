@@ -23,6 +23,8 @@ from run_agent import AIAgent
 
 def _make_agent():
     return AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
         model="test/model",
         quiet_mode=True,
         skip_context_files=True,

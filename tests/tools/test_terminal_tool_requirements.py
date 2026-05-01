@@ -49,3 +49,68 @@ class TestTerminalRequirements:
 
         assert "terminal" in names
         assert "execute_code" in names
+
+    def test_terminal_and_execute_code_tools_resolve_for_vercel_sandbox(self, monkeypatch):
+        monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "_get_env_config",
+            lambda: {"env_type": "vercel_sandbox", "container_disk": 51200},
+        )
+        monkeypatch.setattr(
+            terminal_tool_module.importlib.util,
+            "find_spec",
+            lambda _name: object(),
+        )
+        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
+        names = {tool["function"]["name"] for tool in tools}
+
+        assert "terminal" in names
+        assert "execute_code" in names
+
+    def test_terminal_and_execute_code_tools_hide_for_unsupported_vercel_runtime(self, monkeypatch):
+        monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-token")
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "_get_env_config",
+            lambda: {
+                "env_type": "vercel_sandbox",
+                "container_disk": 51200,
+                "vercel_runtime": "node20",
+            },
+        )
+        monkeypatch.setattr(
+            terminal_tool_module.importlib.util,
+            "find_spec",
+            lambda _name: object(),
+        )
+        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
+        names = {tool["function"]["name"] for tool in tools}
+
+        assert "terminal" not in names
+        assert "execute_code" not in names
+
+    def test_terminal_and_execute_code_tools_hide_for_vercel_without_auth(self, monkeypatch):
+        monkeypatch.delenv("VERCEL_OIDC_TOKEN", raising=False)
+        monkeypatch.delenv("VERCEL_TOKEN", raising=False)
+        monkeypatch.delenv("VERCEL_PROJECT_ID", raising=False)
+        monkeypatch.delenv("VERCEL_TEAM_ID", raising=False)
+        monkeypatch.setattr(
+            terminal_tool_module,
+            "_get_env_config",
+            lambda: {
+                "env_type": "vercel_sandbox",
+                "container_disk": 51200,
+                "vercel_runtime": "node22",
+            },
+        )
+        monkeypatch.setattr(
+            terminal_tool_module.importlib.util,
+            "find_spec",
+            lambda _name: object(),
+        )
+        tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
+        names = {tool["function"]["name"] for tool in tools}
+
+        assert "terminal" not in names
+        assert "execute_code" not in names

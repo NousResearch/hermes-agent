@@ -25,8 +25,9 @@ Lifecycle (called by MemoryManager, wired in run_agent.py):
 Optional hooks (override to opt in):
   on_turn_start(turn, message, **kwargs) — per-turn tick with runtime context
   on_session_end(messages)               — end-of-session extraction
+  on_session_switch(new_session_id, **kwargs) — mid-process session_id rotation
   on_pre_compress(messages) -> str       — extract before context compression
-  on_memory_write(action, target, content) — mirror built-in memory writes
+  on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
 """
 
@@ -34,7 +35,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,45 @@ class MemoryProvider(ABC):
         (CLI exit, /reset, gateway session expiry).
         """
 
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        **kwargs,
+    ) -> None:
+        """Called when the agent switches session_id mid-process.
+
+        Fires on ``/resume``, ``/branch``, ``/reset``, ``/new`` (CLI), the
+        gateway equivalents, and context compression — any path that
+        reassigns ``AIAgent.session_id`` without tearing the provider down.
+
+        Providers that cache per-session state in ``initialize()``
+        (``_session_id``, ``_document_id``, accumulated turn buffers,
+        counters) should update or reset that state here so subsequent
+        writes land in the correct session's record.
+
+        Parameters
+        ----------
+        new_session_id:
+            The session_id the agent just switched to.
+        parent_session_id:
+            The previous session_id, if meaningful — set for ``/branch``
+            (fork lineage), context compression (continuation lineage),
+            and ``/resume`` (the session we're leaving). Empty string
+            when no lineage applies.
+        reset:
+            ``True`` when this is a genuinely new conversation, not a
+            resumption of an existing one. Fired by ``/reset`` / ``/new``.
+            Providers should flush accumulated per-session buffers
+            (``_session_turns``, ``_turn_counter``, etc.) when this is
+            set. ``False`` for ``/resume`` / ``/branch`` / compression
+            where the logical conversation continues under the new id.
+
+        Default is no-op for backward compatibility.
+        """
+
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Called before context compression discards old messages.
 
@@ -220,12 +260,21 @@ class MemoryProvider(ABC):
           should all have ``env_var`` set and this method stays no-op).
         """
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Called when the built-in memory tool writes an entry.
 
         action: 'add', 'replace', or 'remove'
         target: 'memory' or 'user'
         content: the entry content
+        metadata: structured provenance for the write, when available. Common
+          keys include ``write_origin``, ``execution_context``, ``session_id``,
+          ``parent_session_id``, ``platform``, and ``tool_name``.
 
         Use to mirror built-in memory writes to your backend.
         """

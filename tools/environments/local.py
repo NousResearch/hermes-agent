@@ -6,6 +6,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
@@ -100,6 +101,10 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "VERCEL_OIDC_TOKEN",
+        "VERCEL_TOKEN",
+        "VERCEL_PROJECT_ID",
+        "VERCEL_TEAM_ID",
     })
     return frozenset(blocked)
 
@@ -213,6 +218,89 @@ def _make_run_env(env: dict) -> dict:
     return run_env
 
 
+def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
+    """Return (shell_init_files, auto_source_bashrc) from config.yaml.
+
+    Best-effort — returns sensible defaults on any failure so terminal
+    execution never breaks because the config file is unreadable.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        terminal_cfg = cfg.get("terminal") or {}
+        files = terminal_cfg.get("shell_init_files") or []
+        if not isinstance(files, list):
+            files = []
+        auto_bashrc = bool(terminal_cfg.get("auto_source_bashrc", True))
+        return [str(f) for f in files if f], auto_bashrc
+    except Exception:
+        return [], True
+
+
+def _resolve_shell_init_files() -> list[str]:
+    """Resolve the list of files to source before the login-shell snapshot.
+
+    Expands ``~`` and ``${VAR}`` references and drops anything that doesn't
+    exist on disk, so a missing ``~/.bashrc`` never breaks the snapshot.
+    The ``auto_source_bashrc`` path runs only when the user hasn't supplied
+    an explicit list — once they have, Hermes trusts them.
+    """
+    explicit, auto_bashrc = _read_terminal_shell_init_config()
+
+    candidates: list[str] = []
+    if explicit:
+        candidates.extend(explicit)
+    elif auto_bashrc and not _IS_WINDOWS:
+        # Build a login-shell-ish source list so tools like n / nvm / asdf /
+        # pyenv that self-install into the user's shell rc land on PATH in
+        # the captured snapshot.
+        #
+        # ~/.profile and ~/.bash_profile run first because they have no
+        # interactivity guard — installers like ``n`` and ``nvm`` append
+        # their PATH export there on most distros, and a non-interactive
+        # ``. ~/.profile`` picks that up.
+        #
+        # ~/.bashrc runs last. On Debian/Ubuntu the default bashrc starts
+        # with ``case $- in *i*) ;; *) return;; esac`` and exits early
+        # when sourced non-interactively, which is why sourcing bashrc
+        # alone misses nvm/n PATH additions placed below that guard. We
+        # still include it so users who put PATH logic in bashrc (and
+        # stripped the guard, or never had one) keep working.
+        candidates.extend(["~/.profile", "~/.bash_profile", "~/.bashrc"])
+
+    resolved: list[str] = []
+    for raw in candidates:
+        try:
+            path = os.path.expandvars(os.path.expanduser(raw))
+        except Exception:
+            continue
+        if path and os.path.isfile(path):
+            resolved.append(path)
+    return resolved
+
+
+def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
+    """Prepend ``source <file>`` lines (guarded + silent) to a bash script.
+
+    Each file is wrapped so a failing rc file doesn't abort the whole
+    bootstrap: ``set +e`` keeps going on errors, ``2>/dev/null`` hides
+    noisy prompts, and ``|| true`` neutralises the exit status.
+    """
+    if not files:
+        return cmd_string
+
+    prelude_parts = ["set +e"]
+    for path in files:
+        # shlex.quote isn't available here without an import; the files list
+        # comes from os.path.expanduser output so it's a concrete absolute
+        # path.  Escape single quotes defensively anyway.
+        safe = path.replace("'", "'\\''")
+        prelude_parts.append(f"[ -r '{safe}' ] && . '{safe}' 2>/dev/null || true")
+    prelude = "\n".join(prelude_parts) + "\n"
+    return prelude + cmd_string
+
+
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host machine.
 
@@ -222,6 +310,8 @@ class LocalEnvironment(BaseEnvironment):
     """
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+        if cwd:
+            cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.init_session()
 
@@ -255,6 +345,16 @@ class LocalEnvironment(BaseEnvironment):
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
+        # For login-shell invocations (used by init_session to build the
+        # environment snapshot), prepend sources for the user's bashrc /
+        # custom init files so tools registered outside bash_profile
+        # (nvm, asdf, pyenv, …) end up on PATH in the captured snapshot.
+        # Non-login invocations are already sourcing the snapshot and
+        # don't need this.
+        if login:
+            init_files = _resolve_shell_init_files()
+            if init_files:
+                cmd_string = _prepend_shell_init(cmd_string, init_files)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
@@ -268,7 +368,13 @@ class LocalEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
+            cwd=self.cwd,
         )
+        if not _IS_WINDOWS:
+            try:
+                proc._hermes_pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                pass
 
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
@@ -277,17 +383,69 @@ class LocalEnvironment(BaseEnvironment):
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children)."""
+
+        def _group_alive(pgid: int) -> bool:
+            try:
+                # POSIX-only: _IS_WINDOWS is handled before this helper is used.
+                os.killpg(pgid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                # The group exists, even if this process cannot signal it.
+                return True
+
+        def _wait_for_group_exit(pgid: int, timeout: float) -> bool:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                # Reap the wrapper promptly. A dead but unreaped group leader
+                # still makes killpg(pgid, 0) report the group as alive.
+                try:
+                    proc.poll()
+                except Exception:
+                    pass
+                if not _group_alive(pgid):
+                    return True
+                time.sleep(0.05)
+            try:
+                proc.poll()
+            except Exception:
+                pass
+            return not _group_alive(pgid)
+
         try:
             if _IS_WINDOWS:
                 proc.terminate()
             else:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGTERM)
                 try:
-                    proc.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
+                    pgid = os.getpgid(proc.pid)
+                except ProcessLookupError:
+                    pgid = getattr(proc, "_hermes_pgid", None)
+                    if pgid is None:
+                        raise
+
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                except ProcessLookupError:
+                    return
+
+                # Wait on the process group, not just the shell wrapper. Under
+                # load the wrapper can exit before grandchildren do; returning
+                # at that point leaves orphaned process-group members behind.
+                if _wait_for_group_exit(pgid, 1.0):
+                    return
+
+                try:
+                    # POSIX-only: _IS_WINDOWS is handled by the outer branch.
                     os.killpg(pgid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
+                except ProcessLookupError:
+                    return
+                _wait_for_group_exit(pgid, 2.0)
+                try:
+                    proc.wait(timeout=0.2)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+        except (ProcessLookupError, PermissionError, OSError):
             try:
                 proc.kill()
             except Exception:
@@ -296,7 +454,8 @@ class LocalEnvironment(BaseEnvironment):
     def _update_cwd(self, result: dict):
         """Read CWD from temp file (local-only, no round-trip needed)."""
         try:
-            cwd_path = open(self._cwd_file).read().strip()
+            with open(self._cwd_file) as f:
+                cwd_path = f.read().strip()
             if cwd_path:
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):

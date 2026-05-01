@@ -54,12 +54,12 @@ class TestCronCommandLifecycle:
                 deliver=None,
                 repeat=None,
                 skill=None,
-                skills=["find-nearby", "blogwatcher"],
+                skills=["maps", "blogwatcher"],
                 clear_skills=False,
             )
         )
         updated = get_job(job["id"])
-        assert updated["skills"] == ["find-nearby", "blogwatcher"]
+        assert updated["skills"] == ["maps", "blogwatcher"]
         assert updated["name"] == "Edited Job"
         assert updated["prompt"] == "Revised prompt"
         assert updated["schedule_display"] == "every 120m"
@@ -95,7 +95,7 @@ class TestCronCommandLifecycle:
                 deliver=None,
                 repeat=None,
                 skill=None,
-                skills=["blogwatcher", "find-nearby"],
+                skills=["blogwatcher", "maps"],
             )
         )
         out = capsys.readouterr().out
@@ -103,5 +103,5 @@ class TestCronCommandLifecycle:
 
         jobs = list_jobs()
         assert len(jobs) == 1
-        assert jobs[0]["skills"] == ["blogwatcher", "find-nearby"]
+        assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"

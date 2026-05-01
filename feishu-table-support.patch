@@ -1,0 +1,367 @@
+From 5e91f04fa6bb1da30735af1f0ecb86c4e0a7c573 Mon Sep 17 00:00:00 2001
+From: Hermes Local <hermes-local@example.com>
+Date: Fri, 1 May 2026 09:12:46 +0800
+Subject: [PATCH] feat(feishu): native markdown table support via interactive
+ cards
+
+- Detect markdown tables in outbound messages
+- Convert tables to Feishu interactive card JSON 2.0 table elements
+- Keep text content as markdown elements in the same card
+- Fallback to post message for non-table markdown content
+---
+ gateway/platforms/feishu.py | 283 ++++++++++++++++++++++++++++++++++--
+ 1 file changed, 274 insertions(+), 9 deletions(-)
+
+diff --git a/gateway/platforms/feishu.py b/gateway/platforms/feishu.py
+index 718f01e99..d300c3b41 100644
+--- a/gateway/platforms/feishu.py
++++ b/gateway/platforms/feishu.py
+@@ -149,7 +149,7 @@ logger = logging.getLogger(__name__)
+ # ---------------------------------------------------------------------------
+ 
+ _MARKDOWN_HINT_RE = re.compile(
+-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
++    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)|(^\s*\|.+\|\s*$)",
+     re.MULTILINE,
+ )
+ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+@@ -517,24 +517,110 @@ def _build_markdown_post_payload(content: str) -> str:
+     )
+ 
+ 
+-def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
+-    """Build Feishu post rows while isolating fenced code blocks.
++def _is_markdown_table_line(line: str) -> bool:
++    """Check if a line looks like a markdown table row or separator."""
++    stripped = line.strip()
++    if not stripped.startswith("|"):
++        return False
++    # Must have at least one pipe after the first char
++    return "|" in stripped[1:]
++
++
++def _is_table_separator_line(line: str) -> bool:
++    """Check if line is a markdown table separator like |---|---|."""
++    stripped = line.strip()
++    if not stripped.startswith("|"):
++        return False
++    # Remove outer pipes and check if remaining is only dashes, pipes, colons and spaces
++    inner = stripped[1:-1] if stripped.endswith("|") else stripped[1:]
++    return bool(re.match(r"^[\s\-:|]+$", inner))
++
++
++def _parse_markdown_table(lines: List[str]) -> Optional[Dict[str, Any]]:
++    """Parse markdown table lines into Feishu post table element.
++
++    Returns None if the lines don't form a valid table.
++    """
++    if not lines:
++        return None
++
++    # Filter out separator lines and empty lines
++    data_lines = []
++    for line in lines:
++        stripped = line.strip()
++        if not stripped or _is_table_separator_line(stripped):
++            continue
++        data_lines.append(stripped)
++
++    if len(data_lines) < 1:
++        return None
++
++    # Parse rows
++    rows: List[List[Dict[str, Any]]] = []
++    for line in data_lines:
++        # Split by | but respect escaped \| inside cells
++        # First, temporarily replace \| with a placeholder
++        ESCAPED_PIPE = "\x00ESCAPED_PIPE\x00"
++        temp_line = line.replace("\\|", ESCAPED_PIPE)
++        cells = [cell.strip() for cell in temp_line.split("|")]
++        # Remove empty cells from leading/trailing pipes
++        if len(cells) >= 2 and cells[0] == "" and cells[-1] == "":
++            cells = cells[1:-1]
++        # Filter out any completely empty cells that result from consecutive pipes ||
++        cells = [c for c in cells if c.strip() or c == ""]
++        if not cells:
++            continue
++        # Restore escaped pipes
++        cells = [c.replace(ESCAPED_PIPE, "|") for c in cells]
++
++        row_cells: List[Dict[str, Any]] = []
++        for cell in cells:
++            row_cells.append({
++                "tag": "td",
++                "text": {"tag": "plain_text", "content": cell},
++            })
++        rows.append(row_cells)
++
++    if not rows:
++        return None
++
++    num_cols = max(len(r) for r in rows)
++    cols = [{"width": "auto"} for _ in range(num_cols)]
++
++    return {
++        "tag": "table",
++        "width": "auto",
++        "cols": cols,
++        "rows": rows,
++    }
++
++
++def _build_markdown_post_rows(content: str) -> List[List[Dict[str, Any]]]:
++    """Build Feishu post rows while isolating fenced code blocks and tables.
+ 
+     Feishu's `md` renderer can swallow trailing content when a fenced code block
+     appears inside one large markdown element. Split the reply at real fence
+     lines so prose before/after the code block remains visible while code stays
+     in a dedicated row.
++
++    Also splits out markdown tables and converts them to Feishu native table
++    elements (tag: table) which render properly, unlike md-tag tables.
+     """
+     if not content:
+         return [[{"tag": "md", "text": ""}]]
+-    if "```" not in content:
++    # Check if content contains any table lines anywhere (not just first line)
++    has_table = any(_is_markdown_table_line(line) for line in content.splitlines())
++    if "```" not in content and not has_table:
++        # Quick path: no code blocks and no tables
+         return [[{"tag": "md", "text": content}]]
+ 
+-    rows: List[List[Dict[str, str]]] = []
++    rows: List[List[Dict[str, Any]]] = []
+     current: List[str] = []
+     in_code_block = False
++    table_lines: List[str] = []
++    in_table = False
+ 
+-    def _flush_current() -> None:
++    def _flush_text() -> None:
+         nonlocal current
+         if not current:
+             return
+@@ -543,8 +629,24 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
+             rows.append([{"tag": "md", "text": segment}])
+         current = []
+ 
++    def _flush_table() -> None:
++        nonlocal table_lines
++        if not table_lines:
++            return
++        table_element = _parse_markdown_table(table_lines)
++        if table_element:
++            rows.append([table_element])
++        else:
++            # Fallback: render as text
++            segment = "\n".join(table_lines)
++            if segment.strip():
++                rows.append([{"tag": "md", "text": segment}])
++        table_lines = []
++
+     for raw_line in content.splitlines():
+         stripped_line = raw_line.strip()
++
++        # Check for code block fences
+         is_fence = bool(
+             _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
+             if in_code_block
+@@ -552,17 +654,40 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
+         )
+ 
+         if is_fence:
++            if in_table:
++                _flush_table()
++                in_table = False
+             if not in_code_block:
+-                _flush_current()
++                _flush_text()
+             current.append(raw_line)
+             in_code_block = not in_code_block
+             if not in_code_block:
+-                _flush_current()
++                _flush_text()
++            continue
++
++        # Check for table lines
++        is_table = _is_markdown_table_line(raw_line)
++
++        if is_table and not in_code_block:
++            if not in_table:
++                _flush_text()
++                in_table = True
++            table_lines.append(raw_line)
+             continue
+ 
++        # Not a table line
++        if in_table:
++            _flush_table()
++            in_table = False
++
+         current.append(raw_line)
+ 
+-    _flush_current()
++    # Flush remaining
++    if in_table:
++        _flush_table()
++    else:
++        _flush_text()
++
+     return rows or [[{"tag": "md", "text": content}]]
+ 
+ 
+@@ -3829,11 +3954,151 @@ class FeishuAdapter(BasePlatformAdapter):
+     # =========================================================================
+ 
+     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
++        # Check if content contains markdown tables
++        has_table = any(_is_markdown_table_line(line) for line in content.splitlines())
++        if has_table:
++            # Build interactive card with table support
++            card_payload = self._build_interactive_card_with_tables(content)
++            if card_payload:
++                return "interactive", card_payload
+         if _MARKDOWN_HINT_RE.search(content):
+             return "post", _build_markdown_post_payload(content)
+         text_payload = {"text": content}
+         return "text", json.dumps(text_payload, ensure_ascii=False)
+ 
++    def _build_interactive_card_with_tables(self, content: str) -> Optional[str]:
++        """Build an interactive card (JSON 2.0) with markdown text and tables."""
++        try:
++            elements: List[Dict[str, Any]] = []
++            current_text: List[str] = []
++            table_lines: List[str] = []
++            in_table = False
++
++            def _flush_text() -> None:
++                nonlocal current_text
++                if current_text:
++                    text = "\n".join(current_text).strip()
++                    if text:
++                        elements.append({
++                            "tag": "markdown",
++                            "content": text,
++                        })
++                    current_text = []
++
++            def _flush_table() -> None:
++                nonlocal table_lines
++                if table_lines:
++                    table_element = self._parse_markdown_table_to_card_table(table_lines)
++                    if table_element:
++                        elements.append(table_element)
++                    else:
++                        # Fallback: render as markdown text
++                        text = "\n".join(table_lines).strip()
++                        if text:
++                            elements.append({
++                                "tag": "markdown",
++                                "content": text,
++                            })
++                    table_lines = []
++
++            for raw_line in content.splitlines():
++                is_table = _is_markdown_table_line(raw_line)
++                if is_table:
++                    if not in_table:
++                        _flush_text()
++                        in_table = True
++                    table_lines.append(raw_line)
++                    continue
++                if in_table:
++                    _flush_table()
++                    in_table = False
++                current_text.append(raw_line)
++
++            if in_table:
++                _flush_table()
++            else:
++                _flush_text()
++
++            if not elements:
++                return None
++
++            card = {
++                "schema": "2.0",
++                "body": {
++                    "elements": elements,
++                },
++            }
++            return json.dumps(card, ensure_ascii=False)
++        except Exception as exc:
++            logger.warning("[Feishu] Failed to build interactive card with tables: %s", exc)
++            return None
++
++    @staticmethod
++    def _parse_markdown_table_to_card_table(lines: List[str]) -> Optional[Dict[str, Any]]:
++        """Parse markdown table lines into Feishu interactive card table element."""
++        if not lines:
++            return None
++
++        # Filter out separator lines and empty lines
++        data_lines = []
++        for line in lines:
++            stripped = line.strip()
++            if not stripped or _is_table_separator_line(stripped):
++                continue
++            data_lines.append(stripped)
++
++        if len(data_lines) < 1:
++            return None
++
++        # First line is header
++        header_line = data_lines[0]
++        cells = [cell.strip() for cell in header_line.split("|")]
++        if len(cells) >= 2 and cells[0] == "" and cells[-1] == "":
++            cells = cells[1:-1]
++        cells = [c for c in cells if c.strip() or c == ""]
++        if not cells:
++            return None
++
++        num_cols = len(cells)
++        columns = []
++        for i, cell in enumerate(cells):
++            columns.append({
++                "name": f"col_{i}",
++                "display_name": cell,
++                "data_type": "text",
++                "width": "auto",
++            })
++
++        # Parse data rows
++        rows: List[Dict[str, str]] = []
++        for line in data_lines[1:]:
++            cells = [cell.strip() for cell in line.split("|")]
++            if len(cells) >= 2 and cells[0] == "" and cells[-1] == "":
++                cells = cells[1:-1]
++            cells = [c for c in cells if c.strip() or c == ""]
++            if not cells:
++                continue
++
++            row: Dict[str, str] = {}
++            for i, cell in enumerate(cells):
++                if i < num_cols:
++                    row[f"col_{i}"] = cell
++            rows.append(row)
++
++        if not rows:
++            return None
++
++        return {
++            "tag": "table",
++            "columns": columns,
++            "rows": rows,
++            "header_style": {
++                "text_align": "left",
++                "background_style": "grey",
++                "bold": True,
++            },
++        }
++
+     async def _send_uploaded_file_message(
+         self,
+         *,
+-- 
+2.37.1 (Apple Git-137.1)
+

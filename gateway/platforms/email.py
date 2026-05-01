@@ -110,8 +110,11 @@ def _extract_text_body(msg: email_lib.message.Message) -> str:
             if content_type == "text/plain":
                 payload = part.get_payload(decode=True)
                 if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    return payload.decode(charset, errors="replace")
+                    if isinstance(payload, bytes):
+                        charset = part.get_content_charset() or "utf-8"
+                        return payload.decode(charset, errors="replace")
+                    else:
+                        return payload
         # Fallback: try text/html and strip tags
         for part in msg.walk():
             content_type = part.get_content_type()
@@ -121,9 +124,21 @@ def _extract_text_body(msg: email_lib.message.Message) -> str:
             if content_type == "text/html":
                 payload = part.get_payload(decode=True)
                 if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    html = payload.decode(charset, errors="replace")
-                    return _strip_html(html)
+                    if isinstance(payload, bytes):
+                        charset = part.get_content_charset() or "utf-8"
+                        html = payload.decode(charset, errors="replace")
+                        return _strip_html(html)
+                    else:
+                        return _strip_html(payload)
+        return ""
+    else:
+        payload = msg.get_payload(decode=True)
+        if payload:
+            if isinstance(payload, bytes):
+                charset = msg.get_content_charset() or "utf-8"
+                return payload.decode(charset, errors="replace")
+            else:
+                return payload
         return ""
     else:
         payload = msg.get_payload(decode=True)
@@ -360,10 +375,22 @@ class EmailAdapter(BasePlatformAdapter):
                     status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                     if status != "OK":
                         continue
-
-                    raw_email = msg_data[0][1]
+                    
+                    # Extract the raw email from the fetch response
+                    if not msg_data or not isinstance(msg_data[0], tuple) or len(msg_data[0]) < 2:
+                        logger.debug("[Email] Unexpected FETCH response structure: %s", msg_data)
+                        continue
+                    # msg_data[0][1] is a list of (attr, value) tuples
+                    raw_email = None
+                    for attr, value in msg_data[0][1]:
+                        if attr == b'RFC822':
+                            raw_email = value
+                            break
+                    if raw_email is None:
+                        logger.debug("[Email] RFC822 attribute not found in FETCH response: %s", msg_data[0][1])
+                        continue
+                    
                     msg = email_lib.message_from_bytes(raw_email)
-
                     sender_raw = msg.get("From", "")
                     sender_addr = _extract_email_address(sender_raw)
                     sender_name = _decode_header_value(sender_raw)

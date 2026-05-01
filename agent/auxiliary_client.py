@@ -1696,6 +1696,115 @@ def clear_runtime_main() -> None:
     _RUNTIME_MAIN_MODEL = ""
 
 
+# Mapping of base_url patterns to (provider_name, env_var_name)
+_BASE_URL_TO_PROVIDER = {
+    "dashscope.aliyuncs.com": ("alibaba", "DASHSCOPE_API_KEY"),
+    "coding.dashscope.aliyuncs.com": ("alibaba", "DASHSCOPE_API_KEY"),
+    "api.moonshot.cn": ("moonshot", "MOONSHOT_API_KEY"),
+    "api.deepseek.com": ("deepseek", "DEEPSEEK_API_KEY"),
+    "api.minimax.chat": ("minimax", "MINIMAX_API_KEY"),
+    "api.zhipuai.cn": ("zhipu", "ZHIPU_API_KEY"),
+    "api.siliconflow.cn": ("siliconflow", "SILICONFLOW_API_KEY"),
+    "api-inference.modelscope.cn": ("modelscope", "MODELSCOPE_API_KEY"),
+}
+
+
+def _read_env_var_from_file(env_var: str) -> Optional[str]:
+    """Read an env var value directly from ~/.hermes/.env file.
+    
+    Bypasses os.getenv to avoid stale/masked values in gateway processes.
+    Returns the raw value from the file, or None if not found.
+    """
+    try:
+        from hermes_cli.config import get_hermes_home
+        env_path = get_hermes_home() / ".env"
+        if not env_path.exists():
+            return None
+        with open(env_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(f"{env_var}="):
+                    value = line.split("=", 1)[1].strip().strip('"\'')
+                    # Skip masked placeholder values
+                    if value == "***" or value.startswith("***"):
+                        continue
+                    return value
+    except Exception:
+        pass
+    return None
+
+
+def _get_api_key_for_base_url(base_url: str) -> Optional[str]:
+    """Find API key for a base_url by matching to known providers.
+
+    Checks credential pool first (get_credential), then env vars.
+    Also reads directly from .env file to bypass stale/masked gateway env.
+    Returns None if no matching provider found or no key available.
+    """
+    if not base_url:
+        return None
+    base_lower = base_url.lower()
+
+    # Find matching provider by checking if any pattern is in the base_url
+    for pattern, (provider_name, env_var) in _BASE_URL_TO_PROVIDER.items():
+        if pattern in base_lower:
+            # Try credential pool first
+            try:
+                pool_present, entry = _select_pool_entry(provider_name)
+                if pool_present and entry:
+                    key = _pool_runtime_api_key(entry)
+                    # Skip masked values from pool
+                    if key and key != "***" and not key.startswith("***"):
+                        logger.debug(
+                            "Auxiliary client: found API key for %s in credential pool",
+                            provider_name,
+                        )
+                        return key
+            except Exception as exc:
+                logger.debug(
+                    "Auxiliary client: credential pool lookup failed for %s: %s",
+                    provider_name, exc,
+                )
+
+            # Try environment variable (via dotenv reload)
+            try:
+                from hermes_cli.env_loader import load_hermes_dotenv
+                load_hermes_dotenv()
+            except Exception:
+                pass
+            key = os.getenv(env_var, "").strip()
+            # Skip masked values from env
+            if key and key != "***" and not key.startswith("***"):
+                logger.debug(
+                    "Auxiliary client: found API key for %s in env var %s",
+                    provider_name, env_var,
+                )
+                return key
+
+            # Fallback: read directly from .env file (bypasses stale gateway env)
+            key = _read_env_var_from_file(env_var)
+            if key:
+                logger.debug(
+                    "Auxiliary client: found API key for %s by reading .env file directly",
+                    provider_name,
+                )
+                return key
+
+            # No key found for this provider
+            logger.debug(
+                "Auxiliary client: no API key found for provider %s (pattern %s)",
+                provider_name, pattern,
+            )
+            return None
+
+    # No matching provider found
+    logger.debug(
+        "Auxiliary client: base_url %s not matched to any known provider",
+        base_url,
+    )
+    return None
+
+
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
@@ -3270,9 +3379,15 @@ def resolve_provider_client(
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
-            custom_base = _to_openai_base_url(explicit_base_url).strip()
+custom_base = _to_openai_base_url(explicit_base_url).strip()
+            # Try to find API key from multiple sources:
+            # 1. Explicit API key passed in
+            # 2. Credential pool (match base_url to known providers)
+            # 3. OPENAI_API_KEY env var
+            # 4. "no-key-required" fallback for local servers
             custom_key = (
                 (explicit_api_key or "").strip()
+                or _get_api_key_for_base_url(custom_base)
                 or os.getenv("OPENAI_API_KEY", "").strip()
                 or "no-key-required"  # local servers don't need auth
             )

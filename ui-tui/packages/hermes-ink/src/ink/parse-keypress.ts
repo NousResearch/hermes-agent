@@ -805,7 +805,6 @@ function parseKeypress(s: string = ''): ParsedKey {
   }
 
   if (s === '\r' || s === '\n') {
-    key.raw = undefined
     key.name = 'return'
   } else if (s === '\t') {
     key.name = 'tab'

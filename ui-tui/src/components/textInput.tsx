@@ -761,7 +761,12 @@ export function TextInput({
       }
 
       if (k.return) {
-        if (k.shift || k.ctrl || (isMac ? isActionMod(k) : k.meta)) {
+        // Some terminal stacks (notably Warp/tmux on macOS) distinguish
+        // plain Enter from Shift+Enter/Ctrl+J by raw byte only:
+        //   Enter -> CR (\r, 13), Shift+Enter/Ctrl+J -> LF (\n, 10)
+        // Ink marks both as `key.return`, so preserve the raw LF distinction
+        // before falling through to the normal CR-submit path.
+        if (eventRaw === '\n' || k.shift || k.ctrl || (isMac ? isActionMod(k) : k.meta)) {
           flushParentChange()
           commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
         } else {

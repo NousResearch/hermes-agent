@@ -3,6 +3,20 @@ import { describe, expect, it } from 'vitest'
 import { INITIAL_STATE, parseMultipleKeypresses } from './parse-keypress.js'
 import { PASTE_END, PASTE_START } from './termio/csi.js'
 
+describe('return key raw byte preservation', () => {
+  it('preserves CR for plain Enter', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\r')
+
+    expect(key).toMatchObject({ kind: 'key', name: 'return', raw: '\r', sequence: '\r' })
+  })
+
+  it('preserves LF so TextInput can treat Shift+Enter/Ctrl+J as newline', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\n')
+
+    expect(key).toMatchObject({ kind: 'key', name: 'return', raw: '\n', sequence: '\n' })
+  })
+})
+
 describe('parseMultipleKeypresses bracketed paste recovery', () => {
   it('emits empty bracketed pastes when the terminal sends both markers', () => {
     const [keys, state] = parseMultipleKeypresses(INITIAL_STATE, PASTE_START + PASTE_END)

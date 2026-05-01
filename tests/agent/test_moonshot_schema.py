@@ -372,3 +372,28 @@ class TestEnumNullStripping:
         out = sanitize_moonshot_tool_parameters(params)
         # object-typed enum should pass through unchanged
         assert "enum" in out["properties"]["config"]
+
+    def test_anyof_collapse_still_runs_nullable_and_enum_cleanup(self):
+        """After anyOf collapses to a single non-null branch, the merged
+        node must still have ``nullable`` stripped and null/empty-string
+        values removed from enum — not skipped by the early anyOf return.
+        """
+        params = {
+            "type": "object",
+            "properties": {
+                "db_type": {
+                    "anyOf": [
+                        {"enum": ["mysql", "postgresql", "", None]},
+                        {"type": "null"},
+                    ],
+                    "nullable": True,
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        db_type = out["properties"]["db_type"]
+        assert "anyOf" not in db_type
+        assert "nullable" not in db_type, "nullable must be stripped after anyOf collapse"
+        assert db_type["type"] == "string"
+        assert db_type["enum"] == ["mysql", "postgresql"], \
+            "null/empty enum values must be stripped after anyOf collapse"

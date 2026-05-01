@@ -914,6 +914,12 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Context-only flag — set for group messages that pass the policy gate
+    # but are not @-mentioning the bot.  These are recorded in the session
+    # transcript for conversational context but do NOT trigger the agent
+    # pipeline (no reaction, no typing indicator, no agent response).
+    context_only: bool = False
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     

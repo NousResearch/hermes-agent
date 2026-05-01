@@ -2204,15 +2204,27 @@ class FeishuAdapter(BasePlatformAdapter):
 
         chat_type = getattr(message, "chat_type", "p2p")
         chat_id = getattr(message, "chat_id", "") or ""
-        if chat_type != "p2p" and not self._should_accept_group_message(message, sender_id, chat_id):
-            logger.debug("[Feishu] Dropping group message that failed mention/policy gate: %s", message_id)
-            return
+        # Determine whether this group message should trigger the agent or
+        # be recorded as context-only background chatter.
+        context_only = False
+        if chat_type != "p2p":
+            if not self._allow_group_message(sender_id, chat_id):
+                logger.debug("[Feishu] Dropping group message that failed policy gate: %s", message_id)
+                return
+            if not self._message_is_bot_addressed(message):
+                # User is allowed by policy but did NOT @mention the bot.
+                # Record as context so the agent can see it, but don't
+                # trigger the full pipeline (no reaction, no response).
+                context_only = True
+                logger.debug("[Feishu] Group message %s is context_only (no bot mention)", message_id)
+
         await self._process_inbound_message(
             data=data,
             message=message,
             sender_id=sender_id,
             chat_type=chat_type,
             message_id=message_id,
+            context_only=context_only,
         )
 
     def _on_message_read_event(self, data: P2ImMessageMessageReadV1) -> None:
@@ -2511,9 +2523,67 @@ class FeishuAdapter(BasePlatformAdapter):
         time (matches openclaw's createChatQueue serial queue behaviour).
         """
         chat_id = getattr(event.source, "chat_id", "") or "" if event.source else ""
+
+        if getattr(event, "context_only", False):
+            # Record directly to transcript — skip the full pipeline.
+            await self._record_context_only_message(event)
+            return
+
         chat_lock = self._get_chat_lock(chat_id)
         async with chat_lock:
             await self.handle_message(event)
+
+    async def _record_context_only_message(self, event: MessageEvent) -> None:
+        """Persist a context_only event into the session transcript without
+        triggering the agent, typing indicator, or processing reactions.
+
+        The message is stored as a regular ``user`` role entry with a
+        ``context_only: true`` marker so downstream consumers (compression,
+        session_search, etc.) can distinguish it from addressed messages.
+        """
+        try:
+            from gateway.session import SessionStore
+
+            # Resolve the session store from the gateway runner attached to
+            # this adapter via the message handler closure.
+            session_store: Optional[SessionStore] = getattr(
+                self, "_context_session_store", None
+            )
+            if session_store is None:
+                # The message handler is set by the gateway runner; peek at
+                # the runner's session_store through __self__ when available.
+                handler = self._message_handler
+                runner = getattr(handler, "__self__", None) if handler else None
+                session_store = getattr(runner, "session_store", None)
+                if session_store is not None:
+                    # Cache for subsequent calls.
+                    self._context_session_store = session_store  # type: ignore[attr-defined]
+
+            if session_store is None:
+                logger.warning(
+                    "[Feishu] Cannot record context_only message — session_store unavailable"
+                )
+                return
+
+            session_entry = session_store.get_or_create_session(event.source)
+            user_label = event.source.user_name or event.source.user_id or "unknown"
+            ts = event.timestamp.isoformat() if event.timestamp else None
+            session_store.append_to_transcript(
+                session_entry.session_id,
+                {
+                    "role": "user",
+                    "content": f"[{user_label}]: {event.text}",
+                    "context_only": True,
+                    **({"timestamp": ts} if ts else {}),
+                },
+            )
+            logger.debug(
+                "[Feishu] Recorded context_only message from %s in session %s",
+                user_label,
+                session_entry.session_id,
+            )
+        except Exception:
+            logger.exception("[Feishu] Failed to record context_only message")
 
     # =========================================================================
     # Processing status reactions
@@ -2679,6 +2749,7 @@ class FeishuAdapter(BasePlatformAdapter):
         sender_id: Any,
         chat_type: str,
         message_id: str,
+        context_only: bool = False,
     ) -> None:
         text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
 
@@ -2737,6 +2808,7 @@ class FeishuAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
             timestamp=datetime.now(),
+            context_only=context_only,
         )
         await self._dispatch_inbound_event(normalized)
 
@@ -3629,6 +3701,14 @@ class FeishuAdapter(BasePlatformAdapter):
         """Require an explicit @mention before group messages enter the agent."""
         if not self._allow_group_message(sender_id, chat_id):
             return False
+        return self._message_is_bot_addressed(message)
+
+    def _message_is_bot_addressed(self, message: Any) -> bool:
+        """Return True when the message explicitly @mentions the bot or @all.
+
+        This is the pure mention-check extracted from _should_accept_group_message
+        so it can be called independently (e.g. context_only routing).
+        """
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:

@@ -391,19 +391,21 @@ class MemoryStore:
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """Render a system prompt block with stable header (no volatile indicators).
+
+        Headers are kept stable to preserve KV cache across turns. Percentage
+        indicators that change with memory size would invalidate the cache
+        prefix even when content is identical.
+        """
         if not entries:
             return ""
 
-        limit = self._char_limit(target)
         content = ENTRY_DELIMITER.join(entries)
-        current = len(content)
-        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         if target == "user":
-            header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
+            header = "USER PROFILE (who the user is)"
         else:
-            header = f"MEMORY (your personal notes) [{pct}% — {current:,}/{limit:,} chars]"
+            header = "MEMORY (your personal notes)"
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"

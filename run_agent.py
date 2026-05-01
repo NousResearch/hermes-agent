@@ -4946,9 +4946,10 @@ class AIAgent:
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 
-        from hermes_time import now as _hermes_now
-        now = _hermes_now()
-        timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+        # Use session_start timestamp for stability across turns within the same session.
+        # Regenerating the timestamp on every API call would invalidate the KV cache
+        # prefix even though the session hasn't actually started at a different time.
+        timestamp_line = f"Conversation started: {self.session_start.strftime('%A, %B %d, %Y %I:%M %p')}"
         if self.pass_session_id and self.session_id:
             timestamp_line += f"\nSession ID: {self.session_id}"
         if self.model:

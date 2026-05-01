@@ -1465,8 +1465,8 @@ class TestBuildAssistantMessage:
 
         This preserves ``_copy_reasoning_content_for_api``'s downstream
         tiers at replay time — cross-provider leak guard (#15748),
-        promote-from-``reasoning``, and DeepSeek/Kimi ""-pad — which
-        would all be bypassed if we eagerly wrote ``reasoning_content=""``
+        promote-from-``reasoning``, and DeepSeek/Kimi " "-pad — which
+        would all be bypassed if we eagerly wrote ``reasoning_content=" "``
         on every assistant turn regardless of provider.
         """
         msg = _mock_assistant_msg(content="plain answer")
@@ -4617,7 +4617,7 @@ class TestReasoningReplayForStrictProviders:
         agent.compression_enabled = False
         agent.save_trajectories = False
 
-    def test_kimi_tool_replay_includes_empty_reasoning_content(self, agent):
+    def test_kimi_tool_replay_includes_space_reasoning_content(self, agent):
         self._setup_agent(agent)
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
@@ -4654,7 +4654,7 @@ class TestReasoningReplayForStrictProviders:
         assert replayed_assistant["role"] == "assistant"
         assert replayed_assistant["tool_calls"][0]["function"]["name"] == "terminal"
         assert "reasoning_content" in replayed_assistant
-        assert replayed_assistant["reasoning_content"] == ""
+        assert replayed_assistant["reasoning_content"] == " "
 
     def test_explicit_reasoning_content_beats_normalized_reasoning_on_replay(self, agent):
         self._setup_agent(agent)

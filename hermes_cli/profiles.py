@@ -101,7 +101,7 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
 
 # Names that cannot be used as profile aliases
 _RESERVED_NAMES = frozenset({
-    "hermes", "default", "test", "tmp", "root", "sudo",
+    "hermes", "default", "main", "test", "tmp", "root", "sudo",
 })
 
 # Hermes subcommands that cannot be used as profile names/aliases
@@ -399,9 +399,9 @@ def create_profile(
     """
     validate_profile_name(name)
 
-    if name == "default":
+    if name in _RESERVED_NAMES:
         raise ValueError(
-            "Cannot create a profile named 'default' — it is the built-in profile (~/.hermes)."
+            f"Cannot create a profile named '{name}' — it is reserved."
         )
 
     profile_dir = get_profile_dir(name)

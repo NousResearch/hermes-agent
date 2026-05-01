@@ -207,7 +207,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
               wrap="truncate-end"
             >
               {providerIdx === idx ? '▸ ' : '  '}
-              {i + 1}. {row}
+              {idx + 1}. {row}
             </Text>
           ) : (
             <Text color={t.color.muted} key={`pad-${i}`} wrap="truncate-end">
@@ -223,7 +223,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         <Text color={t.color.muted} wrap="truncate-end">
           persist: {persistGlobal ? 'global' : 'session'} · g toggle
         </Text>
-        <OverlayHint t={t}>↑/↓ select · Enter choose · 1-9,0 quick · Esc/q cancel</OverlayHint>
+        <OverlayHint t={t}>↑/↓ select · Enter choose · Esc/q cancel</OverlayHint>
       </Box>
     )
   }
@@ -273,7 +273,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
             wrap="truncate-end"
           >
             {prefix}
-            {i + 1}. {row}
+            {idx + 1}. {row}
           </Text>
         )
       })}
@@ -286,7 +286,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         persist: {persistGlobal ? 'global' : 'session'} · g toggle
       </Text>
       <OverlayHint t={t}>
-        {models.length ? '↑/↓ select · Enter switch · 1-9,0 quick · Esc back · q close' : 'Enter/Esc back · q close'}
+        {models.length ? '↑/↓ select · Enter switch · Esc back · q close' : 'Enter/Esc back · q close'}
       </OverlayHint>
     </Box>
   )

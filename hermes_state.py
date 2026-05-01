@@ -1154,6 +1154,48 @@ class SessionDB:
     # Message storage
     # =========================================================================
 
+    # Sentinel prefix used to distinguish JSON-encoded structured content
+    # (multimodal messages: lists of parts like text + image_url) from plain
+    # string content. The NUL byte is not legal in normal text, so this
+    # cannot collide with real user content.
+    _CONTENT_JSON_PREFIX = "\x00json:"
+
+    @classmethod
+    def _encode_content(cls, content: Any) -> Any:
+        """Serialize structured (list/dict) message content for sqlite.
+
+        sqlite3 can only bind ``str``, ``bytes``, ``int``, ``float``, and ``None``
+        to query parameters. Multimodal messages have ``content`` as a list of
+        parts (``[{"type": "text", ...}, {"type": "image_url", ...}]``), which
+        raises ``ProgrammingError: Error binding parameter N: type 'list' is
+        not supported`` when bound directly.
+
+        Returns the value unchanged when it's already a safe scalar, or a
+        sentinel-prefixed JSON string for lists/dicts. Paired with
+        :meth:`_decode_content` on read.
+        """
+        if content is None or isinstance(content, (str, bytes, int, float)):
+            return content
+        try:
+            return cls._CONTENT_JSON_PREFIX + json.dumps(content)
+        except (TypeError, ValueError):
+            # Last-resort fallback: stringify so persistence never fails.
+            return str(content)
+
+    @classmethod
+    def _decode_content(cls, content: Any) -> Any:
+        """Reverse :meth:`_encode_content`; returns scalars unchanged."""
+        if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
+            try:
+                return json.loads(content[len(cls._CONTENT_JSON_PREFIX):])
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    "Failed to decode JSON-encoded message content; "
+                    "returning raw string"
+                )
+                return content
+        return content
+
     def append_message(
         self,
         session_id: str,
@@ -1190,6 +1232,9 @@ class SessionDB:
             if codex_message_items else None
         )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        # Multimodal content (list of parts) must be JSON-encoded: sqlite3
+        # cannot bind list/dict parameters directly.
+        stored_content = self._encode_content(content)
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -1206,7 +1251,7 @@ class SessionDB:
                 (
                     session_id,
                     role,
-                    content,
+                    stored_content,
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
@@ -1289,7 +1334,7 @@ class SessionDB:
                     (
                         session_id,
                         role,
-                        msg.get("content"),
+                        self._encode_content(msg.get("content")),
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
@@ -1328,6 +1373,8 @@ class SessionDB:
         result = []
         for row in rows:
             msg = dict(row)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
             if msg.get("tool_calls"):
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
@@ -1425,7 +1472,7 @@ class SessionDB:
 
         messages = []
         for row in rows:
-            content = row["content"]
+            content = self._decode_content(row["content"])
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
@@ -1810,10 +1857,26 @@ class SessionDB:
                            )""",
                         (match["id"], match["id"]),
                     )
-                    context_msgs = [
-                        {"role": r["role"], "content": (r["content"] or "")[:200]}
-                        for r in ctx_cursor.fetchall()
-                    ]
+                    context_msgs = []
+                    for r in ctx_cursor.fetchall():
+                        raw = r["content"]
+                        decoded = self._decode_content(raw)
+                        # Multimodal context: render a compact text-only
+                        # summary for search previews.
+                        if isinstance(decoded, list):
+                            text_parts = [
+                                p.get("text", "") for p in decoded
+                                if isinstance(p, dict) and p.get("type") == "text"
+                            ]
+                            text = " ".join(t for t in text_parts if t).strip()
+                            preview = text or "[multimodal content]"
+                        elif isinstance(decoded, str):
+                            preview = decoded
+                        else:
+                            preview = ""
+                        context_msgs.append(
+                            {"role": r["role"], "content": preview[:200]}
+                        )
                 match["context"] = context_msgs
             except Exception:
                 match["context"] = []

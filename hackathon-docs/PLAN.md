@@ -1,235 +1,171 @@
-# Hermes Bilingual Caption Agent — Hackathon Plan
+# Hermes Caption Agent — Plan v2 (Dashboard Visual Editor)
 
 **Hackathon**: Hermes Agent Creative Hackathon  
 **Prize pool**: $25k (Main $15k + Kimi Track $5k)  
 **Deadline**: EOD Sunday May 3rd, 2026  
-**Judged on**: Creativity, usefulness, presentation  
-**Kimi Track**: Must prove use of Kimi models in submission video
+**Previous plan**: `PLAN_v1.md` (Telegram-native, executed — backend pipeline complete)
 
 ---
 
-## Problem Statement
+## Problem Statement (Unchanged)
 
-Content creators making bilingual (English + Vietnamese) videos spend 30–45 minutes per video manually:
-1. Choosing font, size, color, and position in their editor every time
-2. Typing or re-generating Vietnamese captions with no consistency
-3. Fixing translation mistakes with no memory of prior corrections
+Content creators making bilingual (English + Vietnamese) videos spend 30–45 minutes per video manually choosing font, size, color, position in CapCut, typing Vietnamese captions with no consistency, and fixing translation mistakes with no memory of prior corrections.
 
-There is no tool that learns a creator's personal caption style and applies it automatically across every future video while improving from corrections.
+**User quote**: *"I was hoping that the tool can auto generate the caption for both English and Vietnamese with the same font, size and color and where it appears on the video with the same style that I'm doing in each video right now. I understand that the Vietnamese part will be tricky and that the auto caption will have many mistakes, which I can definitely fix it."*
 
 ---
 
-## Solution
+## Revised Architecture
 
-**A self-improving Hermes-powered bilingual caption agent.**
-
-One-line pitch: *"Hermes learns how you subtitle once, then applies that caption style and bilingual workflow to every future video."*
-
-### Pipeline
+The key insight: **the user wants to replace CapCut's visual editing workflow**, not chat their way through corrections. The LLM should run exactly once per video; all editing should be fast, visual, and free.
 
 ```
-User sends video
-   → faster-whisper (local, free) transcribes English audio
-   → Kimi K2.5 via NVIDIA NIM translates EN → VI + cleans up
-   → ASS subtitle file built: EN on top, VI below (stacked, same moment)
-   → FFmpeg burns styled captions into video
-   → User receives captioned video
-   → User corrects mistakes in chat → Hermes re-burns
-   → After approval → corrections saved to Hermes memory
-   → Next video: agent applies saved corrections automatically
+Telegram (trigger only)
+  → Agent: transcribe (Whisper) + generate phonetics (Kimi K2.5, once)
+  → Saves job JSON to ~/.hermes/caption-jobs/{id}.json
+  → Burns initial draft video (FFmpeg)
+  → Returns: draft video + "Edit at http://localhost:9119/captions/{id}"
+        ↓
+Dashboard /captions/:id  (no LLM, no tokens, visual editing)
+  ┌─────────────────────┬─────────────────────────────────────┐
+  │   <video> player    │  Segment list (editable)            │
+  │   (auto-reloads     │  ┌──────────────────────────────┐   │
+  │    after re-burn)   │  │ EN  Today we're learning...  │   │
+  │                     │  │ VI  không biết  [humm biet]  │   │
+  │                     │  └──────────────────────────────┘   │
+  │                     │                                     │
+  │                     │  Style panel                        │
+  │                     │  Font / Size / Color / Margin       │
+  │                     │                                     │
+  │                     │  [Re-burn]  [Download]              │
+  └─────────────────────┴─────────────────────────────────────┘
 ```
 
-### The Memory Loop (Hermes-native differentiator)
+**What doesn't change**: the backend pipeline (Whisper + Kimi + ASS + FFmpeg) is complete and reused as-is.
 
-Three layers compound over time:
+---
 
-| Memory Layer | Stores | Example |
+## Why Dashboard Instead of Telegram Chat
+
+| Concern | Telegram Chat | Dashboard Editor |
 |---|---|---|
-| Style profile | Font, size, color, outline, position | "Montserrat Bold 52pt, white, black stroke, bottom-center" |
-| Correction memory | Recurring translation preferences | "always use 'các bạn', not 'mọi người' for 'guys'" |
-| Glossary | Names, brands, channel terms | "channel name is 'Cooking with Linh'" |
+| Caption text editing | Prompt per edit → LLM round-trip (~5s, tokens) | Direct text input → instant |
+| Style changes (font/size/color) | Natural language → lossy → re-prompt | Form controls → exact values |
+| Visual feedback | Download video to preview | Inline video player |
+| Per-edit cost | Tokens + inference time | $0, 0ms latency |
+| Scalability (other languages) | Works but slow | Works, same UI |
 
-**Demo story**: Video 1 needs 6 corrections. Video 2 needs 2. Video 3 needs 0. The agent got smarter.
+Telegram remains valuable as the **trigger surface** — creators already have it open, video upload is natural, and they don't need to start a browser to kick off processing.
 
 ---
 
-## Technical Approach
+## Implementation Phases
 
-### Stack (Total hackathon cost: ~$0)
+### Phase 1 — Job persistence in `tools/video_caption.py` (~1h)
 
-| Component | Tool | Cost |
+**Goal**: After generating captions, persist job state to disk for the dashboard to read.
+
+**Changes to `tools/video_caption.py`**:
+1. Add `save_caption_job(job_id, video_path, segments, style, output_path)` — writes `{hermes_home}/caption-jobs/{id}.json`
+2. Update `_handle_caption()`: after full `caption` operation, call `save_caption_job`, include `job_id` and `dashboard_url` in response JSON
+
+**Job JSON schema**:
+```json
+{
+  "id": "uuid4",
+  "created_at": "ISO8601",
+  "video_path": "/abs/path/input.mp4",
+  "output_path": "/abs/path/output.mp4",
+  "style": { "font": "Arial", "font_size": 48, ... },
+  "segments": [
+    {"id": 0, "start": 0.0, "end": 2.3, "text": "Today we learn", "lang": "en", "phonetic": ""},
+    {"id": 1, "start": 2.3, "end": 4.1, "text": "không biết", "lang": "vi", "phonetic": "[humm biet]"}
+  ]
+}
+```
+
+### Phase 2 — Backend API in `hermes_cli/web_server.py` (~2h)
+
+**New endpoints** (all require `_require_token()` auth — follows existing pattern):
+
+| Method | Path | Purpose |
 |---|---|---|
-| Transcription | faster-whisper `medium` model (local) | $0 |
-| Translation EN→VI | Kimi K2.5 via NVIDIA NIM | $0 |
-| Subtitle styling + burn | FFmpeg + ASS subtitle format | $0 |
-| Orchestration + memory | Hermes Agent | $0 |
-| Primary interface | Telegram gateway (already in Hermes) | $0 |
-| Secondary interface | Hermes CLI | $0 |
+| `GET` | `/api/caption/jobs` | List all jobs (id, created_at, video filename) |
+| `GET` | `/api/caption/jobs/{id}` | Full job state (segments, style, paths) |
+| `PUT` | `/api/caption/jobs/{id}/segments` | Save edited segments → write to job JSON |
+| `PUT` | `/api/caption/jobs/{id}/style` | Save style changes → write to job JSON |
+| `POST` | `/api/caption/jobs/{id}/burn` | Re-burn: `_build_ass_content()` + `burn()` from `video_caption.py`, update `output_path` in job JSON |
+| `GET` | `/api/caption/jobs/{id}/video` | Stream video file for in-browser `<video>` player |
+| `GET` | `/api/caption/jobs/{id}/download` | Download final output with `Content-Disposition: attachment` |
 
-### Why faster-whisper + Kimi, not CapCut or Argos
+**Implementation note**: Import `_build_ass_content`, `burn` directly from `tools.video_caption` — no subprocess, no LLM.
 
-- **CapCut**: No public API. Cannot automate programmatically.
-- **Argos Translate**: Vietnamese support is weak (primarily European language pairs). Poor demo quality.
-- **faster-whisper**: Local, free, good Vietnamese accuracy on `medium`/`large-v3` models.
-- **Kimi K2.5**: Production-quality Vietnamese translation + qualifies for the $5k Kimi track.
+### Phase 3 — Dashboard React page (~4-5h)
 
-### NVIDIA NIM Details
+**New file**: `web/src/pages/CaptionEditorPage.tsx`
 
-Kimi K2.5 is available free via NVIDIA NIM:
-- Base URL: `https://integrate.api.nvidia.com/v1`
-- Model ID: `moonshotai/kimi-k2.5`
-- OpenAI-compatible API — works with Hermes's custom provider config
-- Env var: `NVIDIA_API_KEY` in `~/.hermes/.env`
-- **Known quirk**: Output sometimes lands in `reasoning_content` not `content` — the tool will check both
+**Route**: `/captions/:id` — add to `BUILTIN_ROUTES_CORE` in `web/src/App.tsx`
 
-### Subtitle Format: ASS
+**Layout (two-column)**:
+```
+Left (40%):
+  - Native <video> tag with controls
+  - src = /api/caption/jobs/{id}/video?t={burnTimestamp}  (cache-busting)
+  - Auto-reloads after re-burn completes
 
-ASS (Advanced SubStation Alpha) is preferred over SRT because:
-- Full styling control: font, size, color, outline width, shadow, position
-- Per-style definitions: can encode EN and VI styles separately
-- FFmpeg supports burning ASS natively (`-vf "ass=file.ass"`)
-- SRT is also written alongside burned video for archival/editing
+Right (60%):
+  - Segment list (scrollable):
+      Each row: [EN/VI badge] [text input] [phonetic input, greyed if EN]
+  - Style panel (collapsible):
+      Font family (text), Font size (number), Primary color (color picker),
+      Outline color (color picker), Margin bottom (slider)
+  - Action bar (sticky bottom):
+      [Re-burn] button — POST /api/caption/jobs/{id}/burn, poll until 200,
+                         then reload video player
+      [Download] button — GET /api/caption/jobs/{id}/download
+```
+
+**State management**: `useState` for `segments` and `style`; optimistic local edits; flush on Re-burn.
+
+**Nav entry**: Add "Captions" tab to `BUILTIN_NAV_REST` in `App.tsx` with `Captions` label and appropriate icon.
+
+Also add `/captions` route listing all jobs (links to `/captions/:id`).
+
+### Phase 4 — Skill update (~30min)
+
+**Update `skills/video/phonetic_captions/SKILL.md`**:
+- After `caption` op completes, agent should present:
+  - The draft video
+  - Numbered segment summary (EN/VI + phonetic)
+  - Dashboard link: "Open the caption editor to make visual edits: [link]"
+  - Offer to make quick corrections via chat (for users on mobile without dashboard access)
 
 ---
 
-## Surfaces
+## Files Changed / Created
 
-### Primary: Telegram
-
-**Why**: Natural for creators — open Telegram, drop video, get it back. No new app. The chat-based correction loop is native to messaging.
-
-```
-You: [sends video]
-Hermes: Processing... ✓ Here's your draft! MEDIA:/path/output.mp4
-        [sends captioned video]
-        Lines numbered 1-12 for corrections.
-
-You: fix line 4 Vietnamese to "thêm muối vừa phải"
-Hermes: Updated! MEDIA:/path/output_v2.mp4 [sends re-burned video]
-
-You: looks great!
-Hermes: Saved your correction to memory. I'll apply it automatically next time.
-```
-
-**Gateway fix required**: `_preprocess_inbound_text` in `gateway/run.py` does not currently inject video file paths into agent messages (documents get this, video type does not). Need to add a ~5-line handler mirroring the document injection pattern.
-
-### Secondary: CLI
-
-**Works automatically** — no extra code. Because the tool is registered in Hermes's tool registry, any Hermes surface can use it. CLI users pass the file path directly in conversation:
-
-```
-> caption /path/to/video.mp4
-> caption this video: /tmp/cooking_ep5.mp4 and fix the Vietnamese for "add salt gradually"
-```
-
-CLI is useful for:
-- Batch captioning multiple videos
-- Local dev/testing without Telegram setup
-- Users who prefer terminal workflows
-
----
-
-## Files to Create / Modify
-
-| File | Action | Purpose |
+| File | Action | Phase |
 |---|---|---|
-| `gateway/run.py` | Modify | Fix `_preprocess_inbound_text` to inject video file paths (~5 lines) |
-| `tools/video_caption.py` | Create | Core tool: transcribe, translate, build_ass, burn, reburn operations |
-| `toolsets.py` | Modify | Register `video-caption` toolset |
-| `hermes_cli/config.py` | Modify | Add `caption_style` key to `DEFAULT_CONFIG` |
-| `skills/video/bilingual_captions/SKILL.md` | Create | Skill wrapping the full conversational workflow |
+| `tools/video_caption.py` | Modify — add `save_caption_job()`, update `_handle_caption()` | 1 |
+| `hermes_cli/web_server.py` | Modify — add 7 new `/api/caption/...` endpoints | 2 |
+| `web/src/pages/CaptionEditorPage.tsx` | Create — visual editor | 3 |
+| `web/src/App.tsx` | Modify — add routes + nav entry | 3 |
+| `skills/video/phonetic_captions/SKILL.md` | Modify — surface dashboard link | 4 |
 
 ---
 
-## Build Phases
+## Demo Story (Updated)
 
-### Phase 1 — Core pipeline (Day 1: April 30)
+**Meet Linh — she makes bilingual cooking content.**
 
-**Goal**: Send video via Telegram → get back burned video with captions.
+1. Opens Telegram, sends today's video (15s clip)
+2. Hermes replies in ~30s: captioned draft video + link to `localhost:9119/captions/abc123`
+3. Linh clicks the link — caption editor opens in her browser
+4. She sees the segment table — fixes "không biết" phonetic, changes font size from 48 to 52
+5. Clicks "Re-burn" — video updates in 5s (FFmpeg only, no LLM)
+6. Downloads final video
 
-1. Fix `gateway/run.py` video path injection (critical path — everything depends on this)
-2. Create `tools/video_caption.py`:
-   - `transcribe(video_path, language="en")` → list of `{start, end, text}` segments
-   - `translate_to_vietnamese(segments, nvidia_api_key)` → list of `{start, end, en, vi}` segments
-   - `build_ass(segments, style_config, output_path)` → writes `.ass` file with stacked EN/VI
-   - `burn(video_path, ass_path, output_path)` → FFmpeg subprocess call
-   - `reburn(video_path, corrected_segments, style_config, output_path)` → apply edits + re-burn
-3. Register in `toolsets.py`
-
-**Verification**: Send 15s test video via Telegram → receive captioned video back.
-
-### Phase 2 — Style + Kimi + memory (Day 2: May 1)
-
-**Goal**: Persistent style, real Kimi translation, correction memory.
-
-4. Ship default `caption_style` config in `hermes_cli/config.py`:
-   ```python
-   "caption_style": {
-       "font": "Montserrat Bold",
-       "font_size": 52,
-       "primary_color": "&H00FFFFFF",   # white (ASS AABBGGRR format)
-       "outline_color": "&H00000000",   # black
-       "outline_width": 3,
-       "alignment": 2,                  # bottom-center
-       "margin_bottom": 80,
-       "max_line_length": 42,
-   }
-   ```
-5. Wire Kimi translation via NVIDIA NIM (replace Whisper-only placeholder from Phase 1)
-   - Add `reasoning_content` fallback for NVIDIA NIM's Kimi quirk
-6. Post-correction memory hook: on user approval → agent writes to `MEMORY.md`:
-   - Translation preferences (e.g., "guys" → "các bạn")
-   - Glossary terms
-7. Create `skills/video/bilingual_captions/SKILL.md`
-
-**Verification**: Two-pass demo — Video 1 with corrections, Video 2 shows corrections auto-applied.
-
-### Phase 3 — Demo video + submission (Day 3: May 2–3)
-
-**Goal**: Compelling submission video + tweet + Discord post.
-
-8. Record demo script:
-   - Show the problem (CapCut manual caption workflow, ~45 min per video)
-   - Show the solution (Telegram: send video → 30s → get captioned video back)
-   - Show Kimi translation quality vs raw Whisper output (proves Kimi usage)
-   - Show memory improvement: Video 1 (corrections), Video 2 (auto-applied)
-9. Write submission tweet tagging @NousResearch with demo video
-10. Post link to `#creative-hackathon-submissions` on Nous Research Discord
-
----
-
-## Sample User Journey
-
-> **Meet Linh — she creates bilingual cooking content for Vietnamese and English audiences.**
-
-**Before**: Every video takes 45 extra minutes in CapCut re-doing captions — choosing font, sizing it, typing the Vietnamese, positioning both lines. Same thing every single video.
-
-**With Hermes Caption Agent:**
-
-**Step 1** — Linh opens Telegram and sends her video:
-> *[sends video file]*  
-> "caption this please"
-
-**Step 2** — ~30 seconds later, Hermes replies:
-> "Done! Here's your draft. English on top, Vietnamese below — here are the lines:
-> 1. EN: Today we're making pho | VI: Hôm nay chúng ta làm phở
-> 2. EN: Add salt gradually | VI: Thêm muối từ từ
-> ...
-> Let me know what to fix!"  
-> *[sends back captioned video]*
-
-**Step 3** — Linh watches it and catches two issues:
-> "Line 2 Vietnamese should say 'thêm muối vừa phải', not 'thêm muối từ từ'"
-
-**Step 4** — Hermes re-burns:
-> "Fixed! Here's the updated video." *[sends new video within 15s]*
-
-**Step 5** — Linh approves:
-> "Perfect!"
-
-Hermes saves the correction silently.
-
-**Next video (one week later)**: Linh sends a new video. Hermes already knows her style, her font, and that "add salt" → "thêm muối vừa phải". Draft comes back already correct. Zero corrections needed.
+**Second video (next week):** Hermes already has her style saved. Draft comes back with her font, size, and colour. Zero style changes needed.
 
 ---
 
@@ -237,20 +173,26 @@ Hermes saves the correction silently.
 
 | Risk | Mitigation |
 |---|---|
-| NVIDIA NIM slow during peak hours (5–30s) | Acceptable for translation of ~50-150 words; show async "processing..." message |
-| faster-whisper `medium` misses some Vietnamese words | Expected; user corrects and Hermes learns. This is the demo's value prop, not a bug. |
-| FFmpeg not installed on user's machine | Add `check_requirements()` in tool; print clear install message |
-| Telegram 50MB video send limit | 10-20s YouTube Shorts = 5-25MB; well within limits |
-| NVIDIA NIM `reasoning_content` quirk | Add 3-line fallback in translation call |
-| Kimi ToS (no commercial use via NIM) | Hackathon demo only — compliant |
+| Dashboard not running when Telegram link is sent | Include fallback note: "Or reply here to edit via chat" |
+| Video CORS for `<video>` player | Serve via FastAPI with correct `Content-Type` header + range support |
+| Re-burn blocking the FastAPI event loop | Run `burn()` in `asyncio.to_thread()` (FFmpeg subprocess) |
+| Job JSON grows large for long videos | Cap at 500 segments; segment merging is a V2 feature |
 
 ---
 
-## Kimi Track Strategy
+## Kimi Track Strategy (Unchanged)
 
-The submission video will explicitly show:
-1. The `NVIDIA_API_KEY` / `moonshotai/kimi-k2.5` config in `~/.hermes/.env`
-2. Side-by-side: raw Whisper output vs Kimi-cleaned Vietnamese translation
-3. Hermes memory storing Kimi-refined corrections for future runs
+Submission video will show:
+1. `NVIDIA_API_KEY` + `moonshotai/kimi-k2.5` config
+2. Side-by-side: raw Whisper output vs Kimi-corrected Vietnamese + phonetics
+3. Dashboard editor showing manual refinement on top of Kimi output
 
-This makes the Kimi model usage unambiguous and demonstrates meaningful quality improvement — not just a wrapper call.
+---
+
+## Out of Scope (V2)
+
+- Real-time caption preview (re-render on every keystroke)
+- Drag-and-drop timeline editor
+- Word-level Whisper segmentation splitting
+- Multi-video batch management
+- Mobile-responsive dashboard layout

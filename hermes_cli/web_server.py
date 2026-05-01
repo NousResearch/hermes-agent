@@ -3109,6 +3109,158 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     return FileResponse(target, media_type=media_type)
 
 
+# ---------------------------------------------------------------------------
+# Caption editor API
+# ---------------------------------------------------------------------------
+
+
+def _caption_jobs_dir() -> Path:
+    return get_hermes_home() / "caption-jobs"
+
+
+def _load_caption_job(job_id: str) -> dict:
+    job_path = _caption_jobs_dir() / f"{job_id}.json"
+    if not job_path.exists():
+        raise HTTPException(status_code=404, detail=f"Caption job '{job_id}' not found")
+    try:
+        return json.loads(job_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read job: {e}")
+
+
+def _save_caption_job_data(job_id: str, job: dict) -> None:
+    job_path = _caption_jobs_dir() / f"{job_id}.json"
+    job_path.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+@app.get("/api/caption/jobs")
+async def list_caption_jobs(request: Request):
+    """List all caption jobs. Token-protected."""
+    _require_token(request)
+    jobs_dir = _caption_jobs_dir()
+    if not jobs_dir.exists():
+        return []
+    jobs = []
+    for p in sorted(jobs_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True):
+        try:
+            job = json.loads(p.read_text(encoding="utf-8"))
+            jobs.append({
+                "id": job["id"],
+                "created_at": job.get("created_at", ""),
+                "video_filename": Path(job.get("video_path", "")).name,
+                "segment_count": len(job.get("segments", [])),
+            })
+        except Exception:
+            pass
+    return jobs
+
+
+@app.get("/api/caption/jobs/{job_id}")
+async def get_caption_job(job_id: str, request: Request):
+    """Get full caption job state (segments, style, paths). Token-protected."""
+    _require_token(request)
+    return _load_caption_job(job_id)
+
+
+class CaptionSegmentsBody(BaseModel):
+    segments: list
+
+
+@app.put("/api/caption/jobs/{job_id}/segments")
+async def update_caption_segments(job_id: str, body: CaptionSegmentsBody, request: Request):
+    """Save edited segment list to the job JSON. Token-protected."""
+    _require_token(request)
+    job = _load_caption_job(job_id)
+    job["segments"] = body.segments
+    _save_caption_job_data(job_id, job)
+    return {"ok": True, "segment_count": len(body.segments)}
+
+
+class CaptionStyleBody(BaseModel):
+    style: dict
+
+
+@app.put("/api/caption/jobs/{job_id}/style")
+async def update_caption_style(job_id: str, body: CaptionStyleBody, request: Request):
+    """Save style overrides to the job JSON. Token-protected."""
+    _require_token(request)
+    job = _load_caption_job(job_id)
+    job["style"] = {**job.get("style", {}), **body.style}
+    _save_caption_job_data(job_id, job)
+    return {"ok": True, "style": job["style"]}
+
+
+@app.post("/api/caption/jobs/{job_id}/burn")
+async def burn_caption_job(job_id: str, request: Request):
+    """Re-burn updated segments/style into the video using FFmpeg. Token-protected.
+
+    Runs FFmpeg in a thread to avoid blocking the event loop.
+    """
+    _require_token(request)
+    job = _load_caption_job(job_id)
+
+    async def _do_burn():
+        import sys
+        project_root = Path(__file__).parent.parent
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+        from tools.video_caption import _build_ass_content, burn as _burn, save_caption_job
+        import uuid as _uuid
+
+        segments = job.get("segments", [])
+        style = job.get("style", {})
+        video_path = job["video_path"]
+
+        # Write updated ASS to a temp file then burn
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            ass_path = f.name
+        ass_content = _build_ass_content(segments, style)
+        Path(ass_path).write_text(ass_content, encoding="utf-8")
+
+        new_output = _burn(video_path, ass_path, None)
+        job["output_path"] = new_output
+        _save_caption_job_data(job_id, job)
+        return new_output
+
+    try:
+        output_path = await asyncio.to_thread(_do_burn)
+        # _do_burn is a coroutine-returning async function — need to await the inner result
+        if asyncio.iscoroutine(output_path):
+            output_path = await output_path
+        return {"ok": True, "output_path": str(output_path)}
+    except Exception as e:
+        _log.exception("Caption burn failed for job %s", job_id)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/caption/jobs/{job_id}/video")
+async def stream_caption_video(job_id: str, request: Request):
+    """Stream the output video file for the in-browser player. Token-protected."""
+    _require_token(request)
+    job = _load_caption_job(job_id)
+    video_path = Path(job.get("output_path") or job.get("video_path", ""))
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+    return FileResponse(str(video_path), media_type="video/mp4")
+
+
+@app.get("/api/caption/jobs/{job_id}/download")
+async def download_caption_video(job_id: str, request: Request):
+    """Download the final output video. Token-protected."""
+    _require_token(request)
+    job = _load_caption_job(job_id)
+    video_path = Path(job.get("output_path") or job.get("video_path", ""))
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+    filename = f"captioned_{job_id}{video_path.suffix}"
+    return FileResponse(
+        str(video_path),
+        media_type="video/mp4",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def _mount_plugin_api_routes():
     """Import and mount backend API routes from plugins that declare them.
 

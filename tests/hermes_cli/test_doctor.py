@@ -227,6 +227,11 @@ def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
 
     seen = {}
 
+    def fake_ensure_common_tool_paths():
+        seen["path_helper_called"] = True
+
+    monkeypatch.setattr(doctor_mod, "ensure_common_tool_paths", fake_ensure_common_tool_paths)
+
     def fake_check_tool_availability(*args, **kwargs):
         seen["interactive"] = os.getenv("HERMES_INTERACTIVE")
         raise SystemExit(0)
@@ -241,6 +246,7 @@ def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
         doctor_mod.run_doctor(Namespace(fix=False))
 
     assert seen["interactive"] == "1"
+    assert seen["path_helper_called"] is True
 
 
 def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):

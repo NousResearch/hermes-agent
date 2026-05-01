@@ -44,6 +44,12 @@ class TestSanePath:
     def test_includes_homebrew_sbin(self):
         assert "/opt/homebrew/sbin" in _SANE_PATH.split(os.pathsep)
 
+    def test_includes_mise_shims(self):
+        assert str(Path.home() / ".local" / "share" / "mise" / "shims") in _SANE_PATH.split(os.pathsep)
+
+    def test_includes_asdf_shims(self):
+        assert str(Path.home() / ".asdf" / "shims") in _SANE_PATH.split(os.pathsep)
+
     def test_includes_standard_dirs(self):
         path_parts = _SANE_PATH.split(os.pathsep)
         assert "/usr/local/bin" in path_parts

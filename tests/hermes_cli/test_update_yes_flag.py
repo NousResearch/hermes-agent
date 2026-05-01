@@ -8,11 +8,49 @@ Covers:
      input() call) and the stash is applied automatically
 """
 
+import importlib
 import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.main import cmd_update
+import pytest
+
+
+# Other tests in the suite (notably ``test_env_loader.py`` and
+# ``test_skills_subparser.py``) evict ``hermes_cli.main`` from
+# ``sys.modules`` mid-run.  When that happens on the same xdist worker
+# before we run, a module-top ``from hermes_cli.main import cmd_update``
+# binds against the *old* module object — and ``cmd_update.__globals__``
+# stays pointed at the old ``hermes_cli.main.__dict__``.
+# ``@patch("hermes_cli.main.X")`` then patches the *new* module's
+# attribute, but ``cmd_update`` still resolves every internal call
+# (``_install_hangup_protection``, ``_cmd_update_impl``,
+# ``_stash_local_changes_if_needed``, ``_restore_stashed_changes``, ``sys``,
+# …) via the stale ``__globals__``, so every patch is a no-op and the
+# real production code runs through.  This is the same xdist pollution
+# that ``test_update_stale_dashboard.py`` works around — see the
+# autouse fixture there for the original write-up.
+#
+# Get ``cmd_update`` from the *live* module inside each test instead.
+def _live_cmd_update():
+    live = sys.modules.get("hermes_cli.main")
+    if live is None:
+        live = importlib.import_module("hermes_cli.main")
+    return live.cmd_update
+
+
+@pytest.fixture(autouse=True)
+def _ensure_hermes_cli_main_loaded():
+    """Make sure ``hermes_cli.main`` is loaded before tests in this file run.
+
+    If a prior test on the worker evicted it, re-import here so
+    ``@patch("hermes_cli.main.X")`` targets the same module that
+    ``_live_cmd_update()`` will resolve against.
+    """
+    if "hermes_cli.main" not in sys.modules:
+        importlib.import_module("hermes_cli.main")
+    yield
 
 
 # `cmd_update` wraps `_cmd_update_impl` in `_install_hangup_protection`, which
@@ -22,9 +60,8 @@ from hermes_cli.main import cmd_update
 # wrapper stores the original (still-mocked) stream as ``_original`` but
 # replaces ``sys.stdout`` with itself, so subsequent ``sys.stdout.isatty()``
 # calls go through the wrapper's ``isatty()``, whose return value depends on
-# whether earlier writes flagged ``_original_broken`` — flaky under xdist.
-# Bypass the wrapping with a no-op state so isatty() answers the mock
-# directly.
+# whether earlier writes flagged ``_original_broken``.  Bypass the wrapping
+# with a no-op state so isatty() answers the mock directly.
 _HANGUP_PROTECTION_NOOP_STATE = {
     "prev_stdout": None,
     "prev_stderr": None,
@@ -99,7 +136,7 @@ class TestUpdateYesConfigMigration:
         args = SimpleNamespace(yes=True)
 
         with patch("builtins.input") as mock_input:
-            cmd_update(args)
+            _live_cmd_update()(args)
             # Never prompted the user.
             mock_input.assert_not_called()
 
@@ -150,7 +187,7 @@ class TestUpdateYesConfigMigration:
         ) as mock_sys:
             mock_sys.stdin.isatty.return_value = True
             mock_sys.stdout.isatty.return_value = True
-            cmd_update(args)
+            _live_cmd_update()(args)
             # The user was actually prompted.
             assert mock_input.called
             prompts = [c.args[0] if c.args else "" for c in mock_input.call_args_list]
@@ -195,7 +232,7 @@ class TestUpdateYesStashRestore:
 
         args = SimpleNamespace(yes=True)
 
-        cmd_update(args)
+        _live_cmd_update()(args)
 
         # _restore_stashed_changes was called, and called with prompt_user=False
         # every time (so the user never sees "Restore local changes now?").

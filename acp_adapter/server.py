@@ -744,24 +744,37 @@ class HermesACPAgent(acp.Agent):
         tool_call_meta: dict[str, dict[str, Any]] = {}
         previous_approval_cb = None
 
+        streamed_message = False
+
         if conn:
             tool_progress_cb = make_tool_progress_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-            thinking_cb = make_thinking_cb(conn, session_id, loop)
+            reasoning_cb = make_thinking_cb(conn, session_id, loop)
             step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             message_cb = make_message_cb(conn, session_id, loop)
+
+            def stream_delta_cb(text: str) -> None:
+                nonlocal streamed_message
+                if text:
+                    streamed_message = True
+                message_cb(text)
+
             approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
         else:
             tool_progress_cb = None
-            thinking_cb = None
+            reasoning_cb = None
             step_cb = None
-            message_cb = None
+            stream_delta_cb = None
             approval_cb = None
 
         agent = state.agent
         agent.tool_progress_callback = tool_progress_cb
-        agent.thinking_callback = thinking_cb
+        # ACP thought panes should not receive Hermes' local kawaii waiting/status
+        # updates. Route provider/model reasoning deltas instead; if the provider
+        # emits no reasoning, Zed should not get a fake "thinking" accordion.
+        agent.thinking_callback = None
+        agent.reasoning_callback = reasoning_cb
         agent.step_callback = step_cb
-        agent.message_callback = message_cb
+        agent.stream_delta_callback = stream_delta_cb
 
         # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
         # Set it INSIDE _run_agent so the TLS write happens in the executor
@@ -867,7 +880,7 @@ class HermesACPAgent(acp.Agent):
                 )
             except Exception:
                 logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
-        if final_response and conn:
+        if final_response and conn and not streamed_message:
             update = acp.update_agent_message_text(final_response)
             await conn.session_update(session_id, update)
 

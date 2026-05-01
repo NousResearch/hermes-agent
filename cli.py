@@ -15,8 +15,8 @@ Usage:
 
 import logging
 import os
-import platform
 import shutil
+import sys
 import json
 import re
 import concurrent.futures

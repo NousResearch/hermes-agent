@@ -1963,6 +1963,14 @@ class GatewayRunner:
             except Exception:
                 pass  # don't let interrupt failure block the ack
 
+        # Check if busy ack is disabled — skip sending but still process the input.
+        # Placed before debounce so we don't stamp a "last ack" timestamp that was
+        # never actually delivered.
+        busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
+        if not busy_ack_enabled:
+            logger.debug("Busy ack suppressed for session %s", session_key)
+            return True  # input still processed, just no ack sent
+
         # Debounce: only send an acknowledgment once every 30 seconds per session
         # to avoid spamming the user when they send multiple messages quickly
         _BUSY_ACK_COOLDOWN = 30
@@ -1972,12 +1980,6 @@ class GatewayRunner:
             return True  # interrupt sent (if not queue), ack already delivered recently
 
         self._busy_ack_ts[session_key] = now
-
-        # Check if busy ack is disabled — skip sending but still process the input
-        busy_ack_enabled = os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() == "true"
-        if not busy_ack_enabled:
-            logger.debug("Busy ack suppressed for session %s", session_key)
-            return True  # input still processed, just no ack sent
 
         # Build a status-rich acknowledgment
         status_parts = []

@@ -415,11 +415,10 @@ function Install-Repository {
     if (Test-Path $InstallDir) {
         if (Test-Path "$InstallDir\.git") {
             Write-Info "Existing installation found, updating..."
-            Push-Location $InstallDir
-            git -c windows.appendAtomically=false fetch origin
-            git -c windows.appendAtomically=false checkout $Branch
-            git -c windows.appendAtomically=false pull origin $Branch
-            Pop-Location
+            Write-Info "Skipping remote fetch/pull, using local branch state."
+            # Push-Location $InstallDir
+            # git -c windows.appendAtomically=false checkout $Branch
+            # Pop-Location
         } else {
             Write-Err "Directory exists but is not a git repository: $InstallDir"
             Write-Info "Remove it or choose a different directory with -InstallDir"
@@ -428,7 +427,19 @@ function Install-Repository {
     } else {
         $cloneSuccess = $false
 
-        # Fix Windows git "copy-fd: write returned: Invalid argument" error.
+        # If we're running from a local clone, we can just copy it or use it.
+        $scriptPath = $PSScriptRoot
+        if (Test-Path "$scriptPath\..\.git") {
+            Write-Info "Running from local repository, copying to $InstallDir..."
+            Copy-Item -Path "$scriptPath\.." -Destination $InstallDir -Recurse -Force
+            Write-Success "Copied local repository"
+            $cloneSuccess = $true
+        }
+
+        if ($cloneSuccess) {
+            # Skip remote clone if local copy succeeded
+        } else {
+            # Fix Windows git "copy-fd: write returned: Invalid argument" error.
         # Git for Windows can fail on atomic file operations (hook templates,
         # config lock files) due to antivirus, OneDrive, or NTFS filter drivers.
         # The -c flag injects config before any file I/O occurs.

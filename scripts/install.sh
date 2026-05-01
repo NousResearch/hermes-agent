@@ -694,9 +694,8 @@ clone_repo() {
                 autostash_ref="$(git rev-parse --verify refs/stash)"
             fi
 
-            git fetch origin
-            git checkout "$BRANCH"
-            git pull --ff-only origin "$BRANCH"
+            log_info "Skipping remote fetch/pull, using local branch state."
+            # git checkout "$BRANCH" # Keep current branch instead of forcing $BRANCH
 
             if [ -n "$autostash_ref" ]; then
                 local restore_now="yes"
@@ -735,21 +734,28 @@ clone_repo() {
             exit 1
         fi
     else
-        # Try SSH first (for private repo access), fall back to HTTPS
-        # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
-        # so SSH fails fast instead of hanging when no key is configured.
-        log_info "Trying SSH clone..."
-        if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
-            log_success "Cloned via SSH"
+        # If we're running from a local clone, we can just copy it or use it.
+        # However, for a "one-click" installer often run via curl, we still need a source.
+        # We'll check if we are currently inside a hermes-agent repo.
+        if [ -d "$SCRIPT_DIR/../.git" ]; then
+            log_info "Running from local repository, copying to $INSTALL_DIR..."
+            cp -r "$SCRIPT_DIR/.." "$INSTALL_DIR"
+            log_success "Copied local repository"
         else
-            rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
-            log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
-                log_success "Cloned via HTTPS"
+            # Fallback to remote clone if not running from a local repo
+            log_info "Trying SSH clone..."
+            if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
+               git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+                log_success "Cloned via SSH"
             else
-                log_error "Failed to clone repository"
-                exit 1
+                rm -rf "$INSTALL_DIR" 2>/dev/null
+                log_info "SSH failed, trying HTTPS..."
+                if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+                    log_success "Cloned via HTTPS"
+                else
+                    log_error "Failed to clone repository"
+                    exit 1
+                fi
             fi
         fi
     fi

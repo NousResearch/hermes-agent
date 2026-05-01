@@ -2674,7 +2674,41 @@ def validate_requested_model(
             "message": "Model names cannot contain spaces.",
         }
 
-    if normalized == "custom":
+    if normalized == "lmstudio":
+        from hermes_cli.auth import AuthError
+        # Use probe_lmstudio_models so we can distinguish None (unreachable
+        # / malformed response) from [] (reachable, but no chat-capable models
+        # are loaded). fetch_lmstudio_models collapses both to [].
+        try:
+            models = probe_lmstudio_models(api_key=api_key, base_url=base_url)
+        except AuthError as exc:
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": (
+                    f"{exc} Set `LM_API_KEY` (or update it) to match the server's bearer token."
+                ),
+            }
+        if models is None:
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": f"Could not reach LM Studio's `/api/v1/models` to validate `{requested}`.",
+            }
+        if not models:
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": (
+                    f"LM Studio is reachable but no chat-capable models are loaded. "
+                    f"Load `{requested}` in LM Studio (Developer tab → Load Model) and try again."
+                ),
+            }
+        if requested_for_lookup in set(models):
+            return {"accepted": True, "persist": True, "recognized": True, "message": None}
+        return {
+            "accepted": False, "persist": False, "recognized": False,
+            "message": f"Model `{requested}` was not found in LM Studio's model listing.",
+        }
+
+    if normalized == "custom" or normalized.startswith("custom:"):
         # Try probing with correct auth for the api_mode.
         if api_mode == "anthropic_messages":
             probe = probe_api_models(api_key, base_url, api_mode=api_mode)

@@ -122,6 +122,34 @@ class TestGetConnectedPlatforms:
         assert Platform.DINGTALK not in config.get_connected_platforms()
 
 
+class TestGatewayConfigCompressionRollover:
+    def test_default_max_context_compressions_before_reset_is_three(self):
+        config = GatewayConfig()
+        assert config.max_context_compressions_before_reset == 3
+
+    def test_from_dict_accepts_zero_to_disable_compression_rollover(self):
+        config = GatewayConfig.from_dict({"max_context_compressions_before_reset": 0})
+        assert config.max_context_compressions_before_reset == 0
+
+    def test_from_dict_clamps_negative_compression_rollover(self):
+        config = GatewayConfig.from_dict({"max_context_compressions_before_reset": -5})
+        assert config.max_context_compressions_before_reset == 0
+
+    def test_bridges_compression_rollover_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "max_context_compressions_before_reset: 2\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.max_context_compressions_before_reset == 2
+
+
 class TestSessionResetPolicy:
     def test_roundtrip(self):
         policy = SessionResetPolicy(mode="idle", at_hour=6, idle_minutes=120)

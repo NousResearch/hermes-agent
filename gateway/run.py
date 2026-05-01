@@ -495,6 +495,7 @@ from gateway.config import (
 from gateway.session import (
     SessionStore,
     SessionSource,
+    SessionEntry,
     SessionContext,
     build_session_context,
     build_session_context_prompt,
@@ -5541,6 +5542,17 @@ class GatewayRunner:
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
+
+        session_entry, _compression_rollover = self._rollover_session_if_compression_limit_reached(session_entry)
+        if _compression_rollover:
+            session_key = session_entry.session_key
+            _is_new_session = True
+            await self.hooks.emit("session:start", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "session_id": session_entry.session_id,
+                "session_key": session_key,
+            })
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
@@ -5891,6 +5903,10 @@ class GatewayRunner:
                                     )
                                     # Reset stored token count — transcript was rewritten
                                     session_entry.last_prompt_tokens = 0
+                                    session_entry.compression_count = (
+                                        int(getattr(session_entry, "compression_count", 0) or 0) + 1
+                                    )
+                                    self.session_store._save()
                                     history = _compressed
                                     _new_count = len(_compressed)
                                     _new_tokens = estimate_messages_tokens_rough(
@@ -6392,6 +6408,10 @@ class GatewayRunner:
             self.session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+                compression_count=agent_result.get(
+                    "compression_count",
+                    getattr(session_entry, "compression_count", 0),
+                ),
             )
 
             # Auto voice reply: send TTS audio before the text response
@@ -11125,6 +11145,62 @@ class GatewayRunner:
             with _lock:
                 self._agent_cache.pop(session_key, None)
 
+    def _rollover_session_if_compression_limit_reached(self, session_entry: SessionEntry) -> tuple[SessionEntry, bool]:
+        """Start a fresh session once lossy context compression has run too often."""
+        try:
+            limit = int(getattr(self.config, "max_context_compressions_before_reset", 3) or 0)
+        except (TypeError, ValueError):
+            limit = 3
+        if limit <= 0:
+            return session_entry, False
+
+        compression_count = int(getattr(session_entry, "compression_count", 0) or 0)
+        if compression_count < limit:
+            return session_entry, False
+
+        session_key = session_entry.session_key
+        old_session_id = session_entry.session_id
+        old_agent = None
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock:
+            with _cache_lock:
+                _cached = self._agent_cache.get(session_key)
+                old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+        if old_agent is not None:
+            self._cleanup_agent_resources(old_agent)
+        self._evict_cached_agent(session_key)
+        new_entry = self.session_store.reset_session(session_key)
+        # This automatic rollover is consumed by the current inbound message;
+        # do not make the next message look like another fresh reset.
+        new_entry.is_fresh_reset = False
+        self.session_store._save()
+        self._clear_session_boundary_security_state(session_key)
+        self._session_model_overrides.pop(session_key, None)
+        self._set_session_reasoning_override(session_key, None)
+        if hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes.pop(session_key, None)
+        logger.info(
+            "Session %s auto-rolled over after %d context compression(s): %s -> %s",
+            session_key,
+            compression_count,
+            old_session_id,
+            new_entry.session_id,
+        )
+        return new_entry, True
+
+    @staticmethod
+    def _sync_agent_compression_count(session_entry: SessionEntry, agent: Any) -> None:
+        """Seed the agent compressor with persisted gateway compression count."""
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor is None:
+            return
+        try:
+            persisted = int(getattr(session_entry, "compression_count", 0) or 0)
+            current = int(getattr(compressor, "compression_count", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        compressor.compression_count = max(current, persisted)
+
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
         """Reset per-turn state on a cached agent before a new turn starts.
@@ -12320,6 +12396,7 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            self._sync_agent_compression_count(session_entry, agent)
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
@@ -12665,12 +12742,14 @@ class GatewayRunner:
             _input_toks = 0
             _output_toks = 0
             _context_length = 0
+            _compression_count = 0
             _agent = agent_holder[0]
             if _agent and hasattr(_agent, "context_compressor"):
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
+                _compression_count = getattr(_agent.context_compressor, "compression_count", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
@@ -12684,6 +12763,7 @@ class GatewayRunner:
                     "tools": tools_holder[0] or [],
                     "history_offset": len(agent_history),
                     "last_prompt_tokens": _last_prompt_toks,
+                    "compression_count": _compression_count,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
@@ -12789,6 +12869,7 @@ class GatewayRunner:
                 "tools": tools_holder[0] or [],
                 "history_offset": _effective_history_offset,
                 "last_prompt_tokens": _last_prompt_toks,
+                "compression_count": _compression_count,
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,

@@ -13755,6 +13755,7 @@ class AIAgent:
             "completion_tokens": self.session_completion_tokens,
             "total_tokens": self.session_total_tokens,
             "last_prompt_tokens": getattr(self.context_compressor, "last_prompt_tokens", 0) or 0,
+            "compression_count": getattr(self.context_compressor, "compression_count", 0) or 0,
             "estimated_cost_usd": self.session_estimated_cost_usd,
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,

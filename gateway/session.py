@@ -452,6 +452,11 @@ class SessionEntry:
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
+
+    # Successful lossy context compressions applied to this session lane.
+    # Used by the gateway to roll over before summary-of-summary drift becomes
+    # the dominant context.  Reset/session switch starts a fresh count.
+    compression_count: int = 0
     
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
@@ -506,6 +511,7 @@ class SessionEntry:
             "cache_write_tokens": self.cache_write_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
+            "compression_count": self.compression_count,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "expiry_finalized": self.expiry_finalized,
@@ -559,6 +565,7 @@ class SessionEntry:
             cache_write_tokens=data.get("cache_write_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
+            compression_count=data.get("compression_count", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),
@@ -952,6 +959,7 @@ class SessionStore:
         self,
         session_key: str,
         last_prompt_tokens: int = None,
+        compression_count: int = None,
     ) -> None:
         """Update lightweight session metadata after an interaction."""
         with self._lock:
@@ -962,6 +970,8 @@ class SessionStore:
                 entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
+                if compression_count is not None:
+                    entry.compression_count = max(0, int(compression_count))
                 self._save()
 
     def suspend_session(self, session_key: str) -> bool:

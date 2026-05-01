@@ -1198,6 +1198,101 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
 
+
+class TestCompressionCount:
+    """Tests for lossy context-compression rollover tracking."""
+
+    def test_session_entry_default(self):
+        """New sessions should have compression_count=0."""
+        from gateway.session import SessionEntry
+        from datetime import datetime
+
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+
+        assert entry.compression_count == 0
+
+    def test_session_entry_roundtrip(self):
+        """compression_count should survive serialization/deserialization."""
+        from gateway.session import SessionEntry
+        from datetime import datetime
+
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            compression_count=2,
+        )
+
+        d = entry.to_dict()
+        assert d["compression_count"] == 2
+        restored = SessionEntry.from_dict(d)
+        assert restored.compression_count == 2
+
+    def test_session_entry_from_old_data_defaults_to_zero(self):
+        """Old session data without compression_count should default to 0."""
+        from gateway.session import SessionEntry
+
+        entry = SessionEntry.from_dict({
+            "session_key": "test",
+            "session_id": "s1",
+            "created_at": "2025-01-01T00:00:00",
+            "updated_at": "2025-01-01T00:00:00",
+        })
+
+        assert entry.compression_count == 0
+
+    def test_update_session_sets_compression_count(self, tmp_path):
+        """update_session should persist the latest compression depth."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        store._entries = {"k1": entry}
+
+        store.update_session("k1", compression_count=2)
+        assert entry.compression_count == 2
+        store._save.assert_called()
+
+    def test_reset_session_resets_compression_count(self, tmp_path):
+        """A fresh reset session should not inherit lossy compression depth."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        old = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            compression_count=3,
+        )
+        store._entries = {"k1": old}
+
+        new = store.reset_session("k1")
+        assert new.compression_count == 0
+
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
 

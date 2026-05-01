@@ -426,6 +426,12 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # After this many successful lossy context compressions in one gateway
+    # session lane, start a fresh session before the next agent turn. 0 disables
+    # this rollover. The default of 3 keeps one useful compressed history while
+    # avoiding repeated summary-of-summary drift in long-running gateways.
+    max_context_compressions_before_reset: int = 3
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -519,6 +525,7 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "max_context_compressions_before_reset": self.max_context_compressions_before_reset,
         }
     
     @classmethod
@@ -573,6 +580,15 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        try:
+            max_context_compressions_before_reset = int(
+                data.get("max_context_compressions_before_reset", 3)
+            )
+            if max_context_compressions_before_reset < 0:
+                max_context_compressions_before_reset = 0
+        except (TypeError, ValueError):
+            max_context_compressions_before_reset = 3
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -588,6 +604,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            max_context_compressions_before_reset=max_context_compressions_before_reset,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -684,6 +701,11 @@ def load_gateway_config() -> GatewayConfig:
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
+
+            if "max_context_compressions_before_reset" in yaml_cfg:
+                gw_data["max_context_compressions_before_reset"] = yaml_cfg[
+                    "max_context_compressions_before_reset"
+                ]
 
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(

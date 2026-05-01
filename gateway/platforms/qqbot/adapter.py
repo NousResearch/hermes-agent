@@ -98,6 +98,7 @@ from gateway.platforms.qqbot.constants import (
     DEFAULT_API_TIMEOUT,
     FILE_UPLOAD_TIMEOUT,
     CONNECT_TIMEOUT_SECONDS,
+    WS_CLOSE_TIMEOUT_SECONDS,
     RECONNECT_BACKOFF,
     MAX_RECONNECT_ATTEMPTS,
     RATE_LIMIT_DELAY,
@@ -298,15 +299,33 @@ class QQAdapter(BasePlatformAdapter):
         self._release_platform_lock()
         logger.info("[%s] Disconnected", self._log_tag)
 
+    async def _close_ws_resources(self) -> None:
+        """Close WebSocket resources without letting graceful close hang forever."""
+        ws = self._ws
+        self._ws = None
+        if ws and not ws.closed:
+            try:
+                await asyncio.wait_for(ws.close(), timeout=WS_CLOSE_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] Timed out closing stale QQ WebSocket; abandoning it",
+                    self._log_tag,
+                )
+
+        session = self._session
+        self._session = None
+        if session and not session.closed:
+            try:
+                await asyncio.wait_for(session.close(), timeout=WS_CLOSE_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] Timed out closing stale QQ WebSocket session; abandoning it",
+                    self._log_tag,
+                )
+
     async def _cleanup(self) -> None:
         """Close WebSocket, HTTP session, and client."""
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
-
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        await self._close_ws_resources()
 
         if self._http_client:
             await self._http_client.aclose()
@@ -386,12 +405,7 @@ class QQAdapter(BasePlatformAdapter):
     async def _open_ws(self, gateway_url: str) -> None:
         """Open a WebSocket connection to the QQ Bot gateway."""
         # Only clean up WebSocket resources — keep _http_client alive for REST API calls.
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        await self._close_ws_resources()
 
         self._session = aiohttp.ClientSession()
         self._ws = await self._session.ws_connect(

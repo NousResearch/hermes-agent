@@ -192,6 +192,34 @@ class TestVoiceAttachmentSSRFProtection:
         assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
 
 # ---------------------------------------------------------------------------
+# WebSocket cleanup
+# ---------------------------------------------------------------------------
+
+class TestQQWebSocketCleanup:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    def test_cleanup_abandons_hung_websocket_close(self):
+        from gateway.platforms.qqbot import adapter as qq_adapter
+
+        class HangingClose:
+            closed = False
+
+            async def close(self):
+                await asyncio.Event().wait()
+
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._ws = HangingClose()
+        adapter._session = None
+
+        with mock.patch.object(qq_adapter, "WS_CLOSE_TIMEOUT_SECONDS", 0.01, create=True):
+            asyncio.run(asyncio.wait_for(adapter._cleanup(), timeout=0.2))
+
+        assert adapter._ws is None
+
+
+# ---------------------------------------------------------------------------
 # _strip_at_mention
 # ---------------------------------------------------------------------------
 

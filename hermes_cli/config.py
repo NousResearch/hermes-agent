@@ -996,7 +996,9 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
-        "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
+        "reactions": True,             # Add emoji reactions to messages during processing
+        "persona_emoji": "",           # Agent identity emoji shown on ack + completion (e.g. 🔎). Empty = 👀
+        "dynamic_reactions": True,     # Swap reaction per tool call to show current activity
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
         # discord / discord_admin tools: restrict which actions the agent may call.
         # Default (empty) = all actions allowed (subject to bot privileged intents).

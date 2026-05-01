@@ -509,7 +509,10 @@ class TeamsAdapter(BasePlatformAdapter):
 
         for chunk in chunks:
             try:
-                result = await self._app.send(chat_id, chunk)
+                if reply_to:
+                    result = await self._app.reply(chat_id, reply_to, chunk)
+                else:
+                    result = await self._app.send(chat_id, chunk)
                 last_message_id = getattr(result, "id", None)
             except Exception as e:
                 return SendResult(success=False, error=str(e), retryable=True)

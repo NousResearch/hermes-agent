@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -82,9 +83,12 @@ async def list_jobs():
     for f in sorted(jobs_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
+            created_at = data.get("created_at") or datetime.utcfromtimestamp(
+                f.stat().st_mtime
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
             summaries.append({
                 "id": data.get("id", f.stem),
-                "created_at": data.get("created_at", ""),
+                "created_at": created_at,
                 "video_filename": Path(data.get("video_path", "")).name,
                 "segment_count": len(data.get("segments", [])),
             })

@@ -241,6 +241,13 @@ function buildRoutes(
       path: m.tab.path,
       element: <PluginPage name={m.name} />,
     });
+    // Also mount a wildcard route so deep links like /captions/abc123 work.
+    // The plugin component handles sub-navigation internally.
+    routes.push({
+      key: `plugin:${m.name}:sub`,
+      path: `${m.tab.path}/*`,
+      element: <PluginPage name={m.name} />,
+    });
   }
 
   for (const m of manifests) {

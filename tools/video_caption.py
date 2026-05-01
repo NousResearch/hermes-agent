@@ -269,8 +269,9 @@ def generate_phonetics(segments: list[dict], api_key: str | None = None) -> list
     prompt = (
         "You are captioning a Vietnamese language teaching short video. "
         "The audio is mostly English narration with Vietnamese words and phrases being taught. "
-        "Whisper (the speech transcriber) may have garbled Vietnamese words into approximate English spellings.\n\n"
-        "For each segment below, return a JSON array where every item has exactly these fields:\n"
+        "Whisper (the speech transcriber) often garbles Vietnamese words into approximate English-looking spellings — "
+        "for example 'Hong biet', 'Khong biet', 'hong', 'zoe', 'un' are likely garbled Vietnamese, not English.\n\n"
+        "For each segment below, return a JSON object with a \"segments\" key containing an array where every item has exactly these fields:\n"
         '- "id": same integer as input\n'
         '- "text": if English narration → corrected English text. '
         'If the segment contains Vietnamese being taught (even if garbled) → rewrite with correct Vietnamese spelling and diacritics.\n'
@@ -278,7 +279,7 @@ def generate_phonetics(segments: list[dict], api_key: str | None = None) -> list
         '- "phonetic": if lang is "vi" → a simple English pronunciation guide in square brackets '
         '(e.g. "[humm biet]", "[zuh yee]", "[toh-ee ten la]"). '
         'If lang is "en" → empty string "".\n\n'
-        "Return ONLY a valid JSON array, no markdown, no explanation.\n\n"
+        'Return ONLY a valid JSON object like {"segments": [...]}, no markdown, no explanation.\n\n'
         f"Segments:\n{input_lines}"
     )
 
@@ -292,6 +293,7 @@ def generate_phonetics(segments: list[dict], api_key: str | None = None) -> list
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=2048,
+            response_format={"type": "json_object"},
         )
         choice = response.choices[0]
         raw = getattr(choice.message, "content", None) or ""
@@ -303,11 +305,12 @@ def generate_phonetics(segments: list[dict], api_key: str | None = None) -> list
         logger.warning("Kimi API call failed: %s — treating all segments as English", e)
         return [{**s, "lang": "en", "phonetic": ""} for s in segments]
 
-    # Strip markdown code fences if present
+    # json_object mode returns {"segments": [...]}, but handle bare array too for resilience
     logger.debug("Kimi raw response (first 500 chars): %s", raw[:500])
     clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
     try:
-        kimi_results = json.loads(clean)
+        parsed = json.loads(clean)
+        kimi_results = parsed.get("segments", []) if isinstance(parsed, dict) else parsed
     except json.JSONDecodeError:
         logger.warning(
             "Kimi returned non-JSON — treating all segments as English.\n"

@@ -878,6 +878,7 @@ class GatewayRunner:
         self._restart_task_started = False
         self._restart_detached = False
         self._restart_via_service = False
+        self._startup_time: float = time.time()
         self._stop_task: Optional[asyncio.Task] = None
         
         # Track running agents per session for interrupt support
@@ -6916,6 +6917,15 @@ class GatewayRunner:
         try:
             marker_path = _hermes_home / ".restart_last_processed.json"
             if not marker_path.exists():
+                # No dedup marker — if the gateway just started (within
+                # the first 60 seconds), treat this as a stale /restart
+                # redelivery.  A legitimate /restart cannot arrive before
+                # the gateway has finished booting plus the adapter
+                # handshake; anything arriving this early is a re-delivery
+                # from the previous gateway cycle.
+                if hasattr(self, "_startup_time"):
+                    if time.time() - self._startup_time < 60:
+                        return True
                 return False
             data = json.loads(marker_path.read_text())
         except Exception:

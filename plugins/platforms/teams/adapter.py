@@ -38,6 +38,7 @@ except ImportError:
 
 try:
     from microsoft_teams.apps import App, ActivityContext
+    from microsoft_teams.common.http.client import ClientOptions
     from microsoft_teams.api import MessageActivity, ConversationReference
     from microsoft_teams.api.activities.typing import TypingActivityInput
     from microsoft_teams.api.activities.invoke.adaptive_card import AdaptiveCardInvokeActivity
@@ -57,6 +58,7 @@ try:
     TEAMS_SDK_AVAILABLE = True
 except ImportError:
     TEAMS_SDK_AVAILABLE = False
+    ClientOptions = None  # type: ignore[assignment,misc]
     App = None  # type: ignore[assignment,misc]
     ActivityContext = None  # type: ignore[assignment,misc]
     MessageActivity = None  # type: ignore[assignment,misc]
@@ -208,6 +210,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 client_secret=self._client_secret,
                 tenant_id=self._tenant_id,
                 http_server_adapter=_AiohttpBridgeAdapter(aiohttp_app),
+                client=ClientOptions(headers={"User-Agent": "Hermes"}),
             )
 
             # Register message handler before initialize()

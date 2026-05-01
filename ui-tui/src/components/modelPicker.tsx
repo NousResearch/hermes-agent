@@ -8,7 +8,7 @@ import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
-import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
+import { OverlayHint, useOverlayKeys, windowItems } from './overlayControls.js'
 
 const VISIBLE = 12
 const MIN_WIDTH = 40
@@ -263,24 +263,6 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       setStage('disconnect')
 
       return
-    }
-
-    const n = ch === '0' ? 10 : parseInt(ch, 10)
-
-    if (!Number.isNaN(n) && n >= 1 && n <= Math.min(10, count)) {
-      const offset = windowOffset(count, sel, VISIBLE)
-
-      if (stage === 'provider') {
-        const next = offset + n - 1
-
-        if (providers[next]) {
-          setProviderIdx(next)
-        }
-      } else if (provider && models[offset + n - 1]) {
-        onSelect(
-          `${models[offset + n - 1]} --provider ${provider.slug}${persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`
-        )
-      }
     }
   })
 

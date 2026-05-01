@@ -1144,7 +1144,7 @@ def _compress_session_history(
     before_messages: list | None = None,
     history_version: int | None = None,
 ) -> tuple[int, dict]:
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from agent.model_metadata import estimate_request_tokens_rough
 
     agent = session["agent"]
     # Snapshot history under the lock so the LLM-bound compression call
@@ -1160,7 +1160,13 @@ def _compress_session_history(
         usage = _get_usage(agent)
         return 0, usage
     if approx_tokens is None:
-        approx_tokens = estimate_messages_tokens_rough(history)
+        # Include system prompt + tool schemas so the figure reflects real
+        # request pressure, not a transcript-only underestimate (#6217).
+        _sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+        _tools = getattr(agent, "tools", None) or None
+        approx_tokens = estimate_request_tokens_rough(
+            history, system_prompt=_sys_prompt, tools=_tools
+        )
     # Pass system_message=None so AIAgent._compress_context rebuilds the
     # system prompt cleanly via _build_system_prompt(None). Passing the
     # cached prompt (which already contains the agent identity block)
@@ -2328,14 +2334,21 @@ def _(rid, params: dict) -> dict:
     focus_topic = str(params.get("focus_topic", "") or "").strip()
     try:
         from agent.manual_compression_feedback import summarize_manual_compression
-        from agent.model_metadata import estimate_messages_tokens_rough
+        from agent.model_metadata import estimate_request_tokens_rough
 
         with session["history_lock"]:
             before_messages = list(session.get("history", []))
             history_version = int(session.get("history_version", 0))
         before_count = len(before_messages)
+        _agent = session["agent"]
+        _sys_prompt = getattr(_agent, "_cached_system_prompt", "") or ""
+        _tools = getattr(_agent, "tools", None) or None
         before_tokens = (
-            estimate_messages_tokens_rough(before_messages) if before_count else 0
+            estimate_request_tokens_rough(
+                before_messages, system_prompt=_sys_prompt, tools=_tools
+            )
+            if before_count
+            else 0
         )
 
         if before_count >= 4:
@@ -2358,8 +2371,18 @@ def _(rid, params: dict) -> dict:
             with session["history_lock"]:
                 messages = list(session.get("history", []))
             after_count = len(messages)
+            # Re-read system prompt + tools after compression — _compress_context
+            # may have rebuilt the system prompt (_cached_system_prompt=None).
+            _sys_prompt_after = getattr(_agent, "_cached_system_prompt", "") or _sys_prompt
+            _tools_after = getattr(_agent, "tools", None) or _tools
             after_tokens = (
-                estimate_messages_tokens_rough(messages) if after_count else 0
+                estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=_sys_prompt_after,
+                    tools=_tools_after,
+                )
+                if after_count
+                else 0
             )
             agent = session["agent"]
             _sync_session_key_after_compress(sid, session)

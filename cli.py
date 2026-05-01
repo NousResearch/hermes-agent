@@ -7343,10 +7343,20 @@ class HermesCLI:
         original_count = len(self.conversation_history)
         with self._busy_command("Compressing context..."):
             try:
-                from agent.model_metadata import estimate_messages_tokens_rough
+                from agent.model_metadata import estimate_request_tokens_rough
                 from agent.manual_compression_feedback import summarize_manual_compression
                 original_history = list(self.conversation_history)
-                approx_tokens = estimate_messages_tokens_rough(original_history)
+                # Include system prompt + tool schemas in the estimate —
+                # a transcript-only number understates real request pressure
+                # and can even appear to grow after compression because a
+                # dense handoff summary replaces many short turns (#6217).
+                _sys_prompt = getattr(self.agent, "_cached_system_prompt", "") or ""
+                _tools = getattr(self.agent, "tools", None) or None
+                approx_tokens = estimate_request_tokens_rough(
+                    original_history,
+                    system_prompt=_sys_prompt,
+                    tools=_tools,
+                )
                 if focus_topic:
                     print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens), "
                           f"focus: \"{focus_topic}\"...")
@@ -7378,7 +7388,11 @@ class HermesCLI:
                 ):
                     self.session_id = self.agent.session_id
                     self._pending_title = None
-                new_tokens = estimate_messages_tokens_rough(self.conversation_history)
+                new_tokens = estimate_request_tokens_rough(
+                    self.conversation_history,
+                    system_prompt=_sys_prompt,
+                    tools=_tools,
+                )
                 summary = summarize_manual_compression(
                     original_history,
                     self.conversation_history,

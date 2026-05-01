@@ -960,7 +960,7 @@ def skill_view(
                 skill_md = direct_path.with_suffix(".md")
                 break
 
-        # Search by directory name across all dirs
+        # Search by directory name (canonical) and frontmatter name (display name)
         if not skill_md:
             for search_dir in all_dirs:
                 from agent.skill_utils import iter_skill_index_files
@@ -970,6 +970,18 @@ def skill_view(
                         skill_dir = found_skill_md.parent
                         skill_md = found_skill_md
                         break
+
+                    # Also allow the frontmatter `name` shown by skills_list.
+                    try:
+                        found_content = found_skill_md.read_text(encoding="utf-8")
+                        found_frontmatter, _ = _parse_frontmatter(found_content)
+                        listed_name = str(found_frontmatter.get("name") or "").strip()
+                        if listed_name and listed_name == name:
+                            skill_dir = found_skill_md.parent
+                            skill_md = found_skill_md
+                            break
+                    except Exception:
+                        continue
                 if skill_md:
                     break
 

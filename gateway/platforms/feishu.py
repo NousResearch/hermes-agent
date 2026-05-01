@@ -149,7 +149,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    r"(^#{1,6}\s)|(^\\s*[-*]\\s)|(^\\s*\\d+\\.\\s)|(^\\s*---+\\s*$)|(```)|(`[^`\\n]+`)|(\\*\\*[^*\\n].+?\\*\\*)|(~~[^~\\n].+?~~)|(<u>.+?</u>)|(\\*[^*\\n]+\\*)|(\\[[^\\]]+\\]\\([^)]+\\))|(^\u003e\\s)|(^\\s*\\|.+\\|\\s*$)",
     re.MULTILINE,
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
@@ -498,6 +498,24 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+def _is_markdown_table_line(line: str) -> bool:
+    """Check if a line looks like a markdown table row or separator."""
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return False
+    # Must have at least one pipe after the first char
+    return "|" in stripped[1:]
+
+
+def _is_table_separator_line(line: str) -> bool:
+    """Check if line is a markdown table separator like |---|---|."""
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return False
+    # Remove outer pipes and check if remaining is only dashes, pipes, colons and spaces
+    inner = stripped[1:-1] if stripped.endswith("|") else stripped[1:]
+    return bool(re.match(r"^[\s\-:|]+$", inner))
 
 
 # ---------------------------------------------------------------------------
@@ -3828,137 +3846,151 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
-    def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+   def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        # Check if content contains markdown tables
+        has_table = any(_is_markdown_table_line(line) for line in content.splitlines())
+        if has_table:
+            # Build interactive card with table support
+            card_payload = self._build_interactive_card_with_tables(content)
+            if card_payload:
+                return "interactive", card_payload
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 
-    async def _send_uploaded_file_message(
-        self,
-        *,
-        chat_id: str,
-        file_path: str,
-        reply_to: Optional[str],
-        metadata: Optional[Dict[str, Any]],
-        caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-        outbound_message_type: str = "file",
-    ) -> SendResult:
-        if not self._client:
-            return SendResult(success=False, error="Not connected")
-        if not os.path.exists(file_path):
-            return SendResult(success=False, error=f"File not found: {file_path}")
-
-        display_name = file_name or os.path.basename(file_path)
-        upload_file_type, resolved_message_type = self._resolve_outbound_file_routing(
-            file_path=display_name,
-            requested_message_type=outbound_message_type,
-        )
+    def _build_interactive_card_with_tables(self, content: str) -> Optional[str]:
+        """Build an interactive card (JSON 2.0) with markdown text and tables."""
         try:
-            with open(file_path, "rb") as file_obj:
-                body = self._build_file_upload_body(
-                    file_type=upload_file_type,
-                    file_name=display_name,
-                    file=file_obj,
-                )
-                request = self._build_file_upload_request(body)
-                upload_response = await asyncio.to_thread(self._client.im.v1.file.create, request)
-            file_key = self._extract_response_field(upload_response, "file_key")
-            if not file_key:
-                return self._response_error_result(
-                    upload_response,
-                    default_message="file upload failed",
-                    override_error="Feishu file upload missing file_key",
-                )
+            elements: List[Dict[str, Any]] = []
+            current_text: List[str] = []
+            table_lines: List[str] = []
+            in_table = False
 
-            if caption:
-                media_tag = {
-                    "tag": "media",
-                    "file_key": file_key,
-                    "file_name": display_name,
-                }
-                message_response = await self._feishu_send_with_retry(
-                    chat_id=chat_id,
-                    msg_type="post",
-                    payload=self._build_media_post_payload(caption=caption, media_tag=media_tag),
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
+            def _flush_text() -> None:
+                nonlocal current_text
+                if current_text:
+                    text = "\n".join(current_text).strip()
+                    if text:
+                        elements.append({
+                            "tag": "markdown",
+                            "content": text,
+                        })
+                    current_text = []
+
+            def _flush_table() -> None:
+                nonlocal table_lines
+                if table_lines:
+                    table_element = self._parse_markdown_table_to_card_table(table_lines)
+                    if table_element:
+                        elements.append(table_element)
+                    else:
+                        # Fallback: render as markdown text
+                        text = "\n".join(table_lines).strip()
+                        if text:
+                            elements.append({
+                                "tag": "markdown",
+                                "content": text,
+                            })
+                    table_lines = []
+
+            for raw_line in content.splitlines():
+                is_table = _is_markdown_table_line(raw_line)
+                if is_table:
+                    if not in_table:
+                        _flush_text()
+                        in_table = True
+                    table_lines.append(raw_line)
+                    continue
+                if in_table:
+                    _flush_table()
+                    in_table = False
+                current_text.append(raw_line)
+
+            if in_table:
+                _flush_table()
             else:
-                message_response = await self._feishu_send_with_retry(
-                    chat_id=chat_id,
-                    msg_type=resolved_message_type,
-                    payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
-            return self._finalize_send_result(message_response, "file send failed")
+                _flush_text()
+
+            if not elements:
+                return None
+
+            card = {
+                "schema": "2.0",
+                "body": {
+                    "elements": elements,
+                },
+            }
+            return json.dumps(card, ensure_ascii=False)
         except Exception as exc:
-            logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
-
-    async def _send_raw_message(
-        self,
-        *,
-        chat_id: str,
-        msg_type: str,
-        payload: str,
-        reply_to: Optional[str],
-        metadata: Optional[Dict[str, Any]],
-    ) -> Any:
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
-        if reply_to:
-            body = self._build_reply_message_body(
-                content=payload,
-                msg_type=msg_type,
-                reply_in_thread=reply_in_thread,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_reply_message_request(reply_to, body)
-            return await asyncio.to_thread(self._client.im.v1.message.reply, request)
-
-        body = self._build_create_message_body(
-            receive_id=chat_id,
-            msg_type=msg_type,
-            content=payload,
-            uuid_value=str(uuid.uuid4()),
-        )
-        request = self._build_create_message_request("chat_id", body)
-        return await asyncio.to_thread(self._client.im.v1.message.create, request)
-
-    @staticmethod
-    def _response_succeeded(response: Any) -> bool:
-        return bool(response and getattr(response, "success", lambda: False)())
-
-    @staticmethod
-    def _extract_response_field(response: Any, field_name: str) -> Any:
-        if not FeishuAdapter._response_succeeded(response):
+            logger.warning("[Feishu] Failed to build interactive card with tables: %s", exc)
             return None
-        data = getattr(response, "data", None)
-        return getattr(data, field_name, None) if data else None
 
-    def _response_error_result(
-        self,
-        response: Any,
-        *,
-        default_message: str,
-        override_error: Optional[str] = None,
-    ) -> SendResult:
-        if override_error:
-            return SendResult(success=False, error=override_error, raw_response=response)
-        code = getattr(response, "code", "unknown")
-        msg = getattr(response, "msg", default_message)
-        return SendResult(success=False, error=f"[{code}] {msg}", raw_response=response)
+    @staticmethod
+    def _parse_markdown_table_to_card_table(lines: List[str]) -> Optional[Dict[str, Any]]:
+        """Parse markdown table lines into Feishu interactive card table element."""
+        if not lines:
+            return None
 
-    def _finalize_send_result(self, response: Any, default_message: str) -> SendResult:
-        if not self._response_succeeded(response):
-            return self._response_error_result(response, default_message=default_message)
-        return SendResult(
-            success=True,
-            message_id=self._extract_response_field(response, "message_id"),
-            raw_response=response,
-        )
+        # Filter out separator lines and empty lines
+        data_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or _is_table_separator_line(stripped):
+                continue
+            data_lines.append(stripped)
+
+        if len(data_lines) < 1:
+            return None
+
+        # First line is header
+        header_line = data_lines[0]
+        cells = [cell.strip() for cell in header_line.split("|")]
+        if len(cells) >= 2 and cells[0] == "" and cells[-1] == "":
+            cells = cells[1:-1]
+        cells = [c for c in cells if c.strip() or c == ""]
+        if not cells:
+            return None
+
+        num_cols = len(cells)
+        columns = []
+        for i, cell in enumerate(cells):
+            columns.append({
+                "name": f"col_{i}",
+                "display_name": cell,
+                "data_type": "text",
+                "width": "auto",
+            })
+
+        # Parse data rows
+        rows: List[Dict[str, str]] = []
+        for line in data_lines[1:]:
+            cells = [cell.strip() for cell in line.split("|")]
+            if len(cells) >= 2 and cells[0] == "" and cells[-1] == "":
+                cells = cells[1:-1]
+            cells = [c for c in cells if c.strip() or c == ""]
+            if not cells:
+                continue
+
+            row: Dict[str, str] = {}
+            for i, cell in enumerate(cells):
+                if i < num_cols:
+                    row[f"col_{i}"] = cell
+            rows.append(row)
+
+        if not rows:
+            return None
+
+        return {
+            "tag": "table",
+            "columns": columns,
+            "rows": rows,
+            "header_style": {
+                "text_align": "left",
+                "background_style": "grey",
+                "bold": True,
+            },
+        }
 
     # =========================================================================
     # Connection internals — websocket / webhook setup

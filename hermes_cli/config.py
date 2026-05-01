@@ -775,6 +775,14 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        # Auto-delete system-notice replies (e.g. "✨ New session started!",
+        # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
+        # that support message deletion (currently Telegram; other platforms
+        # ignore and leave the message in place).  Only affects slash-command
+        # replies wrapped with gateway.platforms.base.EphemeralReply — agent
+        # responses and content messages are never touched.  Default 0
+        # (disabled) preserves prior behavior.
+        "ephemeral_system_ttl": 0,
         "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders

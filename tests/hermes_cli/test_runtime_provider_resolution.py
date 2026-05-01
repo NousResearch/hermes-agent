@@ -897,6 +897,58 @@ def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     assert resolved["requested_provider"] == "nous"
 
 
+def test_named_custom_provider_wins_over_builtin_alias(monkeypatch):
+    """A custom_providers entry named after a built-in *alias* (not a canonical
+    provider name) must win over the built-in.  Regression guard for #15743:
+    when users define ``custom_providers: [{name: kimi, ...}]`` and reference
+    ``provider: kimi``, the built-in alias rewriting (``kimi`` → ``kimi-coding``)
+    would otherwise hijack the request and send it to the wrong endpoint.
+    """
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "kimi",
+                    "base_url": "https://my-custom-kimi.example.com/v1",
+                    "api_key": "my-kimi-key",
+                }
+            ]
+        },
+    )
+
+    entry = rp._get_named_custom_provider("kimi")
+
+    assert entry is not None
+    assert entry["base_url"] == "https://my-custom-kimi.example.com/v1"
+    assert entry["api_key"] == "my-kimi-key"
+
+
+def test_named_custom_provider_skipped_for_canonical_built_in(monkeypatch):
+    """Companion to the test above: ``nous`` is a canonical provider name
+    (``resolve_provider('nous') == 'nous'``), so a custom entry with that name
+    should NOT be returned — the built-in wins as before.
+    """
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "nous",
+                    "base_url": "http://localhost:1234/v1",
+                    "api_key": "shadow-key",
+                }
+            ]
+        },
+    )
+
+    entry = rp._get_named_custom_provider("nous")
+
+    assert entry is None
+
+
 def test_explicit_openrouter_skips_openai_base_url(monkeypatch):
     """When the user explicitly requests openrouter, OPENAI_BASE_URL
     (which may point to a custom endpoint) must not override the

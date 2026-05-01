@@ -1165,6 +1165,29 @@ class Migrator:
                 users = [str(u).strip() for u in allow_from if str(u).strip()]
                 if users:
                     additions["WHATSAPP_ALLOWED_USERS"] = ",".join(users)
+            # Map WhatsApp-specific settings to Hermes config
+            hermes_cfg_path = self.target_root / "config.yaml"
+            hermes_cfg = load_yaml_file(hermes_cfg_path)
+            whatsapp_hermes = hermes_cfg.get("whatsapp") or {}
+            changed = False
+            if whatsapp.get("enabled") is not None:
+                whatsapp_hermes["enabled"] = whatsapp["enabled"]
+                changed = True
+            if whatsapp.get("dmPolicy") is not None:
+                whatsapp_hermes["dm_policy"] = whatsapp["dmPolicy"]
+                changed = True
+            if whatsapp.get("groupPolicy") is not None:
+                whatsapp_hermes["group_policy"] = whatsapp["groupPolicy"]
+                changed = True
+            if whatsapp.get("sendReadReceipts") is not None:
+                whatsapp_hermes["send_read_receipts"] = whatsapp["sendReadReceipts"]
+                changed = True
+            if whatsapp.get("ackReaction") is not None:
+                whatsapp_hermes["ack_reaction"] = whatsapp["ackReaction"]
+                changed = True
+            if changed and self.execute:
+                hermes_cfg["whatsapp"] = whatsapp_hermes
+                dump_yaml_file(hermes_cfg_path, hermes_cfg)
         if additions:
             self.merge_env_values(additions, "whatsapp-settings", self.source_root / "openclaw.json")
         else:

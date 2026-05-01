@@ -19,3 +19,4 @@ node_modules
 
 # Runtime data (bind-mounted at /opt/data; must not leak into build context)
 data/
+/Users/claw4.5/Documents/GitHub/hermes-agent

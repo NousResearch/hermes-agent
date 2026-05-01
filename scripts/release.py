@@ -48,6 +48,7 @@ AUTHOR_MAP = {
     "aludwin+gh@gmail.com": "adamludwin",
     "2093036+exiao@users.noreply.github.com": "exiao",
     "rylen.anil@gmail.com": "rylena",
+    "godnanijatin@gmail.com": "jatingodnani",
     "14046872+tmimmanuel@users.noreply.github.com": "tmimmanuel",
     "revar@users.noreply.github.com": "revaraver",
     # Matrix parity salvage batch (April 2026)

@@ -111,7 +111,11 @@ Look for:
 
 ## Step 6: Install the App in Teams
 
-Open the **Install in Teams** link printed by `teams app create` in Step 3 — it opens directly in the Teams client. After installing, send a direct message to your bot — it's ready.
+```bash
+teams app get <teamsAppId> --install-link
+```
+
+Open the printed link in your browser — it opens directly in the Teams client. After installing, send a direct message to your bot — it's ready.
 
 ---
 

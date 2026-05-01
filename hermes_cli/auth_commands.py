@@ -467,6 +467,224 @@ def auth_spotify_command(args) -> None:
     raise SystemExit(f"Unknown Spotify auth action: {action}")
 
 
+def auth_sync_command(args) -> None:
+    """Detect and fix credential drift across .env files and auth.json.
+
+    Compares API keys across:
+      - ~/.hermes/.env (the main env file — treated as source of truth)
+      - ~/.hermes/auth.json (the credential pool cache)
+      - ~/.hermes/profiles/<name>/.env (each profile's env file)
+
+    With ``--fix``, updates profiles and the credential pool to match
+    the main .env file.  Without it, only reports mismatches.
+    """
+    fix = bool(getattr(args, "fix", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    try:
+        from hermes_cli.config import load_config, load_env, get_env_path
+        from hermes_cli.profiles import list_profiles
+    except ImportError as e:
+        raise SystemExit(f"Cannot load config modules: {e}")
+
+    # ── Gather source-of-truth .env keys ──
+    env_path = get_env_path()
+    if not env_path.exists():
+        raise SystemExit(f"Main .env not found at {env_path} — nothing to sync from.")
+    main_env = load_env()
+    if not main_env:
+        raise SystemExit(f"Main .env at {env_path} is empty.")
+
+    # ── Find all providers with key_env configured ──
+    cfg = load_config()
+    providers_cfg = cfg.get("providers") or {}
+    if isinstance(providers_cfg, dict):
+        provider_env_map = {
+            name: pinfo.get("key_env", "")
+            for name, pinfo in providers_cfg.items()
+            if pinfo.get("key_env")
+        }
+    else:
+        provider_env_map = {}
+
+    if not provider_env_map:
+        print("No providers with key_env found in config.yaml — nothing to sync.")
+        return
+
+    # ── Build list of env file locations to check ──
+    env_sources: list[tuple[str, str, dict]] = []
+    env_sources.append(("main .env", str(env_path), main_env))
+
+    try:
+        for profile in list_profiles():
+            if profile.is_default:
+                continue  # already checked as "main .env"
+            penv_path = profile.path / ".env"
+            if penv_path.exists():
+                profile_env = _parse_env_file(str(penv_path))
+                if profile_env:
+                    env_sources.append(
+                        (f"profile:{profile.name}", str(penv_path), profile_env)
+                    )
+    except Exception as e:
+        print(f"⚠ Could not list profiles: {e}")
+
+    # ── Load credential pool for providers that have a pool ──
+    pool_keys: dict[str, str] = {}
+    for provider, key_env in provider_env_map.items():
+        try:
+            pool = load_pool(provider)
+            entries = pool.entries()
+            if entries:
+                # Use the most recently added API-key credential
+                for entry in reversed(entries):
+                    token = (entry.access_token or "").strip()
+                    if token and not token.startswith("oidc|"):
+                        pool_keys[provider] = token
+                        break
+        except Exception:
+            pass
+
+    # ── Report / fix ──
+    drift_count = 0
+    fixed_count = 0
+
+    for provider, key_env in sorted(provider_env_map.items()):
+        truth_value = main_env.get(key_env, "")
+        if not truth_value:
+            continue
+
+        provider_drift = []
+
+        for source_label, source_path, source_env in env_sources:
+            source_value = source_env.get(key_env, "")
+            if not source_value:
+                continue
+            if source_value != truth_value:
+                provider_drift.append((source_label, source_path, source_value))
+
+        # Check auth.json pool
+        pool_token = pool_keys.get(provider, "")
+        if pool_token and pool_token not in (truth_value, ""):
+            provider_drift.append(
+                ("credential pool (auth.json)", "~/.hermes/auth.json", pool_token)
+            )
+
+        if not provider_drift:
+            continue
+
+        drift_count += len(provider_drift)
+
+        print(f"\n[{provider}] {key_env} mismatch detected:")
+        print(f"  ┌─ source of truth ({str(env_path)})")
+        print(f"  │  value: {truth_value[:12]}…{truth_value[-8:] if len(truth_value) > 20 else ''}")
+        for label, spath, val in provider_drift:
+            val_suffix = f"{val[-8:]}" if len(val) > 20 else ""
+            print(f"  ├─ {label} ({spath})")
+            print(f"  │  value: {val[:12]}…{val_suffix}")
+
+        if fix or dry_run:
+            for label, spath, val in provider_drift:
+                if label == "credential pool (auth.json)":
+                    if not dry_run:
+                        _fix_pool_entry(provider, truth_value)
+                    print(f"  ✓ {'[DRY RUN] Would update' if dry_run else 'Updated'} credential pool for {provider}")
+                    fixed_count += 1
+                elif spath != str(env_path) and spath.endswith(".env"):
+                    if not dry_run:
+                        _fix_env_file(spath, key_env, truth_value)
+                    print(f"  ✓ {'[DRY RUN] Would update' if dry_run else 'Updated'} {label}: {key_env}")
+                    fixed_count += 1
+        else:
+            print(f"  └─ Run `hermes auth sync --fix` to align all to main .env")
+
+    if drift_count == 0:
+        print("✓ All credential sources are in sync — no drift detected.")
+    else:
+        print(f"\n{drift_count} credential drift(s) found across {len(provider_env_map)} provider(s).")
+        if fix:
+            print(f"Fixed {fixed_count} drift(s). Run `hermes auth sync` again to verify.")
+        elif not dry_run:
+            print("Run `hermes auth sync --fix` to resolve.")
+
+
+def _parse_env_file(path: str) -> dict:
+    """Parse a .env file into a dict, skipping comments and empty lines."""
+    result = {}
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    # strip inline comments only if preceded by whitespace
+                    comment_idx = value.find(" #")
+                    if comment_idx == -1:
+                        comment_idx = value.find("\t#")
+                    if comment_idx > -1:
+                        value = value[:comment_idx]
+                    result[key] = value.strip().strip('"\'').strip()
+    except Exception:
+        pass
+    return result
+
+
+def _fix_pool_entry(provider: str, new_key: str) -> None:
+    """Replace the credential pool entry for *provider* with *new_key*."""
+    try:
+        from agent.credential_pool import AUTH_TYPE_API_KEY, SOURCE_MANUAL
+
+        pool = load_pool(provider)
+        # Remove existing API-key entries
+        for entry in list(pool.entries()):
+            if entry.auth_type == AUTH_TYPE_API_KEY:
+                pool.remove_index(entry.id)
+        # Add the new one
+        pool.add(
+            PooledCredential(
+                access_token=new_key,
+                auth_type=AUTH_TYPE_API_KEY,
+                source=SOURCE_MANUAL,
+                label="synced-from-env",
+            )
+        )
+    except Exception as e:
+        print(f"  ⚠ Could not update credential pool for {provider}: {e}")
+
+
+def _fix_env_file(path: str, key: str, value: str) -> None:
+    """Replace or add *key=value* in a .env file at *path*."""
+    try:
+        with open(path, "r") as f:
+            lines = f.read().splitlines()
+    except Exception:
+        lines = []
+
+    found = False
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            new_lines.append(line)
+            continue
+        if "=" in stripped:
+            k, _, _ = stripped.partition("=")
+            if k.strip() == key:
+                new_lines.append(f"{key}={value}")
+                found = True
+                continue
+        new_lines.append(line)
+
+    if not found:
+        new_lines.append(f"{key}={value}")
+
+    with open(path, "w") as f:
+        f.write("\n".join(new_lines) + "\n")
+
+
 def _interactive_auth() -> None:
     """Interactive credential pool management when `hermes auth` is called bare."""
     # Show current pool status first
@@ -672,6 +890,9 @@ def auth_command(args) -> None:
         return
     if action == "spotify":
         auth_spotify_command(args)
+        return
+    if action == "sync":
+        auth_sync_command(args)
         return
     # No subcommand — launch interactive mode
     _interactive_auth()

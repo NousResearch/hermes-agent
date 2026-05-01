@@ -142,6 +142,10 @@ class ComputerUseBackend(ABC):
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Route input to `app` (by name or bundle ID). Default: focus without raise."""
 
+    @abstractmethod
+    def launch_app(self, bundle_id: Optional[str] = None, name: Optional[str] = None) -> ActionResult:
+        """Launch an app in the background. Provide bundle_id or name."""
+
     # ── Timing ──────────────────────────────────────────────────────
     def wait(self, seconds: float) -> ActionResult:
         """Default implementation: time.sleep."""

@@ -74,7 +74,7 @@ _SAFE_ACTIONS = frozenset({"capture", "wait", "list_apps"})
 # Actions that mutate user-visible state. Go through approval.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
-    "drag", "scroll", "type", "key", "set_value", "focus_app",
+    "drag", "scroll", "type", "key", "set_value", "focus_app", "launch_app",
 })
 
 # Hard-blocked key combinations. Mirrored from #4562 — these are destructive
@@ -199,6 +199,10 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
         return ActionResult(ok=True, action="focus_app")
+
+    def launch_app(self, bundle_id=None, name=None) -> ActionResult:
+        self.calls.append(("launch_app", {"bundle_id": bundle_id, "name": name}))
+        return ActionResult(ok=True, action="launch_app")
 
 
 # ---------------------------------------------------------------------------
@@ -333,6 +337,15 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if not app:
             return json.dumps({"error": "focus_app requires `app`"})
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
+        return _maybe_follow_capture(backend, res, capture_after)
+
+    if action == "launch_app":
+        bundle_id = args.get("bundle_id")
+        name = args.get("app")
+        urls = args.get("urls") or None
+        if not bundle_id and not name:
+            return json.dumps({"error": "launch_app requires `bundle_id` or `app`"})
+        res = backend.launch_app(bundle_id=bundle_id, name=name, urls=urls)
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action in ("click", "double_click", "right_click", "middle_click"):

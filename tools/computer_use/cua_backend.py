@@ -341,8 +341,12 @@ class CuaDriverBackend(ComputerUseBackend):
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
         `get_window_state` (ax/som) or `screenshot` (vision).
         """
-        # Step 1: enumerate on-screen windows to find target pid/window_id.
-        lw_out = self._session.call_tool("list_windows", {"on_screen_only": True})
+        # Step 1: enumerate windows to find target pid/window_id.
+        # When a specific app is requested, search all windows (including hidden /
+        # off-screen) so that apps launched via launch_app (which starts hidden)
+        # are reachable. Without a filter we only need on-screen windows.
+        lw_args: Dict[str, Any] = {} if app else {"on_screen_only": True}
+        lw_out = self._session.call_tool("list_windows", lw_args)
 
         # Prefer structuredContent.windows (MCP 2024-11-05+); fall back to
         # text-line parsing for older cua-driver builds.
@@ -360,7 +364,7 @@ class CuaDriverBackend(ComputerUseBackend):
                 }
                 for w in raw_windows
             ]
-            # Sort by z_index descending (lowest z_index = frontmost on macOS).
+            # Sort by z_index ascending (lowest z_index = frontmost on macOS).
             windows.sort(key=lambda w: w["z_index"])
         else:
             raw_text = lw_out["data"] if isinstance(lw_out["data"], str) else ""
@@ -377,7 +381,7 @@ class CuaDriverBackend(ComputerUseBackend):
             if filtered:
                 windows = filtered
 
-        # Pick first on-screen window (sorted by z_index / z-order above).
+        # Pick target: prefer on-screen window; fall back to first (hidden apps).
         target = next((w for w in windows if not w["off_screen"]), windows[0])
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
@@ -527,10 +531,12 @@ class CuaDriverBackend(ComputerUseBackend):
         if pid is None:
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
-        # Safari WebKit AXTextField does not accept AX attribute writes (type_text),
-        # so use type_text_chars which synthesises individual key events instead.
-        # This works universally across all macOS apps in background mode.
-        return self._action("type_text_chars", {"pid": pid, "text": text})
+        # type_text tries AX attribute write first (fast bulk insert) and
+        # automatically falls back to CGEvent character synthesis for targets that
+        # reject the AX path (Chromium / Electron inputs, Safari WebKit fields).
+        # This replaces the previous explicit type_text_chars call — type_text_chars
+        # was merged into type_text in cua-driver v0.1.0.
+        return self._action("type_text", {"pid": pid, "text": text})
 
     def key(self, keys: str) -> ActionResult:
         pid = self._active_pid
@@ -630,6 +636,30 @@ class CuaDriverBackend(ComputerUseBackend):
             )
         return ActionResult(ok=False, action="focus_app",
                             message=f"No on-screen window found for app '{app}'.")
+
+    def launch_app(
+        self,
+        bundle_id: Optional[str] = None,
+        name: Optional[str] = None,
+        urls: Optional[List[str]] = None,
+    ) -> ActionResult:
+        """Launch an app in the background via cua-driver launch_app.
+
+        Pass ``urls`` for browsers — without a URL, Safari/Chrome/Firefox
+        start the process but never create a window, making capture/click
+        impossible.
+        """
+        args: Dict[str, Any] = {}
+        if bundle_id:
+            args["bundle_id"] = bundle_id
+        elif name:
+            args["name"] = name
+        else:
+            return ActionResult(ok=False, action="launch_app",
+                                message="launch_app requires bundle_id or name.")
+        if urls:
+            args["urls"] = urls
+        return self._action("launch_app", args)
 
     # ── Internal ───────────────────────────────────────────────────
     def _action(self, name: str, args: Dict[str, Any]) -> ActionResult:

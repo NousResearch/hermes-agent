@@ -44,6 +44,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "wait",
                     "list_apps",
                     "focus_app",
+                    "launch_app",
                 ],
                 "description": (
                     "Which action to perform. `capture` is free (no side "
@@ -160,6 +161,27 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             "seconds": {
                 "type": "number",
                 "description": "Seconds to wait. Max 30.",
+            },
+            # ── launch_app ─────────────────────────────────────────
+            "bundle_id": {
+                "type": "string",
+                "description": (
+                    "Only for action='launch_app'. App bundle identifier "
+                    "(preferred), e.g. 'com.google.Chrome'. Takes precedence "
+                    "over `app` when both are given."
+                ),
+            },
+            "urls": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Only for action='launch_app'. URLs or file paths to "
+                    "open in the launched app. **Required for browsers** "
+                    "(Safari, Chrome, Firefox) — without a URL the browser "
+                    "process starts but creates no window, so capture and "
+                    "click will fail. Pass e.g. ['https://example.com'] to "
+                    "get a usable window without stealing focus."
+                ),
             },
             # ── focus_app ──────────────────────────────────────────
             "raise_window": {

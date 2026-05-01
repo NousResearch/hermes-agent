@@ -29,7 +29,7 @@ from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any, List
+from typing import Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
 # /usage; we still import it at module top in the gateway because test
@@ -454,6 +454,7 @@ from gateway.session import (
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    EphemeralReply,
     MessageEvent,
     MessageType,
     merge_pending_message_event,
@@ -4472,7 +4473,7 @@ class GatewayRunner:
                     invalidation_reason="stop_command",
                 )
                 logger.info("STOP for session %s — agent interrupted, session lock released", _quick_key)
-                return "⚡ Stopped. You can continue this session."
+                return EphemeralReply("⚡ Stopped. You can continue this session.")
 
             # /reset and /new must bypass the running-agent guard so they
             # actually dispatch as commands instead of being queued as user
@@ -4677,7 +4678,7 @@ class GatewayRunner:
                     # Force-clean the sentinel so the session is unlocked.
                     self._release_running_agent_state(_quick_key)
                     logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
-                    return "⚡ Force-stopped. The agent was still starting — session unlocked."
+                    return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
                 # Queue the message so it will be picked up after the
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
@@ -6353,7 +6354,7 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
-    async def _handle_reset_command(self, event: MessageEvent) -> str:
+    async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
         
@@ -6464,8 +6465,8 @@ class GatewayRunner:
             _tip_line = ""
 
         if session_info:
-            return f"{header}\n\n{session_info}{_tip_line}"
-        return f"{header}{_tip_line}"
+            return EphemeralReply(f"{header}\n\n{session_info}{_tip_line}")
+        return EphemeralReply(f"{header}{_tip_line}")
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
@@ -6713,7 +6714,7 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
-    async def _handle_stop_command(self, event: MessageEvent) -> str:
+    async def _handle_stop_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /stop command - interrupt a running agent.
 
         When an agent is truly hung (blocked thread that never checks
@@ -6738,7 +6739,7 @@ class GatewayRunner:
                 invalidation_reason="stop_command_pending",
             )
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
-            return "⚡ Stopped. The agent hadn't started yet — you can continue this session."
+            return EphemeralReply("⚡ Stopped. The agent hadn't started yet — you can continue this session.")
         if agent:
             # Force-clean the session lock so a truly hung agent doesn't
             # keep it locked forever.
@@ -6748,11 +6749,11 @@ class GatewayRunner:
                 interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason="stop_command_handler",
             )
-            return "⚡ Stopped. You can continue this session."
+            return EphemeralReply("⚡ Stopped. You can continue this session.")
         else:
             return "No active task to stop."
 
-    async def _handle_restart_command(self, event: MessageEvent) -> str:
+    async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /restart command - drain active work, then restart the gateway."""
         # Defensive idempotency check: if the previous gateway process
         # recorded this same /restart (same platform + update_id) and the new
@@ -6778,7 +6779,7 @@ class GatewayRunner:
             count = self._running_agent_count()
             if count:
                 return f"⏳ Draining {count} active agent(s) before restart..."
-            return "⏳ Gateway restart already in progress..."
+            return EphemeralReply("⏳ Gateway restart already in progress...")
 
         # Save the requester's routing info so the new gateway process can
         # notify them once it comes back online.
@@ -6830,7 +6831,7 @@ class GatewayRunner:
             self.request_restart(detached=True, via_service=False)
         if active_agents:
             return f"⏳ Draining {active_agents} active agent(s) before restart..."
-        return "♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`."
+        return EphemeralReply("♻ Restarting gateway. If you aren't notified within 60 seconds, restart from the console with `hermes gateway restart`.")
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
         """Return True if this /restart is a Telegram re-delivery we already handled.
@@ -8321,7 +8322,7 @@ class GatewayRunner:
             return f"⚡ ✓ Priority Processing: **{label}** (saved to config)\n_(takes effect on next message)_"
         return f"⚡ ✓ Priority Processing: **{label}** (this session only)"
 
-    async def _handle_yolo_command(self, event: MessageEvent) -> str:
+    async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
         from tools.approval import (
             disable_session_yolo,
@@ -8333,10 +8334,10 @@ class GatewayRunner:
         current = is_session_yolo_enabled(session_key)
         if current:
             disable_session_yolo(session_key)
-            return "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."
+            return EphemeralReply("⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval.")
         else:
             enable_session_yolo(session_key)
-            return "⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution."
+            return EphemeralReply("⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution.")
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.

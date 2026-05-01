@@ -63,8 +63,8 @@ from hermes_constants import is_termux as _is_termux_environment
 
 def _voice_capture_install_hint() -> str:
     if _is_termux_environment():
-        return "pkg install python-numpy portaudio && uv pip install sounddevice"
-    return "uv pip install sounddevice numpy"
+        return "pkg install python-numpy portaudio && uv sync --extra voice (or python -m pip install sounddevice)"
+    return "uv sync --extra voice"
 
 
 def _termux_microphone_command() -> Optional[str]:

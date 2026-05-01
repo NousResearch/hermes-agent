@@ -4217,6 +4217,10 @@ class GatewayRunner:
             for _result in _hook_results:
                 if not isinstance(_result, dict):
                     continue
+                for _field in ("model_override", "provider_override", "model_tier_hint"):
+                    _value = _result.get(_field)
+                    if isinstance(_value, str) and _value.strip():
+                        setattr(event, _field, _value.strip())
                 _action = _result.get("action")
                 if _action == "skip":
                     logger.info(
@@ -5895,6 +5899,9 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=event.message_id,
                 channel_prompt=event.channel_prompt,
+                model_override=event.model_override,
+                provider_override=event.provider_override,
+                model_tier_hint=event.model_tier_hint,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -10798,6 +10805,65 @@ class GatewayRunner:
                 runtime_kwargs[key] = val
         return model, runtime_kwargs
 
+    def _apply_turn_model_override(
+        self,
+        model: str,
+        runtime_kwargs: dict,
+        *,
+        model_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
+        model_tier_hint: Optional[str] = None,
+        session_key: Optional[str] = None,
+    ) -> tuple[str, dict]:
+        """Apply a pre-dispatch plugin's per-turn model override.
+
+        This is intentionally ephemeral. It affects only the current
+        MessageEvent and does not persist as the chat's /model state.
+        """
+        target_model = str(model_override or "").strip()
+        target_provider = str(provider_override or "").strip()
+        if not target_model and not target_provider:
+            return model, runtime_kwargs
+
+        next_runtime = dict(runtime_kwargs)
+
+        if target_provider and target_provider != (runtime_kwargs.get("provider") or ""):
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                resolved = resolve_runtime_provider(requested=target_provider)
+                next_runtime.update({
+                    "api_key": resolved.get("api_key"),
+                    "base_url": resolved.get("base_url"),
+                    "provider": resolved.get("provider"),
+                    "api_mode": resolved.get("api_mode"),
+                    "command": resolved.get("command"),
+                    "args": list(resolved.get("args") or []),
+                    "credential_pool": resolved.get("credential_pool"),
+                })
+            except Exception as exc:
+                logger.warning(
+                    "Per-turn model override failed to resolve provider=%s tier=%s session=%s: %s; using %s",
+                    target_provider,
+                    model_tier_hint or "",
+                    session_key or "",
+                    exc,
+                    model,
+                )
+                return model, runtime_kwargs
+        elif target_provider:
+            next_runtime["provider"] = target_provider
+
+        next_model = target_model or model
+        logger.info(
+            "Per-turn model override: session=%s tier=%s model=%s provider=%s",
+            session_key or "",
+            model_tier_hint or "",
+            next_model,
+            next_runtime.get("provider") or "",
+        )
+        return next_model, next_runtime
+
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
         """Return True if *agent_model* matches an active /model session override."""
         override = self._session_model_overrides.get(session_key)
@@ -11439,6 +11505,9 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        model_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
+        model_tier_hint: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -11950,6 +12019,14 @@ class GatewayRunner:
                     source=source,
                     session_key=session_key,
                     user_config=user_config,
+                )
+                model, runtime_kwargs = self._apply_turn_model_override(
+                    model,
+                    runtime_kwargs,
+                    model_override=model_override,
+                    provider_override=provider_override,
+                    model_tier_hint=model_tier_hint,
+                    session_key=session_key,
                 )
                 logger.debug(
                     "run_agent resolved: model=%s provider=%s session=%s",
@@ -13125,6 +13202,9 @@ class GatewayRunner:
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_model_override = None
+                next_provider_override = None
+                next_model_tier_hint = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     next_message = await self._prepare_inbound_message_text(
@@ -13136,6 +13216,9 @@ class GatewayRunner:
                         return result
                     next_message_id = getattr(pending_event, "message_id", None)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    next_model_override = getattr(pending_event, "model_override", None)
+                    next_provider_override = getattr(pending_event, "provider_override", None)
+                    next_model_tier_hint = getattr(pending_event, "model_tier_hint", None)
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -13161,6 +13244,9 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    model_override=next_model_override,
+                    provider_override=next_provider_override,
+                    model_tier_hint=next_model_tier_hint,
                 )
         finally:
             # Stop progress sender, interrupt monitor, and notification task

@@ -518,6 +518,28 @@ class TestSendDocument:
         sleep_mock.assert_awaited_once()
 
 
+class TestSendPrivateNotice:
+    @pytest.mark.asyncio
+    async def test_send_private_notice_uses_ephemeral_api(self, adapter):
+        adapter._app.client.chat_postEphemeral = AsyncMock(return_value={"message_ts": "123.456"})
+
+        result = await adapter.send_private_notice(
+            chat_id="C123",
+            user_id="U123",
+            content="private hello",
+            metadata={"thread_id": "1234567890.123456"},
+        )
+
+        assert result.success
+        adapter._app.client.chat_postEphemeral.assert_called_once_with(
+            channel="C123",
+            user="U123",
+            text="private hello",
+            mrkdwn=True,
+            thread_ts="1234567890.123456",
+        )
+
+
 # ---------------------------------------------------------------------------
 # TestSendVideo
 # ---------------------------------------------------------------------------
@@ -1314,6 +1336,16 @@ class TestFormatMessage:
         """Ampersand in URL query string must not be escaped."""
         result = adapter.format_message("[link](https://x.com?a=1&b=2)")
         assert result == "<https://x.com?a=1&b=2|link>"
+
+    def test_markdown_image_does_not_create_broken_slack_link(self, adapter):
+        """Markdown image syntax should not become '!<url|alt>' in Slack."""
+        result = adapter.format_message("![alt](https://img.example.com/cat.png)")
+        assert result == "![alt](https://img.example.com/cat.png)"
+
+    def test_literal_asterisks_with_spaces_are_not_treated_as_italic(self, adapter):
+        """Asterisks used as plain delimiters should stay literal."""
+        result = adapter.format_message("a * b * c")
+        assert result == "a * b * c"
 
     def test_emoji_shortcodes_passthrough(self, adapter):
         """Emoji shortcodes like :smile: pass through unchanged."""

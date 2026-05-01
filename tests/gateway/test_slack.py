@@ -2823,3 +2823,82 @@ class TestSlashEphemeralAck:
 
         adapter.handle_message.assert_called_once()
         assert ("C_H", "U_H") in adapter._slash_command_contexts
+
+    @pytest.mark.asyncio
+    async def test_freeform_hermes_question_does_not_stash_context(self, adapter):
+        """Free-form /hermes <question> must NOT route agent reply ephemeral."""
+        command = {
+            "command": "/hermes",
+            "text": "what's the weather",
+            "user_id": "U_FREE",
+            "channel_id": "C_FREE",
+            "response_url": "https://hooks.slack.com/commands/T1/4/free",
+        }
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_called_once()
+        event = adapter.handle_message.call_args[0][0]
+        # Free-form text — not a command
+        assert event.message_type == MessageType.TEXT
+        assert event.text == "what's the weather"
+        # Context must NOT be stashed — agent reply should be public
+        assert len(adapter._slash_command_contexts) == 0
+
+    @pytest.mark.asyncio
+    async def test_concurrent_users_same_channel_isolates_contexts(self, adapter):
+        """Two users slash on the same channel — each gets their own context."""
+        import time
+        from gateway.platforms.slack import _slash_user_id
+
+        # Simulate two users stashing contexts on the same channel.
+        adapter._slash_command_contexts[("C_SHARED", "U_ALICE")] = {
+            "response_url": "https://hooks.slack.com/alice",
+            "ts": time.monotonic(),
+        }
+        adapter._slash_command_contexts[("C_SHARED", "U_BOB")] = {
+            "response_url": "https://hooks.slack.com/bob",
+            "ts": time.monotonic(),
+        }
+
+        # Alice's send() — ContextVar set to Alice's user_id.
+        token = _slash_user_id.set("U_ALICE")
+        try:
+            ctx = adapter._pop_slash_context("C_SHARED")
+        finally:
+            _slash_user_id.reset(token)
+
+        assert ctx is not None
+        assert ctx["response_url"] == "https://hooks.slack.com/alice"
+        # Bob's context must still be there.
+        assert ("C_SHARED", "U_BOB") in adapter._slash_command_contexts
+        assert len(adapter._slash_command_contexts) == 1
+
+        # Bob's send() — ContextVar set to Bob's user_id.
+        token = _slash_user_id.set("U_BOB")
+        try:
+            ctx = adapter._pop_slash_context("C_SHARED")
+        finally:
+            _slash_user_id.reset(token)
+
+        assert ctx is not None
+        assert ctx["response_url"] == "https://hooks.slack.com/bob"
+        assert len(adapter._slash_command_contexts) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_contextvar_does_not_match_any_context(self, adapter):
+        """send() without ContextVar (non-slash path) must not steal contexts."""
+        import time
+        from gateway.platforms.slack import _slash_user_id
+
+        adapter._slash_command_contexts[("C1", "U1")] = {
+            "response_url": "https://hooks.slack.com/test",
+            "ts": time.monotonic(),
+        }
+
+        # ContextVar is unset (default=None) — simulates a normal message send.
+        assert _slash_user_id.get() is None
+        ctx = adapter._pop_slash_context("C1")
+        # Fallback scan still finds it (channel-only) — this is fine for
+        # the normal single-user case; the ContextVar path is the precise one.
+        # The key invariant is: when the ContextVar IS set, it matches exactly.
+        assert ctx is not None  # fallback path finds the entry

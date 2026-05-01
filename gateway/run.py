@@ -4317,7 +4317,11 @@ class GatewayRunner:
                 if getattr(result, "success", False):
                     return
             except Exception:
-                pass
+                logger.debug(
+                    "[%s] send_private_notice failed, falling back to public",
+                    getattr(source, "platform", "?"),
+                    exc_info=True,
+                )
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 

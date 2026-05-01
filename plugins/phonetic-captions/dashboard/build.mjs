@@ -35,8 +35,21 @@ module.exports.Fragment = R.Fragment;
 writeFileSync(
   join(shimDir, "react-jsx-runtime.js"),
   `const R = window.__HERMES_PLUGIN_SDK__.React;
-module.exports.jsx = R.createElement;
-module.exports.jsxs = R.createElement;
+// The new JSX transform calls jsx(type, props, key) where key is the 3rd arg.
+// React.createElement(type, props, ...children) treats extra args as children,
+// so we must extract key from the 3rd arg and merge it into props instead.
+function _jsx(type, props, key) {
+  var children = props.children;
+  var rest = Object.assign({}, props);
+  delete rest.children;
+  if (key !== undefined) rest.key = key;
+  if (Array.isArray(children)) {
+    return R.createElement.apply(null, [type, rest].concat(children));
+  }
+  return R.createElement(type, rest, children);
+}
+module.exports.jsx = _jsx;
+module.exports.jsxs = _jsx;
 module.exports.Fragment = R.Fragment;
 `
 );

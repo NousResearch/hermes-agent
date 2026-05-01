@@ -14,6 +14,7 @@ from gateway.runtime_footer import (
     format_runtime_footer,
     resolve_footer_config,
 )
+from gateway.session_context import clear_session_vars, set_session_vars
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +146,25 @@ def test_format_footer_unknown_field_silently_ignored():
         fields=("model", "bogus", "context_pct"),
     )
     assert out == "gpt-5.4 · 50%"
+
+
+def test_format_footer_prefers_session_context_cwd(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_CWD", "/env/fallback")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tokens = set_session_vars(session_key="session", terminal_cwd=str(workspace))
+    try:
+        out = format_runtime_footer(
+            model="m",
+            context_tokens=0,
+            context_length=None,
+            cwd=None,
+            fields=("cwd",),
+        )
+    finally:
+        clear_session_vars(tokens)
+    assert out == "~/workspace"
 
 
 # ---------------------------------------------------------------------------

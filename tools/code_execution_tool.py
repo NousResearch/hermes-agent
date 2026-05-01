@@ -1756,7 +1756,11 @@ def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
     """
     if mode != "project":
         return staging_dir
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    try:
+        from gateway.session_context import get_session_env
+        raw = get_session_env("TERMINAL_CWD", "").strip()
+    except Exception:
+        raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):

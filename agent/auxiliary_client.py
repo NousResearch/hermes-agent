@@ -43,6 +43,7 @@ Payment / credit exhaustion fallback:
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -923,22 +924,31 @@ def _maybe_wrap_anthropic(
         )
         return client_obj
 
+    # Third-party Anthropic-compatible endpoints (OpenAI-style /v1 bases)
+    # must strip the trailing /v1 before passing to build_anthropic_client,
+    # which itself appends /v1/messages.  Without this strip, requests to
+    # e.g. opencode.ai/zen/go/v1 produce a double /v1/v1/messages → 404.
+    anthropic_base = (base_url or "").strip()
+    if anthropic_base and anthropic_base.rstrip("/").endswith("/v1"):
+        anthropic_base = re.sub(r"/v1/?$", "", anthropic_base)
+
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        real_client = build_anthropic_client(api_key, anthropic_base)
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "
-            "OpenAI-wire client.", base_url, exc,
+            "OpenAI-wire client.", anthropic_base or base_url, exc,
         )
         return client_obj
 
+    log_base = anthropic_base[:60] if anthropic_base else ""
     logger.debug(
         "Auxiliary transport: wrapping client in AnthropicAuxiliaryClient "
         "(model=%s, base_url=%s, api_mode=%s)",
-        model, base_url[:60] if base_url else "", api_mode or "auto-detected",
+        model, log_base, api_mode or "auto-detected",
     )
     return AnthropicAuxiliaryClient(
-        real_client, model, api_key, base_url, is_oauth=False,
+        real_client, model, api_key, anthropic_base, is_oauth=False,
     )
 
 
@@ -1411,9 +1421,14 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         # Third-party Anthropic-compatible gateway (MiniMax, Zhipu GLM,
         # LiteLLM proxies, etc.).  Must NEVER be treated as OAuth —
         # Anthropic OAuth claims only apply to api.anthropic.com.
+        # Strip trailing /v1 to prevent double-path when build_anthropic_client
+        # appends its own /v1/messages (same logic as _maybe_wrap_anthropic).
+        _custom_base = _clean_base.strip()
+        if _custom_base.rstrip("/").endswith("/v1"):
+            _custom_base = re.sub(r"/v1/?$", "", _custom_base)
         try:
             from agent.anthropic_adapter import build_anthropic_client
-            real_client = build_anthropic_client(custom_key, custom_base)
+            real_client = build_anthropic_client(custom_key, _custom_base)
         except ImportError:
             logger.warning(
                 "Custom endpoint declares api_mode=anthropic_messages but the "
@@ -1421,7 +1436,7 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
             )
             return OpenAI(api_key=custom_key, base_url=_clean_base, **_extra), model
         return (
-            AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base, is_oauth=False),
+            AnthropicAuxiliaryClient(real_client, model, custom_key, _custom_base, is_oauth=False),
             model,
         )
     # URL-based anthropic detection for custom endpoints that didn't set

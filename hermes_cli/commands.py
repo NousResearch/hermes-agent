@@ -838,6 +838,13 @@ def discord_skill_commands_by_category(
 _SLACK_MAX_SLASH_COMMANDS = 50
 _SLACK_NAME_LIMIT = 32
 _SLACK_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
+_SLACK_RESERVED_COMMANDS = frozenset({
+    # Built-in Slack slash commands that cannot be registered by apps.
+    # https://slack.com/help/articles/201259356-Use-built-in-slash-commands
+    "me", "status", "away", "dnd", "shrug", "remind", "msg", "feed",
+    "who", "collapse", "expand", "leave", "join", "open", "search",
+    "topic", "mute", "pro", "shortcuts",
+})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -864,6 +871,10 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     documented form (e.g. ``/background``, ``/bg``, and ``/btw`` all work).
     Plugin-registered slash commands are included too.
 
+    Commands whose sanitized name collides with a Slack built-in
+    (e.g. ``/status``, ``/me``, ``/join``) are silently skipped.  Users
+    can still reach them via ``/hermes <command>``.
+
     Results are clamped to Slack's 50-command limit with duplicate-name
     avoidance. ``/hermes`` is always reserved as the first entry so the
     legacy ``/hermes <subcommand>`` form keeps working for anything that
@@ -880,6 +891,8 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     def _add(name: str, desc: str, hint: str) -> None:
         slack_name = _sanitize_slack_name(name)
         if not slack_name or slack_name in seen:
+            return
+        if slack_name in _SLACK_RESERVED_COMMANDS:
             return
         if len(entries) >= _SLACK_MAX_SLASH_COMMANDS:
             return

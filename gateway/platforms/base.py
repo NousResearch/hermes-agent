@@ -2521,7 +2521,6 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
-        callback_generation = getattr(interrupt_event, "_hermes_run_generation", None)
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
@@ -2820,7 +2819,20 @@ class BasePlatformAdapter(ABC):
         finally:
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
-            _callback_generation = callback_generation
+            #
+            # Snapshot the callback generation HERE (after the agent has run),
+            # not at the top of this task.  _hermes_run_generation is set on
+            # the interrupt event by GatewayRunner._bind_adapter_run_generation
+            # during _handle_message_with_agent — which happens DURING the
+            # self._message_handler(event) await above.  Snapshotting earlier
+            # always captured None, which bypassed the generation-ownership
+            # check in pop_post_delivery_callback and let stale runs fire a
+            # fresher run's callbacks.
+            _callback_generation = getattr(
+                interrupt_event,
+                "_hermes_run_generation",
+                None,
+            )
             if hasattr(self, "pop_post_delivery_callback"):
                 _post_cb = self.pop_post_delivery_callback(
                     session_key,

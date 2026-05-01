@@ -332,6 +332,7 @@ AUTHOR_MAP = {
     "stefan@dimagents.ai": "dimitrovi",
     "hermes@noushq.ai": "benbarclay",
     "chinmingcock@gmail.com": "ChimingLiu",
+    "allard.quek@singtel.com": "AllardQuek",
     "openclaw@sparklab.ai": "openclaw",
     "semihcvlk53@gmail.com": "Himess",
     "erenkar950@gmail.com": "erenkarakus",

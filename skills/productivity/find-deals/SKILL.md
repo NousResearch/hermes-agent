@@ -1,7 +1,7 @@
 ---
 name: find-deals
 description: Use when the user wants to search for cannabis product deals at their preferred Arizona dispensaries. Accepts free-form product queries (e.g., "Khalifa Kush 3.5g flower under $40") and optional filters (brand, type, weight, THC/CBD, price range, deal type). Searches Zen Leaf Chandler, The Flower Shop Ahwatukee, Trulieve Tempe, and Story Cannabis North Chandler.
-version: 1.1.0
+version: 1.2.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -13,19 +13,20 @@ metadata:
 # Find Deals
 
 ## Overview
-This skill searches for current cannabis product deals, menu pricing, and promotions at the user's four preferred Arizona recreational dispensaries:
+This skill searches for current cannabis product deals, menu pricing, and promotions at the user's four preferred Arizona recreational dispensaries. Due to the dynamic nature of cannabis menu platforms (Dutchie and Jane), the skill works best when a web search backend is configured (FIRECRAWL_API_KEY, TAVILY_API_KEY, or EXA_API_KEY).
 
-1. **Zen Leaf Chandler** — zenleafdispensaries.com/locations/chandler/menu/recreational
-2. **The Flower Shop Ahwatukee** — theflowershopusa.com/ahwatukee/
-3. **Trulieve Tempe** — trulieve.com/dispensaries/arizona/tempe
-4. **Story Cannabis North Chandler** — storycannabis.com/dispensary-locations/arizona/north-chandler-dispensary/
-
-The user types queries the same way they would into a dispensary website search bar (e.g., "Khalifa Kush 3.5g flower under $40"). The skill parses the query, maps intent to filters, then queries each dispensary's public menu or uses web search to surface matching products, deals, and pricing.
+## Preferred Dispensaries
+| # | Name | Location | Platform | Menu URL |
+|---|------|----------|----------|----------|
+| 1 | Zen Leaf Chandler | Chandler, AZ | Jane/IHeartJane | https://zenleafdispensaries.com/locations/chandler/menu/recreational |
+| 2 | The Flower Shop Ahwatukee | Ahwatukee, AZ | Jane/IHeartJane | https://theflowershopusa.com/ahwatukee/ |
+| 3 | Trulieve Tempe | Tempe, AZ | Dutchie | https://www.trulieve.com/dispensaries/arizona/tempe |
+| 4 | Story Cannabis North Chandler | North Chandler, AZ | Dutchie | https://storycannabis.com/dispensary-locations/arizona/north-chandler-dispensary/ |
 
 ## When to Use
 - User asks "find deals for X" where X is a product, strain, brand, or category
 - Comparing prices across the user's preferred dispensaries
-- Searching for daily specials, first-time patient discounts, or loyalty rewards at these locations
+- Searching for specific vape brands (Boutiq, Abstrakt, Clean Concentrates, Dime, etc.)
 - Filtering menus by weight, potency (THC/CBD), price range, or product type
 
 ## Query Format
@@ -37,95 +38,89 @@ The user provides a **free-form search string** similar to a dispensary site sea
 "edibles under $25"
 "daily special flower"
 "high THC sativa 1/8"
+"find deals for boutiq, abstrakt, clean concentrates, dime"
+"show me all vape carts under $35"
 ```
 
-Hermes parses the query into:
-- **Product / Strain / Brand** (e.g., Khalifa Kush, Trulieve, Wyld)
-- **Product Type** (flower, pre-roll, edible, vape, concentrate, tincture, topical, accessory)
-- **Weight** (1g, 3.5g, 1/8, 1/4, 1/2, 1oz, 0.5g, etc.)
-- **Price Range** (under $X, between $X and $Y)
-- **Potency** (THC > X%, CBD > Y%, high CBD, etc.)
-- **Deal Type** (daily special, first-time, loyalty, bulk, clearance)
+## Parsed Filters
+| Filter | Examples |
+|--------|----------|
+| **brand** | Trulieve, Story, Connected, Alien Labs, Boutiq, Abstrakt, Clean Concentrates, Dime |
+| **type** | flower, pre-roll, edible, vape, concentrate, tincture, topical |
+| **weight** | 1g, 3.5g, 1/8, 1/4, 1oz, .5g |
+| **price** | under $40, $30-$50, max 50 |
+| **potency** | >20% THC, high CBD |
+| **deal_type** | daily-special, first-time, loyalty, bulk |
 
-## Filters
-| Filter | Examples | Notes |
-|--------|----------|-------|
-| **brand** | Trulieve, Story, Connected, Alien Labs | Exact or partial match |
-| **type** | flower, pre-roll, edible, vape, concentrate, tincture, topical | Standardized categories |
-| **weight** | 1g, 3.5g, 1/8, 1/4, 1oz, .5g | Convert fractions to grams |
-| **price_max** | under $40, <$25, max 50 | Upper bound only |
-| **price_range** | $30-$50, 40 to 60 | Both bounds |
-| **thc_min** | >20%, over 25% THCa, high THC | Minimum THC/THCa percentage |
-| **cbd_min** | >5% CBD, high CBD | Minimum CBD percentage |
-| **deal_type** | daily-special, first-time, loyalty, bulk, clearance | Promotional filter |
+## Execution Strategy
+1. **Parse query** into structured filters from free-form text.
+2. **Check web tools availability.** If `FIRECRAWL_API_KEY`, `TAVILY_API_KEY`, or `EXA_API_KEY` is configured, use `web_search_tool` and `web_extract_tool` to fetch current menus.
+3. **For each dispensary**, construct a site-specific search query:
+   - `"Boutiq vape site:zenleafdispensaries.com/chandler"`
+   - `"Abstrakt site:theflowershopusa.com"`
+   - `"Dime vape site:trulieve.com/tempe"`
+4. **Extract prices and availability** from search results or page extracts.
+5. **Present results** grouped by dispensary in a price-sorted table.
 
-## Workflow
-1. Parse the user's free-form query into structured filters.
-2. For each of the 4 preferred dispensaries:
-   a. Construct a site-specific search query or attempt to fetch the public menu page.
-   b. If the menu is API-driven (e.g., Dutchie, Jane, Leafly embed), query the endpoint if accessible.
-   c. Fallback to general web search scoped to the dispensary domain.
-3. Extract matching products: name, brand, type, weight, THC/CBD %, price, deal label.
-4. Present results in a table grouped by dispensary, sorted by price (lowest first) or deal priority.
-5. Flag any first-time patient or loyalty-restricted deals and note expiration when visible.
+## Known Limitations
+| Issue | Cause | Workaround |
+|-------|-------|------------|
+| Dynamic menus (JS-rendered) | Dutchie/Jane platforms | Requires web_crawl or browser automation |
+| API auth blocks | Dutchie/Jane GraphQL endpoints are CORS/auth-protected | Use search/extract tools instead of direct API |
+| Real-time stock | Inventory updates frequently | Always verify in-store before visiting |
 
-## Parsing Rules
-- **"under $X"** or **"<$X"** → `price_max`
-- **"$X-$Y"** or **"$X to $Y"** → `price_range`
-- **"3.5g"**, **"1/8"**, **"eighth"** → `weight: 3.5g`
-- **"1g"**, **"1 gram"** → `weight: 1g`
-- **"high THC"**, **">20%"**, **"over 25% THCa"** → `thc_min`
-- **"high CBD"**, **">5% CBD"** → `cbd_min`
-- **"flower"**, **"bud"** → `type: flower`
-- **"vape"**, **"cart"**, **"cartridge"** → `type: vape`
-- **"edible"**, **"gummy"**, **"chocolate"** → `type: edible`
-- **"live resin"**, **"rosin"**, **"badder"**, **"shatter"** → `type: concentrate`
-- **"daily special"**, **"deal"**, **"sale"** → `deal_type: daily-special`
-- **"first time"**, **"new patient"** → `deal_type: first-time`
+## Web Tool Configuration
+The skill depends on a configured web backend. Add to `~/.hermes/.env`:
+```bash
+export FIRECRAWL_API_KEY="your_key"       # Or TAVILY_API_KEY, EXA_API_KEY
+export FIRECRAWL_API_URL=""                # Optional: self-hosted Firecrawl
+```
+
+Or select via `hermes tools` interactive setup.
+
+## Example User Queries
+- `"find deals for boutiq, abstrakt, clean concentrates, dime"`
+- `"Khalifa Kush 3.5g flower under $40"`
+- `"show me all vape carts under $35"`
+- `"find high THC sativa 1/8 at my spots"`
 
 ## Response Format
 ```
-Results for: "Khalifa Kush 3.5g flower under $40"
+Results for: "Boutiq, Abstrakt, Clean Concentrates, Dime"
 
 Zen Leaf Chandler
 -----------------
-Khalifa Kush (Story) — Flower, 3.5g, 28% THCa | $38.00 | Daily Special: $32.30
+Boutiq Live Resin Cart 1g — Vape, 87% THC | $42.00 | Daily Special: $35.70
+(No Abstrakt, Clean Concentrates, or Dime found)
 
 The Flower Shop Ahwatukee
 -------------------------
-Khalifa Kush x The Menthol (Connected) — Flower, 3.5g, 26% THCa | $45.00
-No deal match under $40
+Abstrakt Vape Cart .5g — Vape, 82% THC | $28.00
+Boutiq Live Rosin 1g — Concentrate, 78% THC | $55.00 | First-Time: $44.00
 
 Trulieve Tempe
 --------------
-Khalifa Kush (Trulieve) — Flower, 3.5g, 24% THCa | $35.00 | Loyalty: $31.50
+Dime .5g Disposables — Vape, 85% THC | $30.00 | Loyalty: $27.00
+Clean Concentrates Live Resin 1g — Concentrate, 80% THC | $45.00
 
 Story Cannabis North Chandler
 -----------------------------
-Khalifa Kush (Story) — Flower, 3.5g, 29% THCa | $40.00 | First-Time: $32.00
+Boutiq Liquid Diamonds 1g — Vape, 90% THC | $48.00
+Clean Concentrates Premium Badder 1g — Concentrate, 75% THC | $50.00 | Daily Special: $42.50
 
-Total matches: 4 across 4 dispensaries
+Total matches: 7 across 4 dispensaries
 ```
 
 ## Common Pitfalls
-1. **Menu APIs are often blocked.** Many dispensaries use Dutchie, Jane, or Leafly menus that require auth or are CORS-restricted. Always have a web-search fallback.
-2. **Prices change fast.** Menu data may be stale; advise the user to confirm with the dispensary before purchasing.
-3. **Deal restrictions.** First-time and loyalty discounts often require membership or a new-patient check-in. Always note restrictions.
-4. **Medical vs. recreational.** These 4 locations are recreational; medical-only deals won't apply.
-5. **Weight notation.** Users may say "eighth" or "1/8" — normalize to 3.5g for consistent matching.
-6. **Brand ambiguity.** "Story" could be the dispensary or the brand; disambiguate from context.
+1. **No web tools configured.** If none of FIRECRAWL_API_KEY, TAVILY_API_KEY, or EXA_API_KEY is set, the skill falls back to direct page fetching which often fails on JS-rendered menus.
+2. **Brand spelling matters.** "Boutiq" is spelled with a 'Q' (not 'K'), "Abstrakt" with a 'K' (not 'C').
+3. **Dispensary-specific brands.** Some brands are exclusive to certain chains (e.g., certain house brands). Cross-location availability varies.
+4. **Deal restrictions.** First-time and loyalty discounts require in-store verification.
 
 ## Verification Checklist
-- [ ] User query parsed into at least product name + one filter.
-- [ ] All 4 preferred dispensaries queried or attempted.
-- [ ] Results filtered and sorted by price.
-- [ ] Deal restrictions (first-time, loyalty) noted explicitly.
-- [ ] User reminded to verify pricing and availability in-store.
-
-## Preferred Dispensaries (Hardcoded)
-| # | Name | Location | Menu URL |
-|---|------|----------|----------|
-| 1 | Zen Leaf Chandler | Chandler, AZ | https://zenleafdispensaries.com/locations/chandler/menu/recreational |
-| 2 | The Flower Shop Ahwatukee | Ahwatukee, AZ | https://theflowershopusa.com/ahwatukee/ |
-| 3 | Trulieve Tempe | Tempe, AZ | https://www.trulieve.com/dispensaries/arizona/tempe |
-| 4 | Story Cannabis North Chandler | North Chandler, AZ | https://storycannabis.com/dispensary-locations/arizona/north-chandler-dispensary/ |
+- [ ] Web search backend configured
+- [ ] Query parsed into at least one filter
+- [ ] All 4 preferred dispensaries queried
+- [ ] Results filtered and sorted by price
+- [ ] Deal restrictions noted
+- [ ] User reminded to verify in-store

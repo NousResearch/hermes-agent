@@ -21,6 +21,13 @@ def _make_browser_result(url="https://example.com"):
     return {"success": True, "data": {"title": "OK", "url": url}}
 
 
+def _make_snapshot_result(snapshot='- heading "Test" [e1]', refs=None):
+    """Return a mock successful snapshot command result."""
+    if refs is None:
+        refs = {"e1": {"text": "Test"}}
+    return {"success": True, "data": {"snapshot": snapshot, "refs": refs}}
+
+
 # ---------------------------------------------------------------------------
 # Pre-navigation SSRF check
 # ---------------------------------------------------------------------------
@@ -83,6 +90,8 @@ class TestPreNavigationSsrf:
         result = json.loads(browser_tool.browser_navigate("https://example.com"))
 
         assert result["success"] is True
+        assert result["workflow_hints"]
+        assert any("browser_console" in hint for hint in result["workflow_hints"])
 
     # -- Local mode: SSRF skipped ----------------------------------------------
 
@@ -253,3 +262,20 @@ class TestAllowPrivateUrlsConfig:
         )
 
         assert browser_tool._allow_private_urls() is False
+
+
+class TestBrowserWorkflowHints:
+    def test_snapshot_includes_compact_workflow_hints(self, monkeypatch):
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+        monkeypatch.setattr(browser_tool, "_last_session_key", lambda task_id: task_id)
+        monkeypatch.setattr(
+            browser_tool,
+            "_run_browser_command",
+            lambda *a, **kw: _make_snapshot_result(),
+        )
+
+        result = json.loads(browser_tool.browser_snapshot(task_id="t1"))
+
+        assert result["success"] is True
+        assert result["workflow_hints"]
+        assert any("Verify state changes" in hint for hint in result["workflow_hints"])

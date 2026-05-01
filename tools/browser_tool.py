@@ -1685,6 +1685,34 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
 # Browser Tool Functions
 # ============================================================================
 
+
+def _browser_workflow_hints(stage: str, full_snapshot: bool = False) -> list[str]:
+    """Return lightweight workflow hints that encourage disciplined browser use.
+
+    These hints intentionally reinforce the browser-investigation-discipline
+    pattern: prefer structured state before screenshots, verify after each
+    interaction, and decompose long brittle tasks instead of retrying blindly.
+    """
+    hints: list[str] = []
+    if stage == "navigate":
+        hints.extend([
+            "Prefer browser_console and compact browser_snapshot before escalating to screenshots.",
+            "If the page already answers the question, stop here instead of interacting further.",
+            "Use browser_vision mainly for visual/layout questions or evidence capture, not as the default next step.",
+        ])
+    elif stage == "snapshot":
+        if full_snapshot:
+            hints.append(
+                "Full snapshot can be expensive to reason over; prefer compact snapshot unless the task truly needs the whole page state."
+            )
+        else:
+            hints.extend([
+                "Verify state changes after each important interaction instead of batching many clicks blindly.",
+                "If the task is getting brittle or long, decompose it into smaller browser sub-tasks before continuing.",
+            ])
+    return hints
+
+
 def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
@@ -1800,7 +1828,8 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         response = {
             "success": True,
             "url": final_url,
-            "title": title
+            "title": title,
+            "workflow_hints": _browser_workflow_hints("navigate"),
         }
         
         # Detect common "blocked" page patterns from title/url
@@ -1898,7 +1927,8 @@ def browser_snapshot(
         response = {
             "success": True,
             "snapshot": snapshot_text,
-            "element_count": len(refs) if refs else 0
+            "element_count": len(refs) if refs else 0,
+            "workflow_hints": _browser_workflow_hints("snapshot", full_snapshot=full),
         }
 
         # Merge supervisor state (pending dialogs + frame tree) when a CDP

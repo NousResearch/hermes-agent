@@ -34,6 +34,11 @@ Use this skill when:
 
 ## The Process
 
+Use explicit gates inspired by stricter agent-workflow systems:
+- **Pre-flight gate** — task context, acceptance criteria, and file scope are clear before implementation starts
+- **Revision gate** — spec compliance must pass before code-quality review starts
+- **Abort gate** — if the task is ambiguous or the reviews keep failing, stop and surface the blocker instead of pushing low-confidence code through
+
 ### 1. Read and Parse Plan
 
 Read the plan file. Extract ALL tasks with their full text and context upfront. Create a todo list:

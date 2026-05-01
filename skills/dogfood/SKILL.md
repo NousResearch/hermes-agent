@@ -14,6 +14,8 @@ metadata:
 
 This skill guides you through systematic exploratory QA testing of web applications using the browser toolset. You will navigate the application, interact with elements, capture evidence of issues, and produce a structured bug report.
 
+For expensive or brittle browser tasks, pair this with `browser-investigation-discipline` so you escalate cleanly: fetch/search first, structured state next, then full browser + screenshots only when necessary.
+
 ## Prerequisites
 
 - Browser toolset must be available (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_vision`, `browser_console`, `browser_scroll`, `browser_back`, `browser_press`)

@@ -133,6 +133,18 @@ class PooledCredential:
         data.setdefault("priority", 0)
         data.setdefault("source", SOURCE_MANUAL)
         data.setdefault("access_token", "")
+        # Guard: reject access tokens that contain literal '...' (redaction artifact).
+        # file_tools.py applies redact_sensitive_text() to read/search output, so
+        # if an agent tool reads and then writes a key, it would persist the
+        # truncated version. This guard catches that at write time.
+        token = data.get("access_token", "")
+        if isinstance(token, str) and "..." in token and len(token) < 35:
+            logger.warning(
+                "⚠️ Rejecting poisoned access_token (len=%d, has literal '...') "
+                "for %s/%s — refusing to persist redacted artifact",
+                len(token), provider, data.get("source", "?"),
+            )
+            data["access_token"] = ""
         return cls(provider=provider, **data)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1490,10 +1502,21 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
     # Seed from the custom_providers config entry's api_key field
     cp_config = _get_custom_provider_config(pool_key)
     if cp_config:
-        api_key = str(cp_config.get("api_key") or "").strip()
+        api_key_raw = str(cp_config.get("api_key") or "").strip()
         base_url = str(cp_config.get("base_url") or "").strip().rstrip("/")
         name = str(cp_config.get("name") or "").strip()
-        if api_key:
+
+        # Reject truncated keys (redact_secrets artifact from file_tools.py)
+        if api_key_raw and "..." in api_key_raw and len(api_key_raw) < 35:
+            logger.warning(
+                "⚠️ Config entry '%s' has truncated api_key (len=%d, has literal '...') — "
+                "skipping. Full key exists in model.api_key (source=model_config). "
+                "Fix: remove or correct this custom_providers entry.",
+                name or pool_key, len(api_key_raw),
+            )
+            api_key_raw = ""
+
+        if api_key_raw:
             source = f"config:{name}"
             if not _is_suppressed(pool_key, source):
                 active_sources.add(source)
@@ -1504,7 +1527,7 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                     {
                         "source": source,
                         "auth_type": AUTH_TYPE_API_KEY,
-                        "access_token": api_key,
+                        "access_token": api_key_raw,
                         "base_url": base_url,
                         "label": name or source,
                     },

@@ -7438,13 +7438,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if proc.pid in manual_pids
             }
             for pid, proc in profile_processes.items():
-                if launch_detached_profile_gateway_restart(proc.profile, pid):
+                if not launch_detached_profile_gateway_restart(proc.profile, pid):
+                    continue
+                # Prefer a graceful SIGUSR1 drain so in-flight agent runs
+                # finish before the watcher respawns the gateway.  If the
+                # gateway doesn't support SIGUSR1 or doesn't exit within
+                # the drain budget, fall back to SIGTERM — the watcher
+                # still sees the exit and relaunches either way.
+                drained = _graceful_restart_via_sigusr1(
+                    pid, drain_timeout=_drain_budget,
+                )
+                if not drained:
                     try:
                         os.kill(pid, _signal.SIGTERM)
-                        killed_pids.add(pid)
-                        relaunched_profiles.append(proc.profile)
                     except (ProcessLookupError, PermissionError):
                         pass
+                killed_pids.add(pid)
+                relaunched_profiles.append(proc.profile)
 
             for pid in manual_pids:
                 if pid in profile_processes:

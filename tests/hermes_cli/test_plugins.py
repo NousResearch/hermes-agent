@@ -100,6 +100,38 @@ class TestPluginDiscovery:
         assert "hello_plugin" in mgr._plugins
         assert mgr._plugins["hello_plugin"].enabled
 
+    def test_manifest_parse_uses_utf8_not_locale(self, tmp_path, monkeypatch):
+        """UTF-8 manifests must load on Windows locales such as GBK."""
+        plugin_dir = tmp_path / "plugins" / "utf8_plugin"
+        plugin_dir.mkdir(parents=True)
+        manifest_file = plugin_dir / "plugin.yaml"
+        manifest_file.write_text(
+            "name: utf8_plugin\n"
+            "version: 0.1.0\n"
+            "description: \"Unicode manifest — 中文\"\n",
+            encoding="utf-8",
+        )
+
+        original_read_text = Path.read_text
+
+        def guarded_read_text(self, *args, **kwargs):
+            if self == manifest_file:
+                assert kwargs.get("encoding") == "utf-8"
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", guarded_read_text)
+
+        mgr = PluginManager()
+        manifest = mgr._parse_manifest(
+            manifest_file=manifest_file,
+            plugin_dir=plugin_dir,
+            source="test",
+            prefix="",
+        )
+
+        assert manifest is not None
+        assert manifest.description == "Unicode manifest — 中文"
+
     def test_discover_project_plugins(self, tmp_path, monkeypatch):
         """Plugins in ./.hermes/plugins/ are discovered."""
         project_dir = tmp_path / "project"

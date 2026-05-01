@@ -201,11 +201,25 @@ class TestMemoryStorePersistence:
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
         # Write file with duplicates
         mem_file = tmp_path / "MEMORY.md"
-        mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry")
+        mem_file.write_text(
+            "duplicate entry\n§\nduplicate entry\n§\nunique entry",
+            encoding="utf-8",
+        )
 
         store = MemoryStore()
         store.load_from_disk()
         assert len(store.memory_entries) == 2
+
+    def test_non_utf8_memory_file_does_not_disable_store(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_bytes(b"legacy cp936-ish bytes: \xa1\xec")
+
+        store = MemoryStore()
+        store.load_from_disk()
+
+        assert len(store.memory_entries) == 1
+        assert "legacy cp936-ish bytes" in store.memory_entries[0]
 
 
 class TestMemoryStoreSnapshot:

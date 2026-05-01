@@ -418,7 +418,7 @@ class MemoryStore:
         if not path.exists():
             return []
         try:
-            raw = path.read_text(encoding="utf-8")
+            raw = path.read_text(encoding="utf-8", errors="replace")
         except (OSError, IOError):
             return []
 

@@ -2,6 +2,17 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 FROM tianon/gosu:1.19-trixie@sha256:3b176695959c71e123eb390d427efc665eeb561b1540e82679c15e992006b8b9 AS gosu_source
 FROM debian:13.4
 
+# ---------- Mirror Configuration ----------
+# Uncomment/change the mirror URL if your build environment needs one.
+# --- Debian apt mirror (Aliyun / mirrors.aliyun.com) ---
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources
+
+# --- npm mirror ---
+ENV npm_config_registry=https://registry.npmmirror.com
+
+# --- pip / uv mirror ---
+ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
 # Disable Python stdout buffering to ensure logs are printed immediately
 ENV PYTHONUNBUFFERED=1
 
@@ -13,7 +24,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # tini reaps orphaned zombie processes (MCP stdio subprocesses, git, bun, etc.)
 # that would otherwise accumulate when hermes runs as PID 1. See #15012.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+    apt-get install -y --no-install-recommends --fix-missing \
         build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
     rm -rf /var/lib/apt/lists/*
 
@@ -36,6 +47,12 @@ RUN npm install --prefer-offline --no-audit && \
     (cd web && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
 
+# agent-browser — install Chrome to persistent path (outside VOLUME)
+RUN npx agent-browser install && \
+    rm -rf /root/.cache && \
+    mkdir -p /opt/hermes && \
+    mv /root/.agent-browser /opt/hermes/.agent-browser
+
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
 COPY --chown=hermes:hermes . .
@@ -46,6 +63,7 @@ RUN cd web && npm run build
 # ---------- Permissions ----------
 # Make install dir world-readable so any HERMES_UID can read it at runtime.
 # The venv needs to be traversable too.
+COPY --chmod=0755 docker/entrypoint.sh docker/entrypoint.sh
 USER root
 RUN chmod -R a+rX /opt/hermes
 # Start as root so the entrypoint can usermod/groupmod + gosu.
@@ -53,7 +71,10 @@ RUN chmod -R a+rX /opt/hermes
 
 # ---------- Python virtualenv ----------
 RUN uv venv && \
-    uv pip install --no-cache-dir -e ".[all]"
+    uv pip install --no-cache-dir \
+        --exclude-newer-package "python-olm=false" \
+        --exclude-newer-package "unpaddedbase64=false" \
+        -e ".[all]"
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist

@@ -142,8 +142,12 @@ def _get_loop_center_url() -> str:
     return ""
 
 
-def _post_to_loop_center(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """POST a JSON payload to loop-agent-center. Returns decoded response dict."""
+def _call_loop_center(
+    path: str,
+    method: str = "GET",
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Send HTTP request to loop-agent-center. Returns decoded response dict."""
     import urllib.request
 
     base = _get_loop_center_url()
@@ -151,22 +155,21 @@ def _post_to_loop_center(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     user_id = os.getenv("USER_ID", "unknown")
     url = f"{base}/api/v1/internal/agents/{agent_id}/{user_id}{path}"
 
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"} if data else {}
+    req = urllib.request.Request(url, data=data, method=method.upper(), headers=headers)
 
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            logger.info("定时任务已提交到调度中心：%s，响应状态：%s", payload.get("name", "?"), result.get("status"))
-            return result
+            return json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
-        logger.warning("向调度中心提交定时任务失败（%s）：%s", url, exc)
+        logger.warning("请求调度中心失败（%s %s）：%s", method, url, exc)
         return {"status": -1, "message": str(exc)}
+
+
+def _post_to_loop_center(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """POST a JSON payload to loop-agent-center. Thin wrapper for backward compat."""
+    return _call_loop_center(path, method="POST", payload=payload)
 
 
 def _cronjob_external(
@@ -180,8 +183,8 @@ def _cronjob_external(
 ) -> str:
     """Handle cron actions when backend=external (loop-agent-center).
 
-    Only action='create' is forwarded; all other actions return a friendly
-    redirect message telling the user to manage jobs via the scheduling center.
+    Create, update, and remove are forwarded to the scheduling center;
+    all other actions return a friendly redirect message.
     """
     logger.info("外部定时任务后端处理请求，操作类型：%s", action)
 
@@ -249,17 +252,75 @@ def _cronjob_external(
                 f"提交到调度中心失败: {result.get('message', '未知错误')}", success=False
             )
 
-    # ── Non-create actions: friendly redirect ──
+    if action == "update":
+        if not job_id:
+            return tool_error("job_id is required for update", success=False)
+        logger.info("更新定时任务请求：job_id=%s", job_id)
+
+        # Build payload from provided fields
+        updates: Dict[str, Any] = {}
+        if prompt is not None:
+            updates["prompt"] = prompt
+        if name is not None:
+            updates["name"] = name
+        if schedule is not None:
+            parsed = parse_schedule(schedule)
+            updates["schedule"] = {
+                "kind": parsed.get("kind", "cron"),
+                "display": parsed.get("display", schedule),
+            }
+            kind = updates["schedule"]["kind"]
+            if kind == "cron":
+                updates["schedule"]["expr"] = parsed.get("expr", schedule)
+            elif kind == "interval":
+                updates["schedule"]["minutes"] = parsed.get("minutes")
+            elif kind == "once":
+                updates["schedule"]["run_at"] = parsed.get("run_at")
+            updates["schedule_display"] = parsed.get("display", schedule)
+        if skills is not None:
+            updates["skills"] = _canonical_skills(None, skills)
+
+        if not updates:
+            return tool_error("没有提供需要更新的字段", success=False)
+
+        result = _call_loop_center(f"/cronjobs/{job_id}", method="PUT", payload=updates)
+        if result.get("status") == 0:
+            logger.info("定时任务「%s」更新成功", job_id)
+            return json.dumps(
+                {"success": True, "message": "定时任务已更新，后续由调度中心统一管理执行。"},
+                indent=2,
+                ensure_ascii=False,
+            )
+        else:
+            logger.error("定时任务「%s」更新失败：%s", job_id, result.get("message", "未知错误"))
+            return tool_error(f"更新定时任务失败: {result.get('message', '未知错误')}", success=False)
+
+    if action == "remove":
+        if not job_id:
+            return tool_error("job_id is required for remove", success=False)
+        logger.info("删除定时任务请求：job_id=%s", job_id)
+
+        result = _call_loop_center(f"/cronjobs/{job_id}", method="DELETE")
+        if result.get("status") == 0:
+            logger.info("定时任务「%s」删除成功", job_id)
+            return json.dumps(
+                {"success": True, "message": f"定时任务「{job_id}」已删除。"},
+                indent=2,
+                ensure_ascii=False,
+            )
+        else:
+            logger.error("定时任务「%s」删除失败：%s", job_id, result.get("message", "未知错误"))
+            return tool_error(f"删除定时任务失败: {result.get('message', '未知错误')}", success=False)
+
+    # ── Other actions: friendly redirect ──
     logger.info("外部定时任务后端不支持操作「%s」，返回友好提示", action)
-    _FRIENDLY_MESSAGES: Dict[str, str] = {
+    _friendly_messages: Dict[str, str] = {
         "list": "当前定时任务由调度中心统一管理，暂不支持通过对话查询任务列表。请前往调度中心查看。",
-        "update": "当前定时任务由调度中心统一管理，暂不支持通过对话修改任务。请前往调度中心操作。",
-        "remove": "当前定时任务由调度中心统一管理，暂不支持通过对话删除任务。请前往调度中心操作。",
         "pause": "当前定时任务由调度中心统一管理，暂不支持通过对话暂停任务。请前往调度中心操作。",
         "resume": "当前定时任务由调度中心统一管理，暂不支持通过对话恢复任务。请前往调度中心操作。",
         "run": "当前定时任务由调度中心统一管理，暂不支持手动触发。请在调度中心执行。",
     }
-    msg = _FRIENDLY_MESSAGES.get(action, "当前定时任务由调度中心统一管理，该操作暂不支持。")
+    msg = _friendly_messages.get(action, "当前定时任务由调度中心统一管理，该操作暂不支持。")
 
     return json.dumps({"success": True, "message": msg}, indent=2, ensure_ascii=False)
 

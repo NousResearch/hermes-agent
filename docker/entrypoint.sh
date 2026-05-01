@@ -81,6 +81,13 @@ if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
     cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
 fi
 
+# agent-browser: symlink to the build-time browser install so the
+# runtime user (hermes) finds it under $HERMES_HOME/.agent-browser.
+_AGENT_BROWSER_SRC="$INSTALL_DIR/.agent-browser"
+if [ -d "$_AGENT_BROWSER_SRC/browsers" ] && ! [ -e "$HERMES_HOME/.agent-browser" ]; then
+    ln -sf "$_AGENT_BROWSER_SRC" "$HERMES_HOME/.agent-browser"
+fi
+
 # Sync bundled skills (manifest-based so user edits are preserved)
 if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"

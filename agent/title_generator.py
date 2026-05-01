@@ -77,17 +77,19 @@ def auto_title_session(
     try:
         existing = session_db.get_session_title(session_id)
         if existing:
+            logger.debug("会话已有标题，跳过自动生成：session_id=%s, title=%s", session_id, existing)
             return
     except Exception:
         return
 
     title = generate_title(user_message, assistant_response)
     if not title:
+        logger.debug("会话标题生成失败（可能是辅助模型未配置）：session_id=%s", session_id)
         return
 
     try:
         session_db.set_session_title(session_id, title)
-        logger.debug("Auto-generated session title: %s", title)
+        logger.info("会话标题已生成：session_id=%s, title=%s", session_id, title)
     except Exception as e:
         logger.debug("Failed to set auto-generated title: %s", e)
 
@@ -116,6 +118,7 @@ def maybe_auto_title(
     if user_msg_count > 2:
         return
 
+    logger.info("开始自动生成会话标题：session_id=%s", session_id)
     thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message, assistant_response),

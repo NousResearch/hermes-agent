@@ -32,6 +32,7 @@ import re
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -1138,6 +1139,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _approval_token=_approval_token,
                 _prev_session_key=_prev_session_key,
                 _prev_gateway_session=_prev_gateway_session,
+                user_message=user_message,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -1175,6 +1177,21 @@ class APIServerAdapter(BasePlatformAdapter):
         if not final_response:
             final_response = result.get("error", "(No response generated)")
 
+        # Auto-generate session title after first exchange (non-blocking)
+        if final_response and self._session_db:
+            try:
+                from agent.title_generator import maybe_auto_title
+                _all_msgs = result.get("messages", [])
+                maybe_auto_title(
+                    self._session_db,
+                    session_id,
+                    user_message,
+                    final_response,
+                    _all_msgs,
+                )
+            except Exception:
+                pass
+
         # Extract reasoning content from the result
         reasoning_content = result.get("last_reasoning", "") or ""
 
@@ -1209,6 +1226,7 @@ class APIServerAdapter(BasePlatformAdapter):
         chat_session_key: str = None,
         _sess_tokens=None, _approval_token=None,
         _prev_session_key: str = None, _prev_gateway_session: str = None,
+        user_message: str = "",
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -1332,6 +1350,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 usage = agent_usage or usage
             except Exception:
                 pass
+
+            # Auto-generate session title after first exchange (non-blocking)
+            if session_id and self._session_db:
+                try:
+                    from agent.title_generator import maybe_auto_title
+                    _all_msgs = result.get("messages", []) if result else []
+                    _final_resp = result.get("final_response", "") if result else ""
+                    maybe_auto_title(
+                        self._session_db,
+                        session_id,
+                        user_message,
+                        _final_resp,
+                        _all_msgs,
+                    )
+                except Exception:
+                    pass
 
             # Finish chunk
             finish_chunk = {
@@ -1888,6 +1922,22 @@ class APIServerAdapter(BasePlatformAdapter):
                     "response": completed_env,
                 })
 
+            # Auto-generate session title after first exchange (non-blocking)
+            if session_id and self._session_db:
+                try:
+                    from agent.title_generator import maybe_auto_title
+                    _all_msgs = result.get("messages", []) if isinstance(result, dict) else []
+                    _final_resp = final_response_text or ""
+                    maybe_auto_title(
+                        self._session_db,
+                        session_id,
+                        user_message,
+                        _final_resp,
+                        _all_msgs,
+                    )
+                except Exception:
+                    pass
+
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             _persist_incomplete_if_needed()
             # Client disconnected — interrupt the agent so it stops
@@ -2138,6 +2188,21 @@ class APIServerAdapter(BasePlatformAdapter):
         final_response = result.get("final_response", "")
         if not final_response:
             final_response = result.get("error", "(No response generated)")
+
+        # Auto-generate session title after first exchange (non-blocking)
+        if final_response and self._session_db:
+            try:
+                from agent.title_generator import maybe_auto_title
+                _all_msgs = result.get("messages", [])
+                maybe_auto_title(
+                    self._session_db,
+                    session_id,
+                    user_message,
+                    final_response,
+                    _all_msgs,
+                )
+            except Exception:
+                pass
 
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())
@@ -3243,6 +3308,264 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=500,
             )
 
+    # ------------------------------------------------------------------
+    # Workspace file management
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_workspace_root() -> str:
+        """Get the workspace root directory from HERMES_HOME."""
+        hermes_home = os.environ.get("HERMES_HOME", "/opt/data")
+        return str(Path(hermes_home) / "workspace")
+
+    def _resolve_workspace_path(self, raw_path: str) -> Optional[Path]:
+        """Resolve and validate a path within the workspace.
+
+        Returns the resolved Path if valid, None if it escapes the workspace.
+        """
+        if not raw_path or not raw_path.strip():
+            return None
+        workspace = Path(self._get_workspace_root()).resolve()
+        try:
+            target = (workspace / raw_path.strip()).resolve()
+            target.relative_to(workspace)
+            return target
+        except (ValueError, OSError):
+            return None
+
+    async def _handle_workspace_list(self, request: "web.Request") -> "web.Response":
+        """GET /v1/workspace — list files and directories in workspace.
+
+        Query params:
+          - path: subdirectory to list (default: root)
+          - recursive: list recursively (default: false)
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        raw_path = request.query.get("path", "").strip()
+        recursive = request.query.get("recursive", "").lower() in ("true", "1")
+
+        workspace = Path(self._get_workspace_root()).resolve()
+        target = workspace
+        if raw_path:
+            resolved = self._resolve_workspace_path(raw_path)
+            if not resolved:
+                return web.json_response(
+                    {"error": {"message": "Invalid path or path escapes workspace", "type": "invalid_request_error"}},
+                    status=400,
+                )
+            target = resolved
+
+        if not target.exists():
+            return web.json_response({"files": [], "path": str(target.relative_to(workspace))})
+        if not target.is_dir():
+            return web.json_response(
+                {"error": {"message": "Path is not a directory", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        def _scan(dir_path: Path, relative_to: Path) -> list:
+            items = []
+            try:
+                for entry in sorted(dir_path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+                # Skip hidden files
+                    if entry.name.startswith("."):
+                        continue
+                    rel = entry.relative_to(relative_to)
+                    info = {
+                        "name": entry.name,
+                        "path": str(rel.as_posix()),
+                        "type": "directory" if entry.is_dir() else "file",
+                        "size": entry.stat().st_size if entry.is_file() else 0,
+                        "modified_at": entry.stat().st_mtime,
+                    }
+                    items.append(info)
+                    if recursive and entry.is_dir():
+                        items.extend(_scan(entry, relative_to))
+            except PermissionError:
+                pass
+            return items
+
+        try:
+            files = _scan(target, workspace)
+            rel_path = str(target.relative_to(workspace)) if target != workspace else ""
+            return web.json_response({
+                "files": files,
+                "path": rel_path,
+                "workspace_root": str(workspace),
+            })
+        except Exception as e:
+            logger.error("[api_server] Failed to list workspace: %s", e, exc_info=True)
+            return web.json_response(
+                {"error": {"message": "Failed to list workspace", "type": "server_error"}},
+                status=500,
+            )
+
+    async def _handle_workspace_download(self, request: "web.Request") -> "web.Response":
+        """GET /v1/workspace/download?path=xxx — download a file.
+
+        Query params:
+          - path: relative path to the file within workspace (required)
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        raw_path = request.query.get("path", "").strip()
+        if not raw_path:
+            return web.json_response(
+                {"error": {"message": "path query parameter is required", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        resolved = self._resolve_workspace_path(raw_path)
+        if not resolved:
+            return web.json_response(
+                {"error": {"message": "Invalid path or path escapes workspace", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        if not resolved.exists() or not resolved.is_file():
+            return web.json_response(
+                {"error": {"message": "File not found", "type": "not_found"}},
+                status=404,
+            )
+
+        # Check file size limit (100MB)
+        max_bytes = 100 * 1024 * 1024
+        file_size = resolved.stat().st_size
+        if file_size > max_bytes:
+            return web.json_response(
+                {"error": {"message": "File too large for download via API (max 100MB)", "type": "invalid_request_error"}},
+                status=413,
+            )
+
+        try:
+            content = resolved.read_bytes()
+            # Determine content type
+            suffix = resolved.suffix.lower()
+            mime_map = {
+                ".py": "text/x-python",
+                ".js": "text/javascript",
+                ".ts": "text/typescript",
+                ".json": "application/json",
+                ".yaml": "text/yaml",
+                ".yml": "text/yaml",
+                ".md": "text/markdown",
+                ".txt": "text/plain",
+                ".html": "text/html",
+                ".css": "text/css",
+                ".xml": "text/xml",
+                ".sh": "text/x-shellscript",
+                ".toml": "text/toml",
+                ".csv": "text/csv",
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".gif": "image/gif",
+                ".svg": "image/svg+xml",
+                ".pdf": "application/pdf",
+                ".zip": "application/zip",
+            }
+            content_type = mime_map.get(suffix, "application/octet-stream")
+            filename = resolved.name
+            return web.Response(
+                body=content,
+                content_type=content_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Length": str(file_size),
+                },
+            )
+        except Exception as e:
+            logger.error("[api_server] Failed to download file: %s", e, exc_info=True)
+            return web.json_response(
+                {"error": {"message": "Failed to read file", "type": "server_error"}},
+                status=500,
+            )
+
+    async def _handle_workspace_view(self, request: "web.Request") -> "web.Response":
+        """GET /v1/workspace/view?path=xxx — preview file content inline.
+
+        Only works for text files under 1MB.  Binary files return a hint.
+        Query params:
+          - path: relative path within workspace (required)
+          - lines: max lines to return (default: all, max: 2000)
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        raw_path = request.query.get("path", "").strip()
+        if not raw_path:
+            return web.json_response(
+                {"error": {"message": "path query parameter is required", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        resolved = self._resolve_workspace_path(raw_path)
+        if not resolved:
+            return web.json_response(
+                {"error": {"message": "Invalid path or path escapes workspace", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        if not resolved.exists() or not resolved.is_file():
+            return web.json_response(
+                {"error": {"message": "File not found", "type": "not_found"}},
+                status=404,
+            )
+
+        # Reject files over 1MB for inline preview
+        file_size = resolved.stat().st_size
+        max_preview = 1024 * 1024
+        if file_size > max_preview:
+            return web.json_response(
+                {"error": {"message": "File too large for preview (max 1MB)", "type": "invalid_request_error"}},
+                status=413,
+            )
+
+        try:
+            content = resolved.read_bytes()
+            # Detect binary content
+            if b"\x00" in content[:8192]:
+                return web.json_response(
+                    {"file": raw_path, "type": "binary", "size": file_size, "content": None,
+                     "message": "Binary file, use download endpoint"},
+                )
+
+            text = content.decode("utf-8", errors="replace")
+            max_lines = 2000
+            try:
+                max_lines = min(2000, max(1, int(request.query.get("lines", str(max_lines)))))
+            except (ValueError, TypeError):
+                pass
+
+            lines = text.splitlines()
+            truncated = len(lines) > max_lines
+            if truncated:
+                lines = lines[:max_lines]
+
+            suffix = resolved.suffix.lower()
+            return web.json_response({
+                "file": raw_path,
+                "type": "text",
+                "size": file_size,
+                "language": suffix.lstrip(".") if suffix else None,
+                "content": "\n".join(lines),
+                "total_lines": len(lines) + (text.count("\n") - len(lines)) if truncated else len(lines),
+                "truncated": truncated,
+                "max_lines": max_lines if truncated else None,
+            })
+        except Exception as e:
+            logger.error("[api_server] Failed to view file: %s", e, exc_info=True)
+            return web.json_response(
+                {"error": {"message": "Failed to read file", "type": "server_error"}},
+                status=500,
+            )
+
     async def _sweep_orphaned_runs(self) -> None:
         """Periodically clean up run streams that were never consumed."""
         while True:
@@ -3304,6 +3627,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/sessions", self._handle_list_sessions)
             self._app.router.add_delete("/v1/sessions", self._handle_delete_sessions)
             self._app.router.add_get("/v1/sessions/{session_id}", self._handle_get_session)
+            # Workspace file management
+            self._app.router.add_get("/v1/workspace", self._handle_workspace_list)
+            self._app.router.add_get("/v1/workspace/download", self._handle_workspace_download)
+            self._app.router.add_get("/v1/workspace/view", self._handle_workspace_view)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

@@ -2392,6 +2392,15 @@ class GatewayRunner:
         task.add_done_callback(self._background_tasks.discard)
         return True
 
+    def _refresh_installed_unit_before_service_restart(self) -> bool:
+        """Best-effort refresh of the installed systemd unit before exit-75 restart."""
+        from hermes_cli.gateway import _detect_installed_unit_scope, refresh_systemd_unit_if_needed
+
+        scope = _detect_installed_unit_scope()
+        if scope is None:
+            return False
+        return refresh_systemd_unit_if_needed(system=scope)
+
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
@@ -3705,6 +3714,10 @@ class GatewayRunner:
                 self._increment_restart_failure_counts(set(active_agents.keys()))
 
             if self._restart_requested and self._restart_via_service:
+                try:
+                    self._refresh_installed_unit_before_service_restart()
+                except Exception:
+                    logger.debug("Pre-restart unit refresh failed", exc_info=True)
                 self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 

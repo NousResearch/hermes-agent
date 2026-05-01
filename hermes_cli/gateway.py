@@ -5,6 +5,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import logging
 import os
 import shutil
 import signal
@@ -15,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+
+logger = logging.getLogger(__name__)
 
 from gateway.status import terminate_pid
 from gateway.restart import (
@@ -1558,6 +1561,14 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
 
+def _bundled_node_bin_dir(home: Path) -> str | None:
+    """Return the bundled Hermes node bin dir for *home* when present."""
+    bundled_node = home / ".hermes" / "node" / "bin" / "node"
+    if bundled_node.exists():
+        return str(bundled_node.parent)
+    return None
+
+
 def _remap_path_for_user(path: str, target_home_dir: str) -> str:
     """Remap *path* from the current user's home to *target_home_dir*.
 
@@ -1619,12 +1630,6 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
 
     path_entries = [venv_bin, node_bin]
-    resolved_node = shutil.which("node")
-    if resolved_node:
-        resolved_node_dir = str(Path(resolved_node).resolve().parent)
-        if resolved_node_dir not in path_entries:
-            path_entries.append(resolved_node_dir)
-
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
     # systemd's TimeoutStopSec must exceed the gateway's drain_timeout so
     # there's budget left for post-interrupt cleanup (tool subprocess kill,
@@ -1648,6 +1653,9 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         venv_bin = _remap_path_for_user(venv_bin, home_dir)
         node_bin = _remap_path_for_user(node_bin, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
+        bundled_node_dir = _bundled_node_bin_dir(Path(home_dir))
+        if bundled_node_dir and bundled_node_dir not in path_entries:
+            path_entries.append(bundled_node_dir)
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
@@ -1686,6 +1694,9 @@ WantedBy=multi-user.target
 
     hermes_home = str(get_hermes_home().resolve())
     profile_arg = _profile_arg(hermes_home)
+    bundled_node_dir = _bundled_node_bin_dir(Path.home())
+    if bundled_node_dir and bundled_node_dir not in path_entries:
+        path_entries.append(bundled_node_dir)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
@@ -1754,15 +1765,37 @@ def systemd_unit_is_current(system: bool = False) -> bool:
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     """Rewrite the installed systemd unit when the generated definition has changed."""
     unit_path = get_systemd_unit_path(system=system)
-    if not unit_path.exists() or systemd_unit_is_current(system=system):
+    is_current = systemd_unit_is_current(system=system) if unit_path.exists() else False
+    if not unit_path.exists() or is_current:
         return False
 
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
-    unit_path.write_text(generate_systemd_unit(system=system, run_as_user=expected_user), encoding="utf-8")
-    _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+    rendered_unit = generate_systemd_unit(system=system, run_as_user=expected_user)
+    remedy = f"{'sudo ' if system else ''}hermes gateway install --force{' --system' if system else ''}"
+    try:
+        unit_path.write_text(rendered_unit, encoding="utf-8")
+        _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+    except (PermissionError, OSError, subprocess.CalledProcessError) as exc:
+        msg = (
+            f"Cannot refresh {_service_scope_label(system)} gateway unit at {unit_path} ({exc}). "
+            f"Run: {remedy} to update it."
+        )
+        logger.warning(msg)
+        print(f"⚠ {msg}", file=sys.stderr, flush=True)
+        return False
     print(f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install")
     return True
 
+
+def _detect_installed_unit_scope() -> bool | None:
+    """Return the installed systemd scope when exactly one gateway unit exists."""
+    system_exists = get_systemd_unit_path(system=True).exists()
+    user_exists = get_systemd_unit_path(system=False).exists()
+    if system_exists and not user_exists:
+        return True
+    if user_exists and not system_exists:
+        return False
+    return None
 
 
 def _print_linger_enable_warning(username: str, detail: str | None = None) -> None:
@@ -1826,7 +1859,7 @@ def _ensure_linger_enabled() -> None:
 def _select_systemd_scope(system: bool = False) -> bool:
     if system:
         return True
-    return get_systemd_unit_path(system=True).exists() and not get_systemd_unit_path(system=False).exists()
+    return _detect_installed_unit_scope() is True
 
 
 def _get_restart_drain_timeout() -> float:

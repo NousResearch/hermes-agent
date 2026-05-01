@@ -149,6 +149,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
   const resumeRef = useRef<string | null>(searchParams.get("resume"));
   const channel = useMemo(() => generateChannelId(), []);
+  // Track resume param changes so the main WebSocket effect re-opens with the
+  // new resume target.  Without this, the persistent ChatPage component keeps
+  // the initial resumeRef value (null) because the WS effect only keys on
+  // `channel` which is generated once at mount.
+  const [resumeKey, setResumeKey] = useState(0);
+  useEffect(() => {
+    const next = searchParams.get("resume");
+    if (next !== resumeRef.current) {
+      resumeRef.current = next;
+      setResumeKey((k) => k + 1);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -619,7 +631,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel]);
+  }, [channel, resumeKey]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.

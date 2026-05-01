@@ -9456,7 +9456,7 @@ class AIAgent:
         results = [None] * num_tools
         for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
             if block_result is not None:
-                results[i] = (name, args, block_result, 0.0, True, True)
+                results[i] = (name, args, block_result, 0.0, False, True)
 
         # Touch activity before launching workers so the gateway knows
         # we're executing tools (not stuck).

@@ -10312,8 +10312,50 @@ Examples:
         cmd_chat(args)
         return
 
-    # Default to chat if no command specified
-    if args.command is None:
+    # Execute the command — check func first so nested subparsers that
+    # correctly set func (e.g. `hermes mcp add`) are dispatched even when
+    # args.command is None due to Python 3.11 argparse quirks.
+    if hasattr(args, "func") and args.func is not None:
+        if args.func != cmd_chat:
+            # A real subcommand was parsed — dispatch directly.
+            args.func(args)
+            return
+        # args.func == cmd_chat: could be a genuine bare invocation OR a
+        # nested-subparser bug that didn't propagate func properly.  Check
+        # for subcommand-specific attributes that indicate a real subcommand.
+        _subcommand_attrs = ("mcp_action", "cron_command", "gateway_command")
+        if any(getattr(args, a, None) is not None for a in _subcommand_attrs):
+            # A nested subcommand was parsed but func defaulted to cmd_chat
+            # due to argparse not propagating set_defaults from the child
+            # subparser.  Look up the correct handler.
+            _fallback_handlers = {
+                "mcp_action": "cmd_mcp",
+                "cron_command": "cmd_cron",
+                "gateway_command": "cmd_gateway",
+            }
+            for _attr, _handler_name in _fallback_handlers.items():
+                if getattr(args, _attr, None) is not None:
+                    _handler = locals().get(_handler_name) or globals().get(_handler_name)
+                    if _handler:
+                        _handler(args)
+                        return
+            # If handler not found, fall through to func dispatch below
+        # Genuine no-command invocation — fill defaults for chat
+        for attr, default in [
+            ("query", None),
+            ("model", None),
+            ("provider", None),
+            ("toolsets", None),
+            ("verbose", False),
+            ("resume", None),
+            ("continue_last", None),
+            ("worktree", False),
+        ]:
+            if not hasattr(args, attr):
+                setattr(args, attr, default)
+        args.func(args)
+        return
+    elif args.command is None:
         for attr, default in [
             ("query", None),
             ("model", None),
@@ -10327,11 +10369,6 @@ Examples:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
         cmd_chat(args)
-        return
-
-    # Execute the command
-    if hasattr(args, "func"):
-        args.func(args)
     else:
         parser.print_help()
 

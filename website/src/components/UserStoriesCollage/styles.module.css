@@ -1,0 +1,252 @@
+/* User Stories collage — masonry grid with category-driven accents. */
+
+.wrap {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 0 4rem;
+}
+
+.hero {
+  padding: 2.5rem 0 2rem;
+  text-align: center;
+}
+.hero h1 {
+  font-size: clamp(2rem, 4vw, 3.25rem);
+  margin-bottom: 0.75rem;
+  background: linear-gradient(120deg, #a78bfa 0%, #60a5fa 50%, #34d399 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.hero p {
+  max-width: 680px;
+  margin: 0 auto;
+  color: var(--ifm-color-emphasis-700);
+  font-size: 1.05rem;
+  line-height: 1.6;
+}
+
+.meta {
+  display: flex;
+  gap: 1.5rem;
+  justify-content: center;
+  margin-top: 1.25rem;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  color: var(--ifm-color-emphasis-600);
+}
+.meta strong {
+  color: var(--ifm-color-emphasis-900);
+  font-weight: 600;
+}
+
+/* Filter bar */
+.filters {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin: 1.75rem 0 2rem;
+  padding: 0 1rem;
+}
+.filterBtn {
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  background: transparent;
+  color: var(--ifm-color-emphasis-800);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  white-space: nowrap;
+}
+.filterBtn:hover {
+  border-color: var(--ifm-color-emphasis-500);
+  color: var(--ifm-color-emphasis-1000);
+  transform: translateY(-1px);
+}
+.filterActive {
+  background: var(--ifm-color-emphasis-900);
+  color: var(--ifm-background-color);
+  border-color: var(--ifm-color-emphasis-900);
+}
+[data-theme='dark'] .filterActive {
+  background: #e2e8f0;
+  color: #0f172a;
+  border-color: #e2e8f0;
+}
+.filterCount {
+  margin-left: 0.35rem;
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Masonry — use CSS columns for a true collage feel */
+.grid {
+  column-count: 4;
+  column-gap: 1rem;
+  padding: 0 1rem;
+}
+@media (max-width: 1200px) { .grid { column-count: 3; } }
+@media (max-width: 850px)  { .grid { column-count: 2; } }
+@media (max-width: 560px)  { .grid { column-count: 1; } }
+
+/* Tile */
+.tile {
+  break-inside: avoid;
+  margin-bottom: 1rem;
+  position: relative;
+  display: block;
+  padding: 1.1rem 1.2rem 1.15rem;
+  border-radius: 14px;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  background: var(--ifm-card-background-color, var(--ifm-background-surface-color));
+  color: inherit !important;
+  text-decoration: none !important;
+  overflow: hidden;
+  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+}
+.tile::before {
+  /* Color accent strip */
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--tile-accent, linear-gradient(90deg, #a78bfa, #60a5fa));
+  opacity: 0.9;
+}
+.tile::after {
+  /* Subtle hover glow */
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 14px;
+  box-shadow: 0 0 0 0 transparent;
+  pointer-events: none;
+  transition: box-shadow 0.22s ease;
+}
+.tile:hover {
+  transform: translateY(-3px);
+  border-color: var(--tile-accent-solid, var(--ifm-color-primary));
+  box-shadow: 0 8px 24px -8px rgba(0, 0, 0, 0.25);
+}
+[data-theme='dark'] .tile:hover {
+  box-shadow: 0 10px 30px -12px rgba(120, 120, 200, 0.45);
+}
+
+/* Size variants — big tiles get more visual weight */
+.tileSm { min-height: 130px; }
+.tileMd { min-height: 180px; }
+.tileLg {
+  min-height: 240px;
+  padding: 1.35rem 1.45rem 1.45rem;
+}
+.tileLg .headline {
+  font-size: 1.3rem;
+}
+
+/* Tile body */
+.badgeRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-600);
+}
+.sourceBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+.sourceIcon {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--tile-accent-solid, #a78bfa);
+  flex-shrink: 0;
+}
+.catTag {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: var(--tile-accent-soft, rgba(167, 139, 250, 0.12));
+  color: var(--tile-accent-solid, #a78bfa);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.headline {
+  font-size: 1.02rem;
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 0 0 0.5rem;
+  color: var(--ifm-color-emphasis-1000);
+}
+
+.quote {
+  font-size: 0.875rem;
+  line-height: 1.55;
+  color: var(--ifm-color-emphasis-800);
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.tileLg .quote { -webkit-line-clamp: 8; }
+.tileSm .quote { -webkit-line-clamp: 4; }
+
+.author {
+  display: block;
+  margin-top: 0.7rem;
+  font-size: 0.78rem;
+  color: var(--ifm-color-emphasis-600);
+  font-weight: 500;
+}
+
+.external {
+  position: absolute;
+  top: 0.9rem;
+  right: 0.9rem;
+  opacity: 0;
+  font-size: 0.85rem;
+  color: var(--tile-accent-solid, var(--ifm-color-primary));
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.tile:hover .external {
+  opacity: 1;
+  transform: translate(2px, -2px);
+}
+
+/* Footer */
+.footer {
+  margin: 3rem auto 0;
+  padding: 1.5rem;
+  text-align: center;
+  max-width: 720px;
+  border-radius: 14px;
+  background: var(--ifm-color-emphasis-100);
+  font-size: 0.95rem;
+  color: var(--ifm-color-emphasis-800);
+  line-height: 1.6;
+}
+.footer a {
+  color: var(--ifm-color-primary);
+  text-decoration: none;
+  font-weight: 600;
+}
+.footer a:hover { text-decoration: underline; }
+
+.empty {
+  padding: 3rem 1rem;
+  text-align: center;
+  color: var(--ifm-color-emphasis-600);
+  font-size: 0.95rem;
+}

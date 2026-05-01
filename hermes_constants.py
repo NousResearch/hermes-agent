@@ -342,4 +342,8 @@ def apply_ipv4_preference(force: bool = False) -> None:
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 
+OPENPATHS_BASE_URL = "https://openpaths.io/v1"
+OPENPATHS_MODELS_URL = f"{OPENPATHS_BASE_URL}/models"
+OPENPATHS_CHAT_URL = f"{OPENPATHS_BASE_URL}/chat/completions"
+
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"

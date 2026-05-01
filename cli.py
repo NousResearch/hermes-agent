@@ -3232,6 +3232,14 @@ class HermesCLI:
                 pass
             return changed
 
+        if resolved_provider == "openpaths":
+            if self._model_is_default:
+                fallback_model = "auto-medium-task"
+                if current_model != fallback_model:
+                    self.model = fallback_model
+                    changed = True
+            return changed
+
         if resolved_provider != "openai-codex":
             return changed
 

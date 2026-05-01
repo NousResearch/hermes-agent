@@ -51,7 +51,9 @@ from typing import Dict, Optional, Any, List, Union
 # preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
+from hermes_cli.auth import resolve_provider
 from hermes_cli.config import cfg_get
+from hermes_cli.models import get_default_model_for_provider
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -979,11 +981,26 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     """
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})
+    provider = str(os.getenv("HERMES_INFERENCE_PROVIDER") or "auto").strip().lower()
     if isinstance(model_cfg, str):
-        return model_cfg
+        model = model_cfg
     elif isinstance(model_cfg, dict):
-        return model_cfg.get("default") or model_cfg.get("model") or ""
-    return ""
+        model = model_cfg.get("default") or model_cfg.get("model") or ""
+        provider = str(model_cfg.get("provider") or provider).strip().lower()
+    else:
+        model = ""
+
+    if model and model != "anthropic/claude-opus-4.6":
+        return model
+
+    try:
+        resolved_provider = resolve_provider(provider)
+    except Exception as exc:
+        logger.debug("Could not resolve gateway provider %r for default model: %s", provider, exc)
+        return model
+
+    default_model = get_default_model_for_provider(resolved_provider)
+    return default_model or model
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:

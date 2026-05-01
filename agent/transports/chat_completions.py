@@ -90,6 +90,22 @@ def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
     return translated or None
 
 
+def _openpaths_reasoning_effort(model: str, reasoning_config: dict | None) -> str | None:
+    """Translate Hermes reasoning settings to OpenPaths reasoning_effort."""
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            return "none"
+        effort = str(reasoning_config.get("effort") or "").strip().lower()
+        if effort == "xhigh":
+            return "high"
+        if effort in {"none", "low", "medium", "high", "auto"}:
+            return effort
+
+    if (model or "").strip().lower() in {"auto-think", "auto-think-task", "autothink"}:
+        return "auto"
+    return None
+
+
 def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     normalized = str(base_url or "").strip().rstrip("/").lower()
     if not normalized:
@@ -260,6 +276,7 @@ class ChatCompletionsTransport(ProviderTransport):
         is_kimi = params.get("is_kimi", False)
         is_tokenhub = params.get("is_tokenhub", False)
         reasoning_config = params.get("reasoning_config")
+        provider_name = str(params.get("provider_name") or "").strip().lower()
 
         if ephemeral is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(ephemeral))
@@ -310,13 +327,17 @@ class ChatCompletionsTransport(ProviderTransport):
             if _lm_effort is not None:
                 api_kwargs["reasoning_effort"] = _lm_effort
 
+        if provider_name == "openpaths":
+            _openpaths_effort = _openpaths_reasoning_effort(model, reasoning_config)
+            if _openpaths_effort is not None:
+                api_kwargs["reasoning_effort"] = _openpaths_effort
+
         # extra_body assembly
         extra_body: dict[str, Any] = {}
 
         is_openrouter = params.get("is_openrouter", False)
         is_nous = params.get("is_nous", False)
         is_github_models = params.get("is_github_models", False)
-        provider_name = str(params.get("provider_name") or "").strip().lower()
         base_url = params.get("base_url")
 
         provider_prefs = params.get("provider_preferences")

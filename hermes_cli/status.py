@@ -124,6 +124,7 @@ def show_status(args):
 
     # Values may be a single env var name (str) or a tuple of alternates (first found wins).
     keys: dict[str, str | tuple[str, ...]] = {
+        "OpenPaths": "OPENPATHS_API_KEY",
         "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
         "Anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),

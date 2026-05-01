@@ -341,6 +341,37 @@ class TestBuildApiKwargsAIGateway:
         assert "web_search" in tool_names
 
 
+class TestBuildApiKwargsOpenPaths:
+    def test_uses_chat_completions_format(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openpaths", base_url="https://openpaths.io/v1")
+        agent.model = "auto-medium-task"
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "messages" in kwargs
+        assert "input" not in kwargs
+
+    def test_auto_think_sends_reasoning_effort_auto(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openpaths", base_url="https://openpaths.io/v1")
+        agent.model = "auto-think"
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["reasoning_effort"] == "auto"
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
+    def test_reasoning_config_maps_to_reasoning_effort(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openpaths", base_url="https://openpaths.io/v1")
+        agent.model = "gpt-5.5"
+        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["reasoning_effort"] == "high"
+
+    def test_disabled_reasoning_maps_to_none(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openpaths", base_url="https://openpaths.io/v1")
+        agent.model = "auto-medium-task"
+        agent.reasoning_config = {"enabled": False}
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["reasoning_effort"] == "none"
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
+
 class TestBuildApiKwargsNousPortal:
     def test_includes_nous_product_tags(self, monkeypatch):
         agent = _make_agent(monkeypatch, "nous", base_url="https://inference-api.nousresearch.com/v1")

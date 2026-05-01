@@ -189,6 +189,25 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o",
         "gpt-4o-mini",
     ],
+    "openpaths": [
+        "auto",
+        "auto-easy-task",
+        "auto-medium-task",
+        "auto-hard-task",
+        "auto-think",
+        "autothink",
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
+        "gemini-3.1-pro-preview",
+        "gemini-2.5-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+    ],
     "openai-codex": _codex_curated_models(),
     "copilot-acp": [
         "copilot-acp",
@@ -904,6 +923,7 @@ class ProviderEntry(NamedTuple):
 
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
+    ProviderEntry("openpaths",      "OpenPaths",                "OpenPaths (auto task-tier model routing)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
@@ -967,6 +987,9 @@ _PROVIDER_ALIASES = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "openpath": "openpaths",
+    "open-paths": "openpaths",
+    "open-path": "openpaths",
     "github": "copilot",
     "github-copilot": "copilot",
     "github-models": "copilot",
@@ -1049,8 +1072,16 @@ def get_default_model_for_provider(provider: str) -> str:
     selected a model (e.g. ``hermes auth add openai-codex`` without
     ``hermes model``).
     """
+    provider = normalize_provider(provider)
+    if provider == "openpaths":
+        return "auto-medium-task"
     models = _PROVIDER_MODELS.get(provider, [])
     return models[0] if models else ""
+
+
+def default_model_for_provider(provider: Optional[str]) -> Optional[str]:
+    """Backward-compatible optional-return wrapper for provider defaults."""
+    return get_default_model_for_provider(normalize_provider(provider))
 
 
 def _openrouter_model_is_free(pricing: Any) -> bool:
@@ -2078,6 +2109,13 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return model_ids(force_refresh=force_refresh)
+    if normalized == "openpaths":
+        live = fetch_api_models(
+            os.getenv("OPENPATHS_API_KEY", ""),
+            os.getenv("OPENPATHS_BASE_URL", "https://openpaths.io/v1"),
+        )
+        if live:
+            return live
     if normalized == "openai-codex":
         from hermes_cli.codex_models import get_codex_model_ids
 

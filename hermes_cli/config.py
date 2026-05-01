@@ -1597,6 +1597,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "OPENPATHS_API_KEY": {
+        "description": "OpenPaths API key",
+        "prompt": "OpenPaths API key",
+        "url": "https://openpaths.io/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OPENPATHS_BASE_URL": {
+        "description": "OpenPaths base URL override",
+        "prompt": "OpenPaths base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "GOOGLE_API_KEY": {
         "description": "Google AI Studio API key (also recognized as GEMINI_API_KEY)",
         "prompt": "Google AI Studio API key",

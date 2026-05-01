@@ -32,6 +32,7 @@ class TestProviderRegistry:
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
+        ("openpaths", "OpenPaths", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
         ("xai", "xAI", "api_key"),
@@ -61,6 +62,12 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("XAI_API_KEY",)
         assert pconfig.base_url_env_var == "XAI_BASE_URL"
         assert pconfig.inference_base_url == "https://api.x.ai/v1"
+
+    def test_openpaths_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["openpaths"]
+        assert pconfig.api_key_env_vars == ("OPENPATHS_API_KEY",)
+        assert pconfig.base_url_env_var == "OPENPATHS_BASE_URL"
+        assert pconfig.inference_base_url == "https://openpaths.io/v1"
 
     def test_nvidia_env_vars(self):
         pconfig = PROVIDER_REGISTRY["nvidia"]
@@ -143,7 +150,8 @@ class TestProviderRegistry:
 # =============================================================================
 
 PROVIDER_ENV_VARS = (
-    "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
+    "OPENROUTER_API_KEY", "OPENAI_API_KEY", "OPENPATHS_API_KEY", "OPENPATHS_BASE_URL",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "LM_API_KEY", "LM_BASE_URL",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
@@ -259,6 +267,12 @@ class TestResolveProvider:
     def test_alias_huggingface_hub(self):
         assert resolve_provider("huggingface-hub") == "huggingface"
 
+    def test_explicit_openpaths(self):
+        assert resolve_provider("openpaths") == "openpaths"
+
+    def test_alias_openpath(self):
+        assert resolve_provider("openpath") == "openpaths"
+
     def test_unknown_provider_raises(self):
         with pytest.raises(AuthError):
             resolve_provider("nonexistent-provider-xyz")
@@ -306,6 +320,15 @@ class TestResolveProvider:
     def test_auto_detects_hf_token(self, monkeypatch):
         monkeypatch.setenv("HF_TOKEN", "hf_test_token")
         assert resolve_provider("auto") == "huggingface"
+
+    def test_auto_detects_openpaths_key(self, monkeypatch):
+        monkeypatch.setenv("OPENPATHS_API_KEY", "op-key")
+        assert resolve_provider("auto") == "openpaths"
+
+    def test_openpaths_takes_priority_over_openrouter(self, monkeypatch):
+        monkeypatch.setenv("OPENPATHS_API_KEY", "op-key")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        assert resolve_provider("auto") == "openpaths"
 
     def test_openrouter_takes_priority_over_glm(self, monkeypatch):
         """OpenRouter API key should win over GLM in auto-detection."""
@@ -532,6 +555,19 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "gw-secret-key"
         assert creds["base_url"] == "https://ai-gateway.vercel.sh/v1"
 
+    def test_resolve_openpaths_with_key(self, monkeypatch):
+        monkeypatch.setenv("OPENPATHS_API_KEY", "op-secret-key")
+        creds = resolve_api_key_provider_credentials("openpaths")
+        assert creds["provider"] == "openpaths"
+        assert creds["api_key"] == "op-secret-key"
+        assert creds["base_url"] == "https://openpaths.io/v1"
+
+    def test_resolve_openpaths_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("OPENPATHS_API_KEY", "op-secret-key")
+        monkeypatch.setenv("OPENPATHS_BASE_URL", "https://openpaths.example/v1")
+        creds = resolve_api_key_provider_credentials("openpaths")
+        assert creds["base_url"] == "https://openpaths.example/v1"
+
     def test_resolve_kilocode_with_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-secret-key")
         creds = resolve_api_key_provider_credentials("kilocode")
@@ -664,6 +700,15 @@ class TestRuntimeProviderResolution:
         result = resolve_runtime_provider(requested="auto")
         assert result["provider"] == "kimi-coding"
         assert result["api_key"] == "auto-kimi-key"
+
+    def test_runtime_auto_detects_openpaths_provider(self, monkeypatch):
+        monkeypatch.setenv("OPENPATHS_API_KEY", "op-runtime-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="auto")
+        assert result["provider"] == "openpaths"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "op-runtime-key"
+        assert result["base_url"] == "https://openpaths.io/v1"
 
     def test_runtime_copilot_uses_gh_cli_token(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")

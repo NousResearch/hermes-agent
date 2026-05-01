@@ -134,6 +134,20 @@ model:
 #   response_cache_ttl: 300      # Cache TTL in seconds, 1-86400 (default: 300)
 
 # =============================================================================
+# Smart Model Routing (optional)
+# =============================================================================
+# Use a cheaper model for short/simple turns while keeping your main model for
+# more complex requests. Disabled by default.
+#
+# smart_model_routing:
+#   enabled: true
+#   max_simple_chars: 160
+#   max_simple_words: 28
+#   cheap_model:
+#     provider: openpaths
+#     model: auto-easy-task
+
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple

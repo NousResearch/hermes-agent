@@ -366,7 +366,13 @@ class EmailAdapter(BasePlatformAdapter):
                     if status != "OK":
                         continue
 
-                    raw_email = msg_data[0][1]
+                    raw_email = None
+                    for part in msg_data or []:
+                        if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], (bytes, bytearray)):
+                            raw_email = bytes(part[1])
+                            break
+                    if not raw_email:
+                        continue
                     msg = email_lib.message_from_bytes(raw_email)
 
                     sender_raw = msg.get("From", "")

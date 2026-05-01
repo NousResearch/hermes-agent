@@ -4758,7 +4758,7 @@ def _(rid, params: dict) -> dict:
             authenticated.append({
                 "slug": entry.slug,
                 "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
-                "is_current": False,
+                "is_current": entry.slug == current_provider,
                 "is_user_defined": False,
                 "models": [],
                 "total_models": 0,
@@ -4794,13 +4794,16 @@ def _(rid, params: dict) -> dict:
     """
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
-        from hermes_cli.config import save_env_value
+        from hermes_cli.config import is_managed, save_env_value
         from hermes_cli.model_switch import list_authenticated_providers
 
         slug = (params.get("slug") or "").strip()
         api_key = (params.get("api_key") or "").strip()
         if not slug or not api_key:
             return _err(rid, 4001, "slug and api_key are required")
+
+        if is_managed():
+            return _err(rid, 4006, "managed install — credentials are read-only")
 
         pconfig = PROVIDER_REGISTRY.get(slug)
         if not pconfig:

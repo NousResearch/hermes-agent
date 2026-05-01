@@ -78,6 +78,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       setModelIdx(0)
       setKeyInput('')
       setKeyError('')
+      setKeySaving(false)
 
       return
     }
@@ -383,7 +384,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       (p, i) => {
         const authMark = p.authenticated === false ? '○' : p.is_current ? '*' : '●'
         const modelCount = p.total_models ?? p.models?.length ?? 0
-        const suffix = p.authenticated === false ? '(no key)' : `${modelCount} models`
+        const suffix = p.authenticated === false
+          ? (p.auth_type === 'api_key' ? '(no key)' : '(needs setup)')
+          : `${modelCount} models`
 
         return `${authMark} ${names[i]} · ${suffix}`
       }

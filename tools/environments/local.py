@@ -3,6 +3,7 @@
 import os
 import platform
 import shutil
+from pathlib import Path
 import signal
 import subprocess
 import tempfile
@@ -143,6 +144,34 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     return sanitized
 
 
+def _windows_store_bash_shim(path: str) -> bool:
+    """True if *path* is the Win32 / Store ``bash.exe`` stub (often exit 126), not Git Bash."""
+    if not path:
+        return False
+    lowered = tuple(x.lower() for x in Path(path).expanduser().parts)
+    return "windowsapps" in lowered
+
+
+def _git_for_windows_bash_candidates() -> tuple[str, str, str]:
+    return (
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
+    )
+
+
+def _first_non_shim_bash_exe_on_windows_path() -> str | None:
+    """Walk ``PATH`` and return the first ``bash.exe`` that is not a WindowsApps shim."""
+    for raw in os.environ.get("PATH", "").split(os.pathsep):
+        d = raw.strip().strip('"')
+        if not d:
+            continue
+        exe = os.path.normpath(os.path.join(d, "bash.exe"))
+        if os.path.isfile(exe) and not _windows_store_bash_shim(exe):
+            return exe
+    return None
+
+
 def _find_bash() -> str:
     """Find bash for command execution."""
     if not _IS_WINDOWS:
@@ -155,20 +184,20 @@ def _find_bash() -> str:
         )
 
     custom = os.environ.get("HERMES_GIT_BASH_PATH")
-    if custom and os.path.isfile(custom):
+    if custom and os.path.isfile(custom) and not _windows_store_bash_shim(custom):
         return custom
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
-    for candidate in (
-        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Git", "bin", "bash.exe"),
-    ):
+    for candidate in _git_for_windows_bash_candidates():
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    found = shutil.which("bash")
+    if found and os.path.isfile(found) and not _windows_store_bash_shim(found):
+        return found
+
+    fallback = _first_non_shim_bash_exe_on_windows_path()
+    if fallback:
+        return fallback
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"

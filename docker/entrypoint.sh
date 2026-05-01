@@ -22,6 +22,11 @@ if [ "$(id -u)" = "0" ]; then
         groupmod -o -g "$HERMES_GID" hermes 2>/dev/null || true
     fi
 
+    # Create custom HERMES_HOME paths before permission checks so `stat`/chown helpers
+    # see real metadata. Hermes drops to a non-root user before bootstrapping; without
+    # this, anchors like `/home/hermes/` cannot be mkdir'd with root-only parents (#18482).
+    mkdir -p "$HERMES_HOME"
+
     # Fix ownership of the data volume. When HERMES_UID remaps the hermes user,
     # files created by previous runs (under the old UID) become inaccessible.
     # Always chown -R when UID was remapped; otherwise only if top-level is wrong.

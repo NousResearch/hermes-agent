@@ -506,6 +506,7 @@ AUTHOR_MAP = {
     "hubin_ll@qq.com": "LLQWQ",
     "memosr_email@gmail.com": "memosr",
     "jperlow@gmail.com": "perlowja",
+    "jasonpette1783@gmail.com": "web-dev0521",
     "tangyuanjc@JCdeAIfenshendeMac-mini.local": "tangyuanjc",
     "harryplusplus@gmail.com": "harryplusplus",
     "anthhub@163.com": "anthhub",

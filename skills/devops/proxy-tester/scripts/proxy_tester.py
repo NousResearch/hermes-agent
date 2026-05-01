@@ -102,8 +102,14 @@ def probe_proxy(proxy_cfg: Dict, probe_url: str, timeout: int) -> Dict:
             try:
                 data = resp.json()
                 result["exit_ip"] = data.get("origin", "").strip()
+                result["response_snippet"] = None
             except Exception:
-                result["exit_ip"] = resp.text.strip()[:100]
+                # Non-JSON response (e.g. HTML) — clear exit_ip, store a clean snippet
+                result["exit_ip"] = None
+                import re
+                text_only = re.sub(r"<[^>]+>", "", resp.text).strip()
+                snippet = text_only[:80].replace("\n", " ") or "non-JSON response"
+                result["response_snippet"] = snippet
         else:
             result["error"] = f"HTTP {resp.status_code}"
             result["error_type"] = "http_error"
@@ -197,6 +203,8 @@ def main():
                     help="How many times to test each proxy (default: 3)")
     ap.add_argument("--no-ip-intel", action="store_true",
                     help="Skip reverse-DNS IP-type classification")
+    ap.add_argument("--report", choices=["md", "html"], default="md",
+                    help="Output format: 'md' (default markdown table) or 'html' (branded dark/cyan report)")
     args = ap.parse_args()
 
     # Load proxies — either from file or interactive stdin
@@ -251,16 +259,25 @@ def main():
         avg_latency = (sum(r["latency_ms"] for r in successes) / len(successes)) if successes else None
         exit_ip = successes[0]["exit_ip"] if successes else None
 
+        # Capture response_snippet from the first successful non-JSON response
+        response_snippet = None
+        for s in successes:
+            snippet = s.get("response_snippet")
+            if snippet:
+                response_snippet = snippet
+                break
+
         # Classification (if enabled & we have an IP)
         ip_type = "unknown"
         if not args.no_ip_intel and exit_ip:
-            ip_type = classify_ip(exit_ip)  # placeholder — expand with real ASN DB
+            ip_type = classify_ip(exit_ip)
 
         # Summary print
         if success_rate == 100:
-            print(f"✅ alive — {avg_latency:.0f}ms — {exit_ip} — {ip_type}")
+            snippet_note = f' — {response_snippet}' if response_snippet else ""
+            print(f"✅ alive — {avg_latency:.0f}ms — {exit_ip or response_snippet or '—'}{snippet_note}")
         elif success_rate > 0:
-            print(f"⚠ flaky — {success_rate:.0f}% — {avg_latency:.0f}ms — {exit_ip}")
+            print(f"⚠ flaky — {success_rate:.0f}% — {avg_latency:.0f}ms")
         else:
             print(f"❌ dead — {iter_results[0]['error']}")
 
@@ -270,6 +287,7 @@ def main():
             "success_rate": round(success_rate, 1),
             "avg_latency_ms": round(avg_latency, 1) if avg_latency else None,
             "exit_ip": exit_ip,
+            "response_snippet": response_snippet,
             "ip_type": ip_type,
             "iterations": iter_results,
         }
@@ -278,25 +296,167 @@ def main():
     # ── Write outputs ────────────────────────────────────────────────────────
     import json
 
-    # Summary markdown
-    summary = args.output / "summary.md"
-    with open(summary, "w") as f:
-        f.write(f"# Proxy Test Report — {time.strftime('%Y-%m-%d')}\n\n")
-        f.write("| Proxy | Status | Avg Latency | Exit IP | Type | Success |\n")
-        f.write("|-------|--------|-------------|---------|------|---------|\n")
+    healthy = [r for r in all_results if r["success_rate"] == 100]
+    dead = [r for r in all_results if r["success_rate"] == 0]
+    avg_lat = sum(r["avg_latency_ms"] for r in healthy) / len(healthy) if healthy else 0
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    total = len(all_results)
+
+    if args.report == "html":
+        summary = args.output / "report.html"
+        type_counts = {}
+        for r in healthy:
+            t = r.get("ip_type") or "unknown"
+            type_counts[t] = type_counts.get(t, 0) + 1
+
+        rows_html = ""
         for r in all_results:
-            status = "✅" if r["success_rate"] == 100 else ("⚠" if r["success_rate"] > 0 else "❌")
+            status_icon = "✅" if r["success_rate"] == 100 else ("⚠" if r["success_rate"] > 0 else "❌")
             latency = f"{r['avg_latency_ms']:.0f}ms" if r["avg_latency_ms"] else "—"
-            ip = r["exit_ip"] or "—"
-            f.write(f"| `{r['proxy']}` | {status} | {latency} | {ip} | {r['ip_type']} | {r['success_rate']:.0f}% |\n")
+            ip = r.get("exit_ip") or "—"
+            ip_short = ip[:15] + "…" if len(ip) > 15 else ip
+            # Show response snippet for non-JSON probes (e.g. site returns HTML)
+            if r.get("response_snippet") and ip == "—":
+                ip_display = f'<em style="color:var(--text-muted);font-size:0.75rem">{r["response_snippet"]}</em>'
+            else:
+                ip_display = f'<code>{ip_short}</code>'
+            row_class = "row-healthy" if r["success_rate"] == 100 else ("row-flaky" if r["success_rate"] > 0 else "row-dead")
+            rows_html += f"""<tr class="{row_class}">
+                <td class="proxy-cell">{r["proxy"]}</td>
+                <td>{status_icon}</td>
+                <td>{latency}</td>
+                <td>{ip_display}</td>
+                <td><span class="tag tag-{r.get('ip_type','unknown')}">{r.get('ip_type','unknown')}</span></td>
+                <td>{r["success_rate"]:.0f}%</td>
+            </tr>"""
 
-        healthy = [r for r in all_results if r["success_rate"] == 100]
-        f.write(f"\n**Healthy:** {len(healthy)}/{len(all_results)} ({len(healthy)/len(all_results)*100:.0f}%)\n")
-        if healthy:
-            avg_lat = sum(r["avg_latency_ms"] for r in healthy) / len(healthy)
-            f.write(f"**Average latency (healthy):** {avg_lat:.0f} ms\n")
+        type_badges = "".join(
+            f'<span class="type-chip">{t}: {c}</span>' for t, c in sorted(type_counts.items())
+        ) if type_counts else '<span class="type-chip">none classified</span>'
 
-    print(f"\n✓ Summary → {summary}")
+        html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Proxy Test Report — {timestamp}</title>
+<style>
+  :root {{
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #21262d;
+    --text: #e6edf3;
+    --text-muted: #7d8590;
+    --cyan: #39c5cf;
+    --cyan-dim: rgba(57,197,207,0.15);
+    --green: #3fb950;
+    --green-dim: rgba(63,185,80,0.15);
+    --amber: #d29922;
+    --amber-dim: rgba(210,153,34,0.15);
+    --red: #f85149;
+    --red-dim: rgba(248,81,73,0.15);
+    --radius: 8px;
+  }}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 2rem; }}
+  .container {{ max-width: 1000px; margin: 0 auto; }}
+  header {{ margin-bottom: 2rem; }}
+  h1 {{ font-size: 1.5rem; font-weight: 600; color: var(--cyan); letter-spacing: -0.02em; }}
+  .meta {{ color: var(--text-muted); font-size: 0.85rem; margin-top: 0.25rem; }}
+  .stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 2rem; }}
+  .stat-card {{ background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }}
+  .stat-label {{ font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.4rem; }}
+  .stat-value {{ font-size: 1.6rem; font-weight: 700; color: var(--cyan); }}
+  .stat-value.green {{ color: var(--green); }}
+  .stat-value.amber {{ color: var(--amber); }}
+  .type-chips {{ display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }}
+  .type-chip {{ background: var(--cyan-dim); color: var(--cyan); font-size: 0.75rem; padding: 0.25rem 0.6rem; border-radius: 20px; border: 1px solid rgba(57,197,207,0.3); }}
+  table {{ width: 100%; border-collapse: collapse; background: var(--surface); border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); }}
+  th {{ text-align: left; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.02); }}
+  td {{ padding: 0.7rem 1rem; font-size: 0.875rem; border-bottom: 1px solid var(--border); vertical-align: middle; }}
+  tr:last-child td {{ border-bottom: none; }}
+  .row-healthy {{ background: var(--green-dim); }}
+  .row-flaky {{ background: var(--amber-dim); }}
+  .row-dead {{ background: var(--red-dim); opacity: 0.7; }}
+  .proxy-cell {{ font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; color: var(--text-muted); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  code {{ font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.8rem; color: var(--cyan); background: var(--cyan-dim); padding: 0.1rem 0.4rem; border-radius: 4px; }}
+  .tag {{ font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.05em; }}
+  .tag-datacenter {{ background: rgba(138,109,255,0.15); color: #a78bfa; }}
+  .tag-residential {{ background: rgba(63,185,80,0.15); color: #56d364; }}
+  .tag-mobile {{ background: rgba(210,153,34,0.15); color: #e3b341; }}
+  .tag-unknown {{ background: rgba(125,133,144,0.15); color: var(--text-muted); }}
+  footer {{ margin-top: 2rem; text-align: center; color: var(--text-muted); font-size: 0.75rem; }}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>PROXY TEST REPORT</h1>
+    <p class="meta">{timestamp} · {total} proxies · {args.iterations} iteration(s) · probe: {args.probe_url}</p>
+  </header>
+
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-label">Total Tested</div>
+      <div class="stat-value">{total}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Healthy</div>
+      <div class="stat-value green">{len(healthy)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Dead</div>
+      <div class="stat-value {'red' if dead else 'green'}">{len(dead)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Avg Latency</div>
+      <div class="stat-value">{avg_lat:.0f}ms</div>
+      <div class="type-chips">{type_badges}</div>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Proxy</th>
+        <th>Status</th>
+        <th>Latency</th>
+        <th>Exit IP</th>
+        <th>Type</th>
+        <th>Success</th>
+      </tr>
+    </thead>
+    <tbody>
+      {rows_html}
+    </tbody>
+  </table>
+
+  <footer>Generated by Hermes proxy-tester skill · {args.probe_url}</footer>
+</div>
+</body>
+</html>"""
+        with open(summary, "w") as f:
+            f.write(html_content)
+        print(f"\n✓ HTML report → {summary}")
+
+    else:
+        # Markdown (default)
+        summary = args.output / "summary.md"
+        with open(summary, "w") as f:
+            f.write(f"# Proxy Test Report — {timestamp}\n\n")
+            f.write("| Proxy | Status | Avg Latency | Exit IP | Type | Success |\n")
+            f.write("|-------|--------|-------------|---------|------|--------|\n")
+            for r in all_results:
+                status = "✅" if r["success_rate"] == 100 else ("⚠" if r["success_rate"] > 0 else "❌")
+                latency = f"{r['avg_latency_ms']:.0f}ms" if r["avg_latency_ms"] else "—"
+                ip = r.get("exit_ip") or "—"
+                if r.get("response_snippet") and not r.get("exit_ip"):
+                    ip = f'"{r["response_snippet"]}"'
+                f.write(f"| `{r['proxy']}` | {status} | {latency} | `{ip}` | {r.get('ip_type','unknown')} | {r['success_rate']:.0f}% |\n")
+            f.write(f"\n**Healthy:** {len(healthy)}/{total} ({len(healthy)/total*100:.0f}%)\n")
+            if healthy:
+                f.write(f"**Average latency (healthy):** {avg_lat:.0f} ms\n")
+        print(f"\n✓ Summary → {summary}")
 
     # Full details JSONL
     details = args.output / "details.jsonl"
@@ -306,16 +466,14 @@ def main():
     print(f"✓ Details → {details}")
 
     # Healthy subset
-    healthy = [r for r in all_results if r["success_rate"] == 100]
     (args.output / "healthy.json").write_text(json.dumps(healthy, indent=2))
-    dead = [r for r in all_results if r["success_rate"] == 0]
     (args.output / "dead.json").write_text(json.dumps(dead, indent=2))
     print(f"✓ Healthy: {len(healthy)}, Dead: {len(dead)}")
 
     # Group by type
     by_type = {}
     for r in healthy:
-        t = r["ip_type"] or "unknown"
+        t = r.get("ip_type") or "unknown"
         by_type.setdefault(t, []).append(r)
     (args.output / "by_type").mkdir(exist_ok=True)
     for t, items in by_type.items():

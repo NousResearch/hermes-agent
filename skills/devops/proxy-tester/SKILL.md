@@ -45,6 +45,17 @@ Diagnostic tool for your own proxy pool. Checks liveness, latency, and classifie
 | **Type classification** | Heuristics: ASN / IP range → datacenter vs residential vs mobile |
 | **Success rate** | Out of N attempts, how many complete without error |
 
+## Post-install verification
+
+If you upgraded an existing install or are debugging proxy failures, run the integrity checker once:
+
+```bash
+~/.hermes/skills/devops/proxy-tester/scripts/verify_fix.py
+# Expected output: "✓ credential URL scheme fix is present"
+```
+
+This confirms the critical `build_session` fix (scheme:// prefix) is in place.
+
 ## Usage
 
 ### Quick-start: from colon-separated credentials
@@ -73,11 +84,15 @@ proxy-audit --output ~/proxy-report
 # Paste your proxy list, one per line. Press Ctrl+D when done.
 ```
 
-### Flags
+```
 
 ```
 --output DIR, -o DIR   Output directory (default: ./proxy-report)
---concurrency N, -c N  Parallel workers (default: 10, max: 50)
+--report FORMAT, -r FORMAT   Output format: 'md' (default) or 'html'. HTML output is a
+                       dark-theme branded report (GitHub dark palette + cyan accents) with
+                       stats cards, row coloring (green/amber/red), and type tags.
+                       File: 'report.html' in output directory.
+```
 --timeout SEC, -t SEC  Connection timeout in seconds (default: 10)
 --probe-url URL        URL to fetch through proxy
                        (default: https://httpbin.org/ip)
@@ -131,6 +146,7 @@ When `--no-ip-intel` is **not** set, the skill uses reverse DNS heuristics:
 
 ## Pitfalls
 
+- `Content-Type` check: exit IP is only extracted from JSON responses (`application/json`). For HTML/text responses (e.g. probing a regular website), `exit_ip` is set to `None` — avoids garbled HTML appearing in the report. This matters when using `--probe-url` against your own site instead of httpbin.
 - **Stale proxies** — many will be dead; always test before use
 - **Rate-limited proxies** — some allow only N requests/min; this test uses few requests but real workloads may still trigger limits
 - **GeoIP mismatch** — IP intelligence is approximate; ASN != guaranteed type

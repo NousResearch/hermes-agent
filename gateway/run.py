@@ -5905,12 +5905,16 @@ class GatewayRunner:
         if event.media_urls:
             image_paths = []
             audio_paths = []
+            video_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
                 if mtype.startswith("audio/") or event.message_type in (MessageType.VOICE, MessageType.AUDIO):
                     audio_paths.append(path)
+
+                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
+                    video_paths.append(path)
 
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
@@ -5970,6 +5974,13 @@ class GatewayRunner:
                             )
                         except Exception:
                             pass
+
+
+            if video_paths:
+                message_text = await self._enrich_message_with_video(
+                    message_text,
+                    video_paths,
+                )
 
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
@@ -11835,6 +11846,155 @@ class GatewayRunner:
         # Combine: vision descriptions first, then the user's original text
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
+            if user_text:
+                return f"{prefix}\n\n{user_text}"
+            return prefix
+        return user_text
+
+    async def _extract_video_components(
+        self,
+        video_path: str,
+    ) -> tuple:
+        """Extract audio track and keyframes from a video file using ffmpeg.
+
+        Returns:
+            (audio_path, frame_paths) — audio_path may be None if extraction
+            fails; frame_paths is a list of JPEG paths (may be empty).
+        """
+        import subprocess
+        import tempfile
+
+        _tmp_dir = tempfile.mkdtemp(prefix="hermes_video_")
+        audio_out = os.path.join(_tmp_dir, "audio.wav")
+        frame_pattern = os.path.join(_tmp_dir, "frame_%03d.jpg")
+
+        audio_path = None
+        frame_paths: list = []
+
+        # --- Extract audio track ---
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                [
+                    "ffmpeg", "-i", video_path,
+                    "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+                    "-y", audio_out,
+                ],
+                capture_output=True, timeout=120,
+            )
+            if proc.returncode == 0 and os.path.isfile(audio_out) and os.path.getsize(audio_out) > 44:
+                audio_path = audio_out
+            else:
+                logger.debug("ffmpeg audio extraction returned %d or empty file", proc.returncode)
+        except FileNotFoundError:
+            logger.warning("ffmpeg not found — cannot extract audio from video")
+        except subprocess.TimeoutExpired:
+            logger.warning("ffmpeg audio extraction timed out for %s", video_path)
+        except Exception:
+            logger.debug("ffmpeg audio extraction failed", exc_info=True)
+
+        # --- Extract keyframes (I-frames first, then fallback to fps sampling) ---
+        for vf_filter in ["select=eq(pict_type\\,I)", "fps=1/10"]:
+            try:
+                proc = await asyncio.to_thread(
+                    subprocess.run,
+                    [
+                        "ffmpeg", "-i", video_path,
+                        "-vf", vf_filter,
+                        "-frames:v", "3", "-vsync", "vfr",
+                        "-y", frame_pattern,
+                    ],
+                    capture_output=True, timeout=120,
+                )
+                # Collect any frames that were written
+                for idx in range(1, 4):
+                    fp = os.path.join(_tmp_dir, f"frame_{idx:03d}.jpg")
+                    if os.path.isfile(fp) and os.path.getsize(fp) > 0:
+                        frame_paths.append(fp)
+                if frame_paths:
+                    break  # Got frames, skip fallback
+            except FileNotFoundError:
+                logger.warning("ffmpeg not found — cannot extract frames from video")
+                break
+            except subprocess.TimeoutExpired:
+                logger.warning("ffmpeg frame extraction timed out for %s", video_path)
+                break
+            except Exception:
+                logger.debug("ffmpeg frame extraction failed", exc_info=True)
+                break
+
+        return audio_path, frame_paths
+
+    async def _enrich_message_with_video(
+        self,
+        user_text: str,
+        video_paths: list,
+    ) -> str:
+        """Process inbound video messages by extracting audio + keyframes.
+
+        Audio is transcribed via the STT pipeline; keyframes are analyzed via
+        the vision pipeline.  If ffmpeg is unavailable the user gets a graceful
+        note instead of a silent drop.
+        """
+        import shutil
+
+        enriched_parts: list = []
+        _tmp_dirs_to_clean: list = []
+
+        for vpath in video_paths:
+            logger.info("Processing inbound video: %s", vpath)
+            audio_path, frame_paths = await self._extract_video_components(vpath)
+
+            # Track temp dir for cleanup
+            if audio_path:
+                _tmp_dirs_to_clean.append(os.path.dirname(audio_path))
+            elif frame_paths:
+                _tmp_dirs_to_clean.append(os.path.dirname(frame_paths[0]))
+
+            if not audio_path and not frame_paths:
+                enriched_parts.append(
+                    "[The user sent a video but it could not be processed. "
+                    "ffmpeg may not be installed or the video format is unsupported.]"
+                )
+                continue
+
+            # Transcribe audio track
+            if audio_path:
+                try:
+                    _video_audio_text = await self._enrich_message_with_transcription(
+                        "",
+                        [audio_path],
+                    )
+                    if _video_audio_text.strip():
+                        enriched_parts.append(
+                            f"[Video audio transcription: {_video_audio_text.strip()}]"
+                        )
+                except Exception:
+                    logger.debug("Video audio transcription failed", exc_info=True)
+
+            # Analyze keyframes
+            if frame_paths:
+                try:
+                    _video_vision_text = await self._enrich_message_with_vision(
+                        "",
+                        frame_paths,
+                    )
+                    if _video_vision_text.strip():
+                        enriched_parts.append(
+                            f"[Video visual analysis: {_video_vision_text.strip()}]"
+                        )
+                except Exception:
+                    logger.debug("Video frame analysis failed", exc_info=True)
+
+        # Cleanup temp dirs
+        for td in _tmp_dirs_to_clean:
+            try:
+                shutil.rmtree(td, ignore_errors=True)
+            except Exception:
+                pass
+
+        if enriched_parts:
+            prefix = "\n".join(enriched_parts)
             if user_text:
                 return f"{prefix}\n\n{user_text}"
             return prefix

@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker system *)",
+      "Bash(docker builder du *)",
+      "PowerShell(wsl -l -v 2>&1)",
+      "PowerShell(wsl -d docker-desktop df -h / 2>&1)",
+      "PowerShell(wsl -d docker-desktop df -h /mnt/wsl/docker-desktop-data 2>&1)",
+      "PowerShell(wsl -d docker-desktop mount 2>&1)",
+      "PowerShell(wsl -d docker-desktop df -h /mnt/docker-desktop-disk 2>&1)",
+      "Bash(xargs grep *)",
+      "mcp__context7__query-docs",
+      "mcp__context7__resolve-library-id",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "mcp__exa__web_search_exa",
+      "Bash(python3 -c \"import py_compile; py_compile.compile\\('plugins/langfuse-tracing/__init__.py', doraise=True\\)\")",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(wsl *)",
+      "Read(//home/renyh/.hermes/hermes-agent/.venv/bin/**)",
+      "Read(//home/renyh/.hermes/hermes-agent/.venv/**)",
+      "Bash(git add *)"
+    ]
+  }
+}

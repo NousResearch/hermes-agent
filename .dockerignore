@@ -1,19 +1,95 @@
-# Git
+# ---------- Git ----------
 .git
 .gitignore
 .gitmodules
+.gitattributes
 
-# Dependencies
+# ---------- Dependencies ----------
 node_modules
 .venv
+venv/
+hermes_agent.egg-info/
 
-# CI/CD
+# ---------- Python cache ----------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# ---------- IDE / Editor ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.direnv/
+
+# ---------- Environment ----------
+.env
+.env.*
+export*
+
+# ---------- CI/CD ----------
 .github
 
-# Environment files
-.env
+# ---------- Runtime data (bind-mounted at /opt/data) ----------
+data/
+logs/
+tmp/
+wandb/
+testlogs
+ignored/
 
+# ---------- Build artifacts ----------
+hermes_cli/web_dist/
+web/public/fonts/
+web/public/ds-assets/
+result
+
+# ---------- Test & Example ----------
+examples/
+tests/quick_test_dataset.jsonl
+tests/sample_dataset.jsonl
+.pytest_cache/
+
+# ---------- Temp / Cache ----------
+temp_vision_images/
+images/
+browser-use/
+agent-browser/
+mini-swe-agent/
+
+# ---------- Private keys ----------
+*.ppk
+*.pem
+privvy*
+
+# ---------- Config (may contain sensitive paths) ----------
+cli-config.yaml
+
+# ---------- Skills Hub state ----------
+skills/.hub/
+
+# ---------- Worktrees ----------
+.worktrees/
+
+# ---------- Benchmarks ----------
+environments/benchmarks/evals/
+
+# ---------- Release artifacts ----------
+.release_notes.md
+
+# ---------- Nix ----------
+.nix-stamps/
+
+# ---------- Docs ----------
 *.md
 
-# Runtime data (bind-mounted at /opt/data; must not leak into build context)
-data/
+# ---------- Scripts (not needed in image) ----------
+run_datagen_*.sh
+source-data/*
+
+# ---------- Website ----------
+website/static/api/skills-index.json

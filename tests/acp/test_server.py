@@ -200,6 +200,8 @@ class TestSessionOps:
             "context",
             "reset",
             "compact",
+            "steer",
+            "queue",
             "version",
         ]
         model_cmd = next(
@@ -522,6 +524,11 @@ class TestPrompt:
         assert isinstance(resp, PromptResponse)
         assert resp.stop_reason == "end_turn"
         state.agent.run_conversation.assert_called_once()
+        assert state.agent.tool_progress_callback is not None
+        assert state.agent.step_callback is not None
+        assert state.agent.stream_delta_callback is not None
+        assert state.agent.reasoning_callback is not None
+        assert state.agent.thinking_callback is None
 
     @pytest.mark.asyncio
     async def test_prompt_updates_history(self, agent):
@@ -571,6 +578,27 @@ class TestPrompt:
         last_call = mock_conn.session_update.call_args_list[-1]
         update = last_call[1].get("update") or last_call[0][1]
         assert update.session_update == "agent_message_chunk"
+
+    @pytest.mark.asyncio
+    async def test_prompt_does_not_duplicate_streamed_final_message(self, agent):
+        """If ACP already streamed response chunks, final_response should not be sent again."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            state.agent.stream_delta_callback("streamed answer")
+            return {"final_response": "streamed answer", "messages": []}
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hello")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert mock_conn.session_update.call_count == 1
 
     @pytest.mark.asyncio
     async def test_prompt_auto_titles_session(self, agent):

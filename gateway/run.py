@@ -264,6 +264,7 @@ if _config_path.exists():
                 "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
                 "docker_image": "TERMINAL_DOCKER_IMAGE",
                 "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
+                "docker_env": "TERMINAL_DOCKER_ENV",
                 "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
                 "modal_image": "TERMINAL_MODAL_IMAGE",
                 "daytona_image": "TERMINAL_DAYTONA_IMAGE",
@@ -295,7 +296,7 @@ if _config_path.exists():
                     # receives a literal "~/" which the kernel rejects.
                     if _cfg_key == "cwd" and isinstance(_val, str):
                         _val = os.path.expanduser(_val)
-                    if isinstance(_val, list):
+                    if isinstance(_val, (list, dict)):
                         os.environ[_env_var] = json.dumps(_val)
                     else:
                         os.environ[_env_var] = str(_val)

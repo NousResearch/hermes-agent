@@ -91,6 +91,9 @@ _INVISIBLE_CHARS = {
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
+    if _contains_entry_delimiter(content):
+        return "Blocked: content contains the reserved memory entry delimiter line '§'."
+
     # Check invisible unicode
     for char in _INVISIBLE_CHARS:
         if char in content:
@@ -102,6 +105,17 @@ def _scan_memory_content(content: str) -> Optional[str]:
             return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
 
     return None
+
+
+def _contains_entry_delimiter(content: str) -> bool:
+    """Return True when content contains the on-disk entry delimiter.
+
+    The memory file format uses a line containing only ``§`` to separate
+    entries. Allowing that exact line inside one entry corrupts the next load by
+    splitting the saved item into multiple memories.
+    """
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+    return ENTRY_DELIMITER in normalized
 
 
 class MemoryStore:

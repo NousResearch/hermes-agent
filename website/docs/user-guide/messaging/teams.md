@@ -13,8 +13,10 @@ Connect Hermes Agent to Microsoft Teams as a bot. Unlike Slack's Socket Mode, Te
 | Context | Behavior |
 |---------|----------|
 | **Personal chat (DM)** | Bot responds to every message. No @mention needed. |
-| **Group chat** | Bot responds to every message in the chat. |
-| **Channel** | Bot only responds when @mentioned (Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically). |
+| **Group chat** | Bot only responds when @mentioned. |
+| **Channel** | Bot only responds when @mentioned. |
+
+Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically before processing.
 
 ---
 

@@ -2093,6 +2093,14 @@ class DiscordAdapter(BasePlatformAdapter):
         Tries TELEGRAM first (most operators set TELEGRAM_HOME_CHANNEL),
         then SLACK. Silently no-ops if no other platform is configured
         with a home channel.
+
+        A soft send failure -- adapter.send() returning a result with
+        ``success=False`` rather than raising -- continues the fallback
+        chain. Treating a SendResult(success=False) as delivered would
+        mean a Telegram outage that the adapter politely surfaces (e.g.
+        rate-limit, auth failure) silently swallows the alert without
+        attempting Slack. Hard exceptions still take the same path via
+        the except branch below.
         """
         runner = getattr(self, "gateway_runner", None)
         if not runner:
@@ -2112,7 +2120,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     f"Command: {command_text}\n"
                     f"Reason: {reason}"
                 )
-                await adapter.send(str(home.chat_id), msg)
+                result = await adapter.send(str(home.chat_id), msg)
+                # Only return on confirmed delivery. SendResult(success=False)
+                # -> continue to the next platform.
+                if getattr(result, "success", None) is False:
+                    logger.debug(
+                        "[Discord] Admin notify via %s returned success=False"
+                        " (error=%r); falling through",
+                        target, getattr(result, "error", None),
+                    )
+                    continue
                 return
             except Exception as e:
                 logger.debug("[Discord] Admin notify via %s failed: %s", target, e)

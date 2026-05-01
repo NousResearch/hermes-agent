@@ -713,6 +713,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
+                if "thread_follow_enabled" in platform_cfg:
+                    bridged["thread_follow_enabled"] = platform_cfg["thread_follow_enabled"]
+                if "thread_follow_ttl_seconds" in platform_cfg:
+                    bridged["thread_follow_ttl_seconds"] = platform_cfg["thread_follow_ttl_seconds"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:

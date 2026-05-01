@@ -390,6 +390,8 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    thread_follow_enabled: bool = False
+    thread_follow_ttl_seconds: int = 1800
 
 
 @dataclass
@@ -536,6 +538,23 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    """Coerce bool-ish config/env values."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on", "y"}:
+            return True
+        if lowered in {"0", "false", "no", "off", "n"}:
+            return False
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -1388,6 +1407,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
+        self._active_thread_follows: Dict[tuple[str, str], float] = {}
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: Dict[str, Optional[str]] = {}
         self._app_lock_identity: Optional[str] = None
@@ -1504,6 +1524,15 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            thread_follow_enabled=_coerce_bool(
+                extra.get("thread_follow_enabled", os.getenv("HERMES_FEISHU_THREAD_FOLLOW_ENABLED")),
+                default=False,
+            ),
+            thread_follow_ttl_seconds=_coerce_required_int(
+                extra.get("thread_follow_ttl_seconds", os.getenv("HERMES_FEISHU_THREAD_FOLLOW_TTL_SECONDS")),
+                default=1800,
+                min_value=1,
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1536,6 +1565,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._thread_follow_enabled = settings.thread_follow_enabled
+        self._thread_follow_ttl_seconds = settings.thread_follow_ttl_seconds
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -3719,6 +3750,13 @@ class FeishuAdapter(BasePlatformAdapter):
         is_group = getattr(message, "chat_type", "p2p") != "p2p"
         chat_id = getattr(message, "chat_id", "") or ""
         require_mention = is_group and self._require_mention_for(chat_id)
+        mentions_self_value: Optional[bool] = None
+
+        def mentions_self() -> bool:
+            nonlocal mentions_self_value
+            if mentions_self_value is None:
+                mentions_self_value = self._mentions_self(message)
+            return mentions_self_value
 
         # Defensive only — Feishu doesn't echo our outbound back as inbound,
         # and open_id is always populated on both sides.
@@ -3734,7 +3772,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 return "self_ids_unknown"
             # Step 4 covers mention enforcement for groups when require_mention
             # is on; check here only on paths step 4 won't reach.
-            if mode == "mentions" and not require_mention and not self._mentions_self(message):
+            if mode == "mentions" and not require_mention and not mentions_self():
                 return "bot_not_mentioned"
 
         if not is_group:
@@ -3744,7 +3782,13 @@ class FeishuAdapter(BasePlatformAdapter):
             getattr(sender, "sender_id", None), chat_id, is_bot=is_bot,
         ):
             return "group_policy_rejected"
-        if require_mention and not self._mentions_self(message):
+        if require_mention:
+            if mentions_self():
+                self._activate_thread_follow(message)
+                return None
+            if self._is_thread_follow_active(message):
+                self._activate_thread_follow(message)
+                return None
             return "group_policy_rejected"
         return None
 
@@ -3753,6 +3797,36 @@ class FeishuAdapter(BasePlatformAdapter):
         if rule and rule.require_mention is not None:
             return rule.require_mention
         return self._require_mention
+
+    def _thread_follow_key(self, message: Any) -> Optional[tuple[str, str]]:
+        chat_id = str(getattr(message, "chat_id", "") or "").strip()
+        thread_id = str(getattr(message, "thread_id", "") or "").strip()
+        if not chat_id or not thread_id:
+            return None
+        return (chat_id, thread_id)
+
+    def _activate_thread_follow(self, message: Any) -> None:
+        if not self._thread_follow_enabled:
+            return
+        key = self._thread_follow_key(message)
+        if key is None:
+            return
+        ttl = max(1, int(getattr(self, "_thread_follow_ttl_seconds", 1800) or 1800))
+        self._active_thread_follows[key] = time.time() + ttl
+
+    def _is_thread_follow_active(self, message: Any) -> bool:
+        if not self._thread_follow_enabled:
+            return False
+        key = self._thread_follow_key(message)
+        if key is None:
+            return False
+        expire_at = self._active_thread_follows.get(key)
+        if expire_at is None:
+            return False
+        if expire_at <= time.time():
+            self._active_thread_follows.pop(key, None)
+            return False
+        return True
 
     # --- Group policy ---------------------------------------------------------
 
@@ -4207,7 +4281,9 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         last_error: Optional[Exception] = None
-        active_reply_to = reply_to
+        active_reply_to = reply_to or (
+            (metadata or {}).get("reply_to_message_id") if metadata else None
+        )
         for attempt in range(_FEISHU_SEND_ATTEMPTS):
             try:
                 response = await self._send_raw_message(

@@ -5212,7 +5212,10 @@ class GatewayRunner:
                 )
                 if any(marker in message_text for marker in _stt_fail_markers):
                     _stt_adapter = self.adapters.get(source.platform)
-                    _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    _stt_meta = self._thread_metadata_for_source(
+                        source,
+                        reply_to_message_id=event.message_id,
+                    )
                     if _stt_adapter:
                         try:
                             _stt_msg = (
@@ -5666,7 +5669,10 @@ class GatewayRunner:
                         f"{_compress_token_threshold:,}",
                     )
 
-                    _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    _hyg_meta = self._thread_metadata_for_source(
+                        source,
+                        reply_to_message_id=event.message_id,
+                    )
 
                     try:
                         from run_agent import AIAgent
@@ -7194,7 +7200,10 @@ class GatewayRunner:
                         lines.append("_(session only — use `/model <name> --global` to persist)_")
                         return "\n".join(lines)
 
-                    metadata = {"thread_id": source.thread_id} if source.thread_id else None
+                    metadata = self._thread_metadata_for_source(
+                        source,
+                        reply_to_message_id=event.message_id,
+                    )
                     result = await adapter.send_model_picker(
                         chat_id=source.chat_id,
                         providers=providers,
@@ -8262,7 +8271,7 @@ class GatewayRunner:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
 
-        _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        _thread_metadata = self._thread_metadata_for_source(source)
 
         try:
             user_config = _load_gateway_config()
@@ -9554,7 +9563,10 @@ class GatewayRunner:
         _slash_confirm_mod.register(session_key, confirm_id, command, handler)
 
         adapter = self.adapters.get(source.platform)
-        metadata = self._thread_metadata_for_source(source)
+        metadata = self._thread_metadata_for_source(
+            source,
+            reply_to_message_id=event.message_id,
+        )
 
         used_buttons = False
         if adapter is not None:
@@ -9594,12 +9606,28 @@ class GatewayRunner:
         except Exception:
             return {}
 
-    def _thread_metadata_for_source(self, source) -> Optional[Dict[str, Any]]:
-        """Build the metadata dict platforms need for thread-aware replies."""
-        thread_id = getattr(source, "thread_id", None)
-        if thread_id is None:
+    def _thread_metadata_for_source(
+        self,
+        source,
+        *,
+        thread_id: Optional[str] = None,
+        reply_to_message_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Build the metadata dict platforms need for thread-aware replies.
+
+        Feishu topic replies need both the topic id (``thread_id``) and the
+        originating message id.  The Feishu adapter uses the message id to call
+        the reply endpoint and ``thread_id`` to set ``reply_in_thread=True``;
+        sending a plain chat message with only ``thread_id`` creates a normal
+        group message outside the topic.
+        """
+        resolved_thread_id = thread_id if thread_id is not None else getattr(source, "thread_id", None)
+        if resolved_thread_id is None:
             return None
-        return {"thread_id": thread_id}
+        metadata: Dict[str, Any] = {"thread_id": resolved_thread_id}
+        if getattr(source, "platform", None) == Platform.FEISHU and reply_to_message_id:
+            metadata["reply_to_message_id"] = reply_to_message_id
+        return metadata
 
 
     # ------------------------------------------------------------------
@@ -11246,10 +11274,10 @@ class GatewayRunner:
             else bool(_plat_streaming)
         )
 
-        if source.thread_id:
-            _thread_metadata: Optional[Dict[str, Any]] = {"thread_id": source.thread_id}
-        else:
-            _thread_metadata = None
+        _thread_metadata = self._thread_metadata_for_source(
+            source,
+            reply_to_message_id=event_message_id,
+        )
 
         if _streaming_enabled:
             try:
@@ -11668,7 +11696,11 @@ class GatewayRunner:
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
-        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _progress_metadata = self._thread_metadata_for_source(
+            source,
+            thread_id=_progress_thread_id,
+            reply_to_message_id=event_message_id,
+        )
 
         async def send_progress_messages():
             if not progress_queue:
@@ -11890,7 +11922,11 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_thread_metadata = self._thread_metadata_for_source(
+            source,
+            thread_id=_progress_thread_id,
+            reply_to_message_id=event_message_id,
+        )
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -12034,7 +12070,7 @@ class GatewayRunner:
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            metadata=_status_thread_metadata,
                             on_new_message=(
                                 (lambda: progress_queue.put(("__reset__",)))
                                 if progress_queue is not None

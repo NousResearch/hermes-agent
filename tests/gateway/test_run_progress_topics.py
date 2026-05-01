@@ -212,6 +212,56 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_run_agent_progress_includes_reply_message_for_feishu_topic(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
+
+    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt-thread",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-feishu",
+        session_key="agent:main:feishu:group:oc_chat:omt-thread",
+        event_message_id="om_origin",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert adapter.sent[0]["metadata"] == {
+        "thread_id": "omt-thread",
+        "reply_to_message_id": "om_origin",
+    }
+    assert all(
+        call["metadata"] == {
+            "thread_id": "omt-thread",
+            "reply_to_message_id": "om_origin",
+        }
+        for call in adapter.typing
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(monkeypatch, tmp_path):
     """Telegram DM progress must not reuse event message id as thread metadata."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")

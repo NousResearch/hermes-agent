@@ -130,6 +130,32 @@ def test_feishu_load_settings_parses_per_group_require_mention(monkeypatch):
     assert settings.group_rules["oc_inherit"].require_mention is None
 
 
+@pytest.mark.parametrize(
+    "env_enabled, extra, expected_enabled, expected_ttl",
+    [
+        (None, {}, False, 1800),
+        ("true", {}, True, 1800),
+        ("false", {"thread_follow_enabled": True, "thread_follow_ttl_seconds": 60}, True, 60),
+        ("yes", {"thread_follow_ttl_seconds": "5"}, True, 5),
+    ],
+)
+def test_feishu_load_settings_thread_follow(monkeypatch, env_enabled, extra, expected_enabled, expected_ttl):
+    from gateway.platforms.feishu import FeishuAdapter
+
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")
+    if env_enabled is None:
+        monkeypatch.delenv("HERMES_FEISHU_THREAD_FOLLOW_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("HERMES_FEISHU_THREAD_FOLLOW_ENABLED", env_enabled)
+    monkeypatch.delenv("HERMES_FEISHU_THREAD_FOLLOW_TTL_SECONDS", raising=False)
+
+    settings = FeishuAdapter._load_settings(extra=extra)
+
+    assert settings.thread_follow_enabled is expected_enabled
+    assert settings.thread_follow_ttl_seconds == expected_ttl
+
+
 # --- Module-level helpers --------------------------------------------------
 
 
@@ -425,6 +451,65 @@ def test_admit_group_mention_checked_once_per_call():
     sender = make_sender(sender_type="bot", open_id="ou_peer")
     assert adapter._admit(sender, make_message(chat_type="group")) is None
     assert calls == 1
+
+
+# --- Thread follow ----------------------------------------------------------
+
+
+def test_admit_mentioned_topic_activates_thread_follow_for_later_unmentioned_messages():
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        require_mention=True,
+        group_policy="open",
+        thread_follow_enabled=True,
+        thread_follow_ttl_seconds=60,
+    )
+    sender = make_sender(sender_type="user", open_id="ou_human")
+
+    stub_mention(adapter, True)
+    assert adapter._admit(sender, make_message(chat_type="group", chat_id="oc_1", thread_id="omt_1")) is None
+
+    stub_mention(adapter, False)
+    assert adapter._admit(sender, make_message(chat_type="group", chat_id="oc_1", thread_id="omt_1")) is None
+    assert (
+        adapter._admit(sender, make_message(chat_type="group", chat_id="oc_1", thread_id="omt_other"))
+        == "group_policy_rejected"
+    )
+
+
+def test_admit_thread_follow_does_not_bypass_group_policy():
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        require_mention=True,
+        group_policy="allowlist",
+        thread_follow_enabled=True,
+    )
+    adapter._active_thread_follows[("oc_1", "omt_1")] = 9999999999.0
+    sender = make_sender(sender_type="user", open_id="ou_blocked")
+    stub_mention(adapter, False)
+
+    assert (
+        adapter._admit(sender, make_message(chat_type="group", chat_id="oc_1", thread_id="omt_1"))
+        == "group_policy_rejected"
+    )
+
+
+def test_admit_thread_follow_rejects_expired_topic():
+    adapter = make_adapter_skeleton(
+        bot_open_id="ou_self",
+        require_mention=True,
+        group_policy="open",
+        thread_follow_enabled=True,
+    )
+    adapter._active_thread_follows[("oc_1", "omt_1")] = 0.0
+    sender = make_sender(sender_type="user", open_id="ou_human")
+    stub_mention(adapter, False)
+
+    assert (
+        adapter._admit(sender, make_message(chat_type="group", chat_id="oc_1", thread_id="omt_1"))
+        == "group_policy_rejected"
+    )
+    assert ("oc_1", "omt_1") not in adapter._active_thread_follows
 
 
 # --- Per-group require_mention override ------------------------------------

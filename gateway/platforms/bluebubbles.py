@@ -219,10 +219,28 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     @property
     def _webhook_url(self) -> str:
-        """Compute the external webhook URL for BlueBubbles registration."""
+        """Compute the external webhook URL for BlueBubbles registration.
+
+        Use the IPv4 loopback literal (``127.0.0.1``) for any address that
+        means "the local host". On macOS (and modern Linux), ``localhost``
+        resolves to BOTH ``127.0.0.1`` AND ``::1`` via /etc/hosts; HTTP
+        clients (including BB's axios) often try IPv6 first. Since the
+        webhook listener below is started with ``aiohttp.web.TCPSite`` bound
+        to whatever was supplied (typically ``127.0.0.1`` — IPv4 only), BB
+        hits ECONNREFUSED on ``::1:<port>`` and never retries on IPv4.
+
+        Symptom in BB Server log:
+            [WebhookService] Failed to dispatch "new-message" event to webhook:
+            http://localhost:<port>/...
+              -> Error: connect ECONNREFUSED ::1:<port>
+
+        Fix: rewrite all loopback-equivalent forms to ``127.0.0.1`` so the
+        URL registered with BB is unambiguously IPv4 and matches the bind
+        address aiohttp uses.
+        """
         host = self.webhook_host
-        if host in ("0.0.0.0", "127.0.0.1", "localhost", "::"):
-            host = "localhost"
+        if host in ("0.0.0.0", "127.0.0.1", "localhost", "::", "::1"):
+            host = "127.0.0.1"
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     @property

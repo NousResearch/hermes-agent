@@ -254,6 +254,52 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     ]
 
 
+def test_history_to_messages_preserves_reasoning_for_resume_display():
+    """_history_to_messages must include 'thinking' from reasoning fields.
+
+    When resuming a session, assistant messages should retain their
+    reasoning/thinking content.  See issue #18414.
+    """
+    history = [
+        {"role": "user", "content": "explain quantum computing"},
+        {
+            "role": "assistant",
+            "content": "Quantum computing uses qubits.",
+            "reasoning": "The user wants a clear explanation. Let me cover basics.",
+        },
+        {"role": "user", "content": "go deeper"},
+        {
+            "role": "assistant",
+            "content": "Qubits can exist in superposition.",
+            "reasoning_content": "Expanding on superposition and entanglement.",
+        },
+    ]
+
+    result = server._history_to_messages(history)
+    assert len(result) == 4
+    # First assistant message should have thinking from 'reasoning'
+    assert result[1]["role"] == "assistant"
+    assert result[1]["text"] == "Quantum computing uses qubits."
+    assert result[1]["thinking"] == "The user wants a clear explanation. Let me cover basics."
+    # Second assistant message should have thinking from 'reasoning_content'
+    assert result[3]["role"] == "assistant"
+    assert result[3]["text"] == "Qubits can exist in superposition."
+    assert result[3]["thinking"] == "Expanding on superposition and entanglement."
+
+
+def test_history_to_messages_no_reasoning_field_when_absent():
+    """When no reasoning content exists, 'thinking' should not appear."""
+    history = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+    ]
+
+    result = server._history_to_messages(history)
+    assert len(result) == 2
+    assert result[1]["role"] == "assistant"
+    assert "thinking" not in result[1]
+
+
 def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     captured = {}
 

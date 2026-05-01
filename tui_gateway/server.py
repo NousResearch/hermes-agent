@@ -1942,7 +1942,13 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             continue
         if not (m.get("content") or "").strip():
             continue
-        messages.append({"role": role, "text": m.get("content") or ""})
+        entry: dict = {"role": role, "text": m.get("content") or ""}
+        # Preserve reasoning/thinking content for resumed sessions.
+        # Different providers store reasoning in different fields.
+        reasoning = m.get("reasoning") or m.get("reasoning_content")
+        if reasoning:
+            entry["thinking"] = reasoning
+        messages.append(entry)
 
     return messages
 

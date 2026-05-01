@@ -44,7 +44,7 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       continue
     }
 
-    const { context, name, role, text } = row as TranscriptRow
+    const { context, name, role, text, thinking } = row as TranscriptRow
 
     if (role === 'tool') {
       pending.push(buildToolTrailLine(name ?? 'tool', context ?? ''))
@@ -57,7 +57,7 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
     }
 
     if (role === 'assistant') {
-      out.push({ role, text, ...(pending.length && { tools: pending }) })
+      out.push({ role, text, ...(thinking && { thinking }), ...(pending.length && { tools: pending }) })
       pending = []
     } else if (role === 'user' || role === 'system') {
       out.push({ role, text })
@@ -88,4 +88,5 @@ interface TranscriptRow {
   name?: string
   role?: string
   text?: string
+  thinking?: string
 }

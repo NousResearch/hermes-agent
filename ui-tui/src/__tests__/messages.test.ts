@@ -19,6 +19,27 @@ describe('toTranscriptMessages', () => {
     ])
     expect(toTranscriptMessages(rows)[1]?.tools?.[0]).toContain('Search Files')
   })
+
+  it('passes through thinking from assistant rows for resume', () => {
+    const rows = [
+      { role: 'user', text: 'question' },
+      { role: 'assistant', text: 'answer', thinking: 'my reasoning' },
+    ]
+
+    const result = toTranscriptMessages(rows)
+    expect(result).toHaveLength(2)
+    expect(result[1]?.thinking).toBe('my reasoning')
+  })
+
+  it('does not include thinking when absent', () => {
+    const rows = [
+      { role: 'assistant', text: 'answer' },
+    ]
+
+    const result = toTranscriptMessages(rows)
+    expect(result).toHaveLength(1)
+    expect(result[0]?.thinking).toBeUndefined()
+  })
 })
 
 describe('upsert', () => {

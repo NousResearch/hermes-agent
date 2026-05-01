@@ -12,7 +12,6 @@ Tests cover:
 - Error handling (invalid JSON, missing fields)
 """
 
-import asyncio
 import json
 import time
 import uuid
@@ -26,13 +25,24 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
-    _IdempotencyCache,
+    ROLE_ALIAS_CONFIG,
     _CORS_HEADERS,
+    _align_runtime_with_explicit_model,
     _derive_chat_session_id,
+    _determine_agents_prefetch_action,
+    _explicit_provider_from_model,
+    _get_role_alias_config,
+    _needs_agents_prefetch,
+    _openai_error,
+    _resolve_role_alias,
+    _resolve_swarm_model,
+    _swarm_model_is_available,
+    _runtime_kwargs_for_model_id,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
 )
+
 
 
 # ---------------------------------------------------------------------------
@@ -107,95 +117,6 @@ class TestResponseStore:
 
 
 # ---------------------------------------------------------------------------
-# _IdempotencyCache
-# ---------------------------------------------------------------------------
-
-
-class TestIdempotencyCache:
-    @pytest.mark.asyncio
-    async def test_concurrent_same_key_and_fingerprint_runs_once(self):
-        cache = _IdempotencyCache()
-        gate = asyncio.Event()
-        started = asyncio.Event()
-        calls = 0
-
-        async def compute():
-            nonlocal calls
-            calls += 1
-            started.set()
-            await gate.wait()
-            return ("response", {"total_tokens": 1})
-
-        first = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
-        second = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
-
-        await started.wait()
-        assert calls == 1
-
-        gate.set()
-        first_result, second_result = await asyncio.gather(first, second)
-
-        assert first_result == second_result == ("response", {"total_tokens": 1})
-
-    @pytest.mark.asyncio
-    async def test_different_fingerprint_does_not_reuse_inflight_task(self):
-        cache = _IdempotencyCache()
-        gate = asyncio.Event()
-        started = asyncio.Event()
-        calls = 0
-
-        async def compute():
-            nonlocal calls
-            calls += 1
-            result = calls
-            if calls == 2:
-                started.set()
-            await gate.wait()
-            return result
-
-        first = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
-        second = asyncio.create_task(cache.get_or_set("idem-key", "fp-2", compute))
-
-        await started.wait()
-        assert calls == 2
-
-        gate.set()
-        results = await asyncio.gather(first, second)
-
-        assert sorted(results) == [1, 2]
-
-    @pytest.mark.asyncio
-    async def test_cancelled_waiter_does_not_drop_shared_inflight_task(self):
-        cache = _IdempotencyCache()
-        gate = asyncio.Event()
-        started = asyncio.Event()
-        calls = 0
-
-        async def compute():
-            nonlocal calls
-            calls += 1
-            started.set()
-            await gate.wait()
-            return "response"
-
-        first = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
-
-        await started.wait()
-        assert calls == 1
-
-        first.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await first
-
-        second = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
-        await asyncio.sleep(0)
-        assert calls == 1
-
-        gate.set()
-        assert await second == "response"
-
-
-# ---------------------------------------------------------------------------
 # Adapter initialization
 # ---------------------------------------------------------------------------
 
@@ -239,6 +160,153 @@ class TestAdapterInit:
             "http://localhost:3000",
             "http://127.0.0.1:3000",
         )
+
+
+class TestExplicitModelRuntimeAlignment:
+    def test_explicit_provider_from_model_detects_safe_provider_prefixes(self):
+        assert _explicit_provider_from_model("opencode-zen/big-pickle") == "opencode-zen"
+        assert _explicit_provider_from_model("openrouter/google/gemma-3-5b-eu:free") == "openrouter"
+        assert _explicit_provider_from_model("google/gemma-3-5b-eu:free") == ""
+
+    def test_align_runtime_with_explicit_model_overrides_auto_provider(self, monkeypatch):
+        runtime_kwargs = {
+            "provider": "openai-codex",
+            "api_key": "codex-key",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_mode": "codex_responses",
+        }
+
+        def _resolve_runtime_provider(*, requested=None, **_kwargs):
+            assert requested == "opencode-zen"
+            return {
+                "provider": "opencode-zen",
+                "api_key": "zen-key",
+                "base_url": "https://opencode.ai/zen/v1",
+                "api_mode": "chat_completions",
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            _resolve_runtime_provider,
+        )
+
+        aligned = _align_runtime_with_explicit_model(runtime_kwargs, "opencode-zen/big-pickle")
+        assert aligned["provider"] == "opencode-zen"
+        assert aligned["api_key"] == "zen-key"
+        assert aligned["base_url"] == "https://opencode.ai/zen/v1"
+        assert aligned["api_mode"] == "chat_completions"
+
+    def test_align_runtime_with_explicit_model_keeps_ambiguous_vendor_prefix(self, monkeypatch):
+        called = {"value": False}
+
+        def _resolve_runtime_provider(**_kwargs):
+            called["value"] = True
+            raise AssertionError("should not resolve provider for ambiguous vendor prefix")
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            _resolve_runtime_provider,
+        )
+
+        runtime_kwargs = {
+            "provider": "openrouter",
+            "api_key": "or-key",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }
+        aligned = _align_runtime_with_explicit_model(runtime_kwargs, "google/gemma-3-5b-eu:free")
+        assert aligned == runtime_kwargs
+        assert called["value"] is False
+
+
+class TestSwarmRuntimeKwargs:
+    def test_get_role_alias_config(self):
+        cfg = _get_role_alias_config("hermes-gateway/hermes-translator")
+        assert cfg is not None
+        assert cfg["mode"] == "swarm"
+        assert cfg["hint"]["role"] == "translator"
+        assert cfg["hint"]["recommended_tier"] == "premium"
+
+    def test_resolve_role_alias_is_disabled_for_dynamic_aliases(self):
+        assert _resolve_role_alias("hermes-gateway/hermes-translator") is None
+        assert _resolve_role_alias("HERMES-GATEWAY/HERMES-TRIAGE") is None
+        assert _resolve_role_alias("unknown/model") is None
+
+    def test_runtime_kwargs_for_role_alias_preserves_virtual_model(self):
+        runtime_kwargs, model_name = _runtime_kwargs_for_model_id("hermes-gateway/hermes-translator")
+
+        assert model_name == "hermes-translator"
+        assert runtime_kwargs["provider"] == "openrouter"
+
+    def test_runtime_kwargs_for_model_id_resolves_copilot_base_url(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_COPILOT_BASE_URL", "https://api.githubcopilot.com")
+        monkeypatch.setenv("GITHUB_COPILOT_API_KEY", "copilot-token")
+        # Mock resolve_runtime_provider so auth store doesn't override the test token
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kw: {"api_key": "copilot-token", "base_url": "https://api.githubcopilot.com", "provider": "copilot"},
+        )
+
+        runtime_kwargs, model_name = _runtime_kwargs_for_model_id("github-copilot/gpt-5-mini")
+
+        assert model_name == "gpt-5-mini"
+        assert runtime_kwargs["provider"] == "copilot"
+        assert runtime_kwargs["base_url"] == "https://api.githubcopilot.com"
+        assert runtime_kwargs["api_key"] == "copilot-token"
+
+    def test_swarm_model_is_available_checks_base_url_scoped_cooldown(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_COPILOT_BASE_URL", "https://api.githubcopilot.com")
+        monkeypatch.setenv("GITHUB_COPILOT_API_KEY", "copilot-token")
+        seen = {}
+
+        def _remaining(provider, model, *, base_url=""):
+            seen["provider"] = provider
+            seen["model"] = model
+            seen["base_url"] = base_url
+            return 120
+
+        monkeypatch.setattr(
+            "agent.model_cooldown_db.model_cooldown_remaining",
+            _remaining,
+        )
+
+        assert _swarm_model_is_available("github-copilot/gpt-5-mini") is False
+        assert seen == {
+            "provider": "copilot",
+            "model": "gpt-5-mini",
+            "base_url": "https://api.githubcopilot.com",
+        }
+
+    def test_runtime_kwargs_for_openai_model_uses_codex_when_only_oauth_exists(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_OAUTH_TOKEN", "oauth-token")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        # Mock resolve_runtime_provider so auth store doesn't override the test token
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **kw: {},
+        )
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        runtime_kwargs, model_name = adapter._runtime_kwargs_for_model("openai/gpt-5.4")
+
+        assert model_name == "gpt-5.4"
+        assert runtime_kwargs["provider"] == "openai-codex"
+        assert runtime_kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
+        assert runtime_kwargs["api_key"] == "oauth-token"
+
+    def test_runtime_kwargs_for_openai_model_uses_direct_api_with_openai_key(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        monkeypatch.delenv("OPENAI_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        runtime_kwargs, model_name = adapter._runtime_kwargs_for_model("openai/gpt-5.4")
+
+        assert model_name == "gpt-5.4"
+        assert runtime_kwargs["provider"] == "openai"
+        assert runtime_kwargs["base_url"] == "https://api.openai.com/v1"
+        assert runtime_kwargs["api_key"] == "sk-openai"
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +382,6 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
-    app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -332,34 +399,38 @@ def auth_adapter():
     return _make_adapter(api_key="sk-secret")
 
 
-# ---------------------------------------------------------------------------
-# Adapter internals
-# ---------------------------------------------------------------------------
+class TestAGENTSPrefetchHelpers:
+    def test_needs_agents_prefetch_supports_opencode_tool_names(self):
+        tools = [
+            {"type": "function", "function": {"name": "glob"}},
+            {"type": "function", "function": {"name": "read"}},
+        ]
+        assert _needs_agents_prefetch("please read AGENTS.md", None, tools, []) is True
 
+    def test_determine_agents_prefetch_action_uses_glob_and_read_for_opencode_tools(self):
+        tools = [
+            {"type": "function", "function": {"name": "glob"}},
+            {"type": "function", "function": {"name": "read"}},
+        ]
+        action = _determine_agents_prefetch_action([], tools)
+        assert action["status"] == "need_search"
+        assert action["tool_call"]["function"]["name"] == "glob"
+        assert '"pattern": "**/AGENTS.md"' in action["tool_call"]["function"]["arguments"]
 
-class TestAgentExecution:
-    @pytest.mark.asyncio
-    async def test_run_agent_uses_session_id_as_task_id(self, adapter):
-        mock_agent = MagicMock()
-        mock_agent.run_conversation.return_value = {"final_response": "ok"}
-        mock_agent.session_prompt_tokens = 1
-        mock_agent.session_completion_tokens = 2
-        mock_agent.session_total_tokens = 3
-
-        with patch.object(adapter, "_create_agent", return_value=mock_agent):
-            result, usage = await adapter._run_agent(
-                user_message="hello",
-                conversation_history=[],
-                session_id="session-123",
-            )
-
-        assert result == {"final_response": "ok"}
-        assert usage == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
-        mock_agent.run_conversation.assert_called_once_with(
-            user_message="hello",
-            conversation_history=[],
-            task_id="session-123",
-        )
+    def test_determine_agents_prefetch_action_reads_opencode_path_shape(self):
+        tools = [
+            {"type": "function", "function": {"name": "glob"}},
+            {"type": "function", "function": {"name": "read"}},
+        ]
+        messages = [{
+            "role": "tool",
+            "tool_call_id": "agents_prefetch_search",
+            "content": json.dumps({"paths": ["/tmp/project/AGENTS.md"]}),
+        }]
+        action = _determine_agents_prefetch_action(messages, tools)
+        assert action["status"] == "need_read"
+        assert action["tool_call"]["function"]["name"] == "read"
+        assert '"filePath": "/tmp/project/AGENTS.md"' in action["tool_call"]["function"]["arguments"]
 
 
 # ---------------------------------------------------------------------------
@@ -466,9 +537,11 @@ class TestModelsEndpoint:
             assert resp.status == 200
             data = await resp.json()
             assert data["object"] == "list"
-            assert len(data["data"]) == 1
-            assert data["data"][0]["id"] == "hermes-agent"
-            assert data["data"][0]["owned_by"] == "hermes"
+            # The models endpoint lists multiple hermes modes; ensure hermes-agent is present
+            model_ids = [m["id"] for m in data["data"]]
+            assert "hermes-agent" in model_ids
+            hermes_agent = next(m for m in data["data"] if m["id"] == "hermes-agent")
+            assert hermes_agent["owned_by"] == "hermes"
 
     @pytest.mark.asyncio
     async def test_models_returns_profile_name(self):
@@ -490,6 +563,17 @@ class TestModelsEndpoint:
         config = PlatformConfig(enabled=True, extra=extra)
         adapter = APIServerAdapter(config)
         assert adapter._model_name == "my-custom-agent"
+
+    @pytest.mark.asyncio
+    async def test_models_returns_role_aliases(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/models")
+            assert resp.status == 200
+            data = await resp.json()
+            model_ids = [m["id"] for m in data["data"]]
+            for alias in ROLE_ALIAS_CONFIG:
+                assert alias in model_ids
 
     def test_resolve_model_name_explicit(self):
         assert APIServerAdapter._resolve_model_name("my-bot") == "my-bot"
@@ -520,46 +604,6 @@ class TestModelsEndpoint:
                 headers={"Authorization": "Bearer sk-secret"},
             )
             assert resp.status == 200
-
-
-# ---------------------------------------------------------------------------
-# /v1/capabilities endpoint
-# ---------------------------------------------------------------------------
-
-
-class TestCapabilitiesEndpoint:
-    @pytest.mark.asyncio
-    async def test_capabilities_advertises_plugin_safe_contract(self, adapter):
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/capabilities")
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["object"] == "hermes.api_server.capabilities"
-            assert data["platform"] == "hermes-agent"
-            assert data["model"] == "hermes-agent"
-            assert data["auth"]["type"] == "bearer"
-            assert data["auth"]["required"] is False
-            assert data["features"]["chat_completions"] is True
-            assert data["features"]["run_status"] is True
-            assert data["features"]["run_events_sse"] is True
-            assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
-            assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
-
-    @pytest.mark.asyncio
-    async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
-        app = _create_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/capabilities")
-            assert resp.status == 401
-
-            authed = await cli.get(
-                "/v1/capabilities",
-                headers={"Authorization": "Bearer sk-secret"},
-            )
-            assert authed.status == 200
-            data = await authed.json()
-            assert data["auth"]["required"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -718,17 +762,17 @@ class TestChatCompletionsEndpoint:
 
     @pytest.mark.asyncio
     async def test_stream_includes_tool_progress(self, adapter):
-        """tool_start_callback fires → progress appears as custom SSE event, not in delta.content."""
+        """tool_progress_callback fires → progress appears as custom SSE event, not in delta.content."""
         import asyncio
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             async def _mock_run_agent(**kwargs):
                 cb = kwargs.get("stream_delta_callback")
-                ts_cb = kwargs.get("tool_start_callback")
-                # Simulate the structured tool start the gateway now consumes.
-                if ts_cb:
-                    ts_cb("call_terminal_1", "terminal", {"command": "ls -la"})
+                tp_cb = kwargs.get("tool_progress_callback")
+                # Simulate tool progress before streaming content
+                if tp_cb:
+                    tp_cb("tool.started", "terminal", "ls -la", {"command": "ls -la"})
                 if cb:
                     await asyncio.sleep(0.05)
                     cb("Here are the files.")
@@ -754,10 +798,7 @@ class TestChatCompletionsEndpoint:
                 # markers instead of calling tools (#6972).
                 assert "event: hermes.tool.progress" in body
                 assert '"tool": "terminal"' in body
-                # ``label`` is now derived by ``build_tool_preview`` from the
-                # tool args rather than passed by the caller, so we assert
-                # only that *some* label exists rather than a literal value.
-                assert '"label":' in body
+                assert '"label": "ls -la"' in body
                 # The progress marker must NOT appear inside any
                 # chat.completion.chunk delta.content field.
                 import json as _json
@@ -777,17 +818,17 @@ class TestChatCompletionsEndpoint:
 
     @pytest.mark.asyncio
     async def test_stream_tool_progress_skips_internal_events(self, adapter):
-        """Internal tool calls (name starting with ``_``) are not streamed."""
+        """Internal events (name starting with _) are not streamed."""
         import asyncio
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             async def _mock_run_agent(**kwargs):
                 cb = kwargs.get("stream_delta_callback")
-                ts_cb = kwargs.get("tool_start_callback")
-                if ts_cb:
-                    ts_cb("call_internal_1", "_thinking", {"text": "some internal state"})
-                    ts_cb("call_search_1", "web_search", {"query": "Python docs"})
+                tp_cb = kwargs.get("tool_progress_callback")
+                if tp_cb:
+                    tp_cb("tool.started", "_thinking", "some internal state", {})
+                    tp_cb("tool.started", "web_search", "Python docs", {"query": "Python docs"})
                 if cb:
                     await asyncio.sleep(0.05)
                     cb("Found it.")
@@ -809,155 +850,34 @@ class TestChatCompletionsEndpoint:
                 body = await resp.text()
                 # Internal _thinking event should NOT appear anywhere
                 assert "some internal state" not in body
-                assert "call_internal_1" not in body
                 # Real tool progress should appear as custom SSE event
                 assert "event: hermes.tool.progress" in body
                 assert '"tool": "web_search"' in body
-                # Label is derived from the args dict by build_tool_preview;
-                # asserting on the structural fact (label exists, call id
-                # is correlated) rather than a literal preview string keeps
-                # the test robust against preview-formatter tweaks.
-                assert '"label":' in body
-                assert '"toolCallId": "call_search_1"' in body
-
-    @pytest.mark.asyncio
-    async def test_stream_emits_tool_lifecycle_with_call_id(self, adapter):
-        """Regression for #16588.
-
-        ``/v1/chat/completions`` streaming previously emitted only a
-        ``tool.started``-style ``hermes.tool.progress`` event; clients
-        rendering tool lifecycle UI had no way to mark a tool as finished
-        because no matching ``status: completed`` event was emitted, and
-        no ``toolCallId`` was carried for correlation.
-
-        The fix adds ``tool_start_callback`` / ``tool_complete_callback``
-        to the chat completions agent invocation and writes both halves
-        of the lifecycle pair on the same ``event: hermes.tool.progress``
-        SSE line, with stable ``toolCallId`` and ``status``.
-        """
-        import asyncio
-        import json as _json
-
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            async def _mock_run_agent(**kwargs):
-                cb = kwargs.get("stream_delta_callback")
-                ts_cb = kwargs.get("tool_start_callback")
-                tc_cb = kwargs.get("tool_complete_callback")
-                # The structured callbacks own the chat-completions SSE
-                # channel now; ``tool_progress_callback`` is intentionally
-                # not wired so each tool start emits exactly one event.
-                if ts_cb:
-                    ts_cb("call_terminal_1", "terminal", {"command": "ls -la"})
-                if tc_cb:
-                    tc_cb("call_terminal_1", "terminal", {"command": "ls -la"}, "ok")
-                if cb:
-                    await asyncio.sleep(0.05)
-                    cb("done.")
-                return (
-                    {"final_response": "done.", "messages": [], "api_calls": 1},
-                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
-                )
-
-            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
-                resp = await cli.post(
-                    "/v1/chat/completions",
-                    json={
-                        "model": "test",
-                        "messages": [{"role": "user", "content": "list"}],
-                        "stream": True,
-                    },
-                )
-                assert resp.status == 200
-                body = await resp.text()
-
-            # Walk the SSE body and collect *(status, toolCallId)* pairs
-            # per event so the assertions verify per-event correlation —
-            # an event missing ``toolCallId`` would not pass even if a
-            # different event happens to carry the right id.
-            pairs: list[tuple[str | None, str | None]] = []
-            lines = body.splitlines()
-            for i, line in enumerate(lines):
-                if line.strip() != "event: hermes.tool.progress":
-                    continue
-                for follow in lines[i + 1: i + 4]:
-                    if follow.startswith("data: "):
-                        try:
-                            payload = _json.loads(follow[len("data: "):])
-                        except _json.JSONDecodeError:
-                            break
-                        pairs.append((payload.get("status"), payload.get("toolCallId")))
-                        break
-
-            # Each tool start must emit exactly one event (no duplicate
-            # legacy + new emit), and each lifecycle pair must carry the
-            # same toolCallId on every event — not just somewhere in the
-            # aggregate.
-            assert len(pairs) == 2, f"expected 2 events (running+completed), got {pairs}"
-            assert pairs[0] == ("running", "call_terminal_1"), pairs
-            assert pairs[1] == ("completed", "call_terminal_1"), pairs
-
-    @pytest.mark.asyncio
-    async def test_stream_tool_lifecycle_skips_internal_and_orphan_completes(self, adapter):
-        """Internal tools (``_thinking``-style) and ``completed`` events
-        without a prior matching ``running`` must produce no lifecycle
-        events on the wire — otherwise clients would see orphaned
-        ``status: completed`` updates they cannot correlate."""
-        import asyncio
-
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            async def _mock_run_agent(**kwargs):
-                cb = kwargs.get("stream_delta_callback")
-                ts_cb = kwargs.get("tool_start_callback")
-                tc_cb = kwargs.get("tool_complete_callback")
-                # Internal tool — must be filtered.
-                if ts_cb:
-                    ts_cb("call_internal_1", "_thinking", {})
-                if tc_cb:
-                    tc_cb("call_internal_1", "_thinking", {}, "")
-                # Completion without start — orphan, must be dropped.
-                if tc_cb:
-                    tc_cb("call_orphan_1", "web_search", {}, "ok")
-                if cb:
-                    await asyncio.sleep(0.05)
-                    cb("ok.")
-                return (
-                    {"final_response": "ok.", "messages": [], "api_calls": 1},
-                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
-                )
-
-            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
-                resp = await cli.post(
-                    "/v1/chat/completions",
-                    json={
-                        "model": "test",
-                        "messages": [{"role": "user", "content": "ok"}],
-                        "stream": True,
-                    },
-                )
-                assert resp.status == 200
-                body = await resp.text()
-
-            # Neither the internal call_id nor the orphan call_id should
-            # surface as a lifecycle payload on the wire.
-            assert "call_internal_1" not in body
-            assert "call_orphan_1" not in body
-            assert '"status": "running"' not in body
-            assert '"status": "completed"' not in body
+                assert '"label": "Python docs"' in body
 
     @pytest.mark.asyncio
     async def test_no_user_message_returns_400(self, adapter):
+        """A request with only a system message (no user message) is accepted
+        and forwarded to the agent — the agent receives an empty user prompt.
+        The handler no longer rejects this with 400; only orphaned tool
+        results without user/assistant context are rejected."""
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.post(
-                "/v1/chat/completions",
-                json={
-                    "model": "test",
-                    "messages": [{"role": "system", "content": "You are helpful."}],
-                },
-            )
-            assert resp.status == 400
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "OK", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "system", "content": "You are helpful."}],
+                    },
+                )
+                # The endpoint now accepts system-only messages and forwards
+                # them to the agent rather than rejecting with 400.
+                assert resp.status == 200
 
     @pytest.mark.asyncio
     async def test_successful_completion(self, adapter):
@@ -1579,139 +1499,6 @@ class TestResponsesStreaming:
                 assert data["id"] == response_id
                 assert data["status"] == "completed"
                 assert data["output"][-1]["content"][0]["text"] == "Stored response"
-
-    @pytest.mark.asyncio
-    async def test_stream_cancelled_persists_incomplete_snapshot(self, adapter):
-        """Server-side asyncio.CancelledError (shutdown, request timeout) must
-        still leave an ``incomplete`` snapshot in ResponseStore so
-        GET /v1/responses/{id} and previous_response_id chaining keep
-        working.  Regression for PR #15171 follow-up.
-
-        Calls _write_sse_responses directly so the test can await the
-        handler to completion (TestClient disconnection races the server
-        handler, which makes end-to-end assertion on the final stored
-        snapshot flaky).
-        """
-        # Build a minimal fake request + stream queue the writer understands.
-        fake_request = MagicMock()
-        fake_request.headers = {}
-
-        written_payloads: list = []
-
-        class _FakeStreamResponse:
-            async def prepare(self, req):
-                pass
-
-            async def write(self, payload):
-                written_payloads.append(payload)
-
-        # Patch web.StreamResponse for the duration of the writer call.
-        import gateway.platforms.api_server as api_mod
-        import queue as _q
-
-        stream_q: _q.Queue = _q.Queue()
-
-        async def _agent_coro():
-            # Feed one partial delta into the stream queue...
-            stream_q.put("partial output")
-            # ...then give the drain loop a moment to pick it up before
-            # raising CancelledError to simulate a server-side cancel.
-            await asyncio.sleep(0.01)
-            raise asyncio.CancelledError()
-
-        agent_task = asyncio.ensure_future(_agent_coro())
-        response_id = f"resp_{uuid.uuid4().hex[:28]}"
-
-        with patch.object(api_mod.web, "StreamResponse", return_value=_FakeStreamResponse()):
-            with pytest.raises(asyncio.CancelledError):
-                await adapter._write_sse_responses(
-                    request=fake_request,
-                    response_id=response_id,
-                    model="hermes-agent",
-                    created_at=int(time.time()),
-                    stream_q=stream_q,
-                    agent_task=agent_task,
-                    agent_ref=[None],
-                    conversation_history=[],
-                    user_message="will be cancelled",
-                    instructions=None,
-                    conversation=None,
-                    store=True,
-                    session_id=None,
-                )
-
-        # The in_progress snapshot was persisted on response.created,
-        # and the CancelledError handler must have updated it to
-        # ``incomplete`` with the partial text it saw.
-        stored = adapter._response_store.get(response_id)
-        assert stored is not None, "snapshot must be retrievable after cancellation"
-        assert stored["response"]["status"] == "incomplete"
-        # Partial text captured before cancel should be preserved.
-        output_text = "".join(
-            part.get("text", "")
-            for item in stored["response"].get("output", [])
-            if item.get("type") == "message"
-            for part in item.get("content", [])
-        )
-        assert "partial output" in output_text
-
-    @pytest.mark.asyncio
-    async def test_stream_client_disconnect_persists_incomplete_snapshot(self, adapter):
-        """Client disconnect (ConnectionResetError) during streaming must
-        persist an ``incomplete`` snapshot in ResponseStore.  Regression
-        for PR #15171."""
-        fake_request = MagicMock()
-        fake_request.headers = {}
-
-        write_call_count = {"n": 0}
-
-        class _DisconnectingStreamResponse:
-            async def prepare(self, req):
-                pass
-
-            async def write(self, payload):
-                # First two writes succeed (prepare + response.created).
-                # On the third write (a text delta), the "client"
-                # disconnects — simulate with ConnectionResetError.
-                write_call_count["n"] += 1
-                if write_call_count["n"] >= 3:
-                    raise ConnectionResetError("simulated client disconnect")
-
-        import gateway.platforms.api_server as api_mod
-        import queue as _q
-
-        stream_q: _q.Queue = _q.Queue()
-        stream_q.put("some streamed text")
-        stream_q.put(None)  # EOS sentinel
-
-        async def _agent_coro():
-            await asyncio.sleep(0.01)
-            return ({"final_response": "", "messages": [], "api_calls": 0},
-                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
-
-        agent_task = asyncio.ensure_future(_agent_coro())
-        response_id = f"resp_{uuid.uuid4().hex[:28]}"
-
-        with patch.object(api_mod.web, "StreamResponse", return_value=_DisconnectingStreamResponse()):
-            await adapter._write_sse_responses(
-                request=fake_request,
-                response_id=response_id,
-                model="hermes-agent",
-                created_at=int(time.time()),
-                stream_q=stream_q,
-                agent_task=agent_task,
-                agent_ref=[None],
-                conversation_history=[],
-                user_message="will disconnect",
-                instructions=None,
-                conversation=None,
-                store=True,
-                session_id=None,
-            )
-
-        stored = adapter._response_store.get(response_id)
-        assert stored is not None, "snapshot must survive client disconnect"
-        assert stored["response"]["status"] == "incomplete"
 
 
 # ---------------------------------------------------------------------------

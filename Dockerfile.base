@@ -1,0 +1,74 @@
+# hermes-agent-base: Base image with system dependencies, Node, Playwright, and Claude CLI
+# This image is built once and reused for multiple app builds to save time and disk space.
+# Tag: hermes-agent-base:latest
+
+FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
+FROM tianon/gosu:1.19-trixie@sha256:3b176695959c71e123eb390d427efc665eeb561b1540e82679c15e992006b8b9 AS gosu_source
+FROM debian:13.4
+
+# Disable Python stdout buffering to ensure logs are printed immediately
+ENV PYTHONUNBUFFERED=1
+
+# Store Playwright browsers in the image (not in a volume) so they persist at runtime
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
+
+# Install system dependencies in one layer, clear APT cache to save space
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean && \
+    rm -rf /var/cache/apt/archives/*
+
+# Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
+RUN useradd -u 10000 -m -d /opt/data hermes
+
+COPY --chmod=0755 --from=gosu_source /gosu /usr/local/bin/
+COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
+
+# Set up the hermes directory and copy package files first for better layer caching
+COPY package*.json /opt/hermes/
+COPY scripts/whatsapp-bridge/package*.json /opt/hermes/scripts/whatsapp-bridge/
+
+WORKDIR /opt/hermes
+
+# Install Node dependencies and Playwright as root (--with-deps needs apt)
+# This is the heaviest step, so it's isolated in the base image
+RUN npm install --prefer-offline --no-audit && \
+    npx playwright install --with-deps chromium --only-shell && \
+    cd /opt/hermes/scripts/whatsapp-bridge && \
+    npm install --prefer-offline --no-audit && \
+    npm cache clean --force && \
+    cd /opt/hermes
+
+# Install Claude Code CLI for claude-code-mcp bridge (wraps Claude Code as MCP server)
+RUN set -eux; \
+    GCS_BUCKET="https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"; \
+    VERSION=$(curl -fsSL "$GCS_BUCKET/latest" 2>/dev/null || echo "latest"); \
+    PLATFORM="linux-x64"; \
+    echo "Downloading claude $VERSION for $PLATFORM"; \
+    curl -fsSL -o /usr/local/bin/claude "$GCS_BUCKET/$VERSION/$PLATFORM/claude" && \
+    chmod +x /usr/local/bin/claude && \
+    ls -la /usr/local/bin/claude; \
+    /usr/local/bin/claude --version || true
+
+# Create venv ahead of time (empty, but ready for app layer to install into)
+RUN uv venv
+
+# Set up permissions - hermes user owns the hermes directory
+RUN chown -R hermes:hermes /opt/hermes
+
+# Copy entrypoint script and make it executable
+COPY docker/entrypoint.sh /opt/hermes/docker/entrypoint.sh
+RUN chmod +x /opt/hermes/docker/entrypoint.sh
+
+# Default environment variables
+ENV HERMES_HOME=/opt/data
+ENV CLAUDE_CLI_PATH=/usr/local/bin/claude
+ENV PATH="/opt/hermes/venv/bin:$PATH"
+
+# Volume for persistent data (config, sessions, etc.)
+VOLUME [ "/opt/data" ]
+
+# Default entrypoint
+ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]

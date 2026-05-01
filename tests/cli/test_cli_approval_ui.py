@@ -154,7 +154,9 @@ class TestCliApprovalUi:
         assert "Dangerous Command" not in lines[0]
         assert any("Dangerous Command" in line for line in lines[1:3])
         assert "Show full command" in rendered
-        assert "githubcli-archive-keyring.gpg" not in rendered
+        assert "githubcli-archive-" in rendered
+        assert "keyring.gpg" in rendered
+        assert "status=progress" in rendered
 
     def test_approval_display_shows_full_command_after_view(self):
         cli = _make_cli_stub()

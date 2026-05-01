@@ -300,9 +300,49 @@ def test_maybe_wrap_anthropic_strips_trailing_slash_v1():
     assert isinstance(result, AnthropicAuxiliaryClient)
 
 
-# Note: _try_custom_endpoint (custom provider with api_mode=anthropic_messages)
-# applies the same /v1 strip via _clean_base check, covered by the
-# provider-agnostic test above (test_maybe_wrap_anthropic_strips_trailing_v1_any_provider).
+def test_try_custom_endpoint_strips_trailing_v1():
+    """Custom endpoint with api_mode=anthropic_messages must strip trailing /v1."""
+    from agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient
+
+    fake_anthropic = MagicMock(name="anthropic_sdk_client")
+
+    with (
+        patch(
+            "agent.auxiliary_client._resolve_custom_runtime",
+            return_value=("https://api.example-ai-provider.com/v1", "sk-test-key", "anthropic_messages"),
+        ),
+        patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=fake_anthropic,
+        ) as bc,
+    ):
+        result, model = _try_custom_endpoint()
+
+    bc.assert_called_once_with("sk-test-key", "https://api.example-ai-provider.com")
+    assert isinstance(result, AnthropicAuxiliaryClient)
+    assert model == "gpt-4o-mini"
+
+
+def test_try_custom_endpoint_preserves_non_v1_base():
+    """Custom endpoint without /v1 suffix passes through unchanged."""
+    from agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient
+
+    fake_anthropic = MagicMock(name="anthropic_sdk_client")
+
+    with (
+        patch(
+            "agent.auxiliary_client._resolve_custom_runtime",
+            return_value=("https://api.anthropic.com", "sk-ant-test", "anthropic_messages"),
+        ),
+        patch(
+            "agent.anthropic_adapter.build_anthropic_client",
+            return_value=fake_anthropic,
+        ) as bc,
+    ):
+        result, model = _try_custom_endpoint()
+
+    bc.assert_called_once_with("sk-ant-test", "https://api.anthropic.com")
+    assert isinstance(result, AnthropicAuxiliaryClient)
 
 
 # --------------------------------------------------------------------------

@@ -591,6 +591,136 @@ class TestNewEndpoints:
         resp = self.client.get("/api/cron/jobs/nonexistent-id")
         assert resp.status_code == 404
 
+    def test_conductor_named_cron_job_launches_immediate_supervisor(self, monkeypatch):
+        """Dashboard Conductor must not depend on gateway cron ticks to start work."""
+        import hermes_cli.web_server as web_server
+
+        class FakeProc:
+            pid = 4242
+
+            def poll(self):
+                return None
+
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return FakeProc()
+
+        monkeypatch.setattr(web_server.subprocess, "Popen", fake_popen)
+
+        resp = self.client.post(
+            "/api/cron/jobs",
+            json={
+                "name": "conductor-123",
+                "prompt": "start a new mission",
+                "schedule": "5s",
+                "deliver": "local",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["type"] == "conductor_mission"
+        assert data["status"] == "running"
+        assert data["pid"] == 4242
+        assert data["log_path"]
+        assert captured["cmd"][:3] == [web_server.sys.executable, "-m", "hermes_cli.main"]
+        assert "chat" in captured["cmd"]
+        assert "start a new mission" in captured["cmd"]
+        assert captured["kwargs"]["stdin"] is web_server.subprocess.DEVNULL
+
+    def test_conductor_status_reports_missing_worker_as_failed(self):
+        """A stale Conductor record without a live process must be visibly failed, not active."""
+        from hermes_constants import get_hermes_home
+
+        missions_dir = get_hermes_home() / "conductor"
+        missions_dir.mkdir(parents=True, exist_ok=True)
+        status_path = missions_dir / "conductor-stale.json"
+        status_path.write_text(json.dumps({
+            "id": "conductor-stale",
+            "name": "conductor-stale",
+            "status": "starting",
+            "pid": 99999999,
+            "started_at": 1,
+            "log_path": str(missions_dir / "conductor-stale.log"),
+        }))
+
+        resp = self.client.get("/api/conductor/missions/conductor-stale")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "failed"
+        assert "not running" in data["error"]
+
+    def test_conductor_status_reports_session_id_from_log(self):
+        """The workspace needs the real Hermes session id to attach mission output."""
+        from hermes_constants import get_hermes_home
+
+        missions_dir = get_hermes_home() / "conductor"
+        missions_dir.mkdir(parents=True, exist_ok=True)
+        log_path = missions_dir / "conductor-linked.log"
+        log_path.write_text(
+            "mission started\nsession_id: 20260430_170111_e41a4f\n",
+            encoding="utf-8",
+        )
+        status_path = missions_dir / "conductor-linked.json"
+        status_path.write_text(json.dumps({
+            "id": "conductor-linked",
+            "name": "conductor-linked",
+            "status": "completed",
+            "pid": 99999999,
+            "started_at": 1,
+            "log_path": str(log_path),
+        }))
+
+        resp = self.client.get("/api/conductor/missions/conductor-linked")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["session_id"] == "20260430_170111_e41a4f"
+
+    def test_conductor_delete_stops_running_mission(self, monkeypatch):
+        """Dashboard Stop Mission must stop the durable conductor subprocess."""
+        import hermes_cli.web_server as web_server
+
+        class FakeProc:
+            pid = 4243
+
+            def poll(self):
+                return None
+
+            def wait(self, timeout=None):
+                return -15
+
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            return FakeProc()
+
+        def fake_killpg(pid, sig):
+            captured["pid"] = pid
+            captured["sig"] = sig
+
+        monkeypatch.setattr(web_server.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(web_server.os, "killpg", fake_killpg)
+
+        create_resp = self.client.post(
+            "/api/conductor/missions",
+            json={"name": "conductor-stop-test", "prompt": "start a mission"},
+        )
+        assert create_resp.status_code == 200
+
+        delete_resp = self.client.delete("/api/conductor/missions/conductor-stop-test")
+
+        assert delete_resp.status_code == 200
+        data = delete_resp.json()
+        assert data["status"] == "cancelled"
+        assert data["stopped"] is True
+        assert captured["pid"] == 4243
+        assert captured["sig"] == web_server.signal.SIGTERM
+
     # --- Profiles ---
 
     def test_profiles_list_includes_default(self):
@@ -806,7 +936,6 @@ class TestNewEndpoints:
     def test_profile_soul_unknown_profile_404(self):
         resp = self.client.get("/api/profiles/nonexistent/soul")
         assert resp.status_code == 404
-
     def test_skills_list(self):
         resp = self.client.get("/api/skills")
         assert resp.status_code == 200

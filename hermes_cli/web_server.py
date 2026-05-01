@@ -15,13 +15,16 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import secrets
+import signal
 import subprocess
 import sys
 import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -634,6 +637,12 @@ _ACTION_LOG_FILES: Dict[str, str] = {
 # report liveness and exit code without shelling out to ``ps``.
 _ACTION_PROCS: Dict[str, subprocess.Popen] = {}
 
+_CONDUCTOR_PROCS: Dict[str, subprocess.Popen] = {}
+
+
+def _get_conductor_dir() -> Path:
+    return get_hermes_home() / "conductor"
+
 
 def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
@@ -683,6 +692,194 @@ def _tail_lines(path: Path, n: int) -> List[str]:
         return []
     lines = text.splitlines()
     return lines[-n:] if n > 0 else lines
+
+
+def _extract_conductor_session_id(log_path: Optional[str]) -> Optional[str]:
+    if not log_path:
+        return None
+    lines = _tail_lines(Path(log_path), 2000)
+    for line in reversed(lines):
+        match = re.search(r"\bsession_id:\s*([A-Za-z0-9_.:-]+)", line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _is_conductor_job_name(name: str) -> bool:
+    """Return True for dashboard Conductor's historical cron-wrapper jobs."""
+    normalized = (name or "").strip().lower()
+    return normalized == "conductor" or normalized.startswith("conductor-")
+
+
+def _pid_is_running(pid: Optional[int]) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _write_conductor_status(mission: Dict[str, Any]) -> None:
+    _get_conductor_dir().mkdir(parents=True, exist_ok=True)
+    path = _get_conductor_dir() / f"{mission['id']}.json"
+    path.write_text(json.dumps(mission, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _read_conductor_status(mission_id: str) -> Optional[Dict[str, Any]]:
+    path = _get_conductor_dir() / f"{mission_id}.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    session_id = _extract_conductor_session_id(data.get("log_path"))
+    if session_id:
+        data["session_id"] = session_id
+
+    proc = _CONDUCTOR_PROCS.get(mission_id)
+    if proc is not None:
+        exit_code = proc.poll()
+        data["exit_code"] = exit_code
+        if exit_code is None:
+            data["status"] = "running"
+        elif exit_code == 0:
+            data["status"] = "completed"
+        else:
+            data["status"] = "failed"
+            data.setdefault("error", f"worker exited with code {exit_code}")
+        _write_conductor_status(data)
+        return data
+
+    # If the dashboard server restarted, the Popen handle is gone.  Use an
+    # OS-level liveness check so stale missions cannot look active forever.
+    if data.get("status") in {"queued", "starting", "running"}:
+        if _pid_is_running(data.get("pid")):
+            data["status"] = "running"
+        else:
+            data["status"] = "failed"
+            data["error"] = "worker process is not running"
+        _write_conductor_status(data)
+    return data
+
+
+def _launch_conductor_mission(prompt: str, name: str = "") -> Dict[str, Any]:
+    """Launch a dashboard Conductor mission immediately as a durable process.
+
+    Older dashboard bundles created one-shot cron jobs named ``conductor-*``.
+    That made mission startup depend on the gateway cron ticker, so work could
+    sit stale for minutes. Intercept those jobs and start a subprocess now,
+    with PID/log/status artifacts the dashboard can verify.
+    """
+    mission_id = name.strip() if name.strip() else f"conductor-{uuid.uuid4().hex[:12]}"
+    safe_id = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in mission_id)[:96]
+    if not safe_id:
+        safe_id = f"conductor-{uuid.uuid4().hex[:12]}"
+
+    _get_conductor_dir().mkdir(parents=True, exist_ok=True)
+    log_path = _get_conductor_dir() / f"{safe_id}.log"
+    prompt_path = _get_conductor_dir() / f"{safe_id}.prompt.md"
+    prompt_path.write_text(prompt, encoding="utf-8")
+    log_file = open(log_path, "ab", buffering=0)
+    log_file.write(
+        f"\n=== conductor mission {safe_id} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
+    )
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "hermes_cli.main",
+        "chat",
+        "-Q",
+        "--source",
+        "dashboard-conductor",
+        "-q",
+        prompt,
+    ]
+    popen_kwargs: Dict[str, Any] = {
+        "cwd": str(PROJECT_ROOT),
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_file,
+        "stderr": subprocess.STDOUT,
+        "env": {**os.environ, "HERMES_NONINTERACTIVE": "1", "HERMES_YOLO_MODE": "0"},
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    _CONDUCTOR_PROCS[safe_id] = proc
+    mission = {
+        "id": safe_id,
+        "name": name or safe_id,
+        "type": "conductor_mission",
+        "status": "running" if proc.poll() is None else "failed",
+        "session_id": None,
+        "pid": proc.pid,
+        "started_at": time.time(),
+        "log_path": str(log_path),
+        "prompt_path": str(prompt_path),
+        "schedule": "immediate",
+        "deliver": "local",
+    }
+    _write_conductor_status(mission)
+    return mission
+
+
+def _terminate_conductor_process(proc: Optional[subprocess.Popen], pid: Optional[int]) -> bool:
+    """Best-effort process termination for a dashboard Conductor mission."""
+    if proc is not None:
+        if proc.poll() is not None:
+            return False
+        try:
+            if sys.platform != "win32":
+                os.killpg(proc.pid, signal.SIGTERM)
+            else:
+                proc.terminate()
+            proc.wait(timeout=5)
+            return True
+        except subprocess.TimeoutExpired:
+            if sys.platform != "win32":
+                os.killpg(proc.pid, signal.SIGKILL)
+            else:
+                proc.kill()
+            proc.wait(timeout=5)
+            return True
+        except Exception:
+            return False
+
+    if sys.platform != "win32" and pid and pid > 0 and _pid_is_running(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            return True
+        except Exception:
+            return False
+
+    return False
+
+
+def _stop_conductor_mission(mission_id: str) -> Optional[Dict[str, Any]]:
+    mission = _read_conductor_status(mission_id)
+    if not mission:
+        return None
+
+    proc = _CONDUCTOR_PROCS.pop(mission_id, None)
+    stopped = _terminate_conductor_process(proc, mission.get("pid"))
+    mission["status"] = "cancelled"
+    mission["stopped"] = stopped
+    mission["stopped_at"] = time.time()
+    mission["error"] = "mission stopped by user"
+    _write_conductor_status(mission)
+    return mission
 
 
 @app.post("/api/gateway/restart")
@@ -742,6 +939,49 @@ async def get_action_status(name: str, lines: int = 200):
         "pid": pid,
         "lines": tail,
     }
+
+
+@app.get("/api/conductor/missions")
+async def list_conductor_missions():
+    _get_conductor_dir().mkdir(parents=True, exist_ok=True)
+    missions = []
+    for path in sorted(_get_conductor_dir().glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        mission = _read_conductor_status(path.stem)
+        if mission:
+            missions.append(mission)
+    return {"missions": missions}
+
+
+@app.get("/api/conductor/missions/{mission_id}")
+async def get_conductor_mission(mission_id: str, lines: int = 200):
+    mission = _read_conductor_status(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    log_path = mission.get("log_path")
+    mission["lines"] = _tail_lines(Path(log_path), min(max(lines, 1), 2000)) if log_path else []
+    return mission
+
+
+@app.delete("/api/conductor/missions/{mission_id}")
+async def delete_conductor_mission(mission_id: str):
+    mission = _stop_conductor_mission(mission_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    return mission
+
+
+@app.post("/api/conductor/missions")
+async def create_conductor_mission(body: Dict[str, Any]):
+    try:
+        prompt = str(body.get("prompt") or "")
+        if not prompt.strip():
+            raise HTTPException(status_code=400, detail="prompt is required")
+        return _launch_conductor_mission(prompt=prompt, name=str(body.get("name") or ""))
+    except HTTPException:
+        raise
+    except Exception as e:
+        _log.exception("POST /api/conductor/missions failed")
+        raise HTTPException(status_code=500, detail=f"Failed to launch conductor mission: {e}")
 
 
 @app.get("/api/sessions")
@@ -2290,6 +2530,13 @@ async def get_cron_job(job_id: str):
 
 @app.post("/api/cron/jobs")
 async def create_cron_job(body: CronJobCreate):
+    if _is_conductor_job_name(body.name):
+        try:
+            return _launch_conductor_mission(prompt=body.prompt, name=body.name)
+        except Exception as e:
+            _log.exception("POST /api/cron/jobs conductor launch failed")
+            raise HTTPException(status_code=500, detail=f"Failed to launch conductor mission: {e}")
+
     from cron.jobs import create_job
     try:
         job = create_job(prompt=body.prompt, schedule=body.schedule,

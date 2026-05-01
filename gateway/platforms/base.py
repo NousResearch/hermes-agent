@@ -2134,6 +2134,15 @@ class BasePlatformAdapter(ABC):
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
+    async def on_tool_call_start(self, event: MessageEvent, tool_name: str) -> None:
+        """Hook called each time a tool call begins during processing.
+
+        Platform adapters can override this to show per-tool status indicators
+        (e.g. Discord swaps the active reaction emoji to reflect the current tool).
+        ``tool_name`` is the raw tool function name (e.g. ``read_file``,
+        ``web_search``, ``terminal``).
+        """
+
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Hook called when background processing completes."""
 

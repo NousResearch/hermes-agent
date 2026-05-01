@@ -11717,6 +11717,19 @@ class GatewayRunner:
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
+            # Fire on_tool_call_start hook before the progress_queue guard so
+            # reaction swapping works even when tool progress messages are off.
+            if event_type == "tool.started" and tool_name and _status_adapter and _loop_for_step and _run_still_current():
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        _status_adapter._run_processing_hook(
+                            "on_tool_call_start", source, tool_name
+                        ),
+                        _loop_for_step,
+                    )
+                except Exception:
+                    pass
+
             if not progress_queue or not _run_still_current():
                 return
 
@@ -11774,7 +11787,7 @@ class GatewayRunner:
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
-            
+
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
@@ -12312,7 +12325,7 @@ class GatewayRunner:
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            agent.tool_progress_callback = progress_callback  # always register — hook fires before progress_queue guard
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None

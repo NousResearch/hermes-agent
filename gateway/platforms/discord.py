@@ -4816,6 +4816,83 @@ class DiscordAdapter(BasePlatformAdapter):
         if (not event_text or not event_text.strip()) and not _channel_context:
             event_text = "(The user sent a message with no text content)"
 
+        # Vector 3 (token-leak): unified trigger framework — when
+        # ``discord.mentions.inbound_routing`` is enabled and the message is
+        # an actual @mention, route through the skill resolver. On match,
+        # dispatch with auto_skill set (skips general-purpose LLM reasoning).
+        # On no match, early-return iff explicit triggers exist on the
+        # corpus (otherwise fall through to legacy for back-compat).
+        _mentions_cfg = self.config.extra.get("mentions") if isinstance(
+            self.config.extra.get("mentions"), dict
+        ) else None
+        _mentions_inbound = bool(
+            _mentions_cfg.get("inbound_routing", False) if _mentions_cfg else False
+        )
+        _is_actual_mention = (
+            self._client.user is not None
+            and self._client.user in (getattr(message, "mentions", None) or [])
+        )
+        if (
+            _mentions_inbound
+            and _is_actual_mention
+            and self._interactions is not None
+            and msg_type == MessageType.TEXT
+        ):
+            try:
+                _matched = await self._interactions.handle_inbound_mention(
+                    message, normalized_content
+                )
+            except Exception:
+                logger.exception(
+                    "[%s] handle_inbound_mention raised; falling through to legacy",
+                    self.name,
+                )
+                _matched = None
+            if _matched:
+                # Match: dispatch via the existing pipeline with auto_skill set.
+                _chan = message.channel
+                _parent_id = str(getattr(_chan, "parent_id", "") or "")
+                _chan_id = str(getattr(_chan, "id", ""))
+                _channel_prompt = self._resolve_channel_prompt(
+                    _chan_id, _parent_id or None
+                )
+                reply_to_id = None
+                reply_to_text = None
+                if message.reference:
+                    reply_to_id = str(message.reference.message_id)
+                    if message.reference.resolved:
+                        reply_to_text = (
+                            getattr(message.reference.resolved, "content", None)
+                            or None
+                        )
+                event = MessageEvent(
+                    text=event_text,
+                    message_type=msg_type,
+                    source=source,
+                    raw_message=message,
+                    message_id=str(message.id),
+                    media_urls=media_urls,
+                    media_types=media_types,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_text=reply_to_text,
+                    timestamp=message.created_at,
+                    auto_skill=_matched,
+                    channel_prompt=_channel_prompt,
+                )
+                if thread_id:
+                    self._threads.mark(thread_id)
+                await self.handle_message(event)
+                return
+            # No match — early-return only when the corpus actually has
+            # explicit mention triggers configured. Without explicit triggers
+            # the legacy broadcast path is the back-compat default.
+            if self._interactions.explicit_triggers_present():
+                logger.debug(
+                    "[%s] mention had no skill match; explicit triggers present, skipping legacy LLM invoke",
+                    self.name,
+                )
+                return
+
         _chan = message.channel
         _parent_id = str(getattr(_chan, "parent_id", "") or "")
         _chan_id = str(getattr(_chan, "id", ""))

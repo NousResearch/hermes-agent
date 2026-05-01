@@ -613,6 +613,21 @@ class DiscordAdapter(BasePlatformAdapter):
             # so LLM output or echoed user content can't ping the whole
             # server; override per DISCORD_ALLOW_MENTION_* env vars or the
             # discord.allow_mentions.* block in config.yaml.
+
+            # Close any existing client to prevent zombie websocket connections
+            # on reconnect (see #18187). Without this, the old client remains
+            # connected to Discord gateway and both fire on_message, causing
+            # double responses.
+            if self._client is not None:
+                try:
+                    if not self._client.is_closed():
+                        await self._client.close()
+                except Exception:
+                    logger.debug("[%s] Failed to close previous Discord client", self.name)
+                finally:
+                    self._client = None
+                    self._ready_event.clear()
+
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,

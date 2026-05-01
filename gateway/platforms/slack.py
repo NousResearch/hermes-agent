@@ -532,12 +532,13 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_message_event(event, say):
                 await self._handle_slack_message(event)
 
-            # Acknowledge app_mention events to prevent Bolt 404 errors.
-            # The "message" handler above already processes @mentions in
-            # channels, so this is intentionally a no-op to avoid duplicates.
+            # Handle app_mention explicitly. In some Slack app configurations,
+            # channel mentions arrive only as app_mention events rather than the
+            # generic message event. Forward them into the normal message
+            # pipeline so @mentions reliably produce replies.
             @self._app.event("app_mention")
             async def handle_app_mention(event, say):
-                pass
+                await self._handle_slack_message(event)
 
             # File lifecycle events can arrive around snippet uploads even when
             # the actual user message is what we care about. Ack them so Slack
@@ -723,6 +724,42 @@ class SlackAdapter(BasePlatformAdapter):
 
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[Slack] Send error: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
+    async def send_private_notice(
+        self,
+        chat_id: str,
+        user_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Slack ephemeral message visible only to one user."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+        if not chat_id or not user_id:
+            return SendResult(success=False, error="chat_id and user_id are required")
+
+        try:
+            formatted = self.format_message(content)
+            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            kwargs = {
+                "channel": chat_id,
+                "user": user_id,
+                "text": formatted,
+                "mrkdwn": True,
+            }
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+
+            result = await self._get_client(chat_id).chat_postEphemeral(**kwargs)
+            return SendResult(
+                success=True,
+                message_id=result.get("message_ts") or result.get("ts"),
+                raw_response=result,
+            )
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[Slack] Ephemeral send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def edit_message(
@@ -1070,7 +1107,7 @@ class SlackAdapter(BasePlatformAdapter):
             return _ph(f'<{url}|{label}>')
 
         text = re.sub(
-            r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)',
+            r'(?<!!)\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)',
             _convert_markdown_link,
             text,
         )
@@ -1117,9 +1154,11 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         # 10) Convert italic: _text_ stays as _text_ (already Slack italic)
-        #     Single *text* → _text_ (Slack italic)
+        #     Single *text* → _text_ (Slack italic), but only when the
+        #     emphasized text touches non-whitespace on both sides so literal
+        #     delimiters like "a * b * c" are preserved.
         text = re.sub(
-            r'(?<!\*)\*([^*\n]+)\*(?!\*)',
+            r'(?<!\*)\*(\S(?:[^*\n]*?\S)?)\*(?!\*)',
             lambda m: _ph(f'_{m.group(1)}_'),
             text,
         )

@@ -1593,6 +1593,26 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
+    async def send_private_notice(
+        self,
+        chat_id: str,
+        user_id: Optional[str],
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a notice privately when the platform supports it.
+
+        The default implementation falls back to a normal send so callers can
+        use one code path across platforms.
+        """
+        return await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
         Send a typing indicator.

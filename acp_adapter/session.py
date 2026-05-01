@@ -570,6 +570,7 @@ class SessionManager:
             "quiet_mode": True,
             "session_id": session_id,
             "model": model or default_model,
+            "fallback_model": config.get("fallback_providers") or config.get("fallback_model") or None,
         }
 
         try:

@@ -1422,17 +1422,14 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "assistant":
-            # For DeepSeek /anthropic and Kimi /coding endpoints, skip
-            # extracting signed thinking blocks from reasoning_details.
-            # Those blocks carry Anthropic-proprietary signatures that
-            # these endpoints cannot validate — they get stripped later
-            # in the thinking-block management pass, leaving no thinking
-            # block at all.  Instead, let the reasoning_content path
-            # (below) create unsigned blocks that these endpoints accept.
-            _skip_signed_thinking = (
-                _is_deepseek_anthropic_endpoint(base_url)
-                or _is_kimi_family_endpoint(base_url, model)
-            )
+            # For DeepSeek /anthropic endpoints, skip extracting signed
+            # thinking blocks from reasoning_details.  Those blocks carry
+            # Anthropic-proprietary signatures that DeepSeek cannot validate
+            # — they get stripped later in the thinking-block management pass,
+            # leaving no thinking block at all.  Instead, let the
+            # reasoning_content path (below) create unsigned blocks that
+            # DeepSeek accepts.
+            _skip_signed_thinking = _is_deepseek_anthropic_endpoint(base_url)
             blocks = [] if _skip_signed_thinking else _extract_preserved_thinking_blocks(m)
             if content:
                 if isinstance(content, list):

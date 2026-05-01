@@ -173,6 +173,60 @@ class DiscordInteractionsHandler:
             matched_skills=matched,
         )
 
+    # ── Inbound mentions ────────────────────────────────────────────────
+
+    async def handle_inbound_mention(
+        self,
+        message: "discord.Message",
+        normalized_text: str,
+    ) -> Optional[List[str]]:
+        """Resolve skill matches for an @mention event.
+
+        Companion to :meth:`handle_inbound_reaction` — routes the mention
+        through the skill resolver. The caller (``DiscordAdapter._handle_message``)
+        decides what to do with the result:
+
+        - On match: dispatches the existing message pipeline with
+          ``auto_skill=<matched names>`` set, saving the LLM round-trip for
+          general-purpose reasoning.
+        - On no match: caller may early-return (saving an LLM invoke) when
+          explicit triggers are configured, or fall through to the legacy
+          path when not.
+
+        Args:
+            message: The inbound ``discord.Message`` (used for channel
+                metadata; we only read attributes — no fetch I/O).
+            normalized_text: The mention-stripped text already computed by
+                ``_handle_message``. Avoids re-stripping the bot's own
+                ``<@id>`` token.
+
+        Returns:
+            List of matching skill names on a match, or ``None`` on no match
+            / fail-safe. Returning a list (vs ``[]``) lets the caller cleanly
+            distinguish "matched" from "did not match".
+        """
+        try:
+            skills = self._skill_provider()
+        except Exception:
+            logger.exception("handle_inbound_mention: skill_provider raised")
+            return None
+
+        channel = getattr(message, "channel", None)
+        channel_name = getattr(channel, "name", "") or "" if channel is not None else ""
+        channel_id = str(getattr(channel, "id", "") or "") if channel is not None else ""
+        payload: Dict[str, Any] = {
+            "text": normalized_text,
+            "channel": channel_name,
+            "channel_id": channel_id,
+        }
+        matched = resolve_event_skills("mention", payload, skills)
+        if not matched:
+            _event_counters["discord.mentions.skipped_no_match"] += 1
+            return None
+
+        _event_counters["discord.mentions.invoked"] += 1
+        return matched
+
     # ── Inbound reactions ───────────────────────────────────────────────
 
     async def handle_inbound_reaction(

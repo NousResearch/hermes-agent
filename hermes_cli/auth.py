@@ -174,6 +174,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "cursor-harness": ProviderConfig(
+        id="cursor-harness",
+        name="Cursor Harness",
+        auth_type="external_process",
+        inference_base_url="cursor://harness",
+        base_url_env_var="HERMES_CURSOR_HARNESS_BASE_URL",
+    ),
     "gemini": ProviderConfig(
         id="gemini",
         name="Google AI Studio",
@@ -1127,6 +1134,8 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        "cursor": "cursor-harness", "cursor-agent": "cursor-harness",
+        "cursor-harness": "cursor-harness",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
@@ -3416,6 +3425,26 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
+def get_cursor_harness_status() -> Dict[str, Any]:
+    """Status snapshot for the Cursor Harness provider route."""
+    command = (
+        os.getenv("HERMES_CURSOR_HARNESS_STREAM_COMMAND", "").strip().split(" ", 1)[0]
+        or shutil.which("agent")
+        or shutil.which("cursor-agent")
+        or shutil.which("cursor")
+        or ""
+    )
+    plugin_dir = Path(os.getenv("HERMES_HOME", "~/.hermes")).expanduser() / "plugins" / "hermes-cursor-harness"
+    return {
+        "configured": bool(command and (plugin_dir.exists() or os.getenv("HERMES_CURSOR_HARNESS_PYTHONPATH"))),
+        "provider": "cursor-harness",
+        "name": "Cursor Harness",
+        "command": command,
+        "plugin_dir": str(plugin_dir),
+        "logged_in": bool(command),
+    }
+
+
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Generic auth status dispatcher."""
     target = provider_id or get_active_provider()
@@ -3431,6 +3460,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_gemini_oauth_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
+    if target == "cursor-harness":
+        return get_cursor_harness_status()
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":

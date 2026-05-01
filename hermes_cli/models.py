@@ -154,6 +154,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "cursor-harness": [
+        "cursor/default",
+        "cursor/auto",
+        "cursor/composer-2-fast",
+        "cursor/composer-2",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -721,6 +727,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("qwen-oauth",     "Qwen OAuth (Portal)",      "Qwen OAuth (reuses local Qwen CLI login)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
+    ProviderEntry("cursor-harness", "Cursor Harness",           "Cursor Harness (delegates Hermes turns to Cursor Agent)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers (20+ open models)"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Gemini models — native Gemini API)"),
     ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (free tier supported; no API key needed)"),
@@ -758,6 +765,8 @@ _PROVIDER_ALIASES = {
     "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "cursor": "cursor-harness",
+    "cursor-agent": "cursor-harness",
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
@@ -1802,6 +1811,20 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             pass
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
+    if normalized == "cursor-harness":
+        try:
+            from agent.cursor_harness_adapter import _ensure_harness_importable
+
+            _ensure_harness_importable()
+            from hermes_cursor_harness.config import load_config
+            from hermes_cursor_harness.models import list_cursor_models
+
+            result = list_cursor_models(load_config(), timeout_sec=10)
+            live = [f"cursor/{item['id']}" for item in result.get("models", []) if item.get("id")]
+            if live:
+                return live
+        except Exception:
+            pass
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:

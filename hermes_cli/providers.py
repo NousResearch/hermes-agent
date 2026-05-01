@@ -77,6 +77,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="acp://copilot",
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "cursor-harness": HermesOverlay(
+        transport="cursor_harness",
+        auth_type="external_process",
+        base_url_override="cursor://harness",
+        base_url_env_var="HERMES_CURSOR_HARNESS_BASE_URL",
+    ),
     "github-copilot": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN"),
@@ -242,6 +248,8 @@ ALIASES: Dict[str, str] = {
     "copilot": "github-copilot",
     "github": "github-copilot",
     "github-copilot-acp": "copilot-acp",
+    "cursor": "cursor-harness",
+    "cursor-agent": "cursor-harness",
 
     # vercel (models.dev ID for AI Gateway)
     "ai-gateway": "vercel",

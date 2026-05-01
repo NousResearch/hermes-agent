@@ -164,7 +164,7 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
         return "chat_completions"
 
 
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}
+_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "cursor_harness"}
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
@@ -832,6 +832,18 @@ def resolve_runtime_provider(
     behavior (api_mode derived from config).
     """
     requested_provider = resolve_requested_provider(requested)
+    model_cfg = _get_model_config()
+    model_hint = str(target_model or model_cfg.get("default") or "").strip().lower()
+
+    if requested_provider in {"cursor", "cursor-harness"} or model_hint.startswith("cursor/"):
+        return {
+            "provider": "cursor-harness",
+            "api_mode": "cursor_harness",
+            "base_url": os.getenv("HERMES_CURSOR_HARNESS_BASE_URL", "cursor://harness").rstrip("/"),
+            "api_key": "cursor-harness",
+            "source": "cursor-agent",
+            "requested_provider": requested_provider,
+        }
 
     # Azure Anthropic short-circuit: when explicitly targeting an Azure endpoint
     # with provider="anthropic", bypass _resolve_named_custom_runtime (which would
@@ -881,7 +893,6 @@ def resolve_runtime_provider(
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
     )
-    model_cfg = _get_model_config()
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,

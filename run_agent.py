@@ -900,7 +900,8 @@ class AIAgent:
             base_url (str): Base URL for the model API (optional)
             api_key (str): API key for authentication (optional, uses env var if not provided)
             provider (str): Provider identifier (optional; used for telemetry/routing hints)
-            api_mode (str): API mode override: "chat_completions" or "codex_responses"
+            api_mode (str): API mode override: "chat_completions", "codex_responses",
+                "anthropic_messages", "bedrock_converse", or "cursor_harness"
             model (str): Model name to use (default: "anthropic/claude-opus-4.6")
             max_iterations (int): Maximum number of tool calling iterations (default: 90)
             tool_delay (float): Delay between tool calls in seconds (default: 1.0)
@@ -972,8 +973,11 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
+        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "cursor_harness"}:
             self.api_mode = api_mode
+        elif self.provider == "cursor-harness" or (self.model or "").strip().lower().startswith("cursor/"):
+            self.api_mode = "cursor_harness"
+            self.provider = "cursor-harness"
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
         elif self.provider == "xai":
@@ -1038,7 +1042,7 @@ class AIAgent:
         if (
             api_mode is None
             and self.api_mode == "chat_completions"
-            and self.provider != "copilot-acp"
+            and self.provider not in {"copilot-acp", "cursor-harness"}
             and not str(self.base_url or "").lower().startswith("acp://copilot")
             and not str(self.base_url or "").lower().startswith("acp+tcp://")
             and not self._is_azure_openai_url()
@@ -1313,6 +1317,14 @@ class AIAgent:
             if not self.quiet_mode:
                 _gr_label = " + Guardrails" if self._bedrock_guardrail_config else ""
                 print(f"🤖 AI Agent initialized with model: {self.model} (AWS Bedrock, {self._bedrock_region}{_gr_label})")
+        elif self.api_mode == "cursor_harness":
+            self.provider = "cursor-harness"
+            self.api_key = api_key or "cursor-harness"
+            self.base_url = base_url or "cursor://harness"
+            self.client = None
+            self._client_kwargs = {}
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model or 'cursor/default'} (Cursor Harness)")
         else:
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
@@ -9200,6 +9212,218 @@ class AIAgent:
 
         return final_response
 
+    def _cursor_harness_overrides(self) -> Dict[str, Any]:
+        overrides = getattr(self, "request_overrides", None)
+        return overrides if isinstance(overrides, dict) else {}
+
+    def _cursor_harness_option(self, *keys: str) -> Any:
+        overrides = self._cursor_harness_overrides()
+        for key in keys:
+            if key in overrides and overrides[key] not in (None, ""):
+                return overrides[key]
+        return None
+
+    def _cursor_harness_event_callback(self, stream_callback: Optional[callable] = None) -> callable:
+        def _on_event(item: dict[str, Any]) -> None:
+            if not isinstance(item, dict):
+                return
+            etype = item.get("type")
+            if etype == "message_delta" and item.get("role") == "assistant":
+                text = str(item.get("text") or "")
+                if not text:
+                    return
+                self._response_was_previewed = True
+                callbacks = []
+                seen_callbacks = set()
+                for callback in (self.stream_delta_callback, self._stream_callback, stream_callback):
+                    if callback is None:
+                        continue
+                    ident = id(callback)
+                    if ident in seen_callbacks:
+                        continue
+                    seen_callbacks.add(ident)
+                    callbacks.append(callback)
+                for callback in callbacks:
+                    try:
+                        callback(text)
+                    except Exception:
+                        logger.debug("Cursor harness stream callback failed", exc_info=True)
+                return
+            if etype == "tool_call":
+                tool_name = str(item.get("tool_name") or "cursor_tool")
+                if self.tool_progress_callback:
+                    try:
+                        self.tool_progress_callback(tool_name, item.get("payload"))
+                    except Exception:
+                        logger.debug("Cursor harness tool callback failed", exc_info=True)
+                else:
+                    self._emit_status(f"Cursor tool: {tool_name}")
+                return
+            if etype in {"session_started", "mode_changed"}:
+                detail = item.get("mode") or item.get("cursor_session_id") or "started"
+                self._emit_status(f"Cursor harness {etype.replace('_', ' ')}: {detail}")
+
+        return _on_event
+
+    def _run_cursor_harness_conversation(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        active_system_prompt: str,
+        current_turn_user_idx: int,
+        original_user_message: Any,
+        plugin_user_context: str,
+        external_prefetch_context: str,
+        effective_task_id: str,
+        conversation_history: Optional[List[Dict[str, Any]]],
+        stream_callback: Optional[callable],
+    ) -> Dict[str, Any]:
+        from agent.cursor_harness_adapter import (
+            render_cursor_prompt,
+            run_cursor_harness_provider_turn,
+        )
+
+        injections: list[str] = []
+        if external_prefetch_context:
+            fenced = build_memory_context_block(external_prefetch_context)
+            if fenced:
+                injections.append(fenced)
+        if plugin_user_context:
+            injections.append(plugin_user_context)
+
+        prompt = render_cursor_prompt(
+            messages=messages,
+            system_prompt=active_system_prompt,
+            current_turn_user_idx=current_turn_user_idx,
+            user_injections=injections,
+            hermes_session_id=self.session_id,
+            model=self.model,
+            platform=getattr(self, "platform", None) or "",
+        )
+
+        timeout_raw = self._cursor_harness_option("cursor_timeout_sec", "cursor_harness_timeout_sec")
+        timeout_sec = float(timeout_raw) if timeout_raw not in (None, "") else None
+        self._touch_activity("running Cursor harness turn")
+        self._emit_status("Delegating this turn to Cursor Harness")
+
+        try:
+            cursor_result = run_cursor_harness_provider_turn(
+                prompt=prompt,
+                hermes_session_id=self.session_id,
+                model=self.model,
+                project=self._cursor_harness_option("cursor_project", "cursor_harness_project", "project"),
+                mode=self._cursor_harness_option("cursor_mode", "cursor_harness_mode", "mode"),
+                transport=self._cursor_harness_option("cursor_transport", "cursor_harness_transport"),
+                timeout_sec=timeout_sec,
+                event_callback=self._cursor_harness_event_callback(stream_callback),
+            )
+        except Exception as exc:
+            logger.warning("Cursor harness provider turn failed: %s", exc, exc_info=True)
+            self._emit_warning(f"Cursor Harness failed: {exc}")
+            cursor_result = {
+                "success": False,
+                "transport": "cursor_harness",
+                "text": "",
+                "error": str(exc),
+                "events": [],
+            }
+
+        final_response = str(cursor_result.get("text") or "").strip()
+        if not final_response:
+            error = cursor_result.get("error") or cursor_result.get("fallback_reason")
+            final_response = f"Cursor harness did not return a final response. {error}".strip() if error else "(empty)"
+
+        assistant_msg = {
+            "role": "assistant",
+            "content": final_response,
+            "finish_reason": cursor_result.get("stop_reason") or "stop",
+            "cursor_harness": {
+                "harness_session_id": cursor_result.get("harness_session_id"),
+                "cursor_session_id": cursor_result.get("cursor_session_id"),
+                "transport": cursor_result.get("transport"),
+                "modified_files": cursor_result.get("modified_files") or [],
+            },
+        }
+        messages.append(assistant_msg)
+
+        completed = bool(cursor_result.get("success", True))
+        self._save_trajectory(messages, _summarize_user_message_for_log(original_user_message), completed)
+        self._cleanup_task_resources(effective_task_id)
+        self._persist_session(messages, conversation_history)
+
+        logger.info(
+            "Turn ended: reason=cursor_harness(%s) model=%s provider=%s response_len=%d session=%s",
+            cursor_result.get("transport") or "unknown",
+            self.model,
+            self.provider or "cursor-harness",
+            len(final_response),
+            self.session_id or "none",
+        )
+
+        if final_response:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "post_llm_call",
+                    session_id=self.session_id,
+                    user_message=original_user_message,
+                    assistant_response=final_response,
+                    conversation_history=list(messages),
+                    model=self.model,
+                    platform=getattr(self, "platform", None) or "",
+                )
+            except Exception as exc:
+                logger.warning("post_llm_call hook failed: %s", exc)
+
+        result = {
+            "final_response": final_response,
+            "last_reasoning": None,
+            "messages": messages,
+            "api_calls": 1,
+            "completed": completed,
+            "partial": False,
+            "interrupted": False,
+            "response_previewed": getattr(self, "_response_was_previewed", False),
+            "model": self.model,
+            "provider": self.provider,
+            "base_url": self.base_url,
+            "input_tokens": self.session_input_tokens,
+            "output_tokens": self.session_output_tokens,
+            "cache_read_tokens": self.session_cache_read_tokens,
+            "cache_write_tokens": self.session_cache_write_tokens,
+            "reasoning_tokens": self.session_reasoning_tokens,
+            "prompt_tokens": self.session_prompt_tokens,
+            "completion_tokens": self.session_completion_tokens,
+            "total_tokens": self.session_total_tokens,
+            "last_prompt_tokens": getattr(self.context_compressor, "last_prompt_tokens", 0) or 0,
+            "estimated_cost_usd": self.session_estimated_cost_usd,
+            "cost_status": self.session_cost_status,
+            "cost_source": self.session_cost_source,
+            "cursor_harness": cursor_result,
+        }
+        self._response_was_previewed = False
+        self._sync_external_memory_for_turn(
+            original_user_message=original_user_message,
+            final_response=final_response,
+            interrupted=False,
+        )
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_end",
+                session_id=self.session_id,
+                completed=completed,
+                interrupted=False,
+                model=self.model,
+                platform=getattr(self, "platform", None) or "",
+            )
+        except Exception as exc:
+            logger.warning("on_session_end hook failed: %s", exc)
+
+        self.clear_interrupt()
+        self._stream_callback = None
+        return result
+
     def run_conversation(
         self,
         user_message: str,
@@ -9568,6 +9792,19 @@ class AIAgent:
                 _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
             except Exception:
                 pass
+
+        if self.api_mode == "cursor_harness" or self.provider == "cursor-harness":
+            return self._run_cursor_harness_conversation(
+                messages=messages,
+                active_system_prompt=active_system_prompt,
+                current_turn_user_idx=current_turn_user_idx,
+                original_user_message=original_user_message,
+                plugin_user_context=_plugin_user_context,
+                external_prefetch_context=_ext_prefetch_cache,
+                effective_task_id=effective_task_id,
+                conversation_history=conversation_history,
+                stream_callback=stream_callback,
+            )
 
         while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot

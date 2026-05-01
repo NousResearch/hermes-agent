@@ -142,6 +142,28 @@ def test_maybe_wrap_anthropic_honors_explicit_anthropic_messages():
     assert isinstance(result, AnthropicAuxiliaryClient)
 
 
+def test_maybe_wrap_anthropic_strips_opencode_go_trailing_v1():
+    """OpenCode Go stores /v1 OpenAI-style bases; Anthropic SDK adds /v1/messages (#double-v1 404)."""
+    from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient
+
+    plain_client = MagicMock(name="plain_openai")
+    fake_anthropic = MagicMock(name="anthropic_sdk_client")
+
+    with patch(
+        "agent.anthropic_adapter.build_anthropic_client",
+        return_value=fake_anthropic,
+    ) as bc:
+        result = _maybe_wrap_anthropic(
+            plain_client,
+            "minimax-m2.7",
+            "sk-test",
+            "https://opencode.ai/zen/go/v1",
+            api_mode="anthropic_messages",
+        )
+    bc.assert_called_once_with("sk-test", "https://opencode.ai/zen/go")
+    assert isinstance(result, AnthropicAuxiliaryClient)
+
+
 def test_maybe_wrap_anthropic_double_wrap_safe():
     """Already-wrapped AnthropicAuxiliaryClient passes through unchanged."""
     from agent.auxiliary_client import _maybe_wrap_anthropic, AnthropicAuxiliaryClient

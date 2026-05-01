@@ -6200,6 +6200,10 @@ class HermesCLI:
             print(f"  ♻ Restarting gateway (PID {pid})...")
         else:
             # Fallback: try SIGUSR1 directly without waiting
+            if not hasattr(signal, "SIGUSR1"):
+                print("  ✗ Restart signaling via SIGUSR1 is not supported on this platform.")
+                print("    Try restarting the gateway with: hermes gateway restart")
+                return
             try:
                 os.kill(pid, signal.SIGUSR1)
                 print(f"  ♻ Sent restart signal to gateway (PID {pid})...")

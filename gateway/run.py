@@ -5020,10 +5020,12 @@ class GatewayRunner:
                     response_text = raw
             if response_text:
                 response_path = _hermes_home / ".update_response"
+                prompt_path = _hermes_home / ".update_prompt.json"
                 try:
                     tmp = response_path.with_suffix(".tmp")
                     tmp.write_text(response_text)
                     tmp.replace(response_path)
+                    prompt_path.unlink(missing_ok=True)
                 except OSError as e:
                     logger.warning("Failed to write update response: %s", e)
                     return f"✗ Failed to send response to update process: {e}"
@@ -5038,10 +5040,12 @@ class GatewayRunner:
             # The slash command then falls through to normal dispatch.
             if _recognized_cmd:
                 response_path = _hermes_home / ".update_response"
+                prompt_path = _hermes_home / ".update_prompt.json"
                 try:
                     tmp = response_path.with_suffix(".tmp")
                     tmp.write_text("")
                     tmp.replace(response_path)
+                    prompt_path.unlink(missing_ok=True)
                     logger.info(
                         "Recognized /%s during pending update prompt for %s; "
                         "cancelled prompt with default and dispatching command",
@@ -11488,12 +11492,13 @@ class GatewayRunner:
                                 f"or type your answer directly.",
                                 metadata=metadata,
                             )
+                        # Keep the prompt marker on disk until the user
+                        # answers. If the gateway restarts mid-prompt, the
+                        # next watcher can recover by re-forwarding it from
+                        # disk. Duplicate sends in the same process are
+                        # still suppressed by _update_prompt_pending.
                         self._update_prompt_pending[session_key] = True
-                        # Remove the prompt file so it isn't re-read on the
-                        # next poll cycle.  The update process only needs
                         # .update_response to continue — it doesn't re-check
-                        # .update_prompt.json while waiting.
-                        prompt_path.unlink(missing_ok=True)
                         logger.info("Forwarded update prompt to %s: %s", session_key, prompt_text[:80])
                 except (json.JSONDecodeError, OSError) as e:
                     logger.debug("Failed to read update prompt: %s", e)

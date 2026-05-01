@@ -1931,15 +1931,17 @@ class DiscordAdapter(BasePlatformAdapter):
     # default. Deployments that DO set any DISCORD_ALLOWED_* var get slash
     # parity with on_message.
 
-    async def _check_slash_authorization(
-        self, interaction: "discord.Interaction", command_text: str,
-    ) -> bool:
-        """Mirror on_message's user/role/channel gates onto a slash invocation.
+    def _evaluate_slash_authorization(
+        self, interaction: "discord.Interaction",
+    ) -> Tuple[bool, Optional[str]]:
+        """Evaluate slash authorization without producing any response.
 
-        Returns True to proceed. Returns False *after* sending an ephemeral
-        rejection, logging a warning, and scheduling a cross-platform admin
-        alert — the caller must stop on False (the interaction has already
-        been responded to).
+        Returns ``(allowed, reason)``. ``reason`` is populated only when
+        ``allowed`` is False. This is the shared core used by both the
+        responding wrapper (``_check_slash_authorization``) and side-effect-
+        free callers like the ``/skill`` autocomplete callback, which must
+        return an empty list for unauthorized users instead of leaking an
+        ephemeral rejection per-keystroke.
         """
         chan_obj = getattr(interaction, "channel", None)
         in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
@@ -1964,29 +1966,40 @@ class DiscordAdapter(BasePlatformAdapter):
                 if allowed_raw:
                     allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
                     if "*" not in allowed and not (channel_ids & allowed):
-                        return await self._reject_slash(
-                            interaction, command_text,
-                            reason="channel not in DISCORD_ALLOWED_CHANNELS",
-                        )
+                        return (False, "channel not in DISCORD_ALLOWED_CHANNELS")
 
                 ignored_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
                 if ignored_raw:
                     ignored = {c.strip() for c in ignored_raw.split(",") if c.strip()}
                     if "*" in ignored or (channel_ids & ignored):
-                        return await self._reject_slash(
-                            interaction, command_text,
-                            reason="channel in DISCORD_IGNORED_CHANNELS",
-                        )
+                        return (False, "channel in DISCORD_IGNORED_CHANNELS")
 
         # ── User / role allowlist (mirrors on_message line 681) ──
         user_id = str(interaction.user.id)
         if not self._is_allowed_user(user_id, author=interaction.user):
-            return await self._reject_slash(
-                interaction, command_text,
-                reason="user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES",
+            return (
+                False,
+                "user not in DISCORD_ALLOWED_USERS / DISCORD_ALLOWED_ROLES",
             )
 
-        return True
+        return (True, None)
+
+    async def _check_slash_authorization(
+        self, interaction: "discord.Interaction", command_text: str,
+    ) -> bool:
+        """Mirror on_message's user/role/channel gates onto a slash invocation.
+
+        Returns True to proceed. Returns False *after* sending an ephemeral
+        rejection, logging a warning, and scheduling a cross-platform admin
+        alert — the caller must stop on False (the interaction has already
+        been responded to).
+        """
+        allowed, reason = self._evaluate_slash_authorization(interaction)
+        if allowed:
+            return True
+        return await self._reject_slash(
+            interaction, command_text, reason=reason or "unauthorized",
+        )
 
     async def _reject_slash(
         self, interaction: "discord.Interaction", command_text: str, *, reason: str,
@@ -2825,7 +2838,23 @@ class DiscordAdapter(BasePlatformAdapter):
                 "/skill pdf" surfaces skills whose description mentions
                 PDFs even if the name doesn't. Discord caps this list at
                 25 entries per query.
+
+                Authorization: a quiet pre-check evaluates the slash
+                allowlists and returns ``[]`` for unauthorized users so
+                the installed skill catalog is not leaked to anyone who
+                can see the command in the picker. Returning a generic
+                empty list here is intentional — sending a per-keystroke
+                ephemeral rejection would produce a barrage of error
+                popups during typing.
                 """
+                try:
+                    allowed, _reason = self._evaluate_slash_authorization(interaction)
+                except Exception:
+                    # Defensive: never raise from autocomplete. Fail
+                    # closed by returning an empty suggestion list.
+                    return []
+                if not allowed:
+                    return []
                 q = (current or "").strip().lower()
                 choices: list = []
                 for name, desc, _key in entries:
@@ -2852,6 +2881,12 @@ class DiscordAdapter(BasePlatformAdapter):
             async def _skill_handler(
                 interaction: "discord.Interaction", name: str, args: str = "",
             ):
+                # Authorize BEFORE any skill lookup so that known and
+                # unknown skill names produce identical rejections for
+                # unauthorized users (no probing the installed catalog
+                # via "Unknown skill: <name>" responses).
+                if not await self._check_slash_authorization(interaction, "/skill"):
+                    return
                 entry = skill_lookup.get(name)
                 if not entry:
                     await interaction.response.send_message(

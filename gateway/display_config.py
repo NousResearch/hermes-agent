@@ -32,6 +32,7 @@ from typing import Any
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
+    "temporary_tool_progress": False,
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
@@ -140,6 +141,12 @@ def resolve_display_setting(
         val = plat_overrides.get(setting)
         if val is not None:
             return _normalise(setting, val)
+        # Temporary compatibility for the local rollout name used before the
+        # upstream-facing setting was named by behavior rather than mechanism.
+        if setting == "temporary_tool_progress":
+            val = plat_overrides.get("cleanup_tool_progress")
+            if val is not None:
+                return _normalise(setting, val)
 
     # 1b. Backward compat: display.tool_progress_overrides.<platform>
     if setting == "tool_progress":
@@ -156,6 +163,10 @@ def resolve_display_setting(
         val = display_cfg.get(setting)
         if val is not None:
             return _normalise(setting, val)
+        if setting == "temporary_tool_progress":
+            val = display_cfg.get("cleanup_tool_progress")
+            if val is not None:
+                return _normalise(setting, val)
 
     # 3. Built-in platform default
     plat_defaults = _PLATFORM_DEFAULTS.get(platform_key)
@@ -184,7 +195,7 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in ("show_reasoning", "streaming"):
+    if setting in ("temporary_tool_progress", "show_reasoning", "streaming"):
         if isinstance(value, str):
             return value.lower() in ("true", "1", "yes", "on")
         return bool(value)

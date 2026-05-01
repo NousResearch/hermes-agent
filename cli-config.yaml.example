@@ -875,6 +875,13 @@ display:
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
+  # Platform-specific display overrides.
+  # Example: show Telegram tool progress while work is active, then delete
+  # temporary bot-sent progress bubbles after the final response succeeds.
+  platforms:
+    telegram:
+      temporary_tool_progress: false
+
   # Gateway-only natural mid-turn assistant updates.
   # When true, completed assistant status messages are sent as separate chat
   # messages. This is independent of tool_progress and gateway streaming.

@@ -65,6 +65,40 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
         raise AssertionError("non-editable adapters should not receive edit_message calls")
 
 
+class FailingSendAdapter(ProgressCaptureAdapter):
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=False, error="synthetic send failure")
+
+
+class DeletingProgressCaptureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.TELEGRAM):
+        super().__init__(platform=platform)
+        self.deleted = []
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=f"msg-{len(self.sent)}")
+
+    async def delete_message(self, chat_id, message_id) -> bool:
+        self.deleted.append({"chat_id": chat_id, "message_id": message_id})
+        return True
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         # Capture anything passed via kwargs (older code path) but don't
@@ -81,6 +115,69 @@ class FakeAgent:
             time.sleep(0.35)
             cb("tool.started", "browser_navigate", "https://example.com", {})
             time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class FailingAfterProgressAgent(FakeAgent):
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "pwd", {})
+            time.sleep(0.35)
+        return {
+            "final_response": "",
+            "messages": [],
+            "api_calls": 1,
+            "failed": True,
+            "error": "synthetic failure",
+        }
+
+
+class LongRunningStatusAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.16)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class StatusCallbackAgent:
+    def __init__(self, **kwargs):
+        self.status_callback = kwargs.get("status_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.status_callback:
+            self.status_callback("context_pressure", "⚠️ Compacting context...")
+            time.sleep(0.05)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ProgressAndBackgroundReviewAgent(FakeAgent):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.background_review_callback = kwargs.get("background_review_callback")
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "pwd", {})
+            time.sleep(0.35)
+        if self.background_review_callback:
+            self.background_review_callback("💾 Skill 'progress-cleanup' created.")
         return {
             "final_response": "done",
             "messages": [],
@@ -568,6 +665,7 @@ async def _run_with_agent(
     chat_type="group",
     thread_id="17585",
     adapter_cls=ProgressCaptureAdapter,
+    run_generation=1,
 ):
     if config_data:
         import yaml
@@ -605,6 +703,8 @@ async def _run_with_agent(
             source=source,
             message_id="queued-1",
         )
+    if run_generation is not None:
+        runner._session_run_generation[session_key] = run_generation
 
     result = await runner._run_agent(
         message="hello",
@@ -613,6 +713,7 @@ async def _run_with_agent(
         source=source,
         session_id=session_id,
         session_key=session_key,
+        run_generation=run_generation,
     )
     return adapter, result
 
@@ -869,6 +970,103 @@ async def test_base_processing_releases_post_delivery_callback_after_main_send()
 
 
 @pytest.mark.asyncio
+async def test_base_post_delivery_uses_generation_bound_during_handler():
+    adapter = ProgressCaptureAdapter()
+    session_key = "agent:main:telegram:dm:late-gen"
+    released = []
+
+    async def _handler(event):
+        adapter._active_sessions[session_key]._hermes_run_generation = 42
+        adapter.register_post_delivery_callback(
+            session_key,
+            lambda: released.append("current"),
+            generation=42,
+        )
+        return "done"
+
+    adapter.set_message_handler(_handler)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="late-gen",
+        chat_type="dm",
+        thread_id=None,
+    )
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-1",
+    )
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter._process_message_background(event, session_key)
+
+    assert released == ["current"]
+    assert adapter.pop_post_delivery_callback(session_key, generation=42) is None
+
+
+@pytest.mark.asyncio
+async def test_base_post_delivery_callbacks_are_composed_and_generation_safe():
+    adapter = ProgressCaptureAdapter()
+    calls = []
+
+    adapter.register_post_delivery_callback("sk", lambda: calls.append("old"), generation=1)
+    adapter.register_post_delivery_callback("sk", lambda: calls.append("first"), generation=2)
+    adapter.register_post_delivery_callback("sk", lambda: (_ for _ in ()).throw(RuntimeError("boom")), generation=2)
+    adapter.register_post_delivery_callback("sk", lambda: calls.append("second"), generation=2)
+    adapter.register_post_delivery_callback("sk", lambda: calls.append("late-stale"), generation=1)
+
+    callback = adapter.pop_post_delivery_callback("sk", generation=2)
+    assert callable(callback)
+    callback()
+
+    assert calls == ["first", "second"]
+
+    legacy_callback = adapter.pop_post_delivery_callback("sk")
+    assert legacy_callback is None
+
+    stale_callback = adapter.pop_post_delivery_callback("sk", generation=1)
+    assert stale_callback is None
+    assert calls == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_base_processing_does_not_release_post_delivery_callback_after_send_failure():
+    adapter = FailingSendAdapter()
+
+    async def _handler(event):
+        return "done"
+
+    adapter.set_message_handler(_handler)
+    released = []
+    adapter.register_post_delivery_callback("agent:main:telegram:dm:fail", lambda: released.append(True), generation=7)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="fail",
+        chat_type="dm",
+        thread_id=None,
+    )
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-1",
+    )
+    session_key = "agent:main:telegram:dm:fail"
+    active = asyncio.Event()
+    active._hermes_run_generation = 7
+    adapter._active_sessions[session_key] = active
+
+    await adapter._process_message_background(event, session_key)
+
+    assert adapter.sent and adapter.sent[0]["content"] == "done"
+    assert released == []
+    callback = adapter.pop_post_delivery_callback(session_key, generation=7)
+    assert callback is None
+
+
+@pytest.mark.asyncio
 async def test_run_agent_drops_tool_progress_after_generation_invalidation(monkeypatch, tmp_path):
     import yaml
 
@@ -1056,3 +1254,210 @@ async def test_verbose_mode_respects_explicit_tool_preview_length(monkeypatch, t
     assert VerboseAgent.LONG_CODE not in all_content
     # But should still contain the truncated portion with "..."
     assert "..." in all_content
+
+
+async def _fire_post_delivery_callback(adapter, session_key, generation=1):
+    callback = adapter.pop_post_delivery_callback(session_key, generation=generation)
+    assert callable(callback)
+    callback()
+    await asyncio.sleep(0.1)
+
+
+@pytest.mark.asyncio
+async def test_telegram_cleanup_tool_progress_deletes_after_post_delivery_callback(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-cleanup-progress",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "temporary_tool_progress": True,
+                    }
+                }
+            }
+        },
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=DeletingProgressCaptureAdapter,
+    )
+    session_key = "agent:main:telegram:dm:12345"
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert adapter.deleted == []
+
+    await _fire_post_delivery_callback(adapter, session_key)
+
+    assert adapter.deleted == [{"chat_id": "12345", "message_id": "msg-1"}]
+
+
+@pytest.mark.asyncio
+async def test_telegram_temporary_tool_progress_deletes_still_working_notifications(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        LongRunningStatusAgent,
+        session_id="sess-cleanup-still-working",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "platforms": {
+                    "telegram": {
+                        "temporary_tool_progress": True,
+                    }
+                },
+            }
+        },
+        chat_id="12349",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=DeletingProgressCaptureAdapter,
+    )
+    session_key = "agent:main:telegram:dm:12349"
+
+    assert result["final_response"] == "done"
+    still_working_ids = [
+        f"msg-{idx + 1}"
+        for idx, item in enumerate(adapter.sent)
+        if item["content"].startswith("⏳ Still working...")
+    ]
+    assert still_working_ids
+    assert adapter.deleted == []
+
+    await _fire_post_delivery_callback(adapter, session_key)
+
+    assert [item["message_id"] for item in adapter.deleted] == still_working_ids
+
+
+@pytest.mark.asyncio
+async def test_telegram_temporary_tool_progress_deletes_status_callback_messages(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        StatusCallbackAgent,
+        session_id="sess-cleanup-status-callback",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "platforms": {
+                    "telegram": {
+                        "temporary_tool_progress": True,
+                    }
+                },
+            }
+        },
+        chat_id="12350",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=DeletingProgressCaptureAdapter,
+    )
+    session_key = "agent:main:telegram:dm:12350"
+    await asyncio.sleep(0.1)
+
+    assert result["final_response"] == "done"
+    assert any(item["content"] == "⚠️ Compacting context..." for item in adapter.sent)
+    assert adapter.deleted == []
+
+    await _fire_post_delivery_callback(adapter, session_key)
+
+    assert adapter.deleted == [{"chat_id": "12350", "message_id": "msg-1"}]
+
+
+@pytest.mark.asyncio
+async def test_telegram_temporary_tool_progress_composes_with_background_review(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ProgressAndBackgroundReviewAgent,
+        session_id="sess-cleanup-progress-bg-review",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "temporary_tool_progress": True,
+                    }
+                }
+            }
+        },
+        chat_id="12347",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=DeletingProgressCaptureAdapter,
+    )
+    session_key = "agent:main:telegram:dm:12347"
+
+    assert result["final_response"] == "done"
+    assert adapter.deleted == []
+    assert not any("progress-cleanup" in item["content"] for item in adapter.sent)
+
+    await _fire_post_delivery_callback(adapter, session_key)
+
+    assert adapter.deleted == [{"chat_id": "12347", "message_id": "msg-1"}]
+    assert any("progress-cleanup" in item["content"] for item in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_telegram_temporary_tool_progress_cleans_before_queued_followup(monkeypatch, tmp_path):
+    FakeAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-cleanup-progress-queued",
+        pending_text="queued follow-up",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "temporary_tool_progress": True,
+                    }
+                }
+            }
+        },
+        chat_id="12348",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=DeletingProgressCaptureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    await asyncio.sleep(0.1)
+
+    assert {item["message_id"] for item in adapter.deleted} >= {"msg-1"}
+
+
+@pytest.mark.asyncio
+async def test_telegram_cleanup_tool_progress_keeps_breadcrumbs_when_agent_failed(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FailingAfterProgressAgent,
+        session_id="sess-cleanup-progress-failure",
+        config_data={
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "temporary_tool_progress": True,
+                    }
+                }
+            }
+        },
+        chat_id="12346",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=DeletingProgressCaptureAdapter,
+    )
+    session_key = "agent:main:telegram:dm:12346"
+
+    assert result["failed"] is True
+    assert adapter.sent
+
+    await _fire_post_delivery_callback(adapter, session_key)
+
+    assert adapter.deleted == []

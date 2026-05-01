@@ -12836,6 +12836,27 @@ class GatewayRunner:
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
+        temporary_tool_progress_enabled = (
+            source.platform == Platform.TELEGRAM
+            and bool(resolve_display_setting(
+                user_config,
+                platform_key,
+                "temporary_tool_progress",
+                False,
+            ))
+        )
+        progress_message_ids: list[str] = []
+        progress_cleanup_allowed = [False]
+        progress_cleanup_registered = [False]
+
+        def _track_progress_message_id(message_id) -> None:
+            """Track temporary Telegram progress/status bubbles for post-delivery cleanup."""
+            if not temporary_tool_progress_enabled or not message_id:
+                return
+            msg_id = str(message_id)
+            if msg_id not in progress_message_ids:
+                progress_message_ids.append(msg_id)
+
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
@@ -13087,12 +13108,15 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                             can_edit = False
-                            await adapter.send(
+                            result = await adapter.send(
                                 chat_id=source.chat_id,
                                 content=msg,
                                 reply_to=_progress_reply_to,
                                 metadata=_progress_metadata,
                             )
+                            if result.success and result.message_id:
+                                progress_msg_id = result.message_id
+                                _track_progress_message_id(progress_msg_id)
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
@@ -13113,6 +13137,7 @@ class GatewayRunner:
                             )
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
+                            _track_progress_message_id(progress_msg_id)
 
                     _last_edit_ts = time.monotonic()
 
@@ -13226,7 +13251,7 @@ class GatewayRunner:
             if not _status_adapter or not _run_still_current():
                 return
             try:
-                asyncio.run_coroutine_threadsafe(
+                future = asyncio.run_coroutine_threadsafe(
                     _status_adapter.send(
                         _status_chat_id,
                         message,
@@ -13234,8 +13259,68 @@ class GatewayRunner:
                     ),
                     _loop_for_step,
                 )
+
+                def _track_status_send_result(done_future) -> None:
+                    try:
+                        result = done_future.result()
+                        if getattr(result, "success", False):
+                            _track_progress_message_id(getattr(result, "message_id", None))
+                    except Exception as _track_err:
+                        logger.debug("status_callback tracking error (%s): %s", event_type, _track_err)
+
+                future.add_done_callback(_track_status_send_result)
             except Exception as _e:
                 logger.debug("status_callback error (%s): %s", event_type, _e)
+
+        def _register_tool_progress_cleanup_callback() -> None:
+            """Register best-effort cleanup for temporary Telegram progress bubbles."""
+            if progress_cleanup_registered[0] or not temporary_tool_progress_enabled:
+                return
+            adapter = self.adapters.get(source.platform)
+            if not adapter or not callable(getattr(adapter, "delete_message", None)):
+                return
+
+            async def _cleanup_progress_messages() -> None:
+                if not progress_cleanup_allowed[0]:
+                    return
+                ids_to_delete = list(dict.fromkeys(progress_message_ids))
+                for message_id in ids_to_delete:
+                    try:
+                        await adapter.delete_message(source.chat_id, message_id)
+                    except Exception as _cleanup_err:
+                        logger.debug(
+                            "Tool-progress cleanup failed (%s): %s",
+                            message_id,
+                            _cleanup_err,
+                        )
+
+            def _schedule_cleanup() -> None:
+                if not progress_cleanup_allowed[0] or not progress_message_ids:
+                    return
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_cleanup_progress_messages())
+                except RuntimeError:
+                    asyncio.run_coroutine_threadsafe(
+                        _cleanup_progress_messages(),
+                        _loop_for_step,
+                    )
+
+            if getattr(type(adapter), "register_post_delivery_callback", None) is not None:
+                adapter.register_post_delivery_callback(
+                    session_key,
+                    _schedule_cleanup,
+                    generation=run_generation,
+                )
+            else:
+                _pdc = getattr(adapter, "_post_delivery_callbacks", None)
+                if isinstance(_pdc, dict):
+                    _pdc[session_key] = _schedule_cleanup
+                else:
+                    return
+            progress_cleanup_registered[0] = True
+
+        _register_tool_progress_cleanup_callback()
 
         def run_sync():
             # The conditional re-assignment of `message` further below
@@ -14094,11 +14179,13 @@ class GatewayRunner:
                     except Exception:
                         pass
                 try:
-                    await _notify_adapter.send(
+                    result = await _notify_adapter.send(
                         source.chat_id,
                         f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
                         metadata=_status_thread_metadata,
                     )
+                    if getattr(result, "success", False):
+                        _track_progress_message_id(getattr(result, "message_id", None))
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
@@ -14416,29 +14503,40 @@ class GatewayRunner:
                         or _previewed
                     )
                     first_response = result.get("final_response", "")
+                    first_response_delivered = False
                     if first_response and not _already_streamed:
                         try:
                             logger.info(
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
-                            await adapter.send(
+                            send_result = await adapter.send(
                                 source.chat_id,
                                 first_response,
                                 metadata=_status_thread_metadata,
                             )
+                            first_response_delivered = bool(getattr(send_result, "success", False))
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                     elif first_response:
+                        first_response_delivered = True
                         logger.info(
                             "Queued follow-up for session %s: skipping resend because final streamed delivery was confirmed.",
                             session_key or "?",
                         )
-                    # Release deferred bg-review notifications now that the
+                    if first_response_delivered:
+                        if progress_task and not progress_task.done():
+                            progress_task.cancel()
+                            try:
+                                await progress_task
+                            except asyncio.CancelledError:
+                                pass
+                        progress_cleanup_allowed[0] = True
+                    # Release deferred post-delivery callbacks now that the
                     # first response has been delivered.  Pop from the
                     # adapter's callback dict (prevents double-fire in
                     # base.py's finally block) and call it.
-                    if getattr(type(adapter), "pop_post_delivery_callback", None) is not None:
+                    if first_response_delivered and getattr(type(adapter), "pop_post_delivery_callback", None) is not None:
                         _bg_cb = adapter.pop_post_delivery_callback(
                             session_key,
                             generation=run_generation,
@@ -14448,7 +14546,7 @@ class GatewayRunner:
                                 _bg_cb()
                             except Exception:
                                 pass
-                    elif adapter and hasattr(adapter, "_post_delivery_callbacks"):
+                    elif first_response_delivered and adapter and hasattr(adapter, "_post_delivery_callbacks"):
                         _bg_cb = adapter._post_delivery_callbacks.pop(session_key, None)
                         if callable(_bg_cb):
                             try:
@@ -14540,6 +14638,9 @@ class GatewayRunner:
                         await task
                     except asyncio.CancelledError:
                         pass
+
+        if isinstance(response, dict) and not response.get("failed"):
+            progress_cleanup_allowed[0] = True
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).

@@ -78,6 +78,32 @@ class TestResolveDisplaySetting:
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
 
+    def test_temporary_tool_progress_defaults_false(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "temporary_tool_progress") is False
+
+    def test_temporary_tool_progress_platform_override(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "temporary_tool_progress": False,
+                "platforms": {"telegram": {"temporary_tool_progress": "true"}},
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "temporary_tool_progress") is True
+
+    def test_temporary_tool_progress_reads_cleanup_alias(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {"telegram": {"cleanup_tool_progress": True}},
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "temporary_tool_progress") is True
+
 
 # ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides

@@ -2085,6 +2085,51 @@ class BasePlatformAdapter(ABC):
         except Exception:
             pass
 
+    @staticmethod
+    def _normalise_post_delivery_callbacks(entry: Any) -> list[tuple[int | None, Callable]]:
+        """Return ``entry`` as a list of ``(generation, callback)`` pairs.
+
+        Older code stored a single callback or ``(generation, callback)`` tuple.
+        Newer code appends callbacks so independent post-delivery features do
+        not clobber each other.  Keep the reader tolerant so in-flight tests and
+        platform subclasses using the old shape continue to work.
+        """
+        if entry is None:
+            return []
+        if callable(entry):
+            return [(None, entry)]
+        if isinstance(entry, tuple) and len(entry) == 2 and callable(entry[1]):
+            gen = entry[0]
+            return [(int(gen) if gen is not None else None, entry[1])]
+        if isinstance(entry, list):
+            callbacks: list[tuple[int | None, Callable]] = []
+            for item in entry:
+                if callable(item):
+                    callbacks.append((None, item))
+                    continue
+                if isinstance(item, tuple) and len(item) == 2 and callable(item[1]):
+                    gen = item[0]
+                    callbacks.append((int(gen) if gen is not None else None, item[1]))
+            return callbacks
+        return []
+
+    @staticmethod
+    def _compose_post_delivery_callbacks(callbacks: list[Callable]) -> Callable | None:
+        """Compose callbacks with per-callback exception isolation."""
+        if not callbacks:
+            return None
+        if len(callbacks) == 1:
+            return callbacks[0]
+
+        def _combined_callback() -> None:
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception:
+                    logger.debug("Post-delivery callback failed", exc_info=True)
+
+        return _combined_callback
+
     def register_post_delivery_callback(
         self,
         session_key: str,
@@ -2096,13 +2141,37 @@ class BasePlatformAdapter(ABC):
 
         ``generation`` lets callers tie the callback to a specific gateway run
         generation so stale runs cannot clear callbacks owned by a fresher run.
+        Multiple callbacks for the same session/generation are composed instead
+        of replacing each other.
         """
         if not session_key or not callable(callback):
             return
-        if generation is None:
-            self._post_delivery_callbacks[session_key] = callback
-        else:
-            self._post_delivery_callbacks[session_key] = (int(generation), callback)
+        normalized_generation = int(generation) if generation is not None else None
+        existing_callbacks = self._normalise_post_delivery_callbacks(
+            self._post_delivery_callbacks.get(session_key)
+        )
+        if normalized_generation is not None:
+            newer_generations = [
+                entry_generation
+                for entry_generation, _ in existing_callbacks
+                if entry_generation is not None and entry_generation > normalized_generation
+            ]
+            if newer_generations:
+                # A stale run is trying to register after a newer run already owns
+                # the session callbacks.  Preserve the newer callbacks rather than
+                # reintroducing the stale-generation clobber bug.
+                return
+        elif any(entry_generation is not None for entry_generation, _ in existing_callbacks):
+            # Legacy/unknown-generation callbacks should not clobber callbacks
+            # explicitly owned by a known gateway run generation.
+            return
+        callbacks = [
+            (entry_generation, cb)
+            for entry_generation, cb in existing_callbacks
+            if entry_generation == normalized_generation
+        ]
+        callbacks.append((normalized_generation, callback))
+        self._post_delivery_callbacks[session_key] = callbacks[0] if len(callbacks) == 1 else callbacks
 
     def pop_post_delivery_callback(
         self,
@@ -2110,22 +2179,44 @@ class BasePlatformAdapter(ABC):
         *,
         generation: int | None = None,
     ) -> Callable | None:
-        """Pop a deferred callback, optionally requiring generation ownership."""
+        """Pop deferred callback(s), optionally requiring generation ownership."""
         if not session_key:
             return None
         entry = self._post_delivery_callbacks.get(session_key)
-        if entry is None:
+        callbacks = self._normalise_post_delivery_callbacks(entry)
+        if not callbacks:
             return None
-        if isinstance(entry, tuple) and len(entry) == 2:
-            entry_generation, callback = entry
-            if generation is not None and int(entry_generation) != int(generation):
-                return None
+
+        if generation is None:
+            # Unknown generation is legacy-only: do not pop generation-tagged
+            # callbacks, or an old task can clobber callbacks owned by a newer
+            # gateway run for the same session.
+            matched = [cb for entry_generation, cb in callbacks if entry_generation is None]
+            remaining = [
+                (entry_generation, cb)
+                for entry_generation, cb in callbacks
+                if entry_generation is not None
+            ]
+            if remaining:
+                self._post_delivery_callbacks[session_key] = remaining[0] if len(remaining) == 1 else remaining
+            else:
+                self._post_delivery_callbacks.pop(session_key, None)
+            return self._compose_post_delivery_callbacks(matched)
+
+        target_generation = int(generation)
+        matched: list[Callable] = []
+        remaining: list[tuple[int | None, Callable]] = []
+        for entry_generation, callback in callbacks:
+            if entry_generation == target_generation:
+                matched.append(callback)
+            else:
+                remaining.append((entry_generation, callback))
+
+        if remaining:
+            self._post_delivery_callbacks[session_key] = remaining[0] if len(remaining) == 1 else remaining
+        else:
             self._post_delivery_callbacks.pop(session_key, None)
-            return callback if callable(callback) else None
-        if generation is not None:
-            return None
-        self._post_delivery_callbacks.pop(session_key, None)
-        return entry if callable(entry) else None
+        return self._compose_post_delivery_callbacks(matched)
 
     # ── Processing lifecycle hooks ──────────────────────────────────────────
     # Subclasses override these to react to message processing events
@@ -3049,13 +3140,26 @@ class BasePlatformAdapter(ABC):
                 "_hermes_run_generation",
                 None,
             )
-            if hasattr(self, "pop_post_delivery_callback"):
-                _post_cb = self.pop_post_delivery_callback(
-                    session_key,
-                    generation=_callback_generation,
-                )
+            _post_cb = None
+            if delivery_attempted and not delivery_succeeded:
+                # Final delivery failed: discard callbacks for this exact run
+                # without firing them.  Leaving them registered would let a
+                # later successful run delete/release stale artifacts.
+                if hasattr(self, "pop_post_delivery_callback"):
+                    self.pop_post_delivery_callback(
+                        session_key,
+                        generation=_callback_generation,
+                    )
+                elif _callback_generation is None:
+                    getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
             else:
-                _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
+                if hasattr(self, "pop_post_delivery_callback"):
+                    _post_cb = self.pop_post_delivery_callback(
+                        session_key,
+                        generation=_callback_generation,
+                    )
+                else:
+                    _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
             if callable(_post_cb):
                 try:
                     _post_cb()

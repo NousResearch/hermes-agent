@@ -630,12 +630,15 @@ def write_sidebar(entries):
     #
     # Sidebar now shows:
     #   Skills
-    #   ├── godmode              (hand-written spotlight guide)
-    #   ├── google-workspace     (hand-written spotlight guide)
     #   ├── Bundled catalog →    (link to reference/skills-catalog)
     #   └── Optional catalog →   (link to reference/optional-skills-catalog)
     #
     # The catalog pages are auto-regenerated tables with a link to every skill.
+    # Individual skill pages (including the two formerly hand-written guides,
+    # godmode and google-workspace) are still reachable at their URLs and are
+    # linked from the catalog tables and from the Skills overview page — they
+    # just aren't promoted in the left sidebar, because there's no principled
+    # rule for which skills would get promoted and which wouldn't.
     _ = build_sidebar_items(entries)  # still called for any side effects / validation
 
     skills_subtree = (
@@ -644,8 +647,6 @@ def write_sidebar(entries):
         "          label: 'Skills',\n"
         "          collapsed: true,\n"
         "          items: [\n"
-        "            'user-guide/skills/godmode',\n"
-        "            'user-guide/skills/google-workspace',\n"
         "            'reference/skills-catalog',\n"
         "            'reference/optional-skills-catalog',\n"
         "          ],\n"

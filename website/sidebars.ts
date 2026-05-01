@@ -101,8 +101,6 @@ const sidebars: SidebarsConfig = {
           label: 'Skills',
           collapsed: true,
           items: [
-            'user-guide/skills/godmode',
-            'user-guide/skills/google-workspace',
             'reference/skills-catalog',
             'reference/optional-skills-catalog',
           ],

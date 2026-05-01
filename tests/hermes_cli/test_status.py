@@ -109,3 +109,89 @@ def test_show_status_reports_vercel_backend_contract(monkeypatch, capsys, tmp_pa
     assert "oidc-token" not in output
     assert "snapshot filesystem" in output
     assert "live processes do not survive" in output
+
+
+def _minimal_status_test_setup(monkeypatch, tmp_path):
+    from hermes_cli import status as status_mod
+    import hermes_cli.auth as auth_mod
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(status_mod, "get_env_path", lambda: tmp_path / ".env", raising=False)
+    monkeypatch.setattr(status_mod, "get_hermes_home", lambda: tmp_path, raising=False)
+    monkeypatch.setattr(status_mod, "load_config", lambda: {"model": "gpt-5.4"}, raising=False)
+    monkeypatch.setattr(status_mod, "resolve_requested_provider", lambda requested=None: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "resolve_provider", lambda requested=None, **kwargs: "openai-codex", raising=False)
+    monkeypatch.setattr(status_mod, "provider_label", lambda provider: "OpenAI Codex", raising=False)
+    monkeypatch.setattr(auth_mod, "get_nous_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_codex_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_qwen_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(auth_mod, "get_minimax_oauth_auth_status", lambda: {}, raising=False)
+    monkeypatch.setattr(gateway_mod, "get_gateway_runtime_snapshot", lambda: (_ for _ in ()).throw(RuntimeError("skip gateway snapshot")), raising=False)
+    return status_mod
+
+
+def test_show_status_reports_passwordless_sudo(monkeypatch, capsys, tmp_path):
+    status_mod = _minimal_status_test_setup(monkeypatch, tmp_path)
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setattr(status_mod.shutil, "which", lambda name: "/usr/bin/sudo" if name == "sudo" else None)
+    monkeypatch.setattr(status_mod.subprocess, "run", lambda *args, **kwargs: _Result())
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Sudo:         ✓ enabled (passwordless)" in output
+
+
+def test_show_status_reports_sudo_password(monkeypatch, capsys, tmp_path):
+    status_mod = _minimal_status_test_setup(monkeypatch, tmp_path)
+
+    monkeypatch.setenv("SUDO_PASSWORD", "secret")
+
+    def _unexpected_subprocess(*args, **kwargs):
+        raise AssertionError("subprocess.run should not be called when SUDO_PASSWORD is set")
+
+    monkeypatch.setattr(status_mod.subprocess, "run", _unexpected_subprocess)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Sudo:         ✓ enabled (SUDO_PASSWORD)" in output
+
+
+def test_show_status_reports_disabled_when_passwordless_probe_fails(monkeypatch, capsys, tmp_path):
+    status_mod = _minimal_status_test_setup(monkeypatch, tmp_path)
+
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setattr(status_mod.shutil, "which", lambda name: "/usr/bin/sudo" if name == "sudo" else None)
+
+    def _raise_probe_failure(*args, **kwargs):
+        raise OSError("sudo probe failed")
+
+    monkeypatch.setattr(status_mod.subprocess, "run", _raise_probe_failure)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Sudo:         ✗ disabled" in output
+
+
+def test_show_status_reports_disabled_when_sudo_is_missing(monkeypatch, capsys, tmp_path):
+    status_mod = _minimal_status_test_setup(monkeypatch, tmp_path)
+
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setattr(status_mod.shutil, "which", lambda name: None)
+
+    def _unexpected_probe(*args, **kwargs):
+        raise AssertionError("subprocess.run should not be called when sudo is missing")
+
+    monkeypatch.setattr(status_mod.subprocess, "run", _unexpected_probe)
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Sudo:         ✗ disabled" in output

@@ -6,6 +6,7 @@ Shows the status of all Hermes Agent components.
 
 import os
 import sys
+import shutil
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 import importlib.util
 from pathlib import Path
@@ -82,6 +83,31 @@ def _effective_provider_label() -> str:
         effective = "custom"
 
     return provider_label(effective)
+
+
+def _sudo_status() -> tuple[bool, str]:
+    """Return whether sudo is available along with a human-readable label."""
+    sudo_password = os.getenv("SUDO_PASSWORD", "")
+    if sudo_password:
+        return True, "enabled (SUDO_PASSWORD)"
+
+    if not shutil.which("sudo"):
+        return False, "disabled"
+
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", "true"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return False, "disabled"
+
+    if result.returncode == 0:
+        return True, "enabled (passwordless)"
+    return False, "disabled"
 
 
 from hermes_constants import is_termux as _is_termux
@@ -359,8 +385,8 @@ def show_status(args):
         print(f"  Persistence:  {'snapshot filesystem' if persist_enabled else 'ephemeral filesystem'}")
         print("  Processes:    live processes do not survive cleanup, snapshots, or sandbox recreation")
 
-    sudo_password = os.getenv("SUDO_PASSWORD", "")
-    print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
+    sudo_enabled, sudo_label = _sudo_status()
+    print(f"  Sudo:         {check_mark(sudo_enabled)} {sudo_label}")
 
     # =========================================================================
     # Messaging Platforms

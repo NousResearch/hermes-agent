@@ -299,6 +299,16 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  setPluginVisibility: (name: string, hidden: boolean) =>
+    fetchJSON<{ ok: boolean; name: string; hidden: boolean }>(
+      `/api/dashboard/plugins/${encodeURIComponent(name)}/visibility`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hidden }),
+      },
+    ),
+
   // Dashboard themes
   getThemes: () =>
     fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
@@ -728,6 +738,7 @@ export interface HubAgentPluginRow {
   can_update_git: boolean;
   auth_required: boolean;
   auth_command: string;
+  user_hidden: boolean;
 }
 
 export interface PluginsHubProviders {

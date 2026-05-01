@@ -295,6 +295,8 @@ export const en: Translations = {
     authRequiredHint: "Run this command to authenticate:",
     updateGit: "Git pull",
     versionBadge: "Version",
+    showInSidebar: "Show in sidebar",
+    hideFromSidebar: "Hide from sidebar",
   },
 
   skills: {

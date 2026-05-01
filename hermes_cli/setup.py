@@ -2353,6 +2353,10 @@ def _setup_trueconf():
     else:
         print_info("You can set this later by typing /set-home in your TrueConf chat.")
 
+    use_ssl = prompt_yes_no("Allow SSL verifying for messaging platfotm (default true)? Switching off may be usufel for some reasons (self-signed SSL cert, problems while authorizing etc.).", True)
+    save_env_value("TRUECONF_VERIFY_SSL", use_ssl)
+    print_success(f"Allow SSL: {use_ssl}")
+
 
 def _setup_webhooks():
     """Configure webhook integration."""

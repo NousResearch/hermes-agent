@@ -637,6 +637,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools."""
     blocked_toolset_names = {
         "delegation",
+        "agent_control",
         "clarify",
         "memory",
         "code_execution",

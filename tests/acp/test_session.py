@@ -9,7 +9,11 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from acp_adapter import session as acp_session
-from acp_adapter.session import SessionManager, SessionState
+from acp_adapter.session import (
+    SessionManager,
+    SessionState,
+    _resolve_acp_base_toolsets,
+)
 from hermes_state import SessionDB
 
 
@@ -76,6 +80,17 @@ class TestCreateSession:
 
     def test_get_nonexistent_session_returns_none(self, manager):
         assert manager.get_session("does-not-exist") is None
+
+    def test_acp_defaults_to_editor_toolset(self, monkeypatch):
+        monkeypatch.delenv("HERMES_ACP_TOOLSETS", raising=False)
+        monkeypatch.delenv("HERMES_ACP_USE_PROFILE_TOOLSETS", raising=False)
+
+        assert _resolve_acp_base_toolsets({}) == ["hermes-acp"]
+
+    def test_acp_can_use_explicit_toolset_env(self, monkeypatch):
+        monkeypatch.setenv("HERMES_ACP_TOOLSETS", "web, file")
+
+        assert _resolve_acp_base_toolsets({}) == ["web", "file"]
 
 
 

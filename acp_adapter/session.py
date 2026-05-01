@@ -155,6 +155,42 @@ def _expand_acp_enabled_toolsets(
     return expanded
 
 
+def _split_toolset_env(value: str | None) -> List[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_acp_base_toolsets(config: dict[str, Any]) -> List[str]:
+    """Return the base ACP toolsets for a new session.
+
+    Normal editor ACP sessions keep the focused ``hermes-acp`` surface. The
+    agent-control client sets ``HERMES_ACP_USE_PROFILE_TOOLSETS=1`` so peer
+    profiles run with their configured CLI toolsets instead of being flattened
+    into the editor default.
+    """
+    explicit = _split_toolset_env(os.environ.get("HERMES_ACP_TOOLSETS"))
+    if explicit:
+        return explicit
+
+    if _env_truthy("HERMES_ACP_USE_PROFILE_TOOLSETS"):
+        try:
+            from hermes_cli.tools_config import _get_platform_tools
+
+            resolved = sorted(_get_platform_tools(config, "cli"))
+            if resolved:
+                return resolved
+        except Exception:
+            logger.debug("Failed to resolve profile CLI toolsets for ACP", exc_info=True)
+
+    return ["hermes-acp"]
+
+
 def _clear_task_cwd(task_id: str) -> None:
     """Remove task-specific cwd overrides for an ACP session."""
     if not task_id:
@@ -599,11 +635,12 @@ class SessionManager:
             for name, cfg in (config.get("mcp_servers") or {}).items()
             if not isinstance(cfg, dict) or cfg.get("enabled", True) is not False
         ]
+        base_toolsets = _resolve_acp_base_toolsets(config)
 
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
+                base_toolsets,
                 mcp_server_names=configured_mcp_servers,
             ),
             "quiet_mode": True,

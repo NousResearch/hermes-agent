@@ -96,7 +96,15 @@ class TestChildSystemPrompt(unittest.TestCase):
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
-        result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
+        result = _strip_blocked_tools([
+            "terminal",
+            "file",
+            "delegation",
+            "agent_control",
+            "clarify",
+            "memory",
+            "code_execution",
+        ])
         self.assertEqual(sorted(result), ["file", "terminal"])
 
     def test_preserves_allowed_toolsets(self):

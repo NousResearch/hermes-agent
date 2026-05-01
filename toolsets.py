@@ -198,6 +198,19 @@ TOOLSETS = {
         "includes": []
     },
 
+    "agent_control": {
+        "description": (
+            "Control other Hermes profiles as persistent peer agents via ACP. "
+            "Use for orchestrator profiles that need durable teammates with "
+            "their own memory, config, skills, and session history."
+        ),
+        "tools": [
+            "agent_start", "agent_prompt", "agent_status",
+            "agent_list", "agent_fork",
+        ],
+        "includes": [],
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

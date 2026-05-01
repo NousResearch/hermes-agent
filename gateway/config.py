@@ -65,6 +65,15 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
     return default
 
 
+def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
+    """Normalize notice delivery mode to a supported value."""
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"public", "private"}:
+            return normalized
+    return default
+
+
 # Module-level cache for bundled platform plugin names (lives outside the
 # enum so it doesn't become an accidental enum member).
 _Platform__bundled_plugin_names: Optional[set] = None
@@ -592,6 +601,17 @@ class GatewayConfig:
                 )
         return self.unauthorized_dm_behavior
 
+    def get_notice_delivery(self, platform: Optional[Platform] = None) -> str:
+        """Return the effective notice-delivery mode for a platform."""
+        if platform:
+            platform_cfg = self.platforms.get(platform)
+            if platform_cfg and "notice_delivery" in platform_cfg.extra:
+                return _normalize_notice_delivery(
+                    platform_cfg.extra.get("notice_delivery"),
+                    "public",
+                )
+        return "public"
+
 
 def load_gateway_config() -> GatewayConfig:
     """
@@ -706,6 +726,11 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
                         platform_cfg.get("unauthorized_dm_behavior"),
                         gw_data.get("unauthorized_dm_behavior", "pair"),
+                    )
+                if "notice_delivery" in platform_cfg:
+                    bridged["notice_delivery"] = _normalize_notice_delivery(
+                        platform_cfg.get("notice_delivery"),
+                        "public",
                     )
                 if "reply_prefix" in platform_cfg:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]

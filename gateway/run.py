@@ -4294,6 +4294,33 @@ class GatewayRunner:
 
         return "pair"
 
+    async def _deliver_platform_notice(self, source, content: str) -> None:
+        """Deliver a setup/operational notice using platform-specific privacy rules."""
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return
+
+        config = getattr(self, "config", None)
+        notice_delivery = "public"
+        if config and hasattr(config, "get_notice_delivery"):
+            notice_delivery = config.get_notice_delivery(source.platform)
+
+        metadata = {"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
+        if notice_delivery == "private" and getattr(source, "user_id", None):
+            try:
+                result = await adapter.send_private_notice(
+                    source.chat_id,
+                    source.user_id,
+                    content,
+                    metadata=metadata,
+                )
+                if getattr(result, "success", False):
+                    return
+            except Exception:
+                pass
+
+        await adapter.send(source.chat_id, content, metadata=metadata)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -5953,24 +5980,22 @@ class GatewayRunner:
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
             if not os.getenv(env_key):
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    # Slack dispatches all Hermes commands through a single
-                    # parent slash command `/hermes`; bare `/sethome` is not
-                    # registered and would fail with "app did not respond".
-                    sethome_cmd = (
-                        "/hermes sethome"
-                        if source.platform == Platform.SLACK
-                        else "/sethome"
-                    )
-                    await adapter.send(
-                        source.chat_id,
-                        f"📬 No home channel is set for {platform_name.title()}. "
-                        f"A home channel is where Hermes delivers cron job results "
-                        f"and cross-platform messages.\n\n"
-                        f"Type {sethome_cmd} to make this chat your home channel, "
-                        f"or ignore to skip."
-                    )
+                # Slack dispatches all Hermes commands through a single
+                # parent slash command `/hermes`; bare `/sethome` is not
+                # registered and would fail with "app did not respond".
+                sethome_cmd = (
+                    "/hermes sethome"
+                    if source.platform == Platform.SLACK
+                    else "/sethome"
+                )
+                notice = (
+                    f"📬 No home channel is set for {platform_name.title()}. "
+                    f"A home channel is where Hermes delivers cron job results "
+                    f"and cross-platform messages.\n\n"
+                    f"Type {sethome_cmd} to make this chat your home channel, "
+                    f"or ignore to skip."
+                )
+                await self._deliver_platform_notice(source, notice)
         
         # -----------------------------------------------------------------
         # Voice channel awareness — inject current voice channel state

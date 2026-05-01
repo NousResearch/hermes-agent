@@ -418,14 +418,54 @@ class TestCmdUpdateLaunchdRestart:
         with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
              patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
              patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
+             patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
              patch("os.kill") as kill:
             cmd_update(mock_args)
 
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
-        kill.assert_called_once()
+        graceful.assert_called_once()
+        # Graceful drain succeeded — no SIGTERM fallback needed.
+        kill.assert_not_called()
         assert "Restarting manual gateway profile(s): coder" in captured
         assert "Restart manually: hermes gateway run" not in captured
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_profile_manual_gateway_falls_back_to_sigterm(
+        self, mock_run, _mock_which, mock_args, capsys, tmp_path, monkeypatch,
+    ):
+        """When graceful SIGUSR1 drain fails, manual profile restart falls back to SIGTERM."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_plist_path",
+            lambda: tmp_path / "ai.hermes.gateway.plist",
+        )
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            launchctl_loaded=False,
+        )
+        process = gateway_cli.ProfileGatewayProcess(
+            profile="coder",
+            path=tmp_path / ".hermes" / "profiles" / "coder",
+            pid=12345,
+        )
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+             patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
+             patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
+             patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=False) as graceful, \
+             patch("os.kill") as kill:
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        restart.assert_called_once_with("coder", 12345)
+        graceful.assert_called_once()
+        # Graceful drain returned False → SIGTERM fallback.
+        kill.assert_called_once()
+        assert "Restarting manual gateway profile(s): coder" in captured
 
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")

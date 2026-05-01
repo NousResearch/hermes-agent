@@ -101,6 +101,7 @@ from gateway.platforms.qqbot.constants import (
     RECONNECT_BACKOFF,
     MAX_RECONNECT_ATTEMPTS,
     RATE_LIMIT_DELAY,
+    GATEWAY_URL_RETRY_DELAYS,
     QUICK_DISCONNECT_THRESHOLD,
     MAX_QUICK_DISCONNECT_COUNT,
     MAX_MESSAGE_LENGTH,
@@ -134,6 +135,13 @@ def _coerce_list(value: Any) -> List[str]:
 # ---------------------------------------------------------------------------
 # QQAdapter
 # ---------------------------------------------------------------------------
+
+
+
+def _safe_str(exc: BaseException) -> str:
+    """Never return an empty error message -- falls back to repr()."""
+    s = str(exc) if exc is not None else ""
+    return s.strip() or repr(exc)
 
 
 class QQAdapter(BasePlatformAdapter):
@@ -207,6 +215,10 @@ class QQAdapter(BasePlatformAdapter):
 
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
         self._upload_cache: Dict[str, Dict[str, Any]] = {}
+
+        # Gateway URL cache -- avoids rate-limit on api.sgroup.qq.com/gateway
+        self._last_gateway_url: Optional[str] = None
+        self._rate_limit_until: float = 0.0
 
     # ------------------------------------------------------------------
     # Properties
@@ -358,26 +370,80 @@ class QQAdapter(BasePlatformAdapter):
             return self._access_token
 
     async def _get_gateway_url(self) -> str:
-        """Fetch the WebSocket gateway URL from the REST API."""
-        token = await self._ensure_token()
-        try:
-            resp = await self._http_client.get(
-                f"{API_BASE}{GATEWAY_URL_PATH}",
-                headers={
-                    "Authorization": f"QQBot {token}",
-                    "User-Agent": build_user_agent(),
-                },
-                timeout=DEFAULT_API_TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            raise RuntimeError(f"Failed to get QQ Bot gateway URL: {exc}") from exc
+        """Fetch the WebSocket gateway URL with retry, cache, and rate-limit handling.
 
-        url = data.get("url")
-        if not url:
-            raise RuntimeError(f"QQ Bot gateway response missing url: {data}")
-        return url
+        Multi-layered resilience:
+          1. Cache-first: return cached URL immediately to avoid API calls.
+          2. Rate-limit guard: detect cooldown and use cache or fail clearly.
+          3. Internal retry: bounded backoff via GATEWAY_URL_RETRY_DELAYS.
+          4. Cache fallback: if all retries fail, use last known URL.
+        """
+        # Cache-first: avoid unnecessary API calls.
+        if self._last_gateway_url and not time.time() < self._rate_limit_until:
+            return self._last_gateway_url
+
+        # Rate-limit guard.
+        if time.time() < self._rate_limit_until:
+            if self._last_gateway_url:
+                logger.info("[%s] Rate-limited; using cached gateway URL", self._log_tag)
+                return self._last_gateway_url
+            raise RuntimeError("Rate-limited and no cached gateway URL available")
+
+        # Internal retry loop.
+        last_exc: Optional[Exception] = None
+        for attempt, delay in enumerate(GATEWAY_URL_RETRY_DELAYS, start=1):
+            if delay > 0:
+                await asyncio.sleep(delay)
+            token = await self._ensure_token()
+            try:
+                resp = await self._http_client.get(
+                    f"{API_BASE}{GATEWAY_URL_PATH}",
+                    headers={
+                        "Authorization": f"QQBot {token}",
+                        "User-Agent": build_user_agent(),
+                    },
+                    timeout=DEFAULT_API_TIMEOUT,
+                )
+
+                # Detect rate limiting (HTTP 400 + frequency-limit message).
+                if resp.status_code == 400:
+                    body = resp.text[:200]
+                    if "频率限制" in body or "rate" in body.lower():
+                        self._rate_limit_until = time.time() + RATE_LIMIT_DELAY
+                        if self._last_gateway_url:
+                            logger.warning(
+                                "[%s] Rate-limited on gateway URL fetch (attempt %d); using cached URL",
+                                self._log_tag, attempt)
+                            return self._last_gateway_url
+                        raise RuntimeError("Rate-limited on gateway URL fetch with no cached URL")
+
+                resp.raise_for_status()
+                data = resp.json()
+                url = data.get("url")
+                if not url:
+                    raise RuntimeError(f"QQ Bot gateway response missing url: {data}")
+
+                self._last_gateway_url = str(url)
+                self._rate_limit_until = 0.0  # reset cooldown on success
+                logger.info(
+                    "[%s] Gateway URL refreshed (cached for future reconnects)", self._log_tag)
+                return self._last_gateway_url
+
+            except RuntimeError:
+                raise  # do not retry on rate-limit or missing-url errors
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "[%s] Failed to fetch gateway URL (attempt %d/%d): %s",
+                    self._log_tag, attempt, len(GATEWAY_URL_RETRY_DELAYS), _safe_str(exc))
+
+        # Cache fallback.
+        if self._last_gateway_url:
+            logger.warning("[%s] All retries failed; falling back to cached gateway URL", self._log_tag)
+            return self._last_gateway_url
+
+        raise RuntimeError(
+            f"Failed to get QQ Bot gateway URL after {len(GATEWAY_URL_RETRY_DELAYS)} attempts: {_safe_str(last_exc)}")
 
     # ------------------------------------------------------------------
     # WebSocket lifecycle
@@ -481,7 +547,8 @@ class QQAdapter(BasePlatformAdapter):
                     logger.info(
                         "[%s] Rate limited (4008), waiting %ds",
                         self._log_tag,
-                        RATE_LIMIT_DELAY,
+                        RATE_LIMIT_DELAY
+
                     )
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                         return
@@ -556,6 +623,24 @@ class QQAdapter(BasePlatformAdapter):
                 else:
                     backoff_idx += 1
 
+    async def _ensure_fresh_client(self) -> None:
+        """Rebuild the httpx HTTP client to prevent stale connection-pool errors.
+
+        When the adapter has been connected for an extended period, the underlying
+        httpx connection pool may contain stale connections, causing exceptions
+        with empty str() that produce unhelpful log messages.
+        """
+        if self._http_client:
+            try:
+                await self._http_client.aclose()
+            except Exception:
+                pass
+        self._http_client = httpx.AsyncClient(
+            timeout=DEFAULT_API_TIMEOUT,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        )
+
     async def _reconnect(self, backoff_idx: int) -> bool:
         """Attempt to reconnect the WebSocket. Returns True on success."""
         delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
@@ -569,6 +654,7 @@ class QQAdapter(BasePlatformAdapter):
 
         self._heartbeat_interval = 30.0  # reset until Hello
         try:
+            await self._ensure_fresh_client()
             await self._ensure_token()
             gateway_url = await self._get_gateway_url()
             await self._open_ws(gateway_url)
@@ -576,8 +662,9 @@ class QQAdapter(BasePlatformAdapter):
             logger.info("[%s] Reconnected", self._log_tag)
             return True
         except Exception as exc:
-            logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
+            logger.warning("[%s] Reconnect failed: %s", self._log_tag, _safe_str(exc))
             return False
+
 
     async def _read_events(self) -> None:
         """Read WebSocket frames until connection closes."""

@@ -8,18 +8,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { Download, Play, RefreshCw, ChevronLeft } from "lucide-react";
-import { Button, Typography } from "@nous-research/ui";
+import { Button, Spinner, Typography } from "@nous-research/ui";
 import { fetchJSON } from "@/lib/api";
-
-function Spinner({ className = "" }: { className?: string }) {
-  return (
-    <div
-      className={`animate-spin rounded-full border-2 border-current border-t-transparent w-4 h-4 ${className}`}
-      role="status"
-      aria-label="Loading"
-    />
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -98,7 +88,7 @@ export function CaptionJobsPage() {
 
   return (
     <div className="p-6 max-w-3xl">
-      <Typography variant="xl" className="mb-4">Caption Jobs</Typography>
+      <Typography variant="h2" className="mb-4">Caption Jobs</Typography>
       {jobs.length === 0 ? (
         <p className="text-muted-foreground">
           No caption jobs yet. Send a video via Telegram and Hermes will create one.
@@ -244,7 +234,7 @@ export default function CaptionEditorPage() {
               {burning ? <Spinner className="w-4 h-4" /> : <RefreshCw className="w-4 h-4" />}
               {burning ? "Re-burning…" : "Re-burn"}
             </Button>
-            <Button outlined onClick={handleDownload} className="flex items-center gap-2">
+            <Button variant="outline" onClick={handleDownload} className="flex items-center gap-2">
               <Download className="w-4 h-4" />
               Download
             </Button>
@@ -269,7 +259,7 @@ export default function CaptionEditorPage() {
 
         {/* Right: segment editor */}
         <div className="flex-1 overflow-y-auto p-4 space-y-2">
-          <Typography variant="lg" className="mb-3">
+          <Typography variant="h3" className="mb-3">
             Segments ({segments.length})
           </Typography>
           {segments.map((seg, idx) => (

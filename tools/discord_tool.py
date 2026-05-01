@@ -448,6 +448,25 @@ def _create_thread(
     })
 
 
+def _create_forum_thread(
+    token: str, channel_id: str, name: str, content: str,
+    auto_archive_duration: int = 1440, **_kwargs: Any,
+) -> str:
+    """Create a new thread (post) in a forum channel."""
+    body: Dict[str, Any] = {
+        "name": name,
+        "message": {"content": content},
+        "auto_archive_duration": auto_archive_duration,
+    }
+    thread = _discord_request("POST", f"/channels/{channel_id}/threads", token, body=body)
+    return json.dumps({
+        "success": True,
+        "thread_id": thread["id"],
+        "name": thread.get("name"),
+        "message_id": thread.get("id"),
+    })
+
+
 def _add_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwargs: Any) -> str:
     """Add a role to a guild member."""
     _discord_request("PUT", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}", token)
@@ -477,11 +496,12 @@ _ACTIONS = {
     "pin_message": _pin_message,
     "unpin_message": _unpin_message,
     "create_thread": _create_thread,
+    "create_forum_thread": _create_forum_thread,
     "add_role": _add_role,
     "remove_role": _remove_role,
 }
 
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "create_forum_thread"})
 _ADMIN_ACTION_NAMES = frozenset(_ACTIONS.keys()) - _CORE_ACTION_NAMES
 
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
@@ -503,6 +523,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("pin_message", "(channel_id, message_id)", "pin a message"),
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
     ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("create_forum_thread", "(channel_id, name, content)", "create a post in a forum channel"),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -523,6 +544,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "pin_message": ["channel_id", "message_id"],
     "unpin_message": ["channel_id", "message_id"],
     "create_thread": ["channel_id", "name"],
+    "create_forum_thread": ["channel_id", "name", "content"],
     "add_role": ["guild_id", "user_id", "role_id"],
     "remove_role": ["guild_id", "user_id", "role_id"],
 }
@@ -682,7 +704,11 @@ def _build_schema(
         },
         "name": {
             "type": "string",
-            "description": "New thread name (create_thread).",
+            "description": "New thread name (create_thread, create_forum_thread).",
+        },
+        "content": {
+            "type": "string",
+            "description": "Initial message content for a forum post (create_forum_thread).",
         },
         "limit": {
             "type": "integer",
@@ -761,6 +787,9 @@ _ACTION_403_HINT = {
     "create_thread": (
         "Bot lacks CREATE_PUBLIC_THREADS in this channel, or cannot view it."
     ),
+    "create_forum_thread": (
+        "Bot lacks CREATE_PUBLIC_THREADS in this forum channel, or cannot view it."
+    ),
     "add_role": (
         "Either the bot lacks MANAGE_ROLES, or the target role sits higher "
         "than the bot's highest role. Roles can only be assigned below the "
@@ -823,6 +852,7 @@ def _run_discord_action(
     message_id: str = "",
     query: str = "",
     name: str = "",
+    content: str = "",
     limit: int = 50,
     before: str = "",
     after: str = "",
@@ -860,6 +890,7 @@ def _run_discord_action(
         "message_id": message_id,
         "query": query,
         "name": name,
+        "content": content,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -878,6 +909,7 @@ def _run_discord_action(
             message_id=message_id,
             query=query,
             name=name,
+            content=content,
             limit=limit,
             before=before,
             after=after,
@@ -910,7 +942,8 @@ def discord_admin_handler(action: str, **kwargs) -> str:
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
-    "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
+    "content": "", "limit": 50, "before": "", "after": "",
+    "auto_archive_duration": 1440,
 }
 
 

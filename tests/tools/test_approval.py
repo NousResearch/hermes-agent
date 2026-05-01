@@ -259,6 +259,81 @@ class TestRmRecursiveFlagVariants:
         assert key is not None
 
 
+class TestRmAbsolutePathNotFalseFlagged:
+    """Issue #18083: `rm /path` must only fire 'delete in root path' for
+    genuine system-root targets (/, /*, /etc, /var, /usr, ...), not for
+    every absolute path. Routine cleanups in the user's home, /tmp, and
+    /mnt should not be flagged as root-path deletes."""
+
+    def test_rm_user_home_not_root_path(self):
+        is_dangerous, _, desc = detect_dangerous_command(
+            "rm -f /home/scott/hermes-home/fawn_lily_temp.html"
+        )
+        if is_dangerous:
+            assert desc != "delete in root path"
+
+    def test_rm_tmp_path_not_root_path(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm /tmp/x")
+        assert is_dangerous is False or desc != "delete in root path"
+
+    def test_rm_mnt_wsl_path_not_root_path(self):
+        is_dangerous, _, desc = detect_dangerous_command(
+            "rm -rf /mnt/c/Users/user/foo"
+        )
+        if is_dangerous:
+            assert desc != "delete in root path"
+
+    def test_rm_home_recursive_still_caught_as_recursive(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm -rf /home/user/.cache")
+        assert is_dangerous is True
+        assert desc != "delete in root path"
+        assert "recursive" in desc.lower() or "delete" in desc.lower()
+
+    def test_rm_lookalike_etc_bak_not_flagged_as_root(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm /etc.bak/file")
+        assert is_dangerous is False or desc != "delete in root path"
+
+    def test_rm_root_slash_still_caught(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm -rf /")
+        assert is_dangerous is True
+        assert desc == "delete in root path"
+
+    def test_rm_root_glob_still_caught(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm -rf /*")
+        assert is_dangerous is True
+        assert desc == "delete in root path"
+
+    def test_rm_root_dotglob_still_caught(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm -rf /.*")
+        assert is_dangerous is True
+        assert desc == "delete in root path"
+
+    def test_rm_etc_passwd_still_caught(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm -rf /etc/passwd")
+        assert is_dangerous is True
+        assert desc == "delete in root path"
+
+    def test_rm_var_log_still_caught(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm -rf /var/log")
+        assert is_dangerous is True
+        assert desc == "delete in root path"
+
+    def test_rm_usr_bin_still_caught(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm /usr/bin/something")
+        assert is_dangerous is True
+        assert desc == "delete in root path"
+
+    def test_rm_etc_bare_still_caught(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm /etc")
+        assert is_dangerous is True
+        assert desc == "delete in root path"
+
+    def test_rm_lib64_still_caught(self):
+        is_dangerous, _, desc = detect_dangerous_command("rm /lib64/critical.so")
+        assert is_dangerous is True
+        assert desc == "delete in root path"
+
+
 class TestMultilineBypass:
     """Newlines in commands must not bypass dangerous pattern detection."""
 

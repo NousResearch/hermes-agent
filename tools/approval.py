@@ -212,7 +212,11 @@ def _hardline_block_result(description: str) -> dict:
 # =========================================================================
 
 DANGEROUS_PATTERNS = [
-    (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
+    (
+        r'\brm\s+(-[^\s]*\s+)*/(\s|\*|$|\.\*|'
+        r'(bin|boot|dev|etc|lib|lib64|opt|proc|root|run|sbin|srv|sys|usr|var)(/|\s|$))',
+        "delete in root path",
+    ),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
     (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),

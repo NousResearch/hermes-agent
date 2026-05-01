@@ -111,13 +111,7 @@ Look for:
 
 ## Step 6: Install the App in Teams
 
-Open the **Install in Teams** link printed by `teams app create` in Step 3:
-
-```
-https://teams.microsoft.com/l/app/<teamsAppId>?installAppPackage=true&appTenantId=<tenantId>
-```
-
-After installing, open Microsoft Teams and send a direct message to your bot — it's ready.
+Open the **Install in Teams** link printed by `teams app create` in Step 3. After installing, open Microsoft Teams and send a direct message to your bot — it's ready.
 
 ---
 

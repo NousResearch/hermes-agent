@@ -118,7 +118,7 @@ Available in `hybrid` and `tools` memory modes:
 | Tool | Description |
 |------|-------------|
 | `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
-| `hindsight_recall` | Multi-strategy search (semantic + entity graph) |
+| `hindsight_recall` | Retrieve memories. Defaults to semantic/entity-graph recall; supports optional `method` (`recall`, `list`, `entity`) plus per-call `budget`, `max_tokens`, `types`, `tags`, `tags_match`, and exact-match `metadata` filters. `tag_groups` is passed through for `recall`/`entity`; `method="list"` uses the public list API and supports `limit`/`offset`; `method="entity"` supports `max_entity_tokens`. |
 | `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
 
 ## Environment Variables

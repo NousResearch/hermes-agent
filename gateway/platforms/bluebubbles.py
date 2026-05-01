@@ -289,9 +289,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             )
             return True
 
+        # Subscribe to ``new-message`` only. BB fires both ``new-message`` and
+        # ``updated-message`` for every iMessage (the latter for delivery
+        # confirmations + edits + read receipts), causing the agent to be
+        # invoked twice and reply twice per inbound message. Until edit
+        # handling is implemented separately, ``new-message`` alone is the
+        # right primary trigger.
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message"],
+            "events": ["new-message"],
         }
 
         try:

@@ -1,7 +1,7 @@
 # Hackathon Build Status
 
-**Last updated**: 1 May 2026 (late evening)  
-**Deadline**: EOD Sunday 3 May 2026 (2 days remaining)
+**Last updated**: 2 May 2026  
+**Deadline**: EOD Sunday 3 May 2026 (1 day remaining)
 
 ---
 
@@ -121,53 +121,145 @@ Users can override any field in `~/.hermes/config.yaml`. The tool reads this at 
 
 ---
 
-### 5. Teaching Caption Skill — `skills/video/phonetic_captions/SKILL.md` ✅
+### 5. Teaching Caption Skill — `skills/video/phonetic-captions/SKILL.md` ✅
 
-Renamed (1 May) from `bilingual_captions` to `phonetic_captions` for clarity and scalability.
+Renamed (1 May) from `bilingual-captions` to `phonetic-captions` for clarity and scalability.
 Updated to surface dashboard link after generation and explain visual editor workflow.
 Chat correction loop retained as fallback for mobile/no-dashboard users.
 
 ---
 
-### 6. Dashboard Visual Caption Editor ✅
+### 6. Dashboard Visual Caption Editor — Plugin ✅ (2 May — migrated to plugin architecture)
 
-> **Added 1 May (evening)**: Replaces Telegram chat as primary editing surface.
-> Key insight: user wants to replace CapCut's visual editing workflow — chat corrections are slow, expensive, and imprecise for visual media.
+> **Migrated 2 May**: Originally implemented as core edits to `web_server.py` / `App.tsx`.
+> Moved to a first-class **Hermes dashboard plugin** — zero core file changes, pre-built IIFE,
+> drop-in installation. Better demo story: *"We built a plugin, not a fork."*
 
-**Backend** (`hermes_cli/web_server.py` — 7 new endpoints):
+**Plugin location**: `plugins/phonetic-captions/dashboard/`
+
+```
+plugins/phonetic-captions/dashboard/
+├── manifest.json        tab: /captions, icon: FileText, after:skills
+├── plugin_api.py        7 FastAPI routes at /api/plugins/phonetic-captions/*
+├── src/index.tsx        React editor UI (state-based nav, no react-router-dom)
+├── build.mjs            esbuild → IIFE (React from SDK, lucide-react bundled)
+├── package.json         devDeps: esbuild, lucide-react, typescript
+├── tsconfig.json
+└── dist/index.js        pre-built 12KB IIFE (committed, no user build step)
+```
+
+**Plugin API** (`plugin_api.py` — `router = APIRouter()`):
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/caption/jobs` | List all jobs |
-| `GET /api/caption/jobs/{id}` | Get full job (segments, style, paths) |
-| `PUT /api/caption/jobs/{id}/segments` | Save edited segments |
-| `PUT /api/caption/jobs/{id}/style` | Save style changes |
-| `POST /api/caption/jobs/{id}/burn` | Re-burn via FFmpeg (no LLM, runs in `asyncio.to_thread`) |
-| `GET /api/caption/jobs/{id}/video` | Stream video for in-browser player |
-| `GET /api/caption/jobs/{id}/download` | Download final output |
+| `GET /api/plugins/phonetic-captions/jobs` | List all jobs |
+| `GET /api/plugins/phonetic-captions/jobs/{id}` | Get full job (segments, style, paths) |
+| `PUT /api/plugins/phonetic-captions/jobs/{id}/segments` | Save edited segments |
+| `PUT /api/plugins/phonetic-captions/jobs/{id}/style` | Save style changes |
+| `POST /api/plugins/phonetic-captions/jobs/{id}/burn` | Re-burn via FFmpeg (runs in `asyncio.to_thread`) |
+| `GET /api/plugins/phonetic-captions/jobs/{id}/video` | Stream video for in-browser player |
+| `GET /api/plugins/phonetic-captions/jobs/{id}/download` | Download final output |
 
-**Job persistence** (`tools/video_caption.py` — `save_caption_job()`):
-- After `caption` op: saves job to `~/.hermes/caption-jobs/{id}.json`
-- Response includes `job_id` + `dashboard_url` (e.g. `http://localhost:9119/captions/abc123`)
+Auth: all `/api/plugins/*` routes are auth-exempt by framework design (localhost only).
 
-**Frontend** (`web/src/pages/CaptionEditorPage.tsx` — new file):
-- Two-column layout: video player left, segment editor + style panel right
-- Per-segment: text input, phonetic input (VI only), EN/VI badge toggle
-- Style panel: font, font size, text/outline color pickers, margin
-- Re-burn button (calls burn endpoint, auto-reloads video on completion)
-- Download button (fetch with auth header, creates blob URL)
+**Frontend** (`src/index.tsx` → `dist/index.js`):
+- Two-column layout: video player + style panel (left), segment editor (right)
+- Per-segment: text, phonetic field (VI only), EN/VI badge toggle
+- Re-burn: saves segments + style → triggers burn → reloads video player
+- Download: direct fetch, no auth header needed
+- State-based routing (`useState` + `window.history.pushState`) — no react-router-dom
 
-**Routes** (`web/src/App.tsx`):
-- `/captions` → `CaptionJobsPage` (job list)
-- `/captions/:id` → `CaptionEditorPage` (visual editor)
-- "Captions" nav entry added to sidebar
+**Core files untouched**: `hermes_cli/web_server.py`, `web/src/App.tsx`, `web/src/pages/`
 
 ---
 
-### 7. Hackathon Plans — `hackathon-docs/` ✅
+### 7. Testing Steps (End-to-End) 🧪
+
+#### Prerequisites (run once)
+```bash
+# 1. Install Python dependencies
+source .venv/bin/activate
+pip install faster-whisper openai
+
+# 2. Install FFmpeg (macOS)
+brew install ffmpeg
+
+# 3. Add Kimi API key
+echo "NVIDIA_API_KEY=nvapi-..." >> ~/.hermes/.env
+
+# 4. Enable the toolset in ~/.hermes/config.yaml
+#    toolsets:
+#      - hermes-cli
+#      - video-caption
+
+# 5. Load the skill (run once)
+hermes skills add skills/video/phonetic-captions
+```
+
+#### Test 1 — CLI smoke test (no Telegram needed)
+```bash
+hermes
+# In the CLI:
+# > caption the video at /path/to/test_clip.mp4
+# Expected:
+#   - Spinner while Whisper transcribes (~30s for a 30s clip on CPU)
+#   - Tool output shows segment list with EN/VI classification
+#   - Agent replies with: output path + "Edit at http://localhost:9119/captions/<id>"
+```
+
+#### Test 2 — Dashboard editor
+```bash
+hermes dashboard        # opens browser at http://localhost:9119
+
+# 1. Click "Captions" tab in the sidebar
+#    → Job list loads, shows the job from Test 1
+
+# 2. Click the job row
+#    → Editor opens: video player on left, segment list on right
+
+# 3. Edit a segment:
+#    - Click the VI badge on a Vietnamese segment to toggle it
+#    - Fix the text in the inline input
+#    - Fix/add a phonetic guide (appears when lang=vi)
+
+# 4. Change a style setting:
+#    - Expand "Style settings"
+#    - Change font size from 48 → 52
+
+# 5. Click "Re-burn"
+#    - Button shows spinner, ~5-10s for FFmpeg
+#    - Video player reloads automatically with new captions
+
+# 6. Click "Download"
+#    - captioned_<id>.mp4 downloads to ~/Downloads
+```
+
+#### Test 3 — Telegram flow
+```bash
+hermes gateway start telegram
+
+# On Telegram:
+# 1. Send a short video (< 60s for quick test)
+# 2. Wait for "Processing your video..." reply
+# 3. Agent should reply with the captioned video + dashboard link
+# 4. Click the link → editor opens on the right job automatically
+#    (plugin reads /captions/<id> from window.location on mount)
+```
+
+#### Verify plugin discovery
+```bash
+# With dashboard running:
+curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
+# → should include { "name": "phonetic-captions", "tab": {"path": "/captions"}, ... }
+```
+
+---
+
+### 8. Hackathon Plans — `hackathon-docs/` ✅
 
 - `PLAN_v1.md` — original Telegram-native plan (executed, backend pipeline complete)
-- `PLAN.md` — v2 revised plan (dashboard editor, current direction)
+- `PLAN_v2.md` — dashboard core-edit approach (archived)
+- `PLAN.md` — v3 plugin architecture (current)
 
 ---
 
@@ -178,26 +270,27 @@ Chat correction loop retained as fallback for mobile/no-dashboard users.
 | Task | Notes |
 |---|---|
 | Install dependencies | `pip install faster-whisper openai` in `.venv` |
-| End-to-end smoke test | Send a real short video via Telegram, verify: path injection fires → transcription runs → translation fires → video returned |
-| Set `NVIDIA_API_KEY` | Add to `~/.hermes/.env` to enable Kimi translation |
-| Enable toolset | Add `video-caption` to `toolsets` in `~/.hermes/config.yaml`: `toolsets: ["hermes-cli", "video-caption"]` |
-| Load skill | Run `hermes skills install skills/video/phonetic-captions` or add to active skills |
+| Install FFmpeg | `brew install ffmpeg` |
+| Set `NVIDIA_API_KEY` | Add to `~/.hermes/.env` to enable Kimi phonetics |
+| Enable toolset | Add `video-caption` to `toolsets` in `~/.hermes/config.yaml` |
+| Load skill | `hermes skills add skills/video/phonetic-captions` |
+| End-to-end smoke test | CLI caption → dashboard → edit → re-burn → download (see Test 1+2 above) |
+| Telegram flow test | Send video via Telegram, verify path injection → captions → dashboard link (Test 3) |
 
 ### P1 — Important for demo quality
 
 | Task | Notes |
 |---|---|
-| Font selection | "Arial" is a safe fallback but "Montserrat Bold" looks much better for Shorts — install the font or pick a system font that renders well at 48pt |
-| Style tuning | Run against a real Shorts video and adjust `font_size`, `margin_bottom`, `alignment` to taste |
-| Correction memory test | After approving captions, verify Hermes saves the corrections and auto-applies them on a second video |
-| Demo video 1 script | 10–20s clip, introduce yourself/channel in English — use it to show the correction loop |
-| Demo video 2 script | Same topic but different take — show that Hermes auto-applied Video 1 corrections |
+| Font selection | "Arial" is safe fallback; "Montserrat Bold" looks better for Shorts |
+| Style tuning | Run against a real Shorts clip, adjust `font_size` / `margin_bottom` to taste |
+| Demo video 1 | 10–20s clip — show raw → captioned → editor → corrected |
+| Demo video 2 | Same topic, second take — show that style is remembered |
 
-### P2 — Nice to have / polish
+### P2 — Nice to have
 
 | Task | Notes |
 |---|---|
-| Whisper model upgrade | Switch to `large-v3` for better accuracy (needs ~3GB RAM, slower on CPU — test on target machine) |
+| Whisper model upgrade | `large-v3` for better accuracy (~3GB RAM, slower CPU) |
 | Vietnamese font rendering | ASS with Vietnamese diacritics should work out of the box, but test `ơ ư ạ ề ọ` characters display correctly in output |
 | Style slash command | `/caption-style` shortcut to show/edit current caption style — not needed for MVP |
 | Progress feedback | faster-whisper can take 10–30s on CPU for 20s clips — add a "transcribing…" acknowledgement message before calling the tool |

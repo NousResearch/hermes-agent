@@ -522,6 +522,21 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
     """
     toolset = TOOLSETS.get(name)
     if toolset:
+        # Merge any plugin-registered tools targeting this built-in toolset
+        # so that plugins adding tools to existing toolsets are not silently
+        # dropped during resolution.
+        try:
+            from tools.registry import registry
+            registry_tools = set(registry.get_tool_names_for_toolset(name))
+        except Exception:
+            registry_tools = set()
+        static_tools = set(toolset.get("tools", []))
+        if registry_tools - static_tools:
+            # Return a merged copy to avoid mutating the static definition
+            return {
+                **toolset,
+                "tools": sorted(static_tools | registry_tools),
+            }
         return toolset
 
     try:

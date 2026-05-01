@@ -231,3 +231,41 @@ class TestPluginToolsets:
         all_toolsets = get_all_toolsets()
         assert "plugin_bundle" in all_toolsets
         assert all_toolsets["plugin_bundle"]["tools"] == ["plugin_tool"]
+
+    def test_plugin_tool_merged_into_builtin_toolset(self, monkeypatch):
+        """Plugin-added tools targeting a built-in toolset must appear in
+        get_toolset() and resolve_toolset() results.  Regression test for #18314."""
+        # Pick a real built-in toolset and note its static tools
+        builtin_name = "image_gen"
+        static_tools = list(TOOLSETS[builtin_name]["tools"])
+        assert static_tools, "Need at least one static tool for the test"
+
+        reg = ToolRegistry()
+        # Register the existing static tools so the registry knows them
+        for t in static_tools:
+            reg.register(
+                name=t,
+                toolset=builtin_name,
+                schema=_make_schema(t, t),
+                handler=_dummy_handler,
+            )
+        # Register a *new* plugin tool into the same built-in toolset
+        reg.register(
+            name="image_generate_advanced",
+            toolset=builtin_name,
+            schema=_make_schema("image_generate_advanced", "Plugin image tool"),
+            handler=_dummy_handler,
+        )
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        ts = get_toolset(builtin_name)
+        assert ts is not None
+        assert "image_generate_advanced" in ts["tools"], (
+            "Plugin tool missing from get_toolset() for built-in toolset"
+        )
+
+        resolved = resolve_toolset(builtin_name)
+        assert "image_generate_advanced" in resolved, (
+            "Plugin tool missing from resolve_toolset() for built-in toolset"
+        )

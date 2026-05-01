@@ -1632,6 +1632,7 @@ class AIAgent:
         self._session_db = session_db
         self._parent_session_id = parent_session_id
         self._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
+        self._flush_failed = False  # set True if _flush_messages_to_session_db hits an error
         if self._session_db:
             try:
                 self._session_db.create_session(
@@ -3707,6 +3708,10 @@ class AIAgent:
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
+        if self._flush_failed:
+            logger.warning(
+                "Warning: some messages may not have been saved to the session database"
+            )
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
@@ -3756,7 +3761,8 @@ class AIAgent:
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
-            logger.warning("Session DB append_message failed: %s", e)
+            self._flush_failed = True
+            logger.error("Session DB append_message failed: %s", e)
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """

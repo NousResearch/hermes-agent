@@ -104,6 +104,18 @@ class TestNormalizeCustomProviderEntry:
         assert result is not None
         assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
 
+    def test_discover_models_not_flagged_unknown(self, caplog):
+        """discover_models should be accepted as a known provider key."""
+        entry = {
+            "base_url": "https://api.example.com/v1",
+            "api_key": "***",
+            "discover_models": False,
+        }
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="test")
+        assert result is not None
+        assert not any("unknown config keys" in r.message.lower() for r in caplog.records)
+
     def test_camel_case_warning_logged(self, caplog):
         """camelCase alias mapping should produce a warning."""
         entry = {

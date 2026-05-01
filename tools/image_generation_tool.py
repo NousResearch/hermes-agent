@@ -618,6 +618,8 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
         logger.error("Upscaler returned invalid response")
         return None
 
+    except ImportError:
+        raise
     except Exception as e:
         logger.error("Error upscaling image: %s", e, exc_info=True)
         return None
@@ -759,6 +761,8 @@ def image_generate_tool(
 
         return json.dumps(response_data, indent=2, ensure_ascii=False)
 
+    except ImportError:
+        raise
     except Exception as e:
         generation_time = (datetime.datetime.now() - start_time).total_seconds()
         error_msg = f"Error generating image: {str(e)}"

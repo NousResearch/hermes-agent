@@ -5112,13 +5112,15 @@ class GatewayRunner:
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in ("yolo", "verbose"):
+            if _cmd_def_inner and _cmd_def_inner.name in ("yolo", "verbose", "busy"):
                 if _cmd_def_inner.name == "yolo":
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
                     return await self._handle_verbose_command(event)
                 if _cmd_def_inner.name == "footer":
                     return await self._handle_footer_command(event)
+                if _cmd_def_inner.name == "busy":
+                    return await self._handle_busy_command(event)
 
             # Gateway-handled info/control commands with dedicated
             # running-agent handlers.
@@ -5371,6 +5373,9 @@ class GatewayRunner:
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
+
+        if canonical == "busy":
+            return await self._handle_busy_command(event)
 
         if canonical == "model":
             return await self._handle_model_command(event)
@@ -9334,6 +9339,65 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Failed to save tool_progress mode: %s", e)
             return f"{descriptions[new_mode]}\n_(could not save to config: {e})_"
+
+    async def _handle_busy_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /busy — control what happens when messaging while Hermes is working.
+
+        Usage:
+            /busy               Show current busy input mode
+            /busy status        Show current busy input mode
+            /busy queue         Queue messages for the next turn
+            /busy steer         Inject messages mid-run without interrupting
+            /busy interrupt     Interrupt the current run (default)
+        """
+        text = (event.get_text() or "").strip()
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or parts[1].strip().lower() == "status":
+            mode = self._busy_input_mode
+            if mode == "queue":
+                behavior = "queues for next turn"
+            elif mode == "steer":
+                behavior = "steers into current run (after next tool call)"
+            else:
+                behavior = "interrupts current run"
+            return EphemeralReply(
+                f"**Busy input mode: `{mode}`**\n"
+                f"Messages while busy: _{behavior}_\n"
+                f"Change with `/busy queue`, `/busy steer`, or `/busy interrupt`."
+            )
+
+        arg = parts[1].strip().lower()
+        if arg not in {"queue", "interrupt", "steer"}:
+            return EphemeralReply(
+                f"Unknown mode `{arg}`. Use `/busy queue`, `/busy steer`, or `/busy interrupt`."
+            )
+
+        # Update the in-memory mode immediately
+        self._busy_input_mode = arg
+
+        # Persist to config
+        try:
+            from cli import save_config_value
+            if save_config_value("display.busy_input_mode", arg):
+                if arg == "queue":
+                    behavior = "Messages will be queued for the next turn while Hermes is busy."
+                elif arg == "steer":
+                    behavior = "Messages will be steered into the current run (after the next tool call)."
+                else:
+                    behavior = "Messages will interrupt the current run while Hermes is busy."
+                return EphemeralReply(
+                    f"Busy input mode set to **`{arg}`** (saved).\n"
+                    f"_{behavior}_"
+                )
+            else:
+                return EphemeralReply(
+                    f"Busy input mode set to **`{arg}`** (session only, could not save to config)."
+                )
+        except Exception as e:
+            logger.warning("Failed to save busy_input_mode: %s", e)
+            return EphemeralReply(
+                f"Busy input mode set to **`{arg}`** (session only, save failed: {e})."
+            )
 
     async def _handle_footer_command(self, event: MessageEvent) -> str:
         """Handle /footer command — toggle the runtime-metadata footer.

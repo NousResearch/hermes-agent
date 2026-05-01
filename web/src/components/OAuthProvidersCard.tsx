@@ -9,7 +9,8 @@ import {
   LogIn,
 } from "lucide-react";
 import { api, type OAuthProvider } from "@/lib/api";
-import { Button, CopyButton, Spinner } from "@nous-research/ui";
+import { Button, CopyButton } from "@nous-research/ui";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Card,
   CardContent,

@@ -12,10 +12,10 @@ import {
   Button,
   FilterGroup,
   Segmented,
-  Spinner,
   Switch,
 } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Spinner } from "@/components/ui/spinner";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";

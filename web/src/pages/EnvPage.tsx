@@ -21,7 +21,8 @@ import { Toast } from "@/components/Toast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { useToast } from "@/hooks/useToast";
 import { OAuthProvidersCard } from "@/components/OAuthProvidersCard";
-import { Button, ListItem, Spinner } from "@nous-research/ui";
+import { Button, ListItem } from "@nous-research/ui";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Card,
   CardContent,

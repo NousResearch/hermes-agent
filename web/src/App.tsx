@@ -45,9 +45,9 @@ import {
   Button,
   ListItem,
   SelectionSwitcher,
-  Spinner,
   Typography,
 } from "@nous-research/ui";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";

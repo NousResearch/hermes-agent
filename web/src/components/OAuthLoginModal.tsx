@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, X, Check } from "lucide-react";
-import { Button, CopyButton, H2, Spinner } from "@nous-research/ui";
+import { Button, CopyButton, H2 } from "@nous-research/ui";
+import { Spinner } from "@/components/ui/spinner";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/i18n";

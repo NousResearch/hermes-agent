@@ -83,9 +83,10 @@ fi
 
 # agent-browser: symlink to the build-time browser install so the
 # runtime user (hermes) finds it under $HERMES_HOME/.agent-browser.
+# Force-update on every start so the symlink stays valid after image rebuilds.
 _AGENT_BROWSER_SRC="$INSTALL_DIR/.agent-browser"
-if [ -d "$_AGENT_BROWSER_SRC/browsers" ] && ! [ -e "$HERMES_HOME/.agent-browser" ]; then
-    ln -sf "$_AGENT_BROWSER_SRC" "$HERMES_HOME/.agent-browser"
+if [ -d "$_AGENT_BROWSER_SRC/browsers" ]; then
+    ln -snf "$_AGENT_BROWSER_SRC" "$HERMES_HOME/.agent-browser"
 fi
 
 # Sync bundled skills (manifest-based so user edits are preserved)

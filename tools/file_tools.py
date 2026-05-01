@@ -664,6 +664,7 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
 
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
+    logger.info("write_file 写入文件：path=%s, task_id=%s", path, task_id)
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
@@ -913,7 +914,7 @@ WRITE_FILE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does)"},
+            "path": {"type": "string", "description": "Path to the file to write (will be created if it doesn't exist, overwritten if it does). Use relative paths (e.g. 'test.py') — absolute paths and '~/' paths may write outside the workspace."},
             "content": {"type": "string", "description": "Complete content to write to the file"}
         },
         "required": ["path", "content"]

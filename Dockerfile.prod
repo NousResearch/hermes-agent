@@ -1,0 +1,53 @@
+FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
+FROM tianon/gosu:1.19-trixie@sha256:3b176695959c71e123eb390d427efc665eeb561b1540e82679c15e992006b8b9 AS gosu_source
+FROM hub.kaolayouran.cn:5000/dev/hermes-base:shenshan-v1.0
+
+# ---------- Mirror Configuration ----------
+ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV PYTHONUNBUFFERED=1
+
+# Install extra system dependencies not in base
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends --fix-missing \
+        -o Acquire::Retries=3 \
+        -o Acquire::http::Timeout=30 \
+        ripgrep ffmpeg gcc python3-dev libffi-dev procps openssh-client docker-cli tini \
+        libolm-dev curl && \
+    curl -fsSL "https://github.com/tianon/gosu/releases/download/1.19/gosu-amd64" -o /usr/local/bin/gosu && \
+    chmod +x /usr/local/bin/gosu && \
+    rm -rf /var/lib/apt/lists/*
+
+# Non-root user for runtime
+RUN useradd -u 10000 -m -d /opt/data hermes
+
+COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
+
+WORKDIR /opt/hermes
+
+# Copy package manifests (for npm run build in web)
+COPY web/package.json web/package-lock.json web/
+
+# ---------- Source code ----------
+COPY --chown=hermes:hermes . .
+
+# Build web dashboard
+RUN cd web && npm run build
+
+# ---------- Permissions ----------
+COPY --chmod=0755 docker/entrypoint.sh docker/entrypoint.sh
+USER root
+RUN chmod -R a+rX /opt/hermes
+
+# ---------- Python virtualenv ----------
+RUN uv venv && \
+    uv pip install --no-cache-dir \
+        --exclude-newer-package "python-olm=false" \
+        --exclude-newer-package "unpaddedbase64=false" \
+        -e ".[all]"
+
+# ---------- Runtime ----------
+ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
+ENV HERMES_HOME=/opt/data
+ENV PATH="/opt/data/.local/bin:${PATH}"
+VOLUME [ "/opt/data" ]
+ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]

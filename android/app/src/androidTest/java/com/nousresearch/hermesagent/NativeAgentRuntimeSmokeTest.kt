@@ -38,8 +38,8 @@ class NativeAgentRuntimeSmokeTest {
         val homePath = state.getString("home_path")
         val tmpPath = state.getString("tmp_path")
 
-        assertEquals("android_system_shell", state.getString("execution_mode"))
-        assertEquals("/system/bin/sh", shellPath)
+        assertEquals("embedded_termux", state.getString("execution_mode"))
+        assertTrue("shell must be embedded bash", shellPath.endsWith("/bin/bash"))
         assertTrue("shell must exist", File(shellPath).isFile)
         assertTrue("shell must be executable", File(shellPath).canExecute())
         assertTrue("prefix must exist", File(prefixPath).isDirectory)

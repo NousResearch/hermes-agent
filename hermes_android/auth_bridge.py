@@ -14,7 +14,8 @@ QWEN_BASE_URL_ENV = "HERMES_QWEN_BASE_URL"
 
 
 def _qwen_auth_path() -> Path:
-    return Path.home() / ".qwen" / "oauth_creds.json"
+    home = os.environ.get("HOME") or os.environ.get("USERPROFILE") or str(Path.home())
+    return Path(home).expanduser() / ".qwen" / "oauth_creds.json"
 
 PROVIDER_ENV_KEYS = {
     "openrouter": "OPENROUTER_API_KEY",

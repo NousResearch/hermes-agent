@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.request
 import urllib.error
 import time
@@ -2721,6 +2722,26 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     return "chat_completions"
 
 
+def _prefix_family_match(
+    requested_model: str,
+    live_models: list[str],
+) -> Optional[str]:
+    """Match stale family slugs against the provider's live model list."""
+    family_match = re.match(r"^(qwen\d*)", str(requested_model or "").strip().lower())
+    if not family_match:
+        return None
+
+    family = family_match.group(1)
+    if len(family) < 4:
+        return None
+
+    for model in live_models or []:
+        candidate = str(model or "").strip()
+        if candidate.lower().startswith(family):
+            return candidate
+    return None
+
+
 def github_model_reasoning_efforts(
     model_id: Optional[str],
     *,
@@ -3356,6 +3377,17 @@ def validate_requested_model(
                     "recognized": True,
                     "corrected_model": auto[0],
                     "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+
+            # Auto-correct if the model is a family slug
+            family_match = _prefix_family_match(requested_for_lookup, api_models)
+            if family_match:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": family_match,
+                    "message": f"Auto-corrected `{requested}` → `{family_match}`",
                 }
 
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)

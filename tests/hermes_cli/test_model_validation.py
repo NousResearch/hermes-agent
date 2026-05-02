@@ -405,6 +405,18 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "gemini-3-flash") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "minimax-m2.5") == "chat_completions"
 
+    def test_qwen_family_prefix_auto_corrects_from_live_models(self):
+        result = _validate(
+            "qwen3-coder",
+            provider="opencode-zen",
+            api_models=["qwen3.6-plus", "qwen3.5-plus", "gpt-5.3-codex"],
+        )
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result["corrected_model"] == "qwen3.6-plus"
+
     def test_opencode_go_api_modes_match_docs(self):
         assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5.1") == "chat_completions"

@@ -118,6 +118,22 @@ auxiliary:
 
 `provider: auto` with `model: ''` tells Hermes to use the main model for that task.
 
+**Smart model routing (optional):**
+```yaml
+smart_model_routing:
+  enabled: true
+  cheap_model:
+    provider: openai-codex
+    model: gpt-5.3-codex-spark
+    base_url: https://chatgpt.com/backend-api/codex
+    api_key: ''        # optional; usually leave blank and use provider auth
+  max_simple_chars: 400
+  max_simple_words: 80
+  require_empty_history: true
+```
+
+When enabled, Hermes keeps your main model as the default but routes very short standalone plain-text turns to `cheap_model`. It deliberately refuses slash commands, code blocks, file/context references, long prompts, messages with prior chat history, and obvious coding/deploy/search/delete/send/publish work. `/model` session overrides and explicit CLI `--model` pins stay on the selected model.
+
 ## When does it take effect?
 
 - **CLI** (`hermes chat`): next `hermes chat` invocation.

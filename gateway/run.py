@@ -27,7 +27,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
-from contextvars import copy_context
+from contextvars import copy_context, ContextVar
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
@@ -541,6 +541,10 @@ from gateway.whatsapp_identity import (
 
 
 logger = logging.getLogger(__name__)
+_SMART_MODEL_ROUTE_CONTEXT: ContextVar[dict | None] = ContextVar(
+    "smart_model_route_context",
+    default=None,
+)
 
 
 # Sentinel placed into _running_agents immediately when a session starts
@@ -1485,15 +1489,25 @@ class GatewayRunner:
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        *,
+        history: Optional[list[dict]] = None,
+        user_config: Optional[dict] = None,
+        allow_smart_model_routing: bool = True,
+    ) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
+        Uses the session's primary model/provider unless smart model routing is
+        enabled and the current standalone message is safe for the configured
+        cheap model. `/fast` request overrides are computed against the
+        effective model for this turn.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from agent.smart_model_routing import resolve_smart_model_route
 
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
@@ -1504,17 +1518,50 @@ class GatewayRunner:
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
+        effective_model = model
+        effective_runtime = runtime
+        route_reason = "primary"
+
+        route_context = _SMART_MODEL_ROUTE_CONTEXT.get() or getattr(
+            self,
+            "_smart_model_route_context",
+            {},
+        ) or {}
+        if history is None:
+            history = route_context.get("history")
+        if user_config is None:
+            user_config = route_context.get("user_config")
+        if route_context.get("disable"):
+            allow_smart_model_routing = False
+
+        if allow_smart_model_routing:
+            try:
+                smart_route = resolve_smart_model_route(
+                    primary_model=model,
+                    primary_runtime=runtime,
+                    user_message=user_message,
+                    history=history,
+                    config=user_config if user_config is not None else _load_gateway_config(),
+                )
+            except Exception:
+                smart_route = None
+            if smart_route:
+                effective_model = smart_route["model"]
+                effective_runtime = smart_route["runtime"]
+                route_reason = f"smart:{smart_route.get('reason') or 'simple_turn'}"
+
         route = {
-            "model": model,
-            "runtime": runtime,
+            "model": effective_model,
+            "runtime": effective_runtime,
             "signature": (
-                model,
-                runtime["provider"],
-                runtime["base_url"],
-                runtime["api_mode"],
-                runtime["command"],
-                tuple(runtime["args"]),
+                effective_model,
+                effective_runtime["provider"],
+                effective_runtime["base_url"],
+                effective_runtime["api_mode"],
+                effective_runtime["command"],
+                tuple(effective_runtime["args"]),
             ),
+            "route_reason": route_reason,
         }
 
         service_tier = getattr(self, "_service_tier", None)
@@ -8552,7 +8599,21 @@ class GatewayRunner:
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            try:
+                _bg_session_key = self._session_key_for_source(source)
+            except Exception:
+                _bg_session_key = None
+            _smart_context_token = _SMART_MODEL_ROUTE_CONTEXT.set({
+                "history": [],
+                "user_config": user_config,
+                "disable": bool(
+                    _bg_session_key and self._session_model_overrides.get(_bg_session_key)
+                ),
+            })
+            try:
+                turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            finally:
+                _SMART_MODEL_ROUTE_CONTEXT.reset(_smart_context_token)
 
             def run_sync():
                 agent = AIAgent(
@@ -12368,7 +12429,17 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("interim_assistant_callback error: %s", _e)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            _smart_context_token = _SMART_MODEL_ROUTE_CONTEXT.set({
+                "history": history,
+                "user_config": user_config,
+                "disable": bool(
+                    session_key and self._session_model_overrides.get(session_key)
+                ),
+            })
+            try:
+                turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            finally:
+                _SMART_MODEL_ROUTE_CONTEXT.reset(_smart_context_token)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool

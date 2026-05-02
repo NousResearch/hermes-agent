@@ -387,6 +387,18 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    "smart_model_routing": {
+        "enabled": False,
+        "cheap_model": {
+            "provider": "",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+        },
+        "max_simple_chars": 400,
+        "max_simple_words": 80,
+        "require_empty_history": True,
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {

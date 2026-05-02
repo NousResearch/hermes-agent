@@ -282,6 +282,18 @@ def load_cli_config() -> Dict[str, Any]:
             "base_url": "",
             "provider": "auto",
         },
+        "smart_model_routing": {
+            "enabled": False,
+            "cheap_model": {
+                "provider": "",
+                "model": "",
+                "base_url": "",
+                "api_key": "",
+            },
+            "max_simple_chars": 400,
+            "max_simple_words": 80,
+            "require_empty_history": True,
+        },
         "terminal": {
             "env_type": "local",
             "cwd": ".",  # "." is resolved to os.getcwd() at runtime
@@ -3451,12 +3463,13 @@ class HermesCLI:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
-        Always uses the session's primary model/provider.  If the user has
-        toggled `/fast` on and the current model supports Priority
-        Processing / Anthropic fast mode, attach `request_overrides` so the
-        API call is marked accordingly.
+        Uses the session's primary model/provider unless smart model routing is
+        enabled and the current standalone message is safe for the configured
+        cheap model. `/fast` service-tier overrides are then computed against
+        the effective model for this turn.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from agent.smart_model_routing import resolve_smart_model_route
 
         runtime = {
             "api_key": self.api_key,
@@ -3467,17 +3480,39 @@ class HermesCLI:
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
         }
+        effective_model = self.model
+        effective_runtime = runtime
+        route_reason = "primary"
+
+        smart_route = None
+        # A CLI --model argument is an explicit session pin; keep it on the
+        # selected model.  Otherwise allow the deterministic router to choose a
+        # cheap model for simple standalone turns.
+        if getattr(self, "_model_is_default", True):
+            smart_route = resolve_smart_model_route(
+                primary_model=self.model,
+                primary_runtime=runtime,
+                user_message=user_message,
+                history=getattr(self, "conversation_history", None),
+                config=CLI_CONFIG,
+            )
+        if smart_route:
+            effective_model = smart_route["model"]
+            effective_runtime = smart_route["runtime"]
+            route_reason = f"smart:{smart_route.get('reason') or 'simple_turn'}"
+
         route = {
-            "model": self.model,
-            "runtime": runtime,
+            "model": effective_model,
+            "runtime": effective_runtime,
             "signature": (
-                self.model,
-                runtime["provider"],
-                runtime["base_url"],
-                runtime["api_mode"],
-                runtime["command"],
-                tuple(runtime["args"]),
+                effective_model,
+                effective_runtime["provider"],
+                effective_runtime["base_url"],
+                effective_runtime["api_mode"],
+                effective_runtime["command"],
+                tuple(effective_runtime["args"]),
             ),
+            "route_reason": route_reason,
         }
 
         service_tier = getattr(self, "service_tier", None)

@@ -69,7 +69,7 @@ tts:
     model: "gemini-2.5-flash-preview-tts"  # or gemini-2.5-pro-preview-tts
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, Gacrux, etc.
   xai:
-    voice_id: "eve"             # xAI TTS voice (see https://docs.x.ai/docs/api-reference#tts)
+    voice_id: "eve"             # or a custom voice ID — see docs below
     language: "en"              # ISO 639-1 code
     sample_rate: 24000          # 22050 / 24000 (default) / 44100 / 48000
     bit_rate: 128000            # MP3 bitrate; only applies when codec=mp3
@@ -126,6 +126,19 @@ Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are se
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
 :::
+
+### xAI Custom Voices (voice cloning)
+
+xAI supports cloning your voice and using it with TTS. Create a custom voice in the [xAI Console](https://console.x.ai/team/default/voice/voice-library), then set the resulting `voice_id` in your config:
+
+```yaml
+tts:
+  provider: xai
+  xai:
+    voice_id: "nlbqfwie"   # your custom voice ID
+```
+
+See the [xAI Custom Voices docs](https://docs.x.ai/developers/model-capabilities/audio/custom-voices) for details on recording, supported formats, and limits.
 
 ### Piper (local, 44 languages)
 

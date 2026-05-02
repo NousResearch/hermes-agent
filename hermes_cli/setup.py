@@ -1190,6 +1190,13 @@ def _setup_tts_provider(config: dict):
                     "Falling back to Edge TTS."
                 )
                 selected = "edge"
+        if selected == "xai":
+            print()
+            voice_id = prompt("xAI voice_id (Enter for 'eve', or paste a custom voice ID)")
+            if voice_id and voice_id.strip():
+                config.setdefault("tts", {}).setdefault("xai", {})["voice_id"] = voice_id.strip()
+                print_success(f"xAI voice_id set to: {voice_id.strip()}")
+
 
     elif selected == "minimax":
         existing = get_env_value("MINIMAX_API_KEY")

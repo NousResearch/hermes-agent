@@ -200,6 +200,8 @@ class TestSessionOps:
             "context",
             "reset",
             "compact",
+            "steer",
+            "queue",
             "version",
         ]
         model_cmd = next(

@@ -15,6 +15,7 @@ Usage:
 
 import asyncio
 import dataclasses
+import inspect
 import json
 import logging
 import os
@@ -9686,6 +9687,28 @@ class GatewayRunner:
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)
+
+            # Let each connected adapter refresh any platform-side state
+            # that cached the skill list at startup. Today that's the
+            # Discord /skill autocomplete (registered once per connect);
+            # without this call, new skills stay invisible in the
+            # dropdown and deleted skills error out when clicked. Other
+            # adapters that don't override refresh_skill_group (Telegram's
+            # BotCommand menu, Slack subcommand map, etc.) are silently
+            # skipped — the in-process reload above is enough for them.
+            for adapter in list(self.adapters.values()):
+                refresh = getattr(adapter, "refresh_skill_group", None)
+                if not callable(refresh):
+                    continue
+                try:
+                    maybe = refresh()
+                    if inspect.isawaitable(maybe):
+                        await maybe
+                except Exception as exc:
+                    logger.warning(
+                        "Adapter %s refresh_skill_group raised: %s",
+                        getattr(adapter, "name", adapter), exc,
+                    )
 
             lines = ["🔄 **Skills Reloaded**\n"]
             if not added and not removed:

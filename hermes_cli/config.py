@@ -1132,7 +1132,7 @@ DEFAULT_CONFIG = {
     # Pre-exec security scanning via tirith
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
-        "redact_secrets": False,
+        "redact_secrets": True,  # ON by default — prevents credential leaks in gateway output (GH #17691)
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
@@ -3895,10 +3895,10 @@ def load_config() -> Dict[str, Any]:
 
 _SECURITY_COMMENT = """
 # ── Security ──────────────────────────────────────────────────────────
-# Secret redaction is OFF by default — tool output (terminal stdout,
-# read_file results, web content) passes through unmodified. Set
-# redact_secrets to true to mask strings that look like API keys, tokens,
-# and passwords before they enter the model context and logs.
+# Secret redaction is ON by default — tool output (terminal stdout,
+# read_file results, web content) has API keys, tokens, and passwords
+# masked before they enter the model context and logs. Set
+# redact_secrets to false if you need unredacted output for debugging.
 # tirith pre-exec scanning is enabled by default when the tirith binary
 # is available. Configure via security.tirith_* keys or env vars
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
@@ -3937,8 +3937,8 @@ _FALLBACK_COMMENT = """
 
 _COMMENTED_SECTIONS = """
 # ── Security ──────────────────────────────────────────────────────────
-# Secret redaction is OFF by default. Set to true to mask strings that
-# look like API keys, tokens, and passwords in tool output and logs.
+# Secret redaction is ON by default. Set to false to disable masking of
+# strings that look like API keys, tokens, and passwords in tool output and logs.
 #
 # security:
 #   redact_secrets: true

@@ -6581,7 +6581,9 @@ class HermesCLI:
             quick_commands = self.config.get("quick_commands", {})
             if base_cmd.lstrip("/") in quick_commands:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
-                if qcmd.get("type") == "exec":
+                if not isinstance(qcmd, dict):
+                    self._console_print(f"[bold red]Quick command '{base_cmd}' has invalid value (expected dict, got {type(qcmd).__name__}), skipping[/]")
+                elif qcmd.get("type") == "exec":
                     import subprocess
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:

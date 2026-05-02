@@ -73,7 +73,18 @@ class TestStreamingContextScrubberBasics:
         s = StreamingContextScrubber()
         out = (
             s.feed("pre \n<memory")
-            + s.feed("-context>leak</memory-context> post")
+            + s.feed("-context>\nleak</memory-context> post")
+            + s.flush()
+        )
+        assert out == "pre \n post"
+        assert "leak" not in out
+
+    def test_open_tag_waits_for_newline_confirmation_across_deltas(self):
+        """A boundary tag is only a leaked block when the next char is a newline."""
+        s = StreamingContextScrubber()
+        out = (
+            s.feed("pre \n<memory-context>")
+            + s.feed("\nleak</memory-context> post")
             + s.flush()
         )
         assert out == "pre \n post"
@@ -83,7 +94,7 @@ class TestStreamingContextScrubberBasics:
         """The close tag arriving in two fragments."""
         s = StreamingContextScrubber()
         out = (
-            s.feed("pre \n<memory-context>leak</memory")
+            s.feed("pre \n<memory-context>\nleak</memory")
             + s.feed("-context> post")
             + s.flush()
         )
@@ -116,18 +127,28 @@ class TestStreamingContextScrubberPartialTagFalsePositives:
         )
         assert out == "In that previous `<memory-context>` block, there was no matching fact."
 
-    def test_mid_sentence_memory_context_pair_is_not_scrubbed(self):
+    def test_mid_sentence_memory_context_mention_is_not_scrubbed(self):
         """Only block-like memory-context spans are treated as leaked context."""
         s = StreamingContextScrubber()
         out = s.feed("The <memory-context> tag name is documented here.") + s.flush()
         assert out == "The <memory-context> tag name is documented here."
+
+    def test_line_start_memory_context_mention_without_close_is_not_scrubbed(self):
+        """A plain-text line that starts with the tag name must be preserved."""
+        s = StreamingContextScrubber()
+        out = (
+            s.feed("Visible intro\n")
+            + s.feed("<memory-context> is the literal tag name mentioned here.")
+            + s.flush()
+        )
+        assert out == "Visible intro\n<memory-context> is the literal tag name mentioned here."
 
 
 class TestStreamingContextScrubberUnterminatedSpan:
     def test_unterminated_span_drops_payload(self):
         """Provider drops close tag — better to lose output than to leak."""
         s = StreamingContextScrubber()
-        out = s.feed("pre \n<memory-context>secret never closed") + s.flush()
+        out = s.feed("pre \n<memory-context>\nsecret never closed") + s.flush()
         assert out == "pre \n"
         assert "secret" not in out
 
@@ -144,7 +165,7 @@ class TestStreamingContextScrubberCaseInsensitivity:
     def test_uppercase_tags_still_scrubbed(self):
         s = StreamingContextScrubber()
         out = (
-            s.feed("<MEMORY-CONTEXT>secret")
+            s.feed("<MEMORY-CONTEXT>\nsecret")
             + s.feed("</Memory-Context>visible")
             + s.flush()
         )

@@ -9,6 +9,7 @@ from hermes_cli.auth import (
     ProviderConfig,
     resolve_provider,
     get_api_key_provider_status,
+    read_credential_pool,
     resolve_api_key_provider_credentials,
     get_external_process_provider_status,
     resolve_external_process_provider_credentials,
@@ -977,6 +978,45 @@ class TestKimiCodeCredentialAutoDetect:
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+
+
+class TestKimiCodeCredentialPoolAutoDetect:
+    """Test that persisted Kimi pool entries are normalized when loaded."""
+
+    def test_sk_kimi_pool_entry_gets_kimi_code_url(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {
+            "credential_pool": {
+                "kimi-coding": [{
+                    "source": "manual",
+                    "auth_type": "api_key",
+                    "access_token": "sk-kimi-secret-key",
+                    "base_url": MOONSHOT_DEFAULT_URL,
+                    "label": "old Kimi key",
+                }],
+            },
+        })
+
+        entries = read_credential_pool("kimi-coding")
+
+        assert entries[0]["base_url"] == KIMI_CODE_BASE_URL
+
+    def test_kimi_pool_env_override_wins(self, monkeypatch):
+        monkeypatch.setenv("KIMI_BASE_URL", "https://override.example/v1")
+        monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {
+            "credential_pool": {
+                "kimi-coding": [{
+                    "source": "manual",
+                    "auth_type": "api_key",
+                    "access_token": "sk-kimi-secret-key",
+                    "base_url": MOONSHOT_DEFAULT_URL,
+                    "label": "old Kimi key",
+                }],
+            },
+        })
+
+        entries = read_credential_pool("kimi-coding")
+
+        assert entries[0]["base_url"] == "https://override.example/v1"
 
 
 class TestZaiEndpointAutoDetect:

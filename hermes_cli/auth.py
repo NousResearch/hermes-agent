@@ -931,6 +931,43 @@ def get_auth_provider_display_name(provider_id: str) -> str:
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
+def _normalize_loaded_credential_pool_entries(
+    provider_id: str,
+    entries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Normalize provider-specific fields that may become stale on disk."""
+    if provider_id not in ("kimi-coding", "kimi-coding-cn"):
+        return list(entries)
+
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if not pconfig:
+        return list(entries)
+
+    env_url = ""
+    if pconfig.base_url_env_var:
+        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+
+    normalized: List[Dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            normalized.append(entry)
+            continue
+        item = dict(entry)
+        api_key = str(
+            item.get("access_token")
+            or item.get("runtime_api_key")
+            or item.get("api_key")
+            or ""
+        ).strip()
+        item["base_url"] = _resolve_kimi_base_url(
+            api_key,
+            pconfig.inference_base_url,
+            env_url,
+        ).rstrip("/")
+        normalized.append(item)
+    return normalized
+
+
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice."""
     auth_store = _load_auth_store()
@@ -938,9 +975,17 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     if not isinstance(pool, dict):
         pool = {}
     if provider_id is None:
-        return dict(pool)
+        normalized_pool = {}
+        for pid, entries in pool.items():
+            if isinstance(entries, list):
+                normalized_pool[pid] = _normalize_loaded_credential_pool_entries(pid, entries)
+            else:
+                normalized_pool[pid] = entries
+        return normalized_pool
     provider_entries = pool.get(provider_id)
-    return list(provider_entries) if isinstance(provider_entries, list) else []
+    if not isinstance(provider_entries, list):
+        return []
+    return _normalize_loaded_credential_pool_entries(provider_id, provider_entries)
 
 
 def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Path:

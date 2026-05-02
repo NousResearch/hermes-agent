@@ -35,11 +35,21 @@ import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+interface SessionUsage {
+  total?: number;
+  context_used?: number;
+  context_max?: number;
+  context_percent?: number;
+  compressions?: number;
+  cost_usd?: number;
+}
+
 interface SessionInfo {
   cwd?: string;
   model?: string;
   provider?: string;
   credential_warning?: string;
+  usage?: SessionUsage;
 }
 
 interface RpcEnvelope {
@@ -299,6 +309,14 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   const canPickModel = state === "open" && !!sessionId;
   const modelLabel = (info.model ?? "—").split("/").slice(-1)[0] ?? "—";
   const banner = error ?? info.credential_warning ?? null;
+  const usage = info.usage;
+  const ctxPercent = usage?.context_percent;
+  const ctxLabel =
+    usage?.context_max && usage?.context_used != null
+      ? `${usage.context_used.toLocaleString()} / ${usage.context_max.toLocaleString()} (${ctxPercent ?? 0}%)`
+      : usage?.total
+        ? `${usage.total.toLocaleString()} tok`
+        : null;
 
   return (
     <aside
@@ -307,8 +325,8 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         className,
       )}
     >
-      <Card className="flex items-center justify-between gap-2 px-3 py-2">
-        <div className="min-w-0">
+      <Card className="flex items-start justify-between gap-2 px-3 py-2">
+        <div className="min-w-0 flex-1">
           <div className="text-xs uppercase tracking-wider text-muted-foreground">
             model
           </div>
@@ -328,6 +346,26 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           >
             <span className="truncate">{modelLabel}</span>
           </Button>
+
+          {ctxLabel || usage?.compressions || typeof usage?.cost_usd === "number" ? (
+            <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+              {ctxLabel ? (
+                <span className="rounded border border-border/60 px-1.5 py-0.5">
+                  ctx {ctxLabel}
+                </span>
+              ) : null}
+              {usage?.compressions ? (
+                <span className="rounded border border-border/60 px-1.5 py-0.5">
+                  cmp {usage.compressions}
+                </span>
+              ) : null}
+              {typeof usage?.cost_usd === "number" ? (
+                <span className="rounded border border-border/60 px-1.5 py-0.5">
+                  ${usage.cost_usd.toFixed(4)}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <Badge tone={STATE_TONE[state]}>{STATE_LABEL[state]}</Badge>

@@ -415,7 +415,13 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+        # ``find_gateway_pids`` is invoked twice: once to enumerate manual
+         # PIDs to restart, then again ~3s later by the post-restart survivor
+         # sweep (#17648). Return the live PID first, then an empty list to
+         # simulate the process actually exiting after the graceful restart
+         # — otherwise the sweep would SIGKILL pid 12345 even though graceful
+         # drain succeeded, and ``kill.assert_not_called()`` would fire.
+        with patch.object(gateway_cli, "find_gateway_pids", side_effect=[[12345], []]), \
              patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
              patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
              patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
@@ -453,7 +459,11 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+        # See note in ``test_update_restarts_profile_manual_gateways``: the
+        # post-restart survivor sweep (#17648) re-queries ``find_gateway_pids``
+        # ~3s after the restart attempt. Return ``[]`` on the second call so
+        # the SIGTERM fallback isn't escalated to SIGKILL by the sweep.
+        with patch.object(gateway_cli, "find_gateway_pids", side_effect=[[12345], []]), \
              patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
              patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
              patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=False) as graceful, \
@@ -872,15 +882,25 @@ class TestServicePidExclusion:
             launchctl_loaded=True,
         )
 
+        # Survivor sweep (#17648) re-queries ``find_gateway_pids`` after
+         # SIGTERM. ``os.kill`` is mocked, so the PID never "dies" — track
+         # the killed-via-SIGTERM PIDs ourselves and exclude them on later
+         # calls to simulate the OS reaping the process. Without this the
+         # sweep escalates with SIGKILL and ``manual_kills == 2`` instead of 1.
+        _killed_pids: set[int] = set()
+
         def fake_find(exclude_pids=None, all_profiles=False):
-            _exclude = exclude_pids or set()
+            _exclude = (exclude_pids or set()) | _killed_pids
             return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
+
+        def fake_kill(pid, _sig):
+            _killed_pids.add(pid)
 
         with patch.object(
             gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
         ), patch.object(
             gateway_cli, "find_gateway_pids", side_effect=fake_find,
-        ), patch("os.kill") as mock_kill:
+        ), patch("os.kill", side_effect=fake_kill) as mock_kill:
             cmd_update(mock_args)
 
         captured = capsys.readouterr().out

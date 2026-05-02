@@ -26,6 +26,10 @@ if [ "$(id -u)" = "0" ]; then
         groupmod -o -g "$HERMES_GID" hermes 2>/dev/null || true
     fi
 
+    # Ensure the home path itself exists before ownership checks. Without this,
+    # stat/chown paths can fail on first boot with custom HERMES_HOME mounts.
+    mkdir -p "$HERMES_HOME" 2>/dev/null || true
+
     # Fix ownership of the data volume. When HERMES_UID remaps the hermes user,
     # files created by previous runs (under the old UID) become inaccessible.
     # Always chown -R when UID was remapped; otherwise only if top-level is wrong.

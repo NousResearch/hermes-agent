@@ -336,6 +336,7 @@ def run_longmemeval(
     explore: bool = False,
     ingest_strategy: str = "raw",
     llm_fn=None,
+    inject_dates: bool = False,
 ) -> LongMemSummary:
     """
     Run LongMemEval evaluation on a list of questions.
@@ -364,7 +365,11 @@ def run_longmemeval(
         store = backend_cls(**backend_kwargs)
         store.reset()
 
-        n_stored = ingest_sessions_into_store(store, question, ingest_strategy=ingest_strategy, llm_fn=llm_fn)
+        if inject_dates:
+            from benchmarks.dated_ingestion import ingest_longmemeval_with_dates
+            n_stored = ingest_longmemeval_with_dates(store, question)
+        else:
+            n_stored = ingest_sessions_into_store(store, question, ingest_strategy=ingest_strategy, llm_fn=llm_fn)
 
         result = evaluate_question(store, question, judge, top_k=top_k, explore=explore)
         results.append(result)

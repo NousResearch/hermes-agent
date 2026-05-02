@@ -472,6 +472,7 @@ def run_locomo(
     explore: bool = False,
     ingest_strategy: str = "raw",
     llm_fn=None,
+    inject_dates: bool = False,
 ) -> LoCoMoSummary:
     """
     Run LoCoMo evaluation on a list of questions.
@@ -510,13 +511,22 @@ def run_locomo(
         store = backend_cls(**backend_kwargs)
         store.reset()
 
-        n_stored = ingest_conversation_into_store(
-            store,
-            question.conversation_sessions,
-            evidence_refs=question.evidence,
-            ingest_strategy=ingest_strategy,
-            llm_fn=llm_fn,
-        )
+        if inject_dates:
+            from benchmarks.dated_ingestion import (
+                ingest_locomo_with_dates,
+                lookup_session_dates,
+            )
+            n_stored = ingest_locomo_with_dates(
+                store, question, lookup_session_dates(question),
+            )
+        else:
+            n_stored = ingest_conversation_into_store(
+                store,
+                question.conversation_sessions,
+                evidence_refs=question.evidence,
+                ingest_strategy=ingest_strategy,
+                llm_fn=llm_fn,
+            )
 
         result = evaluate_question(store, question, judge, top_k=top_k, explore=explore)
         results.append(result)

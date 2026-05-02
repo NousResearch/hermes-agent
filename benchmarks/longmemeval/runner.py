@@ -172,6 +172,20 @@ def main() -> None:
         "--ingest", default="raw", choices=["raw", "chunk", "summarize"],
         help="Ingestion strategy: raw (default), chunk (semantic grouping), summarize (LLM facts)",
     )
+    parser.add_argument(
+        "--backend", default=None,
+        help="Memory backend name (resolved via benchmarks.runner.BACKENDS). "
+             "Default: baseline-flat (FlatMemoryStore)",
+    )
+    parser.add_argument(
+        "--inject-dates", action="store_true",
+        help=(
+            "Re-attach haystack_dates at ingestion via the shared "
+            "dated_ingestion shim (benchmarks/dated_ingestion.py). "
+            "Required for temporal-reasoning questions; the standard "
+            "adapter discards date metadata."
+        ),
+    )
     args = parser.parse_args()
 
     # Load questions
@@ -203,9 +217,20 @@ def main() -> None:
         "profile": args.profile,
         "embedding_model": args.embedding,
     }
+    backend_cls = None
+    if args.backend:
+        import benchmarks.runner as _runner_mod
+        _backends = getattr(_runner_mod, "BACKENDS", {})
+        if args.backend not in _backends:
+            print(
+                f"Unknown backend {args.backend!r}. Available: {sorted(_backends)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        backend_cls = _backends[args.backend]
 
     print(f"\nRunning LongMemEval ({len(questions)} questions)...")
-    print(f"  Backend: cognitive memory ({args.profile}, {args.embedding})")
+    print(f"  Backend: {args.backend or 'baseline-flat'} ({args.profile}, {args.embedding})")
     print(f"  Judge:   {args.judge_model}")
     print(f"  Mode:    {'explore (PPR graph walk)' if args.explore else 'recall (default)'}")
     print(f"  Ingest:  {args.ingest}")
@@ -215,11 +240,13 @@ def main() -> None:
     summary = run_longmemeval(
         questions=questions,
         judge=judge,
+        backend_cls=backend_cls,
         backend_kwargs=backend_kwargs,
         top_k=args.top_k,
         verbose=args.verbose,
         explore=args.explore,
         ingest_strategy=args.ingest,
+        inject_dates=args.inject_dates,
     )
     elapsed = time.time() - start
 

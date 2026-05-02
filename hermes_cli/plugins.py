@@ -341,6 +341,41 @@ class PluginContext:
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
+    # -- platform adapter registration --------------------------------------
+
+    def register_platform_adapter(
+        self,
+        name: str,
+        adapter_class: type,
+        requirements_check: Callable[[], bool] | None = None,
+    ) -> None:
+        """Register a custom messaging platform adapter.
+
+        ``name`` is the identifier the user puts under
+        ``gateway.platforms.<name>`` in config.yaml. ``adapter_class``
+        must be a subclass of ``gateway.platforms.base.BasePlatformAdapter``.
+        ``requirements_check`` is an optional callable returning False
+        when the adapter's dependencies aren't installed (mirrors the
+        existing ``check_telegram_requirements`` pattern).
+
+        Plugin-registered adapters are consulted as a FALLBACK after
+        ``GatewayRunner._create_adapter`` exhausts its hardcoded chain
+        of in-tree platforms — in-tree wins on name collision so this
+        can't shadow Telegram, Slack, etc.
+        """
+        if name in self._manager._plugin_platform_adapters:
+            logger.warning(
+                "Plugin '%s' tried to register platform adapter '%s' but it is "
+                "already registered by another plugin. Skipping.",
+                self.manifest.name, name,
+            )
+            return
+        self._manager._plugin_platform_adapters[name] = (adapter_class, requirements_check)
+        logger.debug(
+            "Plugin %s registered platform adapter: %s",
+            self.manifest.name, name,
+        )
+
     # -- skill registration -------------------------------------------------
 
     def register_skill(
@@ -407,6 +442,10 @@ class PluginManager:
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        # Plugin platform adapter registry: name → (adapter_class, optional req_check).
+        # Consulted by GatewayRunner._create_adapter as a fallback after the
+        # in-tree if/elif chain. See PluginContext.register_platform_adapter.
+        self._plugin_platform_adapters: Dict[str, tuple] = {}
 
     # -----------------------------------------------------------------------
     # Public
@@ -788,6 +827,17 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = get_plugin_manager()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def get_plugin_platform_adapter(name: str) -> Optional[tuple]:
+    """Return ``(adapter_class, requirements_check_or_None)`` for a
+    plugin-registered platform adapter, or ``None`` if no plugin claims
+    that platform name.
+
+    Used by ``GatewayRunner._create_adapter`` as a fallback after the
+    in-tree if/elif chain — see ``PluginContext.register_platform_adapter``.
+    """
+    return get_plugin_manager()._plugin_platform_adapters.get(name)
 
 
 def get_plugin_commands() -> Dict[str, dict]:

@@ -46,6 +46,29 @@ class TestResolveOrigin:
         job = {"origin": {}}
         assert _resolve_origin(job) is None
 
+    @pytest.mark.parametrize(
+        "non_dict_origin",
+        [
+            "combined-digest-replaces-x-and-y-20260503",
+            123,
+            ["telegram", "12345"],
+            ("platform", "chat_id"),
+            42.0,
+        ],
+    )
+    def test_non_dict_origin_returns_none_instead_of_crashing(self, non_dict_origin):
+        """Non-dict origins (provenance strings from hand-edited or migrated
+        jobs.json) must be treated as missing instead of crashing the
+        scheduler tick on ``origin.get('platform')`` with
+        ``'str' object has no attribute 'get'`` (#18722).
+
+        Before this guard a job in this state crashed every fire attempt
+        forever; ``mark_job_run`` recorded the error but the next tick
+        re-loaded the poisoned origin and crashed identically.
+        """
+        job = {"origin": non_dict_origin}
+        assert _resolve_origin(job) is None
+
 
 class TestResolveDeliveryTarget:
     def test_origin_delivery_preserves_thread_id(self):

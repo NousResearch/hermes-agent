@@ -11977,7 +11977,20 @@ class GatewayRunner:
             if slack_reply_in_thread:
                 _progress_thread_id = source.thread_id or event_message_id
             else:
-                _progress_thread_id = source.thread_id
+                # The Slack adapter sets source.thread_id to the user's own
+                # message ts for top-level DMs (synthetic thread used for
+                # session keying). When reply_in_thread is false, treat that
+                # synthetic thread_id as "no thread" so progress messages
+                # stay at the channel/DM top level instead of starting a
+                # thread that subsequent messages would inherit.
+                if (
+                    source.thread_id
+                    and event_message_id
+                    and source.thread_id == event_message_id
+                ):
+                    _progress_thread_id = None
+                else:
+                    _progress_thread_id = source.thread_id
         else:
             _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None

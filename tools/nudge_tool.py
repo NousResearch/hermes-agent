@@ -283,7 +283,7 @@ def _check_nudge() -> bool:
 
 registry.register(
     name="nudge",
-    toolset="cronjob",
+    toolset="nudge",
     schema=NUDGE_SCHEMA,
     handler=nudge_tool,
     check_fn=_check_nudge,

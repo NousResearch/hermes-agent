@@ -2174,10 +2174,10 @@ class TestRunConversation:
             "success": True,
             "job": {
                 "id": "job-1",
-                "repo_slug": "static-pages",
+                "repo_slug": "repo-name",
                 "state": "running",
                 "connect_command": "copilot --connect=task-1",
-                "web_url": "https://github.com/RosenblattAI/static-pages/tasks/task-1",
+                "web_url": "https://github.com/RosenblattAI/repo-name/tasks/task-1",
             },
         })
 
@@ -2194,8 +2194,8 @@ class TestRunConversation:
         assert result["api_calls"] == 0
         assert result["completed"] is True
         assert "Launched this as a Copilot remote job" in result["final_response"]
-        assert "static-pages" in result["final_response"]
-        assert "https://github.com/RosenblattAI/static-pages/tasks/task-1" in result["final_response"]
+        assert "repo-name" in result["final_response"]
+        assert "https://github.com/RosenblattAI/repo-name/tasks/task-1" in result["final_response"]
         assert mock_handle_function_call.call_args.args[0] == "copilot_remote"
         tool_args = mock_handle_function_call.call_args.args[1]
         assert tool_args["action"] == "launch"
@@ -2231,7 +2231,7 @@ class TestRunConversation:
             "success": True,
             "job": {
                 "id": "JOB-XYZ",
-                "repo_slug": "RosenblattAI/static-pages",
+                "repo_slug": "RosenblattAI/repo-name",
                 "state": "running",
                 "connect_command": "hermes copilot connect JOB-XYZ",
             },

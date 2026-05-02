@@ -27,8 +27,8 @@ def test_launch_explicit_repo_dry_run(db):
             {
                 "action": "launch",
                 "prompt": "Build a static webpage about the Macy Conferences",
-                "repo": "static-pages",
-                "repo_path": "/workspace/repos/corp_it/static-pages",
+                "repo": "repo-name",
+                "repo_path": "/workspace/repos/corp_it/repo-name",
                 "dry_run": True,
             },
             task_id="slack-session-1",
@@ -37,7 +37,7 @@ def test_launch_explicit_repo_dry_run(db):
 
     assert result["success"] is True
     assert result["action"] == "launch"
-    assert result["job"]["repo"] == "static-pages"
+    assert result["job"]["repo"] == "repo-name"
     assert result["job"]["state"] == "done"
     # Dry-run never spawns the Copilot subprocess, so the launcher cannot
     # extract a real reconnect handle. The tool must NOT fabricate one
@@ -51,18 +51,18 @@ def test_launch_explicit_repo_dry_run(db):
 
     jobs = db.list_copilot_remote(state="done")
     assert len(jobs) == 1
-    assert jobs[0]["repo_slug"] == "static-pages"
+    assert jobs[0]["repo_slug"] == "repo-name"
 
 
 def test_launch_routes_repo_and_stores_connect_handle(db, monkeypatch):
     routed_repo = RepoEntry(
-        slug="static-pages",
-        path="/workspace/repos/corp_it/static-pages",
+        slug="repo-name",
+        path="/workspace/repos/corp_it/repo-name",
     )
     monkeypatch.setattr("tools.copilot_remote_tool._route_repo", lambda prompt: routed_repo)
 
     def fake_launch(repo, prompt, *, session_id, model=None, dry_run=False, on_complete=None):
-        assert repo.slug == "static-pages"
+        assert repo.slug == "repo-name"
         assert "new static webpage" in prompt
         assert dry_run is False
         return {
@@ -87,7 +87,7 @@ def test_launch_routes_repo_and_stores_connect_handle(db, monkeypatch):
     )
 
     assert result["success"] is True
-    assert result["job"]["repo"] == "static-pages"
+    assert result["job"]["repo"] == "repo-name"
     assert result["job"]["connect_handle"] == "task-123"
     assert result["job"]["connect_command"] == "copilot --connect=task-123"
     # repo_path is not a real git clone in the test environment, so the shared
@@ -104,8 +104,8 @@ def test_launch_routes_repo_and_stores_connect_handle(db, monkeypatch):
 def test_launch_routes_repo_with_web_url(db, monkeypatch):
     """When the repo path is a real git clone and connect handle exists, web_url should be present."""
     routed_repo = RepoEntry(
-        slug="static-pages",
-        path="/workspace/repos/corp_it/static-pages",
+        slug="repo-name",
+        path="/workspace/repos/corp_it/repo-name",
     )
     monkeypatch.setattr("tools.copilot_remote_tool._route_repo", lambda prompt: routed_repo)
     monkeypatch.setattr(
@@ -140,12 +140,12 @@ def test_launch_routes_repo_with_web_url(db, monkeypatch):
     assert result["success"] is True
     assert result["job"]["connect_handle"] == "task-456"
     assert result["job"]["web_url"] == (
-        "https://github.com/RosenblattAI/static-pages/tasks/task-456"
+        "https://github.com/RosenblattAI/repo-name/tasks/task-456"
     )
 
 
 def test_launch_requires_prompt(db):
-    result = json.loads(copilot_remote({"action": "launch", "repo": "static-pages"}))
+    result = json.loads(copilot_remote({"action": "launch", "repo": "repo-name"}))
 
     assert result["success"] is False
     assert "prompt is required" in result["error"]
@@ -154,8 +154,8 @@ def test_launch_requires_prompt(db):
 def test_list_and_show(db):
     db.create_copilot_remote(
         job_id="job-1",
-        repo_slug="static-pages",
-        repo_path="/workspace/repos/corp_it/static-pages",
+        repo_slug="repo-name",
+        repo_path="/workspace/repos/corp_it/repo-name",
         prompt="Build page",
         connect_handle="task-1",
     )
@@ -174,8 +174,8 @@ def test_list_and_show(db):
 def test_list_skips_web_url_lookup(db, monkeypatch):
     db.create_copilot_remote(
         job_id="job-2",
-        repo_slug="static-pages",
-        repo_path="/workspace/repos/corp_it/static-pages",
+        repo_slug="repo-name",
+        repo_path="/workspace/repos/corp_it/repo-name",
         prompt="Build page",
         connect_handle="task-2",
     )

@@ -9662,13 +9662,17 @@ class HermesCLI:
 
         symbol = (symbol or "❯ ").rstrip() + " "
 
-        # Prepend profile name when not default
+        # Prepend profile name when not default.
+        # Catch BaseException (not just Exception) because a KeyboardInterrupt
+        # from the signal handler can arrive mid-pathlib comparison inside
+        # get_active_profile_name(), and this code runs on the prompt_toolkit
+        # rendering thread where an unhandled KI crashes the TUI layout.
         try:
             from hermes_cli.profiles import get_active_profile_name
             profile = get_active_profile_name()
             if profile not in ("default", "custom"):
                 symbol = f"{profile} {symbol}"
-        except Exception:
+        except BaseException:
             pass
         stripped = symbol.rstrip()
         if not stripped:

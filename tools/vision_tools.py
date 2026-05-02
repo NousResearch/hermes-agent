@@ -119,10 +119,27 @@ def _detect_image_mime_type(image_path: Path) -> Optional[str]:
         return "image/bmp"
     if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "image/webp"
+    # TIFF: little-endian (II) or big-endian (MM)
+    if header[:4] in (b"II\x2a\x00", b"MM\x00\x2a"):
+        return "image/tiff"
+    # ICO / CUR
+    if len(header) >= 4 and header[:4] in (b"\x00\x00\x01\x00", b"\x00\x00\x02\x00"):
+        return "image/x-icon"
+    # AVIF / HEIC (ISOBMFF: ftyp box)
+    if len(header) >= 12 and header[4:8] == b"ftyp":
+        brand = header[8:12]
+        if brand in (b"avif", b"avis"):
+            return "image/avif"
+        if brand in (b"heic", b"heix", b"mif1"):
+            return "image/heic"
     if image_path.suffix.lower() == ".svg":
         head = image_path.read_text(encoding="utf-8", errors="ignore")[:4096].lower()
         if "<svg" in head:
             return "image/svg+xml"
+    # Fallback: use file extension when magic bytes are unrecognised
+    ext_mime = _determine_mime_type(image_path)
+    if ext_mime != "image/jpeg" or image_path.suffix.lower() in (".jpg", ".jpeg"):
+        return ext_mime
     return None
 
 

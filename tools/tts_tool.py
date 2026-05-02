@@ -1140,13 +1140,37 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     }
 
     endpoint = f"{base_url}/models/{model}:generateContent"
-    response = requests.post(
-        endpoint,
-        params={"key": api_key},
-        headers={"Content-Type": "application/json"},
-        json=payload,
-        timeout=60,
-    )
+    timeout = float(gemini_config.get("timeout", 120))
+    max_retries = int(gemini_config.get("max_retries", 2))
+
+    last_error: Optional[Exception] = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.post(
+                endpoint,
+                params={"key": api_key},
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=timeout,
+            )
+            break  # success — exit retry loop
+        except requests.exceptions.ReadTimeout as exc:
+            last_error = exc
+            if attempt < max_retries:
+                wait = 2 ** attempt
+                logger.warning(
+                    "Gemini TTS timed out (attempt %d/%d), retrying in %ds...",
+                    attempt, max_retries, wait,
+                )
+                import time
+                time.sleep(wait)
+            else:
+                raise RuntimeError(
+                    f"Gemini TTS timed out after {max_retries} attempts "
+                    f"(timeout={timeout}s). Increase tts.gemini.timeout in "
+                    f"config.yaml or check your network connection."
+                ) from exc
+
     if response.status_code != 200:
         # Surface the API error message when present
         try:

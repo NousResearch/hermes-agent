@@ -61,6 +61,9 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
     # Reconnection backoff schedule (seconds)
     _BACKOFF_STEPS = [5, 10, 30, 60]
+    # After this many consecutive failures, reduce log level to DEBUG
+    # to avoid flooding the log when HA is simply not on the network.
+    _LOG_QUIET_AFTER = 3
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.HOMEASSISTANT)
@@ -71,6 +74,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._rest_session: Optional["aiohttp.ClientSession"] = None
         self._listen_task: Optional[asyncio.Task] = None
         self._msg_id: int = 0
+        self._consecutive_failures: int = 0
 
         # Configuration from extra
         extra = config.extra or {}
@@ -130,10 +134,13 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             # Start background listener
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._running = True
+            self._consecutive_failures = 0
             logger.info("[%s] Connected to %s", self.name, self._hass_url)
             return True
 
         except Exception as e:
+            # Ensure no session leaks on connection failure
+            await self._cleanup_ws()
             logger.error("[%s] Failed to connect: %s", self.name, e)
             return False
 
@@ -145,7 +152,13 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30)
         )
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
+        try:
+            self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
+        except Exception:
+            # Connection failed (DNS, refused, timeout) — close the session
+            # we just created so it doesn't leak.
+            await self._cleanup_ws()
+            raise
 
         # Step 1: Receive auth_required
         msg = await self._ws.receive_json()
@@ -231,7 +244,16 @@ class HomeAssistantAdapter(BasePlatformAdapter):
 
             # Reconnect with backoff
             delay = self._BACKOFF_STEPS[min(backoff_idx, len(self._BACKOFF_STEPS) - 1)]
-            logger.info("[%s] Reconnecting in %ds...", self.name, delay)
+            self._consecutive_failures += 1
+            quiet = self._consecutive_failures > self._LOG_QUIET_AFTER
+            log = logger.debug if quiet else logger.info
+            log("[%s] Reconnecting in %ds... (attempt %d)", self.name, delay, self._consecutive_failures)
+            if quiet and self._consecutive_failures == self._LOG_QUIET_AFTER + 1:
+                logger.warning(
+                    "[%s] %d consecutive connection failures — suppressing "
+                    "further reconnect logs to DEBUG level",
+                    self.name, self._consecutive_failures,
+                )
             await asyncio.sleep(delay)
             backoff_idx += 1
 
@@ -240,9 +262,11 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                 success = await self._ws_connect()
                 if success:
                     backoff_idx = 0  # Reset on successful reconnect
+                    self._consecutive_failures = 0
                     logger.info("[%s] Reconnected", self.name)
             except Exception as e:
-                logger.warning("[%s] Reconnection failed: %s", self.name, e)
+                log_fn = logger.debug if self._consecutive_failures > self._LOG_QUIET_AFTER else logger.warning
+                log_fn("[%s] Reconnection failed: %s", self.name, e)
 
     async def _read_events(self) -> None:
         """Read events from WebSocket until disconnected."""

@@ -921,11 +921,26 @@ def get_model_info():
         # Effective is what the agent actually uses
         effective_ctx = config_ctx_int if config_ctx_int > 0 else auto_ctx
 
-        # Try to get model capabilities from models.dev
+        # Try to get model capabilities from models.dev. This is optional UI
+        # decoration, so keep the dashboard responsive if DNS/network fetches
+        # stall while models.dev cache is cold.
         caps = {}
         try:
+            import threading
             from agent.models_dev import get_model_capabilities
-            mc = get_model_capabilities(provider=provider, model=model_name)
+
+            holder: dict = {}
+
+            def _load_caps() -> None:
+                try:
+                    holder["value"] = get_model_capabilities(provider=provider, model=model_name)
+                except Exception:
+                    holder["value"] = None
+
+            thread = threading.Thread(target=_load_caps, daemon=True)
+            thread.start()
+            thread.join(0.5)
+            mc = holder.get("value")
             if mc is not None:
                 caps = {
                     "supports_tools": mc.supports_tools,

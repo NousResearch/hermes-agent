@@ -14,6 +14,7 @@ import os
 import tempfile
 import html as _html
 import re
+import subprocess
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -1407,6 +1408,50 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_pairing_approval(
+        self,
+        chat_id: str,
+        platform: str,
+        code: str,
+        user_id: str,
+        user_name: str = "",
+    ) -> SendResult:
+        """Send an owner-only inline approval prompt for a pending pairing code."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            profile = os.getenv("PAIRING_APPROVAL_PROFILE", "").strip() or os.getenv("HERMES_PROFILE", "").strip()
+            label = f"{platform}:{code}"
+            callback_suffix = f"{platform}:{code}"
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Approve", callback_data=f"pair:approve:{callback_suffix}"),
+                    InlineKeyboardButton("❌ Dismiss", callback_data=f"pair:dismiss:{callback_suffix}"),
+                ]
+            ])
+            text = (
+                "🔐 <b>Hermes pairing approval request</b>\n\n"
+                f"User: <code>{_html.escape(user_name or '(no name)')}</code>\n"
+                f"User ID: <code>{_html.escape(str(user_id))}</code>\n"
+                f"Platform: <code>{_html.escape(platform)}</code>\n"
+                f"Pairing code: <code>{_html.escape(code)}</code>\n"
+            )
+            if profile:
+                text += f"Profile: <code>{_html.escape(profile)}</code>\n"
+            text += "\nApprove this request to allow the user to access this Hermes bot."
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+                **self._link_preview_kwargs(),
+            )
+            logger.info("[%s] Pairing approval prompt sent to owner for %s", self.name, label)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_pairing_approval failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
@@ -1959,6 +2004,76 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._bot.send_message(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Pairing approval callbacks (pair:approve|dismiss:platform:code) ---
+        if data.startswith("pair:"):
+            parts = data.split(":", 3)
+            if len(parts) != 4:
+                await query.answer(text="Invalid pairing approval data.")
+                return
+            action, platform_name, code = parts[1], parts[2], parts[3]
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(caller_id):
+                await query.answer(text="⛔ You are not authorized to approve users.")
+                return
+            if action == "dismiss":
+                await query.answer(text="Dismissed.")
+                try:
+                    await query.edit_message_text(
+                        text=f"❌ Pairing approval request dismissed: {platform_name}:{code}",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                return
+            if action != "approve":
+                await query.answer(text="Unknown pairing action.")
+                return
+
+            profile = os.getenv("PAIRING_APPROVAL_PROFILE", "").strip() or os.getenv("HERMES_PROFILE", "").strip()
+            cmd = [sys.executable, "-m", "hermes_cli.main"]
+            if profile:
+                cmd.extend(["--profile", profile])
+            cmd.extend(["pairing", "approve", platform_name, code])
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=20,
+                    cwd=str(_Path.home()),
+                )
+                out = (proc.stdout or "").strip()
+                if proc.returncode == 0:
+                    await query.answer(text="Approved.")
+                    summary = out[-1200:] if out else f"Approved {platform_name}:{code}"
+                    try:
+                        await query.edit_message_text(
+                            text=f"✅ Pairing approved\n\n<pre>{_html.escape(summary)}</pre>",
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
+                    logger.info("[%s] Pairing approved by Telegram button for %s:%s", self.name, platform_name, code)
+                else:
+                    await query.answer(text="Approval failed.")
+                    err = out[-1200:] if out else "approval command failed"
+                    try:
+                        await query.edit_message_text(
+                            text=f"⚠️ Pairing approval failed\n\n<pre>{_html.escape(err)}</pre>",
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
+                    logger.warning("[%s] Pairing approval command failed: %s", self.name, err)
+            except Exception as exc:
+                await query.answer(text="Approval processing error.")
+                logger.error("[%s] Pairing approval callback failed: %s", self.name, exc, exc_info=True)
             return
 
         # --- Update prompt callbacks ---

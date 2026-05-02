@@ -204,6 +204,21 @@ def _handle_send(args):
         return tool_error("Interrupted")
 
     try:
+        # Keep send_message behavior aligned with cron/gateway delivery: cron
+        # explicitly reloads ~/.hermes/.env before resolving platform creds,
+        # while CLI tool sessions may not have those env vars in-process.
+        # Loading here lets TELEGRAM_BOT_TOKEN / TELEGRAM_HOME_CHANNEL and
+        # sibling platform variables work for direct send_message calls too.
+        try:
+            from dotenv import load_dotenv
+            from hermes_constants import get_hermes_home
+            try:
+                load_dotenv(str(get_hermes_home() / ".env"), override=True, encoding="utf-8")
+            except UnicodeDecodeError:
+                load_dotenv(str(get_hermes_home() / ".env"), override=True, encoding="latin-1")
+        except Exception:
+            logger.debug("Could not reload Hermes .env before send_message", exc_info=True)
+
         from gateway.config import load_gateway_config, Platform
         config = load_gateway_config()
     except Exception as e:

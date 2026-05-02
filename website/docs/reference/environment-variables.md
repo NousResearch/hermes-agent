@@ -383,6 +383,9 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MESSAGING_CWD` | Working directory for terminal commands in messaging mode (default: `~`) |
 | `GATEWAY_ALLOWED_USERS` | Comma-separated user IDs allowed across all platforms |
 | `GATEWAY_ALLOW_ALL_USERS` | Allow all users without allowlists (`true`/`false`, default: `false`) |
+| `GATEWAY_PAIRING_APPROVAL_NOTIFY_CHAT_ID` | Optional Telegram chat ID that receives owner approval prompts for new pairing codes |
+| `GATEWAY_PAIRING_APPROVAL_NOTIFY_BOT_TOKEN` | Optional Telegram bot token used only for pairing approval prompts; omit to use the active Telegram adapter |
+| `GATEWAY_PAIRING_APPROVAL_PROFILE` | Optional Hermes profile name used when approving pairing codes from inline buttons |
 
 ### Advanced Messaging Tuning
 

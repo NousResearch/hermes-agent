@@ -15,6 +15,7 @@ Usage:
 
 import asyncio
 import dataclasses
+import html
 import json
 import logging
 import os
@@ -4438,6 +4439,66 @@ class GatewayRunner:
                             f"Ask the bot owner to run:\n"
                             f"`hermes pairing approve {platform_name} {code}`"
                         )
+                        notify_chat_id = (
+                            os.getenv("GATEWAY_PAIRING_APPROVAL_NOTIFY_CHAT_ID", "").strip()
+                            or os.getenv("PAIRING_APPROVAL_NOTIFY_CHAT_ID", "").strip()
+                        )
+                        notify_token = (
+                            os.getenv("GATEWAY_PAIRING_APPROVAL_NOTIFY_BOT_TOKEN", "").strip()
+                            or os.getenv("PAIRING_APPROVAL_NOTIFY_BOT_TOKEN", "").strip()
+                        )
+                        if notify_chat_id and notify_token and source.platform == Platform.TELEGRAM:
+                            try:
+                                import urllib.parse as _urlparse
+                                import urllib.request as _urlrequest
+                                import ssl as _ssl
+                                profile = (
+                                    os.getenv("GATEWAY_PAIRING_APPROVAL_PROFILE", "").strip()
+                                    or os.getenv("PAIRING_APPROVAL_PROFILE", "").strip()
+                                    or os.getenv("HERMES_PROFILE", "").strip()
+                                )
+                                text = (
+                                    "🔐 <b>Hermes pairing approval request</b>\n\n"
+                                    f"User: <code>{html.escape(source.user_name or '(no name)')}</code>\n"
+                                    f"User ID: <code>{html.escape(str(source.user_id))}</code>\n"
+                                    f"Platform: <code>{html.escape(platform_name)}</code>\n"
+                                    f"Pairing code: <code>{html.escape(code)}</code>\n"
+                                )
+                                if profile:
+                                    text += f"Profile: <code>{html.escape(profile)}</code>\n"
+                                text += "\nApprove this request to allow the user to access this Hermes bot."
+                                keyboard = {
+                                    "inline_keyboard": [[
+                                        {"text": "✅ Approve", "callback_data": f"pair:approve:{platform_name}:{code}"},
+                                        {"text": "❌ Dismiss", "callback_data": f"pair:dismiss:{platform_name}:{code}"},
+                                    ]]
+                                }
+                                body = _urlparse.urlencode({
+                                    "chat_id": notify_chat_id,
+                                    "text": text,
+                                    "parse_mode": "HTML",
+                                    "reply_markup": json.dumps(keyboard, ensure_ascii=False),
+                                }).encode()
+                                _urlrequest.urlopen(
+                                    f"https://api.telegram.org/bot{notify_token}/sendMessage",
+                                    data=body,
+                                    timeout=15,
+                                    context=_ssl._create_unverified_context(),
+                                ).read()
+                                logger.info("Pairing approval owner notification sent via notify bot")
+                            except Exception as notify_exc:
+                                logger.warning("Pairing approval owner notification failed: %s", notify_exc)
+                        elif notify_chat_id and hasattr(adapter, "send_pairing_approval"):
+                            try:
+                                await adapter.send_pairing_approval(
+                                    notify_chat_id,
+                                    platform_name,
+                                    code,
+                                    source.user_id,
+                                    source.user_name or "",
+                                )
+                            except Exception as notify_exc:
+                                logger.warning("Pairing approval owner notification failed: %s", notify_exc)
                 else:
                     adapter = self.adapters.get(source.platform)
                     if adapter:

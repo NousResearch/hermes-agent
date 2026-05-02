@@ -269,6 +269,20 @@ whatsapp:
 | File security | `chmod 0600` on all pairing data files |
 | Logging | Codes are never logged to stdout |
 
+**Optional owner approval notifications:**
+
+For Telegram deployments, Hermes can also send the bot owner an inline approval request whenever an unknown DM user receives a pairing code. Set these variables in `~/.hermes/.env` and restart the gateway:
+
+```bash
+GATEWAY_PAIRING_APPROVAL_NOTIFY_CHAT_ID=123456789
+# Optional: send via a separate Telegram bot token instead of the active adapter
+GATEWAY_PAIRING_APPROVAL_NOTIFY_BOT_TOKEN=123456:ABC...
+# Optional: approve against a specific Hermes profile
+GATEWAY_PAIRING_APPROVAL_PROFILE=publicbot
+```
+
+If `GATEWAY_PAIRING_APPROVAL_NOTIFY_BOT_TOKEN` is omitted, Hermes uses the active Telegram adapter when available. The inline buttons approve by running the equivalent of `hermes pairing approve <platform> <code>`. Legacy `PAIRING_APPROVAL_*` environment variable names are still accepted.
+
 **Pairing CLI commands:**
 
 ```bash

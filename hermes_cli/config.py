@@ -1229,6 +1229,25 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # Optional governance for Web3-oriented MCP servers (policy only — no bundled chain RPC).
+    # Requires explicit server_names when enabled to avoid accidental blocking of unrelated MCP tools.
+    "web3_mcp_governance": {
+        "enabled": False,
+        "server_names": [],
+        "blocked_tool_substrings": [
+            "send_raw",
+            "submit_transaction",
+            "sign_typed_data",
+            "eth_send_transaction",
+        ],
+        "allowed_tool_substrings": [],
+        "simulate_on_block": False,
+        "mcp_call_extra_retries": 0,
+        "retry_backoff_seconds": 1.5,
+        "persist_chain_hints": True,
+        "inject_wallet_context_in_prompt": False,
+    },
+
     # Session storage — controls automatic cleanup of ~/.hermes/state.db.
     # state.db accumulates every session, message, tool call, and FTS5 index
     # entry forever.  Without auto-pruning, a heavy user (gateway + cron)

@@ -17,6 +17,14 @@
           "description": "recommended"
         },
         {
+          "id": "deepseek/deepseek-v4-pro",
+          "description": ""
+        },
+        {
+          "id": "deepseek/deepseek-v4-flash",
+          "description": ""
+        },
+        {
           "id": "anthropic/claude-opus-4.7",
           "description": ""
         },
@@ -158,6 +166,12 @@
       "models": [
         {
           "id": "moonshotai/kimi-k2.6"
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek/deepseek-v4-flash"
         },
         {
           "id": "xiaomi/mimo-v2.5-pro"

@@ -545,6 +545,22 @@ def build_environment_hints() -> str:
     return "\n\n".join(hints)
 
 
+def build_web3_mcp_wallet_context_prompt() -> str:
+    """Return Web3 MCP governance snapshot text for the system prompt (optional).
+
+    Controlled by ``web3_mcp_governance.inject_wallet_context_in_prompt`` and
+    ``HERMES_HOME/web3_mcp/wallet_context.json``.  Session-stable — see
+    ``wallet_context_prompt_block`` docstring.
+    """
+    try:
+        from agent.web3_mcp_governance import wallet_context_prompt_block
+
+        return wallet_context_prompt_block()
+    except Exception as exc:
+        logger.debug("build_web3_mcp_wallet_context_prompt: %s", exc)
+        return ""
+
+
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2

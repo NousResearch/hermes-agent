@@ -2001,6 +2001,22 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 }, ensure_ascii=False)
             # Cooldown elapsed → fall through as a half-open probe.
 
+        # Optional Web3 MCP governance (blocklist / allowlist / dry-run stubs).
+        try:
+            from agent.web3_mcp_governance import evaluate_mcp_tool_call
+
+            _gov = evaluate_mcp_tool_call(server_name, tool_name, args)
+            if _gov.mode == "block":
+                return json.dumps({"error": _gov.message}, ensure_ascii=False)
+            if _gov.mode == "simulate":
+                return json.dumps(
+                    _gov.simulated_payload
+                    or {"simulated": True, "note": _gov.message},
+                    ensure_ascii=False,
+                )
+        except Exception as exc:
+            logger.debug("web3_mcp_governance evaluate failed: %s", exc)
+
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
@@ -2048,51 +2064,117 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         def _call_once():
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
 
+        extra_retries = 0
+        backoff_sec = 1.5
         try:
-            result = _call_once()
-            # Check if the MCP tool itself returned an error
+            from agent.web3_mcp_governance import (
+                extra_retries_for_mcp_call,
+                retry_backoff_seconds,
+            )
+
+            extra_retries = extra_retries_for_mcp_call(server_name, tool_name)
+            backoff_sec = retry_backoff_seconds()
+        except Exception:
+            pass
+
+        attempt = 0
+        max_attempts = 1 + max(0, extra_retries)
+
+        def _finalize_success(result_str: str) -> str:
             try:
-                parsed = json.loads(result)
+                from agent.web3_mcp_governance import maybe_persist_chain_hints
+
+                parsed = json.loads(result_str)
+                if "error" not in parsed:
+                    maybe_persist_chain_hints(server_name, tool_name, args)
+            except Exception:
+                pass
+            try:
+                parsed = json.loads(result_str)
                 if "error" in parsed:
                     _bump_server_error(server_name)
                 else:
                     _reset_server_error(server_name)  # success — reset
             except (json.JSONDecodeError, TypeError):
                 _reset_server_error(server_name)  # non-JSON = success
-            return result
-        except InterruptedError:
-            return _interrupted_call_result()
-        except Exception as exc:
-            # Auth-specific recovery path: consult the manager, signal
-            # reconnect if viable, retry once. Returns None to fall
-            # through for non-auth exceptions.
-            recovered = _handle_auth_error_and_retry(
-                server_name, exc, _call_once,
-                f"tools/call {tool_name}",
-            )
-            if recovered is not None:
-                return recovered
+            return result_str
 
-            # Transport session expiry (#13383): same reconnect flow
-            # but skips OAuth recovery because the access token is
-            # still valid — only the server-side session is stale.
-            recovered = _handle_session_expired_and_retry(
-                server_name, exc, _call_once,
-                f"tools/call {tool_name}",
-            )
-            if recovered is not None:
-                return recovered
-
-            _bump_server_error(server_name)
-            logger.error(
-                "MCP tool %s/%s call failed: %s",
-                server_name, tool_name, exc,
-            )
-            return json.dumps({
-                "error": _sanitize_error(
-                    f"MCP call failed: {type(exc).__name__}: {exc}"
+        while attempt < max_attempts:
+            attempt += 1
+            try:
+                result = _call_once()
+                return _finalize_success(result)
+            except InterruptedError:
+                return _interrupted_call_result()
+            except concurrent.futures.TimeoutError as exc:
+                if attempt >= max_attempts:
+                    _bump_server_error(server_name)
+                    logger.error(
+                        "MCP tool %s/%s timed out after %s attempt(s)",
+                        server_name,
+                        tool_name,
+                        attempt,
+                    )
+                    return json.dumps(
+                        {
+                            "error": _sanitize_error(
+                                f"MCP call timed out: {exc}"
+                            )
+                        },
+                        ensure_ascii=False,
+                    )
+                time.sleep(backoff_sec * (2 ** (attempt - 1)))
+            except Exception as exc:
+                err_l = str(exc).lower()
+                retryable = (
+                    attempt < max_attempts
+                    and (
+                        "timeout" in err_l
+                        or "timed out" in err_l
+                    )
                 )
-            }, ensure_ascii=False)
+                if retryable:
+                    time.sleep(backoff_sec * (2 ** (attempt - 1)))
+                    continue
+                recovered = _handle_auth_error_and_retry(
+                    server_name,
+                    exc,
+                    _call_once,
+                    f"tools/call {tool_name}",
+                )
+                if recovered is not None:
+                    return _finalize_success(recovered)
+
+                # Transport session expiry (#13383): same reconnect flow
+                # but skips OAuth recovery because the access token is
+                # still valid — only the server-side session is stale.
+                recovered = _handle_session_expired_and_retry(
+                    server_name, exc, _call_once,
+                    f"tools/call {tool_name}",
+                )
+                if recovered is not None:
+                    return _finalize_success(recovered)
+
+                _bump_server_error(server_name)
+                logger.error(
+                    "MCP tool %s/%s call failed: %s",
+                    server_name,
+                    tool_name,
+                    exc,
+                )
+                return json.dumps(
+                    {
+                        "error": _sanitize_error(
+                            f"MCP call failed: {type(exc).__name__}: {exc}"
+                        )
+                    },
+                    ensure_ascii=False,
+                )
+
+        return json.dumps(
+            {"error": "MCP call failed after retries"},
+            ensure_ascii=False,
+        )
 
     return _handler
 

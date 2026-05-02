@@ -684,6 +684,47 @@ class TestAuxiliaryPoolAwareness:
         assert stale_client.chat.completions.create.call_count == 1
         assert fresh_client.chat.completions.create.call_count == 1
 
+    def test_call_llm_rotates_same_provider_pool_after_usage_limit(self):
+        class _UsageLimit429(Exception):
+            status_code = 429
+            body = {"error": {"type": "usage_limit_reached", "message": "The usage limit has been reached", "resets_at": 1777712481}}
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex/responses"
+        stale_client.chat.completions.create.side_effect = _UsageLimit429("usage_limit_reached")
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex/responses"
+        fresh_client.chat.completions.create.return_value = {"ok": True}
+
+        next_entry = MagicMock()
+        next_entry.label = "codex-alt"
+        pool = MagicMock()
+        pool.has_credentials.return_value = True
+        pool.mark_exhausted_and_rotate.return_value = next_entry
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.5"), (fresh_client, "gpt-5.5")]),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._evict_cached_clients") as evict,
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+        ):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == {"ok": True}
+        pool.mark_exhausted_and_rotate.assert_called_once()
+        _, kwargs = pool.mark_exhausted_and_rotate.call_args
+        assert kwargs["status_code"] == 429
+        assert kwargs["error_context"]["reason"] == "usage_limit_reached"
+        assert kwargs["error_context"]["reset_at"] == 1777712481
+        evict.assert_called_once_with("openai-codex")
+        assert stale_client.chat.completions.create.call_count == 1
+        assert fresh_client.chat.completions.create.call_count == 1
+
     @pytest.mark.asyncio
     async def test_async_call_llm_retries_nous_after_401(self):
         class _Auth401(Exception):
@@ -712,6 +753,44 @@ class TestAuxiliaryPoolAwareness:
         assert result == {"ok": True}
         assert stale_client.chat.completions.create.await_count == 1
         assert fresh_async_client.chat.completions.create.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_rotates_same_provider_pool_after_usage_limit(self):
+        class _UsageLimit429(Exception):
+            status_code = 429
+            body = {"error": {"type": "usage_limit_reached", "message": "The usage limit has been reached", "resets_at": 1777712481}}
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex/responses"
+        stale_client.chat.completions.create = AsyncMock(side_effect=_UsageLimit429("usage_limit_reached"))
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex/responses"
+        fresh_client.chat.completions.create = AsyncMock(return_value={"ok": True})
+
+        next_entry = MagicMock()
+        next_entry.label = "codex-alt"
+        pool = MagicMock()
+        pool.has_credentials.return_value = True
+        pool.mark_exhausted_and_rotate.return_value = next_entry
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.5"), (fresh_client, "gpt-5.5")]),
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client._evict_cached_clients") as evict,
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == {"ok": True}
+        pool.mark_exhausted_and_rotate.assert_called_once()
+        evict.assert_called_once_with("openai-codex")
+        assert stale_client.chat.completions.create.await_count == 1
+        assert fresh_client.chat.completions.create.await_count == 1
 
     def test_cached_gmi_client_keeps_explicit_slash_model_override(self):
         import agent.auxiliary_client as aux

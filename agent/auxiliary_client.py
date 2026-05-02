@@ -43,6 +43,7 @@ Payment / credit exhaustion fallback:
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -1622,6 +1623,93 @@ def _is_auth_error(exc: Exception) -> bool:
         return True
     err_lower = str(exc).lower()
     return "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower()
+
+
+def _error_status_code(exc: Exception) -> Optional[int]:
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        return status
+    return None
+
+
+def _error_context_from_exception(exc: Exception, *, reason: str) -> Dict[str, Any]:
+    """Build a credential-pool error context from provider exceptions."""
+    text = str(exc)
+    context: Dict[str, Any] = {"reason": reason, "message": text}
+
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error") if isinstance(body.get("error"), dict) else body
+        for key in ("reset_at", "resets_at", "retry_until"):
+            if key in err:
+                context["reset_at"] = err[key]
+                break
+        if isinstance(err.get("type"), str):
+            context["reason"] = err["type"]
+        if isinstance(err.get("message"), str):
+            context["message"] = err["message"]
+
+    if "reset_at" not in context:
+        # ChatGPT/Codex usage-limit errors often stringify a Python dict:
+        # {'error': {'type': 'usage_limit_reached', ..., 'resets_at': 1777712481}}
+        match = re.search(r"['\"]resets_at['\"]\s*:\s*(\d+(?:\.\d+)?)", text)
+        if match:
+            context["reset_at"] = match.group(1)
+
+    return context
+
+
+def _rotate_provider_pool_after_exhaustion(
+    provider: str,
+    exc: Exception,
+    *,
+    task: Optional[str] = None,
+    reason: str = "payment error",
+) -> bool:
+    """Mark the current same-provider pool entry exhausted and rotate.
+
+    Main chat already uses the credential pool for same-provider failover.
+    Auxiliary calls (compression/session-search/etc.) must do the same, not
+    wait for a cross-provider fallback.  Returns True when a new entry is
+    selected and cached clients were evicted so the next retry uses it.
+    """
+    normalized = _normalize_aux_provider(provider)
+    if normalized in ("auto", "", None):
+        return False
+    try:
+        pool = load_pool(normalized)
+    except Exception as load_err:
+        logger.debug(
+            "Auxiliary %s: could not load %s credential pool after %s: %s",
+            task or "call", normalized, reason, load_err,
+        )
+        return False
+    if not pool or not pool.has_credentials():
+        return False
+
+    status_code = _error_status_code(exc)
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=status_code,
+        error_context=_error_context_from_exception(exc, reason=reason),
+    )
+    if next_entry is None:
+        logger.warning(
+            "Auxiliary %s: %s on %s and same-provider credential pool has no usable next entry",
+            task or "call", reason, normalized,
+        )
+        return False
+
+    _evict_cached_clients(normalized)
+    label = getattr(next_entry, "label", None) or getattr(next_entry, "id", "")[:8]
+    logger.info(
+        "Auxiliary %s: %s on %s; rotated credential pool to %s and retrying",
+        task or "call", reason, normalized, label or "next entry",
+    )
+    return True
 
 
 def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
@@ -3525,6 +3613,46 @@ def call_llm(
                     return _validate_llm_response(
                         retry_client.chat.completions.create(**retry_kwargs), task)
 
+        # ── Same-provider credential-pool rotation ───────────────────
+        # Main chat can rotate between multiple credentials for the same
+        # provider (e.g. several ChatGPT/Codex accounts).  Auxiliary calls
+        # must stay in sync: if compression hits usage_limit_reached on the
+        # currently selected Codex account, mark that pool entry exhausted,
+        # evict the cached aux client, and retry with the next account before
+        # considering cross-provider fallback.
+        if _is_payment_error(first_err):
+            if _rotate_provider_pool_after_exhaustion(
+                resolved_provider,
+                first_err,
+                task=task,
+                reason="payment error",
+            ):
+                retry_client, retry_model = _get_cached_client(
+                    resolved_provider,
+                    resolved_model,
+                    base_url=resolved_base_url,
+                    api_key=resolved_api_key,
+                    api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
+                )
+                if retry_client is not None:
+                    retry_kwargs = _build_call_kwargs(
+                        resolved_provider,
+                        retry_model or final_model,
+                        messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        timeout=effective_timeout,
+                        extra_body=effective_extra_body,
+                        base_url=str(getattr(retry_client, "base_url", "") or resolved_base_url or ""),
+                    )
+                    _retry_base = str(getattr(retry_client, "base_url", "") or "")
+                    if _is_anthropic_compat_endpoint(resolved_provider, _retry_base):
+                        retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+                    return _validate_llm_response(
+                        retry_client.chat.completions.create(**retry_kwargs), task)
+
         # ── Payment / credit exhaustion fallback ──────────────────────
         # When the resolved provider returns 402 or a credit-related error,
         # try alternative providers instead of giving up.  This handles the
@@ -3809,6 +3937,49 @@ async def async_call_llm(
                         timeout=effective_timeout,
                         extra_body=effective_extra_body,
                         base_url=resolved_base_url,
+                    )
+                    _retry_base = str(getattr(retry_client, "base_url", "") or "")
+                    if _is_anthropic_compat_endpoint(resolved_provider, _retry_base):
+                        retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+                    return _validate_llm_response(
+                        await retry_client.chat.completions.create(**retry_kwargs), task)
+
+        # ── Same-provider credential-pool rotation ───────────────────
+        # Keep async auxiliary tasks (vision/session_search/etc.) aligned with
+        # the same credential-pool exhaustion semantics as main chat.
+        if _is_payment_error(first_err):
+            if _rotate_provider_pool_after_exhaustion(
+                resolved_provider,
+                first_err,
+                task=task,
+                reason="payment error",
+            ):
+                if task == "vision":
+                    _, retry_client, retry_model = resolve_vision_provider_client(
+                        provider=resolved_provider,
+                        model=resolved_model or final_model,
+                        async_mode=True,
+                    )
+                else:
+                    retry_client, retry_model = _get_cached_client(
+                        resolved_provider,
+                        resolved_model,
+                        async_mode=True,
+                        base_url=resolved_base_url,
+                        api_key=resolved_api_key,
+                        api_mode=resolved_api_mode,
+                    )
+                if retry_client is not None:
+                    retry_kwargs = _build_call_kwargs(
+                        resolved_provider,
+                        retry_model or final_model,
+                        messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        tools=tools,
+                        timeout=effective_timeout,
+                        extra_body=effective_extra_body,
+                        base_url=str(getattr(retry_client, "base_url", "") or resolved_base_url or ""),
                     )
                     _retry_base = str(getattr(retry_client, "base_url", "") or "")
                     if _is_anthropic_compat_endpoint(resolved_provider, _retry_base):

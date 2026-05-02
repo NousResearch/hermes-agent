@@ -2732,7 +2732,8 @@ def list_profiles_on_disk() -> list[str]:
     ``config.yaml`` — a bare dir without config isn't a real profile.
     """
     try:
-        home = Path.home() / ".hermes" / "profiles"
+        from hermes_constants import get_default_hermes_root
+        home = get_default_hermes_root() / "profiles"
     except Exception:
         return []
     if not home.is_dir():

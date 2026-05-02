@@ -12,6 +12,8 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from run_agent import _disable_oauth_1m_beta_for_long_context_tier
+
 
 # ---------------------------------------------------------------------------
 # Detection logic
@@ -207,3 +209,42 @@ class TestAgentErrorPath:
             or "rate limit" in error_msg
         )
         assert is_rate_limited
+
+
+class TestOAuthLongContextRecovery:
+    """OAuth subscription traffic must drop the 1M beta after Anthropic
+    returns the long-context tier gate, otherwise retries keep failing even
+    after the compressor reduces context to 200k."""
+
+    def test_oauth_long_context_tier_disables_1m_beta_and_rebuilds_client(self):
+        client = MagicMock()
+        agent = SimpleNamespace(
+            api_mode="anthropic_messages",
+            _is_anthropic_oauth=True,
+            _oauth_1m_beta_disabled=False,
+            _anthropic_client=client,
+            _rebuild_anthropic_client=MagicMock(),
+            _vprint=MagicMock(),
+            log_prefix="",
+        )
+
+        assert _disable_oauth_1m_beta_for_long_context_tier(agent) is True
+
+        assert agent._oauth_1m_beta_disabled is True
+        client.close.assert_called_once_with()
+        agent._rebuild_anthropic_client.assert_called_once_with()
+        agent._vprint.assert_called_once()
+
+    def test_non_oauth_long_context_tier_does_not_rebuild_client(self):
+        agent = SimpleNamespace(
+            api_mode="anthropic_messages",
+            _is_anthropic_oauth=False,
+            _oauth_1m_beta_disabled=False,
+            _anthropic_client=MagicMock(),
+            _rebuild_anthropic_client=MagicMock(),
+            _vprint=MagicMock(),
+        )
+
+        assert _disable_oauth_1m_beta_for_long_context_tier(agent) is False
+        assert agent._oauth_1m_beta_disabled is False
+        agent._rebuild_anthropic_client.assert_not_called()

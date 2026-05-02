@@ -861,6 +861,44 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _disable_oauth_1m_beta_for_long_context_tier(agent) -> bool:
+    """Disable Anthropic's 1M-context beta for OAuth subscriptions.
+
+    Claude Pro/Max OAuth traffic still goes through Anthropic's Messages API.
+    If the subscription is capped at the standard 200K context tier, retries
+    must rebuild the client without the 1M beta header or the request keeps
+    presenting as a long-context request.
+    """
+    if getattr(agent, "api_mode", None) != "anthropic_messages":
+        return False
+    if not getattr(agent, "_is_anthropic_oauth", False):
+        return False
+    if getattr(agent, "_oauth_1m_beta_disabled", False):
+        return False
+
+    agent._oauth_1m_beta_disabled = True
+    try:
+        client = getattr(agent, "_anthropic_client", None)
+        if client is not None:
+            client.close()
+    except Exception:
+        pass
+
+    rebuild = getattr(agent, "_rebuild_anthropic_client", None)
+    if callable(rebuild):
+        rebuild()
+
+    vprint = getattr(agent, "_vprint", None)
+    if callable(vprint):
+        vprint(
+            f"{getattr(agent, 'log_prefix', '')}🔕 Anthropic OAuth subscription "
+            "hit the 1M context tier gate — disabled the 1M beta for this "
+            "session and retrying at 200K context...",
+            force=True,
+        )
+    return True
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -11995,9 +12033,10 @@ class AIAgent:
                     # subscription doesn't include the 1M-context tier.  This
                     # is NOT a transient rate limit — retrying or switching
                     # credentials won't help.  Reduce context to 200k (the
-                    # standard tier) and compress.
+                    # standard tier), drop the OAuth 1M beta, and compress.
                     if classified.reason == FailoverReason.long_context_tier:
                         _reduced_ctx = 200000
+                        _disabled_1m_beta = _disable_oauth_1m_beta_for_long_context_tier(self)
                         compressor = self.context_compressor
                         old_ctx = compressor.context_length
                         if old_ctx > _reduced_ctx:
@@ -12036,11 +12075,17 @@ class AIAgent:
                             # so _flush_messages_to_session_db writes compressed
                             # messages to the new session, not skipping them.
                             conversation_history = None
-                            if len(messages) < original_len or old_ctx > _reduced_ctx:
-                                self._emit_status(
-                                    f"🗜️ Context reduced to {_reduced_ctx:,} tokens "
-                                    f"(was {old_ctx:,}), retrying..."
-                                )
+                            if len(messages) < original_len or old_ctx > _reduced_ctx or _disabled_1m_beta:
+                                if old_ctx > _reduced_ctx:
+                                    self._emit_status(
+                                        f"🗜️ Context reduced to {_reduced_ctx:,} tokens "
+                                        f"(was {old_ctx:,}), retrying..."
+                                    )
+                                elif _disabled_1m_beta:
+                                    self._emit_status(
+                                        f"🔕 Disabled Anthropic 1M context beta; "
+                                        f"retrying at {_reduced_ctx:,} tokens..."
+                                    )
                                 time.sleep(2)
                                 restart_with_compressed_messages = True
                                 break

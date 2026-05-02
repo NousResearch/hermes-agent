@@ -3,7 +3,7 @@
 **Date:** 2026-05-01
 **Author:** Hermes Agent
 **Branch:** cron-health-observability-20260501223311
-**PR:** Pending creation
+**PR:** https://github.com/NousResearch/hermes-agent/pull/18634
 
 ## Goal
 

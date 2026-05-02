@@ -4220,10 +4220,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=effective_agent_ref,
                 cutoff_state=cutoff_state,
             )
+            effective_task_id = session_id or str(uuid.uuid4())
             result = agent.run_conversation(
                 user_message=user_message,
                 conversation_history=conversation_history,
-                task_id="default",
+                task_id=effective_task_id,
             )
             usage = {
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
@@ -4427,10 +4428,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 self._active_run_agents[run_id] = agent
                 def _run_sync():
+                    effective_task_id = session_id or run_id
                     r = agent.run_conversation(
                         user_message=user_message,
                         conversation_history=conversation_history,
-                        task_id="default",
+                        task_id=effective_task_id,
                     )
                     u = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,

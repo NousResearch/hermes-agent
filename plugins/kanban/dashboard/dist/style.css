@@ -251,6 +251,11 @@
   border-radius: var(--radius-sm, 0.25rem);
 }
 
+.hermes-kanban-inline-create > .flex.gap-2:last-child > button:first-of-type {
+  flex: 1;
+  min-width: 0;
+}
+
 /* ---- Drawer (task detail side panel) --------------------------------- */
 
 .hermes-kanban-drawer-shade {
@@ -460,14 +465,17 @@
   font-size: 0.75rem;
   padding-right: 0.25rem;
 }
-.hermes-kanban-bulk-btn {
+
+.hermes-kanban-bulk > button,
+.hermes-kanban-bulk-reassign > button {
   height: 1.7rem !important;
   padding: 0 0.5rem !important;
   font-size: 0.7rem !important;
   border: 1px solid var(--color-border);
   cursor: pointer;
 }
-.hermes-kanban-bulk-btn:hover {
+.hermes-kanban-bulk > button:hover:not(:disabled),
+.hermes-kanban-bulk-reassign > button:hover:not(:disabled) {
   background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
 }
 .hermes-kanban-bulk-reassign {

@@ -839,3 +839,148 @@ def test_get_named_custom_provider_transport_resolves_via_display_name(monkeypat
     result = rp._get_named_custom_provider("Codex Provider")
     assert result is not None
     assert result["api_mode"] == "codex_responses"
+
+
+# =============================================================================
+# Regression: user_providers override for private models not listed by /v1/models
+# =============================================================================
+
+_REJECTED_VALIDATION = {
+    "accepted": False,
+    "persist": False,
+    "recognized": False,
+    "message": "not found",
+}
+
+
+def _run_user_provider_override_case(
+    *,
+    slug,
+    name,
+    base_url,
+    models,
+    raw_input,
+):
+    """Run ``switch_model`` with a private user provider and a rejected API check.
+
+    The bug in PR #17964 was that ``user_providers`` was treated like a list,
+    so private models listed in ``models:`` never triggered the override path.
+    These tests keep the validation failure in place and prove the config list
+    still wins for both dict- and list-shaped ``models`` entries.
+    """
+    from unittest.mock import patch
+
+    user_providers = {
+        slug: {
+            "name": name,
+            "api": base_url,
+            "discover_models": False,
+            "models": models,
+        }
+    }
+
+    with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
+         patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
+         patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
+         patch("hermes_cli.models.validate_requested_model", return_value=_REJECTED_VALIDATION), \
+         patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
+         patch("hermes_cli.model_switch.get_model_info", return_value=None), \
+         patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
+         patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={"api_key": "***", "base_url": base_url, "api_mode": "anthropic_messages"}):
+        return switch_model(
+            raw_input=raw_input,
+            current_provider=slug,
+            current_model="old-model",
+            current_base_url=base_url,
+            user_providers=user_providers,
+            custom_providers=[],
+        )
+
+
+@pytest.mark.parametrize(
+    ("slug", "name", "base_url", "models", "raw_input", "expected_model"),
+    [
+        (
+            "kimi-coding",
+            "Kimi Coding Plan",
+            "https://api.kimi.com/coding",
+            {"kimi-k2.6": {}},
+            "kimi-k2.6",
+            "kimi-k2.6",
+        ),
+        (
+            "kimi-dedicated",
+            "Kimi Dedicated",
+            "https://api.kimi.com/v1",
+            [{"name": "moonshotai/Kimi-K2.6-ACED"}],
+            "moonshotai/Kimi-K2.6-ACED",
+            "moonshotai/Kimi-K2.6-ACED",
+        ),
+    ],
+    ids=["kimi-coding-plan-dict", "kimi-k2-6-aced-list"],
+)
+def test_user_provider_override_accepts_listed_private_models(
+    slug,
+    name,
+    base_url,
+    models,
+    raw_input,
+    expected_model,
+):
+    """Private models listed in providers: config should override /v1/models misses.
+
+    Covers both config shapes the fix now accepts:
+    - dict models for the Kimi Coding Plan K2p6 case
+    - list-of-dicts models for the Kimi-K2.6-ACED dedicated case
+    """
+    result = _run_user_provider_override_case(
+        slug=slug,
+        name=name,
+        base_url=base_url,
+        models=models,
+        raw_input=raw_input,
+    )
+
+    assert result.success is True
+    assert result.new_model == expected_model
+    assert result.error_message == ""
+
+
+@pytest.mark.parametrize(
+    ("slug", "name", "base_url", "models", "raw_input"),
+    [
+        (
+            "kimi-coding",
+            "Kimi Coding Plan",
+            "https://api.kimi.com/coding",
+            {"kimi-k2.6": {}},
+            "kimi-k2.6-mangled",
+        ),
+        (
+            "kimi-dedicated",
+            "Kimi Dedicated",
+            "https://api.kimi.com/v1",
+            [{"name": "moonshotai/Kimi-K2.6-ACED"}],
+            "moonshotai/Kimi-K2.6-ACED!!!",
+        ),
+    ],
+    ids=["kimi-coding-plan-dict-mangled", "kimi-k2-6-aced-list-mangled"],
+)
+def test_user_provider_override_rejects_mangled_private_models(
+    slug,
+    name,
+    base_url,
+    models,
+    raw_input,
+):
+    """Malformed model names should fail cleanly, not crash or auto-accept."""
+    result = _run_user_provider_override_case(
+        slug=slug,
+        name=name,
+        base_url=base_url,
+        models=models,
+        raw_input=raw_input,
+    )
+
+    assert result.success is False
+    assert result.error_message == "not found"

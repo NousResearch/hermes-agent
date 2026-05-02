@@ -76,6 +76,7 @@ export interface Translations {
       logs: string;
       models: string;
       profiles: string;
+      plugins: string;
       sessions: string;
       skills: string;
     };
@@ -84,6 +85,7 @@ export interface Translations {
     navigation: string;
     openDocumentation: string;
     openNavigation: string;
+    pluginNavSection: string;
     sessionsActiveCount: string;
     statusOverview: string;
     system: string;
@@ -226,6 +228,46 @@ export interface Translations {
       slack: string;
       email: string;
     };
+  };
+
+  // ── Plugins page ──
+  pluginsPage: {
+    contextEngineLabel: string;
+    dashboardSlots: string;
+    disableRuntime: string;
+    enableAfterInstall: string;
+    enableRuntime: string;
+    forceReinstall: string;
+    headline: string;
+    identifierLabel: string;
+    inactive: string;
+    installBtn: string;
+    installHeading: string;
+    installHint: string;
+    memoryProviderLabel: string;
+    missingEnvWarn: string;
+    noDashboardTab: string;
+    openTab: string;
+    orphanHeading: string;
+    pluginListHeading: string;
+    providerDefaults: string;
+    providersHeading: string;
+    providersHint: string;
+    refreshDashboard: string;
+    removeConfirm: string;
+    removeHint: string;
+    rescanHeading: string;
+    rescanHint: string;
+    runtimeHeading: string;
+    saveProviders: string;
+    savedProviders: string;
+    sourceBadge: string;
+    authRequired: string;
+    authRequiredHint: string;
+    updateGit: string;
+    versionBadge: string;
+    showInSidebar: string;
+    hideFromSidebar: string;
   };
 
   // ── Profiles page ──

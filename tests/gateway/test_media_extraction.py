@@ -10,6 +10,37 @@ times per reply. (Regression test for #160)
 import pytest
 import re
 
+from gateway.platforms.base import BasePlatformAdapter
+
+
+def test_extract_media_handles_multiple_same_line_tags():
+    content = "Files: MEDIA:/tmp/foo.mp3 and MEDIA:/tmp/bar.jpg"
+
+    media, cleaned = BasePlatformAdapter.extract_media(content)
+
+    assert media == [("/tmp/foo.mp3", False), ("/tmp/bar.jpg", False)]
+    assert "MEDIA:" not in cleaned
+    assert "Files:" in cleaned
+
+
+def test_extract_media_does_not_span_invalid_unquoted_path_to_later_valid_tag():
+    content = "Example MEDIA:/tmp/not_a_media_path then MEDIA:/tmp/real.mp3"
+
+    media, cleaned = BasePlatformAdapter.extract_media(content)
+
+    assert media == [("/tmp/real.mp3", False)]
+    assert "MEDIA:/tmp/not_a_media_path" in cleaned
+    assert "MEDIA:/tmp/real.mp3" not in cleaned
+
+
+def test_extract_media_accepts_quoted_path_with_spaces():
+    content = 'Attached MEDIA:"/tmp/voice note.mp3"'
+
+    media, cleaned = BasePlatformAdapter.extract_media(content)
+
+    assert media == [("/tmp/voice note.mp3", False)]
+    assert "MEDIA:" not in cleaned
+
 
 def extract_media_tags_fixed(result_messages, history_len):
     """

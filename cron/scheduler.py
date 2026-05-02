@@ -123,9 +123,13 @@ _LOCK_FILE = _LOCK_DIR / ".tick.lock"
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
-    """Extract origin info from a job, preserving any extra routing metadata."""
+    """Extract origin info from a job, preserving any extra routing metadata.
+
+    Origin should be a dict; tolerate non-dict legacy values (e.g. strings)
+    without crashing the scheduler ticker.
+    """
     origin = job.get("origin")
-    if not origin:
+    if not origin or not isinstance(origin, dict):
         return None
     platform = origin.get("platform")
     chat_id = origin.get("chat_id")

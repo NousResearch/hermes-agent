@@ -788,19 +788,30 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
         next_run = job.get("next_run_at")
         if not next_run:
+            schedule = job.get("schedule", {})
+            kind = schedule.get("kind")
+
             recovered_next = _recoverable_oneshot_run_at(
-                job.get("schedule", {}),
+                schedule,
                 now,
                 last_run_at=job.get("last_run_at"),
             )
+            recovery_kind = "one-shot" if recovered_next else None
+
+            if not recovered_next and kind in ("cron", "interval"):
+                recovered_next = compute_next_run(schedule, now.isoformat())
+                if recovered_next:
+                    recovery_kind = kind
+
             if not recovered_next:
                 continue
 
             job["next_run_at"] = recovered_next
             next_run = recovered_next
             logger.info(
-                "Job '%s' had no next_run_at; recovering one-shot run at %s",
+                "Job '%s' had no next_run_at; recovering %s run at %s",
                 job.get("name", job["id"]),
+                recovery_kind,
                 recovered_next,
             )
             for rj in raw_jobs:

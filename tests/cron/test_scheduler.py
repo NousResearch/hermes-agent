@@ -46,6 +46,10 @@ class TestResolveOrigin:
         job = {"origin": {}}
         assert _resolve_origin(job) is None
 
+    def test_non_dict_origin_tolerated(self):
+        assert _resolve_origin({"origin": "legacy-string"}) is None
+        assert _resolve_origin({"origin": ["telegram", "123"]}) is None
+
 
 class TestResolveDeliveryTarget:
     def test_origin_delivery_preserves_thread_id(self):

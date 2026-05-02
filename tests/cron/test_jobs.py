@@ -647,6 +647,32 @@ class TestGetDueJobs:
         assert get_due_jobs() == []
         assert get_job("oneshot-stale")["next_run_at"] is None
 
+    def test_broken_cron_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        save_jobs([
+            {
+                "id": "cron-recover",
+                "name": "Recover cron",
+                "prompt": "daily digest",
+                "schedule": {"kind": "cron", "expr": "0 12 * * *", "display": "0 12 * * *"},
+                "schedule_display": "0 12 * * *",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }
+        ])
+
+        due = get_due_jobs()
+        assert due == []
+        assert get_job("cron-recover")["next_run_at"] is not None
+
 
 class TestEnabledToolsets:
     def test_enabled_toolsets_stored(self, tmp_cron_dir):

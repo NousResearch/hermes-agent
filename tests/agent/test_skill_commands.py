@@ -1,5 +1,6 @@
 """Tests for agent/skill_commands.py — skill slash command scanning and platform filtering."""
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +12,7 @@ from agent.skill_commands import (
     resolve_skill_command_key,
     scan_skill_commands,
 )
+import agent.skill_commands as skill_commands_module
 
 
 def _make_skill(
@@ -583,3 +585,49 @@ class TestInlineShellExpansion:
         # The command's intended stdout never made it through — only the
         # timeout marker (which echoes the command text) survives.
         assert "DYN_MARKER" not in msg.replace("sleep 5 && printf DYN_MARKER", "")
+
+
+class TestDeprecatedSkillSlugAliases:
+    """Regression: bundled skill rename (``xitter`` → ``xurl``) without breaking legacy references."""
+
+    def test_normalize_rewrites_xitter_path_segment(self):
+        from agent.skill_commands import _normalize_deprecated_skill_identifier
+
+        assert _normalize_deprecated_skill_identifier("social-media/xitter") == "social-media/xurl"
+        assert _normalize_deprecated_skill_identifier("Xitter") == "xurl"
+        assert _normalize_deprecated_skill_identifier("xurl") == "xurl"
+
+    def test_resolve_skill_command_maps_legacy_xitter_slash(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "xurl", category="social-media")
+            skill_commands_module.scan_skill_commands()
+        assert skill_commands_module.resolve_skill_command_key("xitter") == "/xurl"
+
+    def test_load_skill_payload_passes_resolved_slug_to_skill_view(
+        self, tmp_path, monkeypatch
+    ):
+        captured: list[str] = []
+
+        def fake_skill_view(normalized: str, task_id=None, preprocess=False):
+            captured.append(normalized)
+            skill_root = tmp_path / "social-media" / "xurl"
+            skill_root.mkdir(parents=True, exist_ok=True)
+            return json.dumps(
+                {
+                    "success": True,
+                    "name": "xurl",
+                    "path": "social-media/xurl/SKILL.md",
+                    "skill_dir": str(skill_root),
+                    "content": "ok",
+                }
+            )
+
+        _make_skill(tmp_path, "xurl", category="social-media")
+        monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", tmp_path)
+        monkeypatch.setattr(skills_tool_module, "skill_view", fake_skill_view)
+
+        from agent.skill_commands import _load_skill_payload
+
+        out = _load_skill_payload("social-media/xitter")
+        assert out is not None
+        assert captured == ["social-media/xurl"]

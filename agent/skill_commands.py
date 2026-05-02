@@ -24,9 +24,35 @@ _skill_commands: Dict[str, Dict[str, Any]] = {}
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
+# Legacy bundled skill slugs still present in procedural memory / saved sessions
+# after directory renames (e.g. ``xitter`` → ``xurl``).
+_DEPRECATED_SKILL_SLUG_ALIASES: Dict[str, str] = {
+    "xitter": "xurl",
+}
+
+
+def _normalize_deprecated_skill_identifier(identifier: str) -> str:
+    """Map deprecated path segments to current skill directories.
+
+    Segment-wise (case-insensitive) so identifiers like ``social-media/xitter``
+    resolve after a slug rename without touching discovery in ``skill_utils``.
+    """
+    raw = (identifier or "").strip()
+    if not raw:
+        return raw
+    normalized = raw.replace("\\", "/")
+    parts = normalized.split("/")
+    mapped: list[str] = []
+    for seg in parts:
+        if not seg:
+            mapped.append(seg)
+            continue
+        key = seg.lower()
+        mapped.append(_DEPRECATED_SKILL_SLUG_ALIASES.get(key, seg))
+    return "/".join(mapped)
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
-    raw_identifier = (skill_identifier or "").strip()
+    raw_identifier = _normalize_deprecated_skill_identifier(skill_identifier or "")
     if not raw_identifier:
         return None
 
@@ -364,8 +390,17 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     """
     if not command:
         return None
-    cmd_key = f"/{command.replace('_', '-')}"
-    return cmd_key if cmd_key in get_skill_commands() else None
+    slug = command.replace("_", "-")
+    cmd_key = f"/{slug}"
+    commands = get_skill_commands()
+    if cmd_key in commands:
+        return cmd_key
+    alias_target = _DEPRECATED_SKILL_SLUG_ALIASES.get(slug.lower())
+    if alias_target:
+        alt_key = f"/{alias_target}"
+        if alt_key in commands:
+            return alt_key
+    return None
 
 
 def build_skill_invocation_message(

@@ -2030,7 +2030,20 @@ async def send_weixin_direct(
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if live_adapter is not None and send_session is not None and not send_session.closed:
+    # When called via _run_async from a different async context (e.g. cross-channel
+    # Telegram→WeChat), the live adapter's aiohttp session is bound to the gateway's
+    # main event loop.  Using it from the new thread's loop causes
+    # "Timeout context manager should be used inside a task".
+    _loop_compat = True
+    if send_session is not None and not send_session.closed:
+        try:
+            _conn = getattr(send_session, '_connector', None)
+            _sess_loop = getattr(_conn, '_loop', None)
+            if _sess_loop is not None and _sess_loop is not asyncio.get_running_loop():
+                _loop_compat = False
+        except RuntimeError:
+            pass  # no running loop — fine, single-threaded path
+    if live_adapter is not None and send_session is not None and not send_session.closed and _loop_compat:
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:

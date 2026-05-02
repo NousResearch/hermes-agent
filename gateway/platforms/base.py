@@ -154,9 +154,9 @@ def is_network_accessible(host: str) -> bool:
 def _detect_macos_system_proxy() -> str | None:
     """Read the macOS system HTTP(S) proxy via ``scutil --proxy``.
 
-    Returns an ``http://host:port`` URL string if an HTTP or HTTPS proxy is
-    enabled, otherwise *None*.  Falls back silently on non-macOS or on any
-    subprocess error.
+    Returns a proxy URL string (``http://host:port`` or ``socks5://host:port``)
+    if an HTTP, HTTPS, or SOCKS proxy is enabled, otherwise *None*.  Falls back
+    silently on non-macOS or on any subprocess error.
     """
     if sys.platform != "darwin":
         return None
@@ -174,7 +174,17 @@ def _detect_macos_system_proxy() -> str | None:
             key, _, val = line.partition(" : ")
             props[key.strip()] = val.strip()
 
-    # Prefer HTTPS, fall back to HTTP
+    # SOCKS proxy
+    if props.get("SOCKSEnable") == "1":
+        host = props.get("SOCKSProxy")
+        port = props.get("SOCKSPort")
+        if host and port:
+            return f"socks5://{host}:{port}"
+
+    # HTTPS proxy (returns http:// scheme intentionally — HTTP CONNECT
+    # tunnelling works for both HTTP and HTTPS destinations, and most
+    # HTTP client libraries expect the proxy URL to use the http scheme
+    # regardless of the target protocol.)
     for enable_key, host_key, port_key in (
         ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
         ("HTTPEnable", "HTTPProxy", "HTTPPort"),

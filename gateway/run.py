@@ -3890,23 +3890,21 @@ class GatewayRunner:
 
             # Write a clean-shutdown marker so the next startup knows this
             # wasn't a crash.  suspend_recently_active() only needs to run
-            # after unexpected exits.  However, if the drain timed out and
-            # agents were force-interrupted, their sessions may be in an
-            # incomplete state (trailing tool response, no final assistant
-            # message).  Skip the marker in that case so the next startup
-            # suspends those sessions — giving users a clean slate instead
-            # of resuming a half-finished tool loop.
-            if not timed_out:
-                try:
-                    (_hermes_home / ".clean_shutdown").touch()
-                except Exception:
-                    pass
-            else:
-                logger.info(
-                    "Skipping .clean_shutdown marker — drain timed out with "
-                    "interrupted agents; next startup will suspend recently "
-                    "active sessions."
-                )
+            # after unexpected exits.
+            #
+            # Even when drain timed out, we still write the marker because:
+            # 1. The interrupt signal has been sent — agents will handle it
+            #    cleanly on their next iteration (they check _interrupt_requested
+            #    before committing tool results or making new API calls).
+            # 2. The 3-restart stuck-loop detection (#7536) below already
+            #    suspends sessions that genuinely cannot exit, providing a
+            #    safety net against infinite restart cycles.
+            # 3. Without the marker, EVERY restart loses the active
+            #    conversation — far worse than resuming an interrupted one.
+            try:
+                (_hermes_home / ".clean_shutdown").touch()
+            except Exception:
+                pass
 
             # Track sessions that were active at shutdown for stuck-loop
             # detection (#7536).  On each restart, the counter increments

@@ -182,3 +182,22 @@ def test_uv_update_env_inherits_index_url_from_pip_conf(tmp_path, monkeypatch):
 
     assert env["VIRTUAL_ENV"] == str(PROJECT_ROOT / "venv")
     assert env["UV_INDEX_URL"] == "https://mirrors.aliyun.com/pypi/simple"
+
+
+def test_does_not_override_explicit_uv_index_url(tmp_path, monkeypatch):
+    """Explicit UV_INDEX_URL in base_env should win over pip.conf."""
+    home = tmp_path / "home"
+    pip_dir = home / ".pip"
+    pip_dir.mkdir(parents=True)
+    (pip_dir / "pip.conf").write_text(
+        "[global]\nindex-url = https://from-pipconf.example.com/simple\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: home)
+
+    env = _build_uv_update_env({
+        "PATH": "/usr/bin",
+        "UV_INDEX_URL": "https://explicit.example.com/simple",
+    })
+
+    assert env["UV_INDEX_URL"] == "https://explicit.example.com/simple"

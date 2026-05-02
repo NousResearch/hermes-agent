@@ -1881,16 +1881,6 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     if tasks and isinstance(tasks, list):
@@ -1918,6 +1908,20 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    # Resolve delegation credentials for each task
+    for i, t in enumerate(task_list):
+        try:
+            # First resolve task-specific model/provider overrides
+            task_model = t.get("model")
+            task_provider = t.get("provider")
+            model_override = _resolve_task_model(task_model, task_provider, cfg, parent_agent)
+            
+            # Then resolve full credentials using the override
+            task_creds = _resolve_delegation_credentials(cfg, parent_agent, model_override)
+            t["_creds"] = task_creds
+        except ValueError as exc:
+            return tool_error(str(exc))
+
     overall_start = time.monotonic()
     results = []
 
@@ -1942,26 +1946,27 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            task_creds = t.get("_creds", {})
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds.get("model"),
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds.get("provider"),
+                override_base_url=task_creds.get("base_url"),
+                override_api_key=task_creds.get("api_key"),
+                override_api_mode=task_creds.get("api_mode"),
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
                 role=effective_role,
             )
@@ -2226,7 +2231,35 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+def _resolve_task_model(
+    task_model: Optional[str],
+    task_provider: Optional[str],
+    cfg: dict,
+    parent_agent,
+) -> dict:
+    """Resolve model credentials for a single task.
+
+    Handles two formats:
+    1. Separate format: provider field + model field — use directly
+    2. Pure model name: "model-slug" — use task_provider or global provider
+
+    Returns a dict with {model, provider} that overrides delegation config.
+    """
+    if not task_model and not task_provider:
+        return {}
+
+    result: Dict[str, Any] = {}
+
+    if task_provider:
+        result["provider"] = str(task_provider).strip()
+
+    if task_model:
+        result["model"] = str(task_model).strip()
+
+    return result
+
+
+def _resolve_delegation_credentials(cfg: dict, parent_agent, task_override: Optional[dict] = None) -> dict:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
@@ -2239,14 +2272,23 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     If neither base_url nor provider is configured, returns None values so the
     child inherits everything from the parent agent.
 
+    task_override: optional dict with {model, provider} from per-task specification.
+    When provided, these override the configured delegation.model/provider.
+
     Raises ValueError with a user-friendly message on credential failure.
     """
+    if task_override is None:
+        task_override = {}
+
     configured_model = str(cfg.get("model") or "").strip() or None
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
-    if configured_base_url:
+    effective_model = task_override.get("model") or configured_model
+    effective_provider = task_override.get("provider") or configured_provider
+
+    if configured_base_url and not task_override.get("provider"):
         api_key = configured_api_key or os.getenv("OPENAI_API_KEY", "").strip()
         if not api_key:
             raise ValueError(
@@ -2271,17 +2313,17 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             api_mode = "anthropic_messages"
 
         return {
-            "model": configured_model,
+            "model": effective_model,
             "provider": provider,
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
         }
 
-    if not configured_provider:
+    if not effective_provider:
         # No provider override — child inherits everything from parent
         return {
-            "model": configured_model,
+            "model": effective_model,
             "provider": None,
             "base_url": None,
             "api_key": None,
@@ -2292,10 +2334,10 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
-        runtime = resolve_runtime_provider(requested=configured_provider)
+        runtime = resolve_runtime_provider(requested=effective_provider)
     except Exception as exc:
         raise ValueError(
-            f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
+            f"Cannot resolve delegation provider '{effective_provider}': {exc}. "
             f"Check that the provider is configured (API key set, valid provider name), "
             f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
             f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
@@ -2304,12 +2346,12 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     api_key = runtime.get("api_key", "")
     if not api_key:
         raise ValueError(
-            f"Delegation provider '{configured_provider}' resolved but has no API key. "
+            f"Delegation provider '{effective_provider}' resolved but has no API key. "
             f"Set the appropriate environment variable or run 'hermes auth'."
         )
 
     return {
-        "model": configured_model or runtime.get("model") or None,
+        "model": effective_model or runtime.get("model") or None,
         "provider": runtime.get("provider"),
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
@@ -2454,6 +2496,14 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": "Per-task ACP args override.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Model for this subagent (e.g. 'gpt-4o', 'claude-3-sonnet'). Overrides delegation.model for this task only.",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Override the global provider for this subagent (e.g. 'openrouter', 'openai'). Use together with model.",
                         },
                         "role": {
                             "type": "string",

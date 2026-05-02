@@ -98,6 +98,60 @@ class TestMergeMode:
         assert len(items) == 2
 
 
+class TestModelProviderFields:
+    def test_write_with_model_and_provider(self):
+        store = TodoStore()
+        items = [
+            {"id": "1", "content": "Task with model", "status": "pending", "model": "gemini-flash", "provider": "openrouter"},
+        ]
+        result = store.write(items)
+        assert len(result) == 1
+        assert result[0]["model"] == "gemini-flash"
+        assert result[0]["provider"] == "openrouter"
+
+    def test_write_with_model_only(self):
+        store = TodoStore()
+        items = [
+            {"id": "1", "content": "Task with model only", "status": "pending", "model": "gpt-4o"},
+        ]
+        result = store.write(items)
+        assert len(result) == 1
+        assert result[0]["model"] == "gpt-4o"
+        assert "provider" not in result[0]
+
+    def test_write_with_provider_only(self):
+        store = TodoStore()
+        items = [
+            {"id": "1", "content": "Task with provider only", "status": "pending", "provider": "openai"},
+        ]
+        result = store.write(items)
+        assert len(result) == 1
+        assert result[0]["provider"] == "openai"
+        assert "model" not in result[0]
+
+    def test_merge_updates_model_provider(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Original", "status": "pending"}])
+        store.write(
+            [{"id": "1", "model": "claude-3-sonnet", "provider": "anthropic"}],
+            merge=True,
+        )
+        items = store.read()
+        assert len(items) == 1
+        assert items[0]["model"] == "claude-3-sonnet"
+        assert items[0]["provider"] == "anthropic"
+        assert items[0]["content"] == "Original"
+
+    def test_model_provider_strip_whitespace(self):
+        store = TodoStore()
+        items = [
+            {"id": "1", "content": "Task", "status": "pending", "model": "  gemini-flash  ", "provider": "  openai  "},
+        ]
+        result = store.write(items)
+        assert result[0]["model"] == "gemini-flash"
+        assert result[0]["provider"] == "openai"
+
+
 class TestTodoToolFunction:
     def test_read_mode(self):
         store = TodoStore()

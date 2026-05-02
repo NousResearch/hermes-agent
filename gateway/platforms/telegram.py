@@ -63,6 +63,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.reaction_mixin import DynamicReactionMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -234,7 +235,7 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
-class TelegramAdapter(BasePlatformAdapter):
+class TelegramAdapter(DynamicReactionMixin, BasePlatformAdapter):
     """
     Telegram bot adapter.
 
@@ -289,6 +290,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        # Telegram uses replace-all reactions (set_message_reaction replaces
+        # all existing reactions in one call).
+        self._reaction_replace_mode = True
+        self._init_reaction_mixin()
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -3436,28 +3441,61 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)
             return False
 
-    async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
-        if not self._reactions_enabled():
-            return
-        chat_id = getattr(event.source, "chat_id", None)
+    # ── DynamicReactionMixin primitives ──────────────────────────────────
+
+    # Telegram's set_message_reaction replaces all reactions in one call,
+    # so we use _reaction_set (replace mode) instead of add/remove.
+
+    _TELEGRAM_ALLOWED_EMOJIS = frozenset({
+        "👍", "👎", "❤️", "🔥", "🥰", "👏", "😁", "🤔", "🤯", "😱",
+        "🤬", "😢", "🎉", "🤩", "🤮", "💩", "🙏", "👌", "🕊", "🤡",
+        "🥱", "🥴", "😍", "🐳", "❤️\u200d🔥", "🌚", "🌭", "💯", "🤣",
+        "⚡", "🍌", "🏆", "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕",
+        "😈", "😴", "😭", "🤓", "👻", "👨\u200d💻", "👀", "🎃", "🙈",
+        "😇", "😨", "🤝", "✍️", "🤗", "🫡", "🎅", "🎄", "☃️", "💅",
+        "🤪", "🗿", "🆒", "💘", "🙉", "🦄", "😘", "💊", "🙊", "😎",
+        "👾", "🤷\u200d♂️", "🤷", "🤷\u200d♀️", "😡",
+    })
+
+    async def _reaction_set(self, msg_ref: Any, emoji: str) -> bool:
+        """Replace all reactions on the message with *emoji*."""
+        chat_id, message_id = msg_ref
+        return await self._set_reaction(chat_id, message_id, emoji)
+
+    def _reaction_resolve_message(self, event: Any) -> Any:
+        """Return (chat_id, message_id) tuple for Telegram."""
+        chat_id = getattr(getattr(event, "source", None), "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+            return (str(chat_id), str(message_id))
+        return None
+
+    def _reaction_msg_key(self, event: Any) -> Optional[tuple]:
+        """Return (chat_id, message_id) as the tracking key."""
+        return self._reaction_resolve_message(event)
+
+    def _reaction_translate_emoji(self, emoji: str) -> Optional[str]:
+        """Map emoji to Telegram's allowed reaction set.
+
+        Telegram only supports a fixed set of reaction emojis.  Tool emojis
+        that aren't in the set get mapped to 👨‍💻 (technologist).
+        """
+        if emoji in self._TELEGRAM_ALLOWED_EMOJIS:
+            return emoji
+        # Common fallbacks
+        if emoji == "❌":
+            return "👎"
+        # Generic tool activity → technologist
+        return "👨\u200d💻"
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add persona emoji when processing begins."""
+        await self._rxn_on_processing_start(event)
+
+    async def on_tool_call_start(self, event, tool_name: str) -> None:
+        """Swap reaction to tool-specific emoji."""
+        await self._rxn_on_tool_call_start(event, tool_name)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction.
-
-        Unlike Discord (additive reactions), Telegram's set_message_reaction
-        replaces all existing reactions in one call — no remove step needed.
-        """
-        if not self._reactions_enabled():
-            return
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if chat_id and message_id and outcome != ProcessingOutcome.CANCELLED:
-            await self._set_reaction(
-                chat_id,
-                message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
-            )
+        """Replace active reaction with final emoji."""
+        await self._rxn_on_processing_complete(event, outcome)

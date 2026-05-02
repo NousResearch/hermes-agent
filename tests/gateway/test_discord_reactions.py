@@ -57,7 +57,7 @@ class FakeTree:
 
 @pytest.fixture
 def adapter():
-    config = PlatformConfig(enabled=True, token="***")
+    config = PlatformConfig(enabled=True, token="***", extra={"persona_emoji": "👀"})
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(
         tree=FakeTree(),
@@ -89,6 +89,7 @@ async def test_process_message_background_adds_and_swaps_reactions(adapter):
     raw_message = SimpleNamespace(
         add_reaction=AsyncMock(),
         remove_reaction=AsyncMock(),
+        id=1001,
     )
 
     async def handler(_event):
@@ -105,9 +106,11 @@ async def test_process_message_background_adds_and_swaps_reactions(adapter):
     event = _make_event("1", raw_message)
     await adapter._process_message_background(event, build_session_key(event.source))
 
+    # Mixin adds persona emoji on start; on success the final emoji is the
+    # same persona emoji, so no remove+re-add is needed (optimized away).
     assert raw_message.add_reaction.await_args_list[0].args == ("👀",)
-    assert raw_message.remove_reaction.await_args_list[0].args == ("👀", adapter._client.user)
-    assert raw_message.add_reaction.await_args_list[1].args == ("✅",)
+    assert raw_message.add_reaction.await_count == 1
+    raw_message.remove_reaction.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -151,6 +154,7 @@ async def test_reaction_helper_failures_do_not_break_message_flow(adapter):
     raw_message = SimpleNamespace(
         add_reaction=AsyncMock(side_effect=[RuntimeError("no perms"), RuntimeError("no perms")]),
         remove_reaction=AsyncMock(side_effect=RuntimeError("no perms")),
+        id=1003,
     )
 
     async def handler(_event):
@@ -178,6 +182,7 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     raw_message = SimpleNamespace(
         add_reaction=AsyncMock(),
         remove_reaction=AsyncMock(),
+        id=1004,
     )
 
     async def handler(_event):
@@ -208,6 +213,7 @@ async def test_reactions_disabled_via_env_zero(adapter, monkeypatch):
     raw_message = SimpleNamespace(
         add_reaction=AsyncMock(),
         remove_reaction=AsyncMock(),
+        id=1005,
     )
 
     event = _make_event("5", raw_message)
@@ -226,6 +232,7 @@ async def test_reactions_enabled_by_default(adapter, monkeypatch):
     raw_message = SimpleNamespace(
         add_reaction=AsyncMock(),
         remove_reaction=AsyncMock(),
+        id=1006,
     )
 
     event = _make_event("6", raw_message)
@@ -239,9 +246,14 @@ async def test_on_processing_complete_cancelled_removes_eyes_without_terminal_re
     raw_message = SimpleNamespace(
         add_reaction=AsyncMock(),
         remove_reaction=AsyncMock(),
+        id=1007,
     )
 
     event = _make_event("7", raw_message)
+    # Must start processing first so the mixin tracks the reaction state.
+    await adapter.on_processing_start(event)
+    raw_message.add_reaction.reset_mock()
+    raw_message.remove_reaction.reset_mock()
     await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
 
     raw_message.remove_reaction.assert_awaited_once_with("👀", adapter._client.user)

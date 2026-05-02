@@ -351,6 +351,7 @@ def _make_adapter():
         extra={
             "homeserver": "https://matrix.example.org",
             "user_id": "@bot:example.org",
+            "persona_emoji": "👀",
         },
     )
     adapter = MatrixAdapter(config)
@@ -1713,8 +1714,8 @@ class TestMatrixReactions:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_on_processing_start_sends_eyes(self):
-        """on_processing_start should send eyes reaction."""
+    async def test_on_processing_start_sends_persona_emoji(self):
+        """on_processing_start should send the configured persona emoji."""
         from gateway.platforms.base import MessageEvent, MessageType
 
         self.adapter._reactions_enabled = True
@@ -1730,17 +1731,19 @@ class TestMatrixReactions:
             message_id="$msg1",
         )
         await self.adapter.on_processing_start(event)
-        self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "\U0001f440")
-        assert self.adapter._pending_reactions == {("!room:ex", "$msg1"): "$reaction_event_123"}
+        persona = self.adapter._rxn_persona_emoji
+        self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", persona)
+        # Mixin tracks reactions with (room_id, msg_id, emoji) key
+        assert ("!room:ex", "$msg1", persona) in self.adapter._pending_reactions
 
     @pytest.mark.asyncio
-    async def test_on_processing_complete_sends_check(self):
+    async def test_on_processing_complete_success_keeps_persona(self):
+        """Success restores persona emoji — no swap needed if already showing it."""
         from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
-        self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes_reaction_123"}
+        self.adapter._send_reaction = AsyncMock(return_value="$eyes_reaction_123")
         self.adapter._redact_reaction = AsyncMock(return_value=True)
-        self.adapter._send_reaction = AsyncMock(return_value="$check_reaction_456")
 
         source = MagicMock()
         source.chat_id = "!room:ex"
@@ -1751,18 +1754,22 @@ class TestMatrixReactions:
             raw_message={},
             message_id="$msg1",
         )
+        await self.adapter.on_processing_start(event)
+        self.adapter._send_reaction.reset_mock()
+        self.adapter._redact_reaction.reset_mock()
         await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
-        self.adapter._redact_reaction.assert_called_once_with("!room:ex", "$eyes_reaction_123")
-        self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "\u2705")
+        # Persona emoji on start == persona emoji on success → optimized away
+        self.adapter._redact_reaction.assert_not_called()
+        self.adapter._send_reaction.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_on_processing_complete_sends_cross_on_failure(self):
+    async def test_on_processing_complete_failure_shows_cross(self):
+        """Failure should redact persona emoji and show ❌."""
         from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
-        self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes_reaction_123"}
+        self.adapter._send_reaction = AsyncMock(return_value="$eyes_reaction_123")
         self.adapter._redact_reaction = AsyncMock(return_value=True)
-        self.adapter._send_reaction = AsyncMock(return_value="$cross_reaction_456")
 
         source = MagicMock()
         source.chat_id = "!room:ex"
@@ -1773,16 +1780,21 @@ class TestMatrixReactions:
             raw_message={},
             message_id="$msg1",
         )
+        await self.adapter.on_processing_start(event)
+        self.adapter._send_reaction.reset_mock()
+        self.adapter._redact_reaction.reset_mock()
+        self.adapter._send_reaction.return_value = "$cross_reaction_456"
         await self.adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
         self.adapter._redact_reaction.assert_called_once_with("!room:ex", "$eyes_reaction_123")
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "\u274c")
 
     @pytest.mark.asyncio
-    async def test_on_processing_complete_cancelled_sends_no_terminal_reaction(self):
+    async def test_on_processing_complete_cancelled_cleans_up(self):
         from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
-        self.adapter._send_reaction = AsyncMock(return_value=True)
+        self.adapter._send_reaction = AsyncMock(return_value="$eyes_reaction_123")
+        self.adapter._redact_reaction = AsyncMock(return_value=True)
 
         source = MagicMock()
         source.chat_id = "!room:ex"
@@ -1793,12 +1805,17 @@ class TestMatrixReactions:
             raw_message={},
             message_id="$msg1",
         )
+        await self.adapter.on_processing_start(event)
+        self.adapter._send_reaction.reset_mock()
+        self.adapter._redact_reaction.reset_mock()
         await self.adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+        # Cancelled: redact the active reaction, don't add a new one
+        self.adapter._redact_reaction.assert_called_once()
         self.adapter._send_reaction.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_on_processing_complete_no_pending_reaction(self):
-        """on_processing_complete should skip redaction if no eyes reaction was tracked."""
+    async def test_on_processing_complete_no_prior_start(self):
+        """on_processing_complete without prior start sends persona emoji."""
         from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
@@ -1817,13 +1834,16 @@ class TestMatrixReactions:
         )
         await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
         self.adapter._redact_reaction.assert_not_called()
-        self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "\u2705")
+        persona = self.adapter._rxn_persona_emoji
+        self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", persona)
 
     @pytest.mark.asyncio
     async def test_reactions_disabled(self):
         from gateway.platforms.base import MessageEvent, MessageType
 
         self.adapter._reactions_enabled = False
+        # Re-init mixin so it picks up the disabled flag
+        self.adapter._init_reaction_mixin()
         self.adapter._send_reaction = AsyncMock()
 
         source = MagicMock()
@@ -1837,8 +1857,6 @@ class TestMatrixReactions:
         )
         await self.adapter.on_processing_start(event)
         self.adapter._send_reaction.assert_not_called()
-
-
 # ---------------------------------------------------------------------------
 # Read receipts
 # ---------------------------------------------------------------------------

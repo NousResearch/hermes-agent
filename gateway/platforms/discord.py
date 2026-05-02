@@ -45,6 +45,7 @@ from gateway.config import Platform, PlatformConfig
 import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from gateway.platforms.reaction_mixin import DynamicReactionMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -470,7 +471,7 @@ class VoiceReceiver:
                 pass
 
 
-class DiscordAdapter(BasePlatformAdapter):
+class DiscordAdapter(DynamicReactionMixin, BasePlatformAdapter):
     """
     Discord bot adapter.
 
@@ -529,22 +530,12 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
-        # Per-message active reaction tracking for persona/tool emoji swapping.
-        # Key: message.id (int), Value: currently active reaction emoji (str).
-        self._active_tool_reactions: Dict[int, str] = {}
-        # Timestamp of last reaction swap per message — hysteresis to avoid
-        # Discord rate limits (reaction endpoints: ~1 req/0.25s per channel).
-        # Default cooldown: 1 second between swaps per message.
-        self._last_reaction_swap: Dict[int, float] = {}
-        self._reaction_cooldown: float = float(
-            self.config.extra.get("reaction_cooldown",
-                                  1.0)
-        )
-        # Cache resolved config values at init to avoid disk reads on every
-        # tool call.  Persona emoji and dynamic-reactions flag are stable for
-        # the lifetime of the adapter.
-        self._cached_persona_emoji: str = self._resolve_persona_emoji()
-        self._cached_dynamic_reactions: bool = self._resolve_dynamic_reactions()
+        # Cache raw Discord message objects by session key so on_tool_call_start
+        # can resolve them from a SessionSource (which lacks raw_message).
+        # Populated in on_processing_start, cleaned up in on_processing_complete.
+        self._session_raw_messages: Dict[str, Any] = {}
+        # Initialize the platform-agnostic dynamic reaction mixin.
+        self._init_reaction_mixin()
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -1062,101 +1053,54 @@ class DiscordAdapter(BasePlatformAdapter):
         return os.getenv("DISCORD_REACTIONS", "true").lower() not in ("false", "0", "no") \
             and self.config.extra.get("reactions", True)
 
-    def _resolve_dynamic_reactions(self) -> bool:
-        """Resolve dynamic reactions flag once at init.
+    def _session_key_from_source(self, source) -> str:
+        """Derive a stable session key from a SessionSource or MessageEvent."""
+        if hasattr(source, "source") and source.source is not None:
+            source = source.source  # MessageEvent → inner SessionSource
+        return f"{source.platform}:{source.chat_id}:{source.thread_id or ''}"
 
-        Resolution order:
-        1. ``discord.dynamic_reactions`` in config.yaml (platform override)
-        2. ``dynamic_reactions`` at top-level in config.yaml (global default)
-        3. True (built-in default)
-        """
-        if not self._reactions_enabled():
-            return False
-        extra = self.config.extra
-        if "dynamic_reactions" in extra:
-            return bool(extra["dynamic_reactions"])
-        from hermes_cli.config import load_config
-        return bool(load_config().get("dynamic_reactions", True))
+    # ── DynamicReactionMixin primitives ──────────────────────────────────
 
-    def _dynamic_reactions_enabled(self) -> bool:
-        """Check if per-tool reaction swapping is enabled (cached)."""
-        return self._cached_dynamic_reactions
+    async def _reaction_add(self, msg_ref: Any, emoji: str) -> bool:
+        """Add an emoji reaction to a Discord message."""
+        return await self._add_reaction(msg_ref, emoji)
 
-    def _resolve_persona_emoji(self) -> str:
-        """Resolve the agent's persona emoji once at init.
+    async def _reaction_remove(self, msg_ref: Any, emoji: str) -> bool:
+        """Remove the bot's own emoji reaction from a Discord message."""
+        return await self._remove_reaction(msg_ref, emoji)
 
-        Resolution order:
-        1. ``discord.persona_emoji`` in config.yaml (platform override)
-        2. ``persona_emoji`` at top-level in config.yaml (global default)
-        3. 👀 (built-in fallback so existing deployments are unaffected)
-        """
-        if emoji := self.config.extra.get("persona_emoji"):
-            return emoji
-        from hermes_cli.config import load_config
-        return load_config().get("persona_emoji") or "👀"
+    def _reaction_resolve_message(self, event: Any) -> Any:
+        """Extract the raw Discord message from the event or session cache."""
+        message = getattr(event, "raw_message", None)
+        if message and hasattr(message, "add_reaction"):
+            return message
+        # Fall back to session cache (when called with a SessionSource)
+        sk = self._session_key_from_source(event)
+        return self._session_raw_messages.get(sk)
 
-    def _persona_emoji(self) -> str:
-        """Return the agent's persona emoji (cached)."""
-        return self._cached_persona_emoji
+    def _reaction_msg_key(self, event: Any) -> Optional[int]:
+        """Return message.id as the tracking key."""
+        msg = self._reaction_resolve_message(event)
+        return getattr(msg, "id", None)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add the agent's persona emoji when processing begins."""
-        if not self._reactions_enabled():
-            return
+        """Add persona emoji and cache the raw message for tool-call lookups."""
         message = event.raw_message
         if hasattr(message, "add_reaction"):
-            emoji = self._persona_emoji()
-            await self._add_reaction(message, emoji)
-            self._active_tool_reactions[message.id] = emoji
+            sk = self._session_key_from_source(event)
+            self._session_raw_messages[sk] = message
+        await self._rxn_on_processing_start(event)
 
-    async def on_tool_call_start(self, event: MessageEvent, tool_name: str) -> None:
-        """Swap the active reaction to the tool-specific emoji.
-
-        Called by the gateway's progress_callback on every ``tool.started``
-        event. Removes the previous reaction (persona or prior tool) and
-        adds the emoji that represents the current tool, so the message
-        always shows exactly one reaction reflecting what the agent is doing.
-
-        A per-message cooldown (default 1s) prevents hitting Discord's
-        reaction rate limits (~1 req/0.25s per channel, but remove+add = 2
-        calls per swap).
-        """
-        if not self._dynamic_reactions_enabled():
-            return
-        message = event.raw_message
-        if not hasattr(message, "add_reaction"):
-            return
-
-        # Hysteresis: skip if last swap was too recent
-        now = time.monotonic()
-        last = self._last_reaction_swap.get(message.id, 0.0)
-        if now - last < self._reaction_cooldown:
-            return
-
-        from agent.display import get_tool_emoji
-        tool_emoji = get_tool_emoji(tool_name, default="⚙️")
-        current = self._active_tool_reactions.get(message.id)
-        if current and current != tool_emoji:
-            await self._remove_reaction(message, current)
-        if current != tool_emoji:
-            await self._add_reaction(message, tool_emoji)
-        self._active_tool_reactions[message.id] = tool_emoji
-        self._last_reaction_swap[message.id] = now
+    async def on_tool_call_start(self, event, tool_name: str) -> None:
+        """Swap the active reaction to the tool-specific emoji."""
+        await self._rxn_on_tool_call_start(event, tool_name)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Replace the active reaction with the persona emoji (success) or ❌ (failure)."""
-        if not self._reactions_enabled():
-            return
-        message = event.raw_message
-        if hasattr(message, "add_reaction"):
-            current = self._active_tool_reactions.pop(message.id, self._persona_emoji())
-            self._last_reaction_swap.pop(message.id, None)
-            await self._remove_reaction(message, current)
-            if outcome == ProcessingOutcome.SUCCESS:
-                await self._add_reaction(message, self._persona_emoji())
-            elif outcome == ProcessingOutcome.FAILURE:
-                await self._add_reaction(message, "❌")
-            # CANCELLED: remove active reaction, leave nothing
+        """Replace the active reaction with the persona emoji or ❌."""
+        # Clean up cached raw message for this session
+        sk = self._session_key_from_source(event)
+        self._session_raw_messages.pop(sk, None)
+        await self._rxn_on_processing_complete(event, outcome)
 
     async def send(
         self,

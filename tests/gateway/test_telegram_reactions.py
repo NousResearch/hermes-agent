@@ -15,9 +15,17 @@ def _make_adapter(**extra_env):
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
-    adapter.config = PlatformConfig(enabled=True, token="fake-token")
+    # Use persona_emoji=👀 so tests are deterministic and don't depend on
+    # the host's config.yaml.
+    adapter.config = PlatformConfig(
+        enabled=True, token="fake-token",
+        extra={"persona_emoji": "👀"},
+    )
     adapter._bot = AsyncMock()
     adapter._bot.set_message_reaction = AsyncMock()
+    # Initialize the dynamic reaction mixin (normally done in __init__).
+    adapter._reaction_replace_mode = True
+    adapter._init_reaction_mixin()
     return adapter
 
 
@@ -175,23 +183,24 @@ async def test_on_processing_start_handles_missing_ids(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_success(monkeypatch):
-    """Successful processing should set thumbs-up reaction."""
+    """Successful processing should set persona emoji reaction."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
 
     await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
+    # Mixin uses persona emoji (👀) for success
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\U0001f44d",
+        reaction="👀",
     )
 
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_failure(monkeypatch):
-    """Failed processing should set thumbs-down reaction."""
+    """Failed processing should set thumbs-down reaction (❌ mapped to 👎 on Telegram)."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
@@ -201,7 +210,7 @@ async def test_on_processing_complete_failure(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\U0001f44e",
+        reaction="👎",
     )
 
 

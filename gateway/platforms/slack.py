@@ -34,6 +34,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.reaction_mixin import DynamicReactionMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -253,7 +254,7 @@ def _resolve_slack_proxy_url() -> Optional[str]:
     return proxy_url
 
 
-class SlackAdapter(BasePlatformAdapter):
+class SlackAdapter(DynamicReactionMixin, BasePlatformAdapter):
     """
     Slack bot adapter using Socket Mode.
 
@@ -310,6 +311,8 @@ class SlackAdapter(BasePlatformAdapter):
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
+        # Initialize the platform-agnostic dynamic reaction mixin.
+        self._init_reaction_mixin()
 
     def _describe_slack_api_error(self, response: Any, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Convert Slack API auth/permission failures into actionable user-facing text."""
@@ -1040,7 +1043,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Reactions -----
 
-    async def _add_reaction(
+    async def _add_slack_reaction(
         self, channel: str, timestamp: str, emoji: str
     ) -> bool:
         """Add an emoji reaction to a message. Returns True on success."""
@@ -1056,7 +1059,7 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] reactions.add failed (%s): %s", emoji, e)
             return False
 
-    async def _remove_reaction(
+    async def _remove_slack_reaction(
         self, channel: str, timestamp: str, emoji: str
     ) -> bool:
         """Remove an emoji reaction from a message. Returns True on success."""
@@ -1075,33 +1078,87 @@ class SlackAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("SLACK_REACTIONS", "true").lower() not in ("false", "0", "no")
 
-    async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
-        if not self._reactions_enabled():
-            return
+    # ── DynamicReactionMixin primitives ──────────────────────────────────
+
+    # Slack uses shortcode emoji names (e.g. "eyes" not "👀").
+    _UNICODE_TO_SLACK: Dict[str, str] = {
+        "👀": "eyes",
+        "✅": "white_check_mark",
+        "❌": "x",
+        "⚙️": "gear",
+        "📄": "page_facing_up",
+        "📝": "memo",
+        "🩹": "adhesive_bandage",
+        "🔎": "mag_right",
+        "💻": "computer",
+        "🐍": "snake",
+        "🌐": "globe_with_meridians",
+        "🖱️": "computer_mouse",
+        "⌨️": "keyboard",
+        "📸": "camera_with_flash",
+        "📜": "scroll",
+        "👁️": "eye",
+        "◀️": "arrow_backward",
+        "🖼️": "frame_with_picture",
+        "🔍": "mag",
+        "💬": "speech_balloon",
+        "📊": "bar_chart",
+        "🧠": "brain",
+        "📁": "file_folder",
+        "🔧": "wrench",
+        "⏰": "alarm_clock",
+        "📋": "clipboard",
+        "🎵": "musical_note",
+        "🗣️": "speaking_head_in_silhouette",
+        "🖼": "frame_with_picture",
+    }
+
+    async def _reaction_add(self, msg_ref: Any, emoji: str) -> bool:
+        """Add an emoji reaction to a Slack message."""
+        channel, ts = msg_ref
+        return await self._add_slack_reaction(channel, ts, emoji)
+
+    async def _reaction_remove(self, msg_ref: Any, emoji: str) -> bool:
+        """Remove an emoji reaction from a Slack message."""
+        channel, ts = msg_ref
+        return await self._remove_slack_reaction(channel, ts, emoji)
+
+    def _reaction_resolve_message(self, event: Any) -> Any:
+        """Return (channel_id, ts) tuple for Slack."""
         ts = getattr(event, "message_id", None)
         if not ts or ts not in self._reacting_message_ids:
-            return
-        channel_id = getattr(event.source, "chat_id", None)
+            return None
+        channel_id = getattr(getattr(event, "source", None), "chat_id", None)
         if channel_id:
-            await self._add_reaction(channel_id, ts, "eyes")
+            return (channel_id, ts)
+        return None
+
+    def _reaction_msg_key(self, event: Any) -> Optional[str]:
+        """Return message timestamp as the tracking key."""
+        ts = getattr(event, "message_id", None)
+        if ts and ts in self._reacting_message_ids:
+            return ts
+        return None
+
+    def _reaction_translate_emoji(self, emoji: str) -> Optional[str]:
+        """Translate Unicode emoji to Slack shortcode."""
+        return self._UNICODE_TO_SLACK.get(emoji, "gear")
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add persona emoji when processing begins."""
+        await self._rxn_on_processing_start(event)
+
+    async def on_tool_call_start(self, event, tool_name: str) -> None:
+        """Swap reaction to tool-specific emoji."""
+        await self._rxn_on_tool_call_start(event, tool_name)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction."""
-        if not self._reactions_enabled():
-            return
+        """Replace active reaction with final emoji."""
+        # Call mixin first (it needs _reacting_message_ids to resolve the message).
+        await self._rxn_on_processing_complete(event, outcome)
         ts = getattr(event, "message_id", None)
-        if not ts or ts not in self._reacting_message_ids:
-            return
-        self._reacting_message_ids.discard(ts)
-        channel_id = getattr(event.source, "chat_id", None)
-        if not channel_id:
-            return
-        await self._remove_reaction(channel_id, ts, "eyes")
-        if outcome == ProcessingOutcome.SUCCESS:
-            await self._add_reaction(channel_id, ts, "white_check_mark")
-        elif outcome == ProcessingOutcome.FAILURE:
-            await self._add_reaction(channel_id, ts, "x")
+        if ts:
+            self._reacting_message_ids.discard(ts)
 
     # ----- User identity resolution -----
 

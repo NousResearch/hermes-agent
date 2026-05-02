@@ -1484,7 +1484,7 @@ class TestReactions:
     @pytest.mark.asyncio
     async def test_add_reaction_calls_api(self, adapter):
         adapter._app.client.reactions_add = AsyncMock()
-        result = await adapter._add_reaction("C123", "ts1", "eyes")
+        result = await adapter._add_slack_reaction("C123", "ts1", "eyes")
         assert result is True
         adapter._app.client.reactions_add.assert_called_once_with(
             channel="C123", timestamp="ts1", name="eyes"
@@ -1493,13 +1493,13 @@ class TestReactions:
     @pytest.mark.asyncio
     async def test_add_reaction_handles_error(self, adapter):
         adapter._app.client.reactions_add = AsyncMock(side_effect=Exception("already_reacted"))
-        result = await adapter._add_reaction("C123", "ts1", "eyes")
+        result = await adapter._add_slack_reaction("C123", "ts1", "eyes")
         assert result is False
 
     @pytest.mark.asyncio
     async def test_remove_reaction_calls_api(self, adapter):
         adapter._app.client.reactions_remove = AsyncMock()
-        result = await adapter._remove_reaction("C123", "ts1", "eyes")
+        result = await adapter._remove_slack_reaction("C123", "ts1", "eyes")
         assert result is True
 
     @pytest.mark.asyncio
@@ -1550,10 +1550,10 @@ class TestReactions:
 
         add_calls = adapter._app.client.reactions_add.call_args_list
         remove_calls = adapter._app.client.reactions_remove.call_args_list
-        assert len(add_calls) == 2
-        assert add_calls[1].kwargs["name"] == "white_check_mark"
-        assert len(remove_calls) == 1
-        assert remove_calls[0].kwargs["name"] == "eyes"
+        # Mixin optimizes: persona emoji on start == persona emoji on success,
+        # so no remove+re-add is needed.
+        assert len(add_calls) == 1
+        assert len(remove_calls) == 0
 
         # Message ID should be cleaned up
         assert "1234567890.000001" not in adapter._reacting_message_ids
@@ -1579,6 +1579,12 @@ class TestReactions:
             source=source,
             message_id="1234567890.000002",
         )
+        # Must start processing first so the mixin tracks the reaction state.
+        await adapter.on_processing_start(msg_event)
+        adapter._app.client.reactions_add.reset_mock()
+        adapter._app.client.reactions_remove.reset_mock()
+        # Re-add so on_processing_complete can find it
+        adapter._reacting_message_ids.add("1234567890.000002")
         await adapter.on_processing_complete(msg_event, ProcessingOutcome.FAILURE)
 
         add_calls = adapter._app.client.reactions_add.call_args_list

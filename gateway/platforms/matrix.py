@@ -93,6 +93,7 @@ except ImportError:
     TrustState = _TrustStateStub  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.reaction_mixin import DynamicReactionMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -288,7 +289,7 @@ class _CryptoStateStore:
         return list(self._joined_rooms)
 
 
-class MatrixAdapter(BasePlatformAdapter):
+class MatrixAdapter(DynamicReactionMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     # Threshold for detecting Matrix client-side message splits.
@@ -392,6 +393,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
         }
+        # Initialize the platform-agnostic dynamic reaction mixin.
+        self._init_reaction_mixin()
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -1929,41 +1932,58 @@ class MatrixAdapter(BasePlatformAdapter):
         """Remove a reaction by redacting its event."""
         return await self.redact_message(room_id, reaction_event_id, reason)
 
-    async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add eyes reaction when the agent starts processing a message."""
-        if not self._reactions_enabled:
-            return
-        msg_id = event.message_id
-        room_id = event.source.chat_id
+    # ── DynamicReactionMixin primitives ──────────────────────────────────
+
+    # Matrix reactions are separate events.  Adding returns an event_id;
+    # removing means redacting that event.  We track event_ids per
+    # (msg_key, emoji) so _reaction_remove can find the right one.
+
+    def _reaction_resolve_message(self, event: Any) -> Any:
+        """Return (room_id, event_id) tuple for Matrix."""
+        msg_id = getattr(event, "message_id", None)
+        room_id = getattr(getattr(event, "source", None), "chat_id", None)
         if msg_id and room_id:
-            reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
-            if reaction_event_id:
-                self._pending_reactions[(room_id, msg_id)] = reaction_event_id
+            return (room_id, msg_id)
+        return None
+
+    def _reaction_msg_key(self, event: Any) -> Optional[tuple]:
+        """Return (room_id, msg_id) as the tracking key."""
+        return self._reaction_resolve_message(event)
+
+    async def _reaction_add(self, msg_ref: Any, emoji: str) -> bool:
+        """Send a reaction and track its event_id for later redaction."""
+        room_id, event_id = msg_ref
+        reaction_event_id = await self._send_reaction(room_id, event_id, emoji)
+        if reaction_event_id:
+            # Store so _reaction_remove can find it
+            self._pending_reactions[(room_id, event_id, emoji)] = reaction_event_id
+            return True
+        return False
+
+    async def _reaction_remove(self, msg_ref: Any, emoji: str) -> bool:
+        """Redact a previously sent reaction."""
+        room_id, event_id = msg_ref
+        key = (room_id, event_id, emoji)
+        reaction_event_id = self._pending_reactions.pop(key, None)
+        if reaction_event_id:
+            return await self._redact_reaction(room_id, reaction_event_id)
+        return False
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add persona emoji when processing begins."""
+        await self._rxn_on_processing_start(event)
+
+    async def on_tool_call_start(self, event, tool_name: str) -> None:
+        """Swap reaction to tool-specific emoji."""
+        await self._rxn_on_tool_call_start(event, tool_name)
 
     async def on_processing_complete(
         self,
         event: MessageEvent,
         outcome: ProcessingOutcome,
     ) -> None:
-        """Replace eyes with checkmark (success) or cross (failure)."""
-        if not self._reactions_enabled:
-            return
-        msg_id = event.message_id
-        room_id = event.source.chat_id
-        if not msg_id or not room_id:
-            return
-        if outcome == ProcessingOutcome.CANCELLED:
-            return
-        reaction_key = (room_id, msg_id)
-        if reaction_key in self._pending_reactions:
-            eyes_event_id = self._pending_reactions.pop(reaction_key)
-            if not await self._redact_reaction(room_id, eyes_event_id):
-                logger.debug("Matrix: failed to redact eyes reaction %s", eyes_event_id)
-        await self._send_reaction(
-            room_id,
-            msg_id,
-            "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c",
-        )
+        """Replace active reaction with final emoji."""
+        await self._rxn_on_processing_complete(event, outcome)
 
     async def _on_reaction(self, event: Any) -> None:
         """Handle incoming reaction events."""

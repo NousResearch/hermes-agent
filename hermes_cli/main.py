@@ -2323,6 +2323,8 @@ def _model_flow_openrouter(config, current_model=""):
         model["provider"] = "openrouter"
         model["base_url"] = OPENROUTER_BASE_URL
         model["api_mode"] = "chat_completions"
+        # Clear stale api_key from a previous provider (see #14134).
+        model.pop("api_key", None)
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
@@ -2380,6 +2382,8 @@ def _model_flow_ai_gateway(config, current_model=""):
         model["provider"] = "ai-gateway"
         model["base_url"] = AI_GATEWAY_BASE_URL
         model["api_mode"] = "chat_completions"
+        # Clear stale api_key from a previous provider (see #14134).
+        model.pop("api_key", None)
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via Vercel AI Gateway)")
@@ -2981,6 +2985,8 @@ def _model_flow_custom(config):
         model["base_url"] = effective_url
         if effective_key:
             model["api_key"] = effective_key
+        else:
+            model.pop("api_key", None)
         model.pop("api_mode", None)  # let runtime auto-detect from URL
         save_config(cfg)
         deactivate_provider()
@@ -3004,6 +3010,8 @@ def _model_flow_custom(config):
         _caller_model["base_url"] = effective_url
         if effective_key:
             _caller_model["api_key"] = effective_key
+        else:
+            _caller_model.pop("api_key", None)
         _caller_model.pop("api_mode", None)
         config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
@@ -3277,6 +3285,8 @@ def _model_flow_azure_foundry(config, current_model=""):
     model["base_url"] = effective_url
     model["api_mode"] = api_mode
     model["default"] = effective_model
+    # Clear stale api_key from a previous provider (see #14134).
+    model.pop("api_key", None)
     if ctx_len:
         model["context_length"] = ctx_len
 
@@ -3489,6 +3499,8 @@ def _model_flow_named_custom(config, provider_info):
         model["base_url"] = base_url
         if config_api_key:
             model["api_key"] = config_api_key
+        else:
+            model.pop("api_key", None)
     # Apply api_mode from custom_providers entry, or clear stale value
     custom_api_mode = provider_info.get("api_mode", "")
     if custom_api_mode:
@@ -3822,6 +3834,8 @@ def _model_flow_copilot(config, current_model=""):
             catalog=catalog,
             api_key=api_key,
         )
+        # Clear stale api_key from a previous provider (see #14134).
+        model.pop("api_key", None)
         if selected_effort is not None:
             _set_reasoning_effort(cfg, selected_effort)
         save_config(cfg)
@@ -3944,6 +3958,8 @@ def _model_flow_copilot_acp(config, current_model=""):
     model["provider"] = provider_id
     model["base_url"] = effective_base
     model["api_mode"] = "chat_completions"
+    # Clear stale api_key from a previous provider (see #14134).
+    model.pop("api_key", None)
     save_config(cfg)
     deactivate_provider()
 
@@ -4052,6 +4068,8 @@ def _model_flow_kimi(config, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         model.pop("api_mode", None)  # let runtime auto-detect from URL
+        # Clear stale api_key from a previous provider (see #14134).
+        model.pop("api_key", None)
         save_config(cfg)
         deactivate_provider()
 
@@ -4186,6 +4204,8 @@ def _model_flow_stepfun(config, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         model.pop("api_mode", None)
+        # Clear stale api_key from a previous provider (see #14134).
+        model.pop("api_key", None)
         save_config(cfg)
         deactivate_provider()
 
@@ -4262,6 +4282,8 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         model["provider"] = "custom"
         model["base_url"] = mantle_base_url
         model.pop("api_mode", None)  # chat_completions is the default
+        # Clear stale api_key from a previous provider (see #14134).
+        model.pop("api_key", None)
 
         # Also save region in bedrock config for reference
         bedrock_cfg = cfg.get("bedrock", {})
@@ -4451,6 +4473,8 @@ def _model_flow_bedrock(config, current_model=""):
         model["provider"] = "bedrock"
         model["base_url"] = f"https://bedrock-runtime.{region}.amazonaws.com"
         model.pop("api_mode", None)  # bedrock_converse is auto-detected
+        # Clear stale api_key from a previous provider (see #14134).
+        model.pop("api_key", None)
 
         bedrock_cfg = cfg.get("bedrock", {})
         if not isinstance(bedrock_cfg, dict):
@@ -4731,6 +4755,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:
             model.pop("api_mode", None)
+        # Clear stale api_key from a previous provider to prevent
+        # cross-provider key contamination (see #14134).
+        model.pop("api_key", None)
         save_config(cfg)
         deactivate_provider()
 
@@ -4962,6 +4989,8 @@ def _model_flow_anthropic(config, current_model=""):
             cfg["model"] = model
         model["provider"] = "anthropic"
         model.pop("base_url", None)
+        # Clear stale api_key from a previous provider (see #14134).
+        model.pop("api_key", None)
         save_config(cfg)
         deactivate_provider()
 

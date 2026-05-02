@@ -5542,6 +5542,16 @@ class GatewayRunner:
             # guess (or answer for both subjects). Token overhead is minimal.
             reply_snippet = event.reply_to_text[:500]
             message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+        elif getattr(event, "reply_to_audio_path", None) and event.reply_to_message_id:
+            # Replied-to message was a voice/audio note — transcribe it and inject as context
+            try:
+                transcribed = await self._enrich_message_with_transcription("", [event.reply_to_audio_path])
+                transcribed = transcribed.strip()
+                if transcribed and not any(m in transcribed for m in ("No STT provider", "STT is disabled", "can't listen")):
+                    message_text = f'[Replying to voice message: "{transcribed[:500]}"]\n\n{message_text}'
+                    logger.info("[Gateway] Injected replied-to voice transcription as context")
+            except Exception as _e:
+                logger.warning("[Gateway] Failed to transcribe replied-to audio: %s", _e)
 
         if "@" in message_text:
             try:

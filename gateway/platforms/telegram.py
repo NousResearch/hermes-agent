@@ -2887,6 +2887,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        await self._enrich_event_with_replied_audio(event, update.message)
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3088,6 +3089,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Add caption as text
         if msg.caption:
             event.text = self._clean_bot_trigger_text(msg.caption)
+        
+        # Enrich with replied-to voice/audio if applicable
+        await self._enrich_event_with_replied_audio(event, msg)
         
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
@@ -3524,6 +3528,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Extract reply context if this message is a reply
         reply_to_id = None
         reply_to_text = None
+        reply_to_audio_path = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
             reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
@@ -3550,6 +3555,29 @@ class TelegramAdapter(BasePlatformAdapter):
             channel_prompt=_channel_prompt,
             timestamp=message.date,
         )
+
+    async def _enrich_event_with_replied_audio(self, event: "MessageEvent", message: Message) -> None:
+        """If the triggering message is a reply to a voice/audio note, download and cache
+        that audio so the STT pipeline can transcribe it as context."""
+        if not message.reply_to_message:
+            return
+        replied = message.reply_to_message
+        if replied.voice:
+            try:
+                file_obj = await replied.voice.get_file()
+                audio_bytes = await file_obj.download_as_bytearray()
+                event.reply_to_audio_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
+                logger.info("[Telegram] Cached replied-to voice at %s", event.reply_to_audio_path)
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache replied-to voice: %s", e, exc_info=True)
+        elif replied.audio:
+            try:
+                file_obj = await replied.audio.get_file()
+                audio_bytes = await file_obj.download_as_bytearray()
+                event.reply_to_audio_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
+                logger.info("[Telegram] Cached replied-to audio at %s", event.reply_to_audio_path)
+            except Exception as e:
+                logger.warning("[Telegram] Failed to cache replied-to audio: %s", e, exc_info=True)
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
 

@@ -16,6 +16,7 @@ model:
   #   "nous"         - Nous Portal OAuth (requires: hermes login)
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
+  #   "bedrock"      - AWS Bedrock (requires: AWS credentials via AWS_PROFILE, AWS SSO, or env vars)
   #   "openai-codex" - OpenAI Codex (requires: hermes auth)
   #   "copilot"      - GitHub Copilot / GitHub Models (requires: GITHUB_TOKEN)
   #   "gemini"      - Use Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
@@ -94,6 +95,29 @@ model:
 #     models:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
+
+# =============================================================================
+# Amazon Bedrock Configuration (only applies when using Bedrock)
+# =============================================================================
+# AWS Bedrock requires AWS credentials (IAM, SSO, or env vars).
+# No additional configuration needed for basic use.
+# Optionally set default model and AWS region here.
+#
+# bedrock:
+#   # Default model for Bedrock (Claude variants are recommended)
+#   # Examples: "us.anthropic.claude-opus-4-1-20250514", "us.anthropic.claude-sonnet-4-20250514"
+#   # List available models with: aws bedrock list-foundation-models --by-provider anthropic
+#   # Default if not set: "us.anthropic.claude-sonnet-4-6"
+#   model: "us.anthropic.claude-opus-4-1-20250514"
+#
+#   # AWS region (default: us-east-1)
+#   # Bedrock is available in: us-east-1, us-west-2, eu-west-1, ap-northeast-1, ap-southeast-1
+#   region: "us-east-1"
+#
+#   # Optional: content moderation guardrails
+#   # guardrail:
+#   #   id: "arn:aws:bedrock:..."
+#   #   version: "1"
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)

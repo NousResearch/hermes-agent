@@ -274,6 +274,32 @@ def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Respons
     )
 
 
+def _extract_image_urls_from_content(content: list) -> list:
+    """Extract image URLs from a normalized multimodal content list.
+
+    Returns the bare URL strings (http/https or data:image/...) from
+    ``image_url``/``input_image`` parts.  The list must already have been
+    through ``_normalize_multimodal_content`` — the shape is canonical.
+    """
+    urls = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") not in _IMAGE_PART_TYPES:
+            continue
+        img_ref = part.get("image_url")
+        # Handle both ``{"image_url": {"url": "..."}}`` (Chat Completions
+        # canonical shape) and ``{"image_url": "https://..."}`` (Responses
+        # input_image already rewritten to Chat style by the normalizer).
+        if isinstance(img_ref, dict):
+            url = img_ref.get("url")
+        else:
+            url = img_ref
+        if isinstance(url, str) and url.strip():
+            urls.append(url.strip())
+    return urls
+
+
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -705,6 +731,74 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
 
+    async def _enrich_api_content_with_vision(self, content: list) -> str:
+        """Pre-analyze images in a multimodal content list via vision_analyze.
+
+        Called when ``decide_image_input_mode`` returns ``"text"`` for an
+        API server request.  Runs ``vision_analyze_tool`` on each image URL
+        (http, https, or data:image/...) and returns enriched text with
+        descriptions prepended — matching the gateway's
+        ``_enrich_message_with_vision`` output format.
+
+        Returns a plain string so downstream code (history, logging,
+        trajectory) sees the same shape as text-only turns.
+        """
+        from tools.vision_tools import vision_analyze_tool
+        from agent.memory_manager import sanitize_context
+
+        image_urls = _extract_image_urls_from_content(content)
+        if not image_urls:
+            # No images — collapse to text and return.
+            return _normalize_chat_content(content)
+
+        analysis_prompt = (
+            "Describe everything visible in this image in thorough detail. "
+            "Include any text, code, data, objects, people, layout, colors, "
+            "and any other notable visual information."
+        )
+
+        # Extract original user text from text parts.
+        original_text = ""
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in _TEXT_PART_TYPES:
+                original_text += str(part.get("text") or "")
+
+        enriched_parts = []
+        for url in image_urls:
+            try:
+                result_json = await vision_analyze_tool(
+                    image_url=url,
+                    user_prompt=analysis_prompt,
+                )
+                result = json.loads(result_json)
+                if result.get("success"):
+                    description = result.get("analysis", "")
+                    description = sanitize_context(description)
+                    enriched_parts.append(
+                        f"[The user sent an image. Here's what I can see:\n"
+                        f"{description}]\n"
+                        f"[If you need a closer look, use vision_analyze with "
+                        f"image_url: {url}]"
+                    )
+                else:
+                    enriched_parts.append(
+                        "[The user sent an image but I couldn't quite see it "
+                        "this time (>_<) You can try looking at it yourself "
+                        f"with vision_analyze using image_url: {url}]"
+                    )
+            except Exception as exc:
+                logger.warning("Vision auto-analysis failed for %s: %s", url, exc)
+                enriched_parts.append(
+                    "[The user sent an image but something went wrong when I "
+                    "tried to look at it. You can try examining it yourself "
+                    f"with vision_analyze using image_url: {url}]"
+                )
+
+        prefix = "\n\n".join(enriched_parts)
+        if original_text:
+            return f"{prefix}\n\n{original_text}"
+        return prefix
+
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
@@ -906,6 +1000,51 @@ class APIServerAdapter(BasePlatformAdapter):
         if conversation_messages:
             user_message = conversation_messages[-1].get("content", "")
             history = conversation_messages[:-1]
+
+        # ── Image routing: respect agent.image_input_mode config ──
+        # The api_server historically bypassed the gateway's per-turn
+        # image-routing decision (CLI/TUI/messaging platforms call
+        # _decide_image_input_mode before passing content to the agent).
+        # Match that behaviour here so users with non-vision primary
+        # models (DeepSeek, GLM, etc.) can still process images via
+        # auxiliary.vision.
+        if isinstance(user_message, list) and any(
+            isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES
+            for p in user_message
+        ):
+            try:
+                from agent.image_routing import decide_image_input_mode
+                from agent.auxiliary_client import _read_main_model, _read_main_provider
+                from hermes_cli.config import load_config
+
+                cfg = load_config()
+                provider = _read_main_provider()
+                model = _read_main_model()
+                img_mode = decide_image_input_mode(provider, model, cfg)
+                img_count = sum(
+                    1 for p in user_message
+                    if isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES
+                )
+                if img_mode == "text":
+                    logger.info(
+                        "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
+                        img_mode, img_count,
+                    )
+                    user_message = await self._enrich_api_content_with_vision(user_message)
+                else:
+                    logger.info(
+                        "Image routing: native. %d image(s) attached inline.",
+                        img_count,
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "Image routing: decision failed, passing images through unchanged — %s",
+                    exc,
+                )
+                # On failure, pass through unchanged.  Downstream
+                # _prepare_messages_for_non_vision_model will strip
+                # images from the wire format if the model can't handle
+                # them (best-effort fallback).
 
         if not _content_has_visible_payload(user_message):
             return web.json_response(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import logging
 import os
 from collections import defaultdict, deque
@@ -47,6 +48,7 @@ from acp.schema import (
     TextContentBlock,
     UnstructuredCommandInput,
     Usage,
+    UsageUpdate,
     UserMessageChunk,
 )
 
@@ -65,6 +67,7 @@ from acp_adapter.events import (
 )
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+from acp_adapter.tools import build_tool_complete, build_tool_start
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +318,66 @@ class HermesACPAgent(acp.Agent):
 
         return target_provider, new_model
 
+    @staticmethod
+    def _build_usage_update(state: SessionState) -> UsageUpdate | None:
+        """Build ACP native context-usage data for clients like Zed.
+
+        Zed's circular context indicator is driven by ACP ``usage_update``
+        session updates: ``size`` is the model context window and ``used`` is
+        the current request pressure.  Hermes estimates ``used`` from the same
+        buckets it sends to providers: system prompt, conversation history, and
+        tool schemas.
+        """
+        agent = state.agent
+        compressor = getattr(agent, "context_compressor", None)
+        size = int(getattr(compressor, "context_length", 0) or 0)
+        if size <= 0:
+            return None
+
+        try:
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            used = estimate_request_tokens_rough(
+                state.history,
+                system_prompt=getattr(agent, "_cached_system_prompt", "") or "",
+                tools=getattr(agent, "tools", None) or None,
+            )
+        except Exception:
+            logger.debug("Could not estimate ACP native context usage", exc_info=True)
+            used = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+
+        return UsageUpdate(
+            session_update="usage_update",
+            size=max(size, 0),
+            used=max(used, 0),
+        )
+
+    async def _send_usage_update(self, state: SessionState) -> None:
+        """Send ACP native context usage to the connected client."""
+        if not self._conn:
+            return
+        update = self._build_usage_update(state)
+        if update is None:
+            return
+        try:
+            await self._conn.session_update(
+                session_id=state.session_id,
+                update=update,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to send ACP usage update for session %s",
+                state.session_id,
+                exc_info=True,
+            )
+
+    def _schedule_usage_update(self, state: SessionState) -> None:
+        """Schedule native context indicator refresh after ACP responses."""
+        if not self._conn:
+            return
+        loop = asyncio.get_running_loop()
+        loop.call_soon(asyncio.create_task, self._send_usage_update(state))
+
     async def _register_session_mcp_servers(
         self,
         state: SessionState,
@@ -485,37 +548,99 @@ class HermesACPAgent(acp.Agent):
             )
         return None
 
+    @staticmethod
+    def _history_tool_call_name_args(tool_call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """Extract function name/arguments from an OpenAI-style tool_call."""
+        function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+        name = str(function.get("name") or tool_call.get("name") or "unknown_tool")
+        raw_args = function.get("arguments") or tool_call.get("arguments") or tool_call.get("args") or {}
+        if isinstance(raw_args, str):
+            try:
+                parsed = json.loads(raw_args)
+            except Exception:
+                parsed = {"raw": raw_args}
+            raw_args = parsed
+        if not isinstance(raw_args, dict):
+            raw_args = {}
+        return name, raw_args
+
+    @staticmethod
+    def _history_tool_call_id(tool_call: dict[str, Any]) -> str:
+        """Return the stable provider tool call id for ACP history replay."""
+        return str(
+            tool_call.get("id")
+            or tool_call.get("call_id")
+            or tool_call.get("tool_call_id")
+            or ""
+        ).strip()
+
     async def _replay_session_history(self, state: SessionState) -> None:
         """Send persisted user/assistant history to clients during session/load.
 
         Zed's ACP history UI calls ``session/load`` after the user picks an item
         from the Agents sidebar. The agent must then replay the full conversation
-        as ``user_message_chunk`` / ``agent_message_chunk`` notifications; merely
-        restoring server-side state makes Hermes remember context, but leaves the
-        editor looking like a clean thread.
+        as user/assistant chunks plus reconstructed tool-call start/completion
+        notifications; merely restoring server-side state makes Hermes remember
+        context, but leaves the editor looking like a clean thread.
         """
         if not self._conn or not state.history:
             return
 
-        for message in state.history:
-            role = str(message.get("role") or "")
-            if role not in {"user", "assistant"}:
-                continue
-            text = self._history_message_text(message)
-            if not text:
-                continue
-            update = self._history_message_update(role=role, text=text)
-            if update is None:
-                continue
+        active_tool_calls: dict[str, tuple[str, dict[str, Any]]] = {}
+
+        async def _send(update: Any) -> bool:
             try:
                 await self._conn.session_update(session_id=state.session_id, update=update)
+                return True
             except Exception:
                 logger.warning(
                     "Failed to replay ACP history for session %s",
                     state.session_id,
                     exc_info=True,
                 )
-                return
+                return False
+
+        for message in state.history:
+            role = str(message.get("role") or "")
+
+            if role in {"user", "assistant"}:
+                text = self._history_message_text(message)
+                if text:
+                    update = self._history_message_update(role=role, text=text)
+                    if update is not None and not await _send(update):
+                        return
+
+            if role == "assistant" and isinstance(message.get("tool_calls"), list):
+                for tool_call in message["tool_calls"]:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    tool_call_id = self._history_tool_call_id(tool_call)
+                    if not tool_call_id:
+                        continue
+                    tool_name, args = self._history_tool_call_name_args(tool_call)
+                    active_tool_calls[tool_call_id] = (tool_name, args)
+                    if not await _send(build_tool_start(tool_call_id, tool_name, args)):
+                        return
+                continue
+
+            if role == "tool":
+                tool_call_id = str(message.get("tool_call_id") or "").strip()
+                tool_name = str(message.get("tool_name") or "").strip()
+                function_args: dict[str, Any] | None = None
+                if tool_call_id in active_tool_calls:
+                    tool_name, function_args = active_tool_calls.pop(tool_call_id)
+                if not tool_call_id or not tool_name:
+                    continue
+                result = message.get("content")
+                if not await _send(
+                    build_tool_complete(
+                        tool_call_id,
+                        tool_name,
+                        result=result if isinstance(result, str) else None,
+                        function_args=function_args,
+                    )
+                ):
+                    return
 
     async def new_session(
         self,
@@ -527,6 +652,7 @@ class HermesACPAgent(acp.Agent):
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)
+        self._schedule_usage_update(state)
         return NewSessionResponse(
             session_id=state.session_id,
             models=self._build_model_state(state),
@@ -547,6 +673,7 @@ class HermesACPAgent(acp.Agent):
         logger.info("Loaded session %s", session_id)
         await self._replay_session_history(state)
         self._schedule_available_commands_update(session_id)
+        self._schedule_usage_update(state)
         return LoadSessionResponse(models=self._build_model_state(state))
 
     async def resume_session(
@@ -564,6 +691,7 @@ class HermesACPAgent(acp.Agent):
         logger.info("Resumed session %s", state.session_id)
         await self._replay_session_history(state)
         self._schedule_available_commands_update(state.session_id)
+        self._schedule_usage_update(state)
         return ResumeSessionResponse(models=self._build_model_state(state))
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
@@ -712,6 +840,7 @@ class HermesACPAgent(acp.Agent):
                 if self._conn:
                     update = acp.update_agent_message_text(response_text)
                     await self._conn.session_update(session_id, update)
+                    await self._send_usage_update(state)
                 return PromptResponse(stop_reason="end_turn")
 
         # If Zed sends another regular prompt while the same ACP session is
@@ -916,6 +1045,8 @@ class HermesACPAgent(acp.Agent):
                 cached_read_tokens=result.get("cache_read_tokens"),
             )
 
+        await self._send_usage_update(state)
+
         stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
@@ -1048,22 +1179,84 @@ class HermesACPAgent(acp.Agent):
             return f"Could not list tools: {e}"
 
     def _cmd_context(self, args: str, state: SessionState) -> str:
+        """Show ACP session context pressure and compression guidance."""
         n_messages = len(state.history)
-        if n_messages == 0:
-            return "Conversation is empty (no messages yet)."
-        # Count by role
+
+        # Count by role.
         roles: dict[str, int] = {}
         for msg in state.history:
             role = msg.get("role", "unknown")
             roles[role] = roles.get(role, 0) + 1
+
+        agent = state.agent
+        model = state.model or getattr(agent, "model", "")
+        provider = getattr(agent, "provider", None) or "auto"
+        compressor = getattr(agent, "context_compressor", None)
+        context_length = int(getattr(compressor, "context_length", 0) or 0)
+        threshold_tokens = int(getattr(compressor, "threshold_tokens", 0) or 0)
+
+        try:
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            system_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+            tools = getattr(agent, "tools", None) or None
+            approx_tokens = estimate_request_tokens_rough(
+                state.history,
+                system_prompt=system_prompt,
+                tools=tools,
+            )
+        except Exception:
+            logger.debug("Could not estimate ACP context usage", exc_info=True)
+            approx_tokens = 0
+
+        if threshold_tokens <= 0 and context_length > 0:
+            threshold_tokens = int(context_length * 0.80)
+
         lines = [
-            f"Conversation: {n_messages} messages",
+            f"Conversation: {n_messages} messages"
+            if n_messages
+            else "Conversation is empty (no messages yet).",
             f"  user: {roles.get('user', 0)}, assistant: {roles.get('assistant', 0)}, "
             f"tool: {roles.get('tool', 0)}, system: {roles.get('system', 0)}",
         ]
-        model = state.model or getattr(state.agent, "model", "")
         if model:
             lines.append(f"Model: {model}")
+        lines.append(f"Provider: {provider}")
+
+        if approx_tokens > 0:
+            if context_length > 0:
+                usage_pct = (approx_tokens / context_length) * 100
+                lines.append(
+                    f"Context usage: ~{approx_tokens:,} / {context_length:,} tokens ({usage_pct:.1f}%)"
+                )
+            else:
+                lines.append(f"Context usage: ~{approx_tokens:,} tokens")
+
+        if threshold_tokens > 0:
+            if approx_tokens > 0:
+                threshold_pct = (threshold_tokens / context_length) * 100 if context_length > 0 else 0
+                remaining = max(threshold_tokens - approx_tokens, 0)
+                if approx_tokens >= threshold_tokens:
+                    lines.append(
+                        f"Compression: due now (threshold ~{threshold_tokens:,}"
+                        + (f", {threshold_pct:.0f}%" if threshold_pct else "")
+                        + "). Run /compact."
+                    )
+                else:
+                    lines.append(
+                        f"Compression: ~{remaining:,} tokens until threshold "
+                        f"(~{threshold_tokens:,}"
+                        + (f", {threshold_pct:.0f}%" if threshold_pct else "")
+                        + ")."
+                    )
+            else:
+                lines.append(f"Compression threshold: ~{threshold_tokens:,} tokens")
+
+        if getattr(agent, "compression_enabled", True) is False:
+            lines.append("Compression is disabled for this agent.")
+        else:
+            lines.append("Tip: run /compact to compress manually before the threshold.")
+
         return "\n".join(lines)
 
     def _cmd_reset(self, args: str, state: SessionState) -> str:

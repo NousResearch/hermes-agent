@@ -88,6 +88,37 @@ function terminalTierWidthPx(host: HTMLElement | null): number {
   return Math.max(1, Math.round(layout));
 }
 
+/**
+ * Detect Safari (the WebKit-based browser shipped with macOS/iOS).
+ *
+ * Safari's WebGL implementation mangles Unicode box-drawing glyphs
+ * (╔╗║╚╝, ██╗, etc.) used by the HERMES AGENT banner and TUI borders —
+ * the texture-atlas path renders fragmented blocks instead of forming proper
+ * shapes, while Chrome and Firefox WebGL render the same glyphs correctly
+ * (#18773). The default DOM renderer handles these glyphs faithfully on
+ * Safari, so we skip the WebGL addon there.
+ *
+ * Detection rules:
+ *  - User-Agent must contain `Safari/`.
+ *  - User-Agent must NOT contain any Chromium fingerprint (`Chrome/`,
+ *    `Chromium/`, `CriOS/`) — Chromium-based browsers all advertise
+ *    `Safari/` in their UA for legacy compat.
+ *  - User-Agent must NOT contain other WebKit-wrapping shells we know don't
+ *    hit the bug (`FxiOS/` for Firefox iOS, `EdgiOS/`, `Android` UAs).
+ *
+ * That gives us actual macOS/iOS Safari (and Safari Technology Preview)
+ * without false positives on Chromium derivatives.
+ */
+function isSafariBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  if (!ua.includes("Safari/")) return false;
+  if (/Chrom(e|ium)\/|CriOS\/|FxiOS\/|EdgiOS\/|Android/.test(ua)) {
+    return false;
+  }
+  return true;
+}
+
 function terminalFontSizeForWidth(layoutWidthPx: number): number {
   if (layoutWidthPx < 300) return 7;
   if (layoutWidthPx < 360) return 8;
@@ -370,7 +401,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
     // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
     // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
+    //
+    // Safari is also excluded: its WebGL renderer mangles Unicode
+    // box-drawing glyphs (╔╗║╚╝, ██╗) so the HERMES AGENT banner and TUI
+    // borders fragment visually, even though Chrome/Firefox WebGL renders
+    // them correctly. The default DOM renderer handles these glyphs faithfully
+    // on Safari, so skip the WebGL addon there (#18773).
+    const useWebgl = terminalTierWidthPx(host) >= 768 && !isSafariBrowser();
     if (useWebgl) {
       try {
         const webgl = new WebglAddon();

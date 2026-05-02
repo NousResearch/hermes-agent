@@ -3197,6 +3197,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
 
+                # Images sent as documents (PNG/JPG/WEBP/GIF) → cache for vision
+                SUPPORTED_IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+                if ext in SUPPORTED_IMAGE_TYPES:
+                    file_obj = await doc.get_file()
+                    image_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [SUPPORTED_IMAGE_TYPES[ext]]
+                    event.message_type = MessageType.PHOTO
+                    logger.info("[Telegram] Cached user image document at %s", cached_path)
+                    await self.handle_message(event)
+                    return
+
                 # Check if supported
                 if ext not in SUPPORTED_DOCUMENT_TYPES:
                     supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))

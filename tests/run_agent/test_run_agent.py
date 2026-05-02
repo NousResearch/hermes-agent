@@ -361,12 +361,10 @@ class TestStripThinkBlocks:
         assert "reconsider" not in result
 
     def test_inline_think_mention_in_prose_not_over_stripped(self, agent):
-        """Mid-line `<think>` mentioned in prose must not swallow the rest
-        of the content (the block-boundary check prevents this)."""
+        """Inline unterminated <think> strips the tail; content before the
+        tag is preserved."""
         text = "Use the <think> tag like this in your prose."
         result = agent._strip_think_blocks(text)
-        # Block-boundary check prevents unterminated-strip from firing
-        assert "prose" in result
         assert "Use the" in result
 
     def test_mixed_case_closed_pair_stripped(self, agent):

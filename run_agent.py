@@ -3029,98 +3029,79 @@ class AIAgent:
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())
 
+    @staticmethod
+    def _strip_tag_with_nesting(content: str, tag: str) -> str:
+        open_re = re.compile(rf"<{tag}\b[^>]*>", re.IGNORECASE)
+        close_re = re.compile(rf"</{tag}>", re.IGNORECASE)
+        events: list[tuple[int, int, str]] = []
+        for m in open_re.finditer(content):
+            events.append((m.start(), m.end(), "open"))
+        for m in close_re.finditer(content):
+            events.append((m.start(), m.end(), "close"))
+        events.sort()
+        result: list[str] = []
+        depth = 0
+        visible_start = 0
+        for start, end, etype in events:
+            if etype == "open":
+                if depth == 0:
+                    result.append(content[visible_start:start])
+                depth += 1
+            else:
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0:
+                        visible_start = end
+                else:
+                    result.append(content[visible_start:start])
+                    visible_start = end
+        if depth == 0:
+            result.append(content[visible_start:])
+        else:
+            # Unterminated block — only suppress if there is actual body content.
+            # A bare tag mention at end of sentence (e.g. "the <think> tag") has
+            # no body and should be left for pass 3 to clean up the lone token.
+            # Find where the last unclosed open tag started.
+            last_open_start = visible_start
+            last_open_end = visible_start
+            for start, end, etype in events:
+                if etype == "open":
+                    last_open_start = start
+                    last_open_end = end
+            trailing_body = content[last_open_end:]
+            if not trailing_body.strip():
+                # No body — emit as-is so orphan tag stripper (pass 3) handles just the token.
+                result.append(content[visible_start:])
+            elif (
+                last_open_start > 0
+                and content[last_open_start - 1] == " "
+                and last_open_end < len(content)
+                and content[last_open_end] == " "
+            ):
+                # Tag surrounded by spaces — prose mention (e.g. "Use the <think> tag here").
+                # Strip the tag token itself but keep the surrounding content unchanged.
+                result.append(content[visible_start:last_open_start])
+                result.append(content[last_open_end:])
+            # else: real leaked reasoning body — suppress everything from open tag onward.
+        return "".join(result)
+
     def _strip_think_blocks(self, content: str) -> str:
-        """Remove reasoning/thinking blocks from content, returning only visible text.
-
-        Handles four cases:
-          1. Closed tag pairs (``<think>…</think>``) — the common path when
-             the provider emits complete reasoning blocks.
-          2. Unterminated open tag at a block boundary (start of text or
-             after a newline) — e.g. MiniMax M2.7 / NIM endpoints where the
-             closing tag is dropped.  Everything from the open tag to end
-             of string is stripped.  The block-boundary check mirrors
-             ``gateway/stream_consumer.py``'s filter so models that mention
-             ``<think>`` in prose aren't over-stripped.
-          3. Stray orphan open/close tags that slip through.
-          4. Tag variants: ``<think>``, ``<thinking>``, ``<reasoning>``,
-             ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
-             case-insensitive.
-
-        Additionally strips standalone tool-call XML blocks that some open
-        models (notably Gemma variants on OpenRouter) emit inside assistant
-        content instead of via the structured ``tool_calls`` field:
-          * ``<tool_call>…</tool_call>``
-          * ``<tool_calls>…</tool_calls>``
-          * ``<tool_result>…</tool_result>``
-          * ``<function_call>…</function_call>``
-          * ``<function_calls>…</function_calls>``
-          * ``<function name="…">…</function>`` (Gemma style)
-        Ported from openclaw/openclaw#67318. The ``<function>`` variant is
-        boundary-gated (only strips when the tag sits at start-of-line or
-        after punctuation and carries a ``name="..."`` attribute) so prose
-        mentions like "Use <function> in JavaScript" are preserved.
-        """
         if not content:
             return ""
-        # 1. Closed tag pairs — case-insensitive for all variants so
-        #    mixed-case tags (<THINK>, <Thinking>) don't slip through to
-        #    the unterminated-tag pass and take trailing content with them.
-        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL | re.IGNORECASE)
-        content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
-        content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
-        content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
-        content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
-        # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
-        #     generic tag names first — they have no attribute gating since
-        #     a literal <tool_call> in prose is already vanishingly rare.
-        for _tc_name in ("tool_call", "tool_calls", "tool_result",
-                          "function_call", "function_calls"):
-            content = re.sub(
-                rf'<{_tc_name}\b[^>]*>.*?</{_tc_name}>',
-                '',
-                content,
-                flags=re.DOTALL | re.IGNORECASE,
-            )
-        # 1c. <function name="...">...</function> — Gemma-style standalone
-        #     tool call. Only strip when the tag sits at a block boundary
-        #     (start of text, after a newline, or after sentence-ending
-        #     punctuation) AND carries a name="..." attribute. This keeps
-        #     prose mentions like "Use <function> to declare" safe.
-        content = re.sub(
-            r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
-            r'<function\b[^>]*\bname\s*=[^>]*>'
-            r'(?:(?:(?!</function>).)*)</function>',
-            '',
-            content,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
-        # 2. Unterminated reasoning block — open tag at a block boundary
-        #    (start of text, or after a newline) with no matching close.
-        #    Strip from the tag to end of string.  Fixes #8878 / #9568
-        #    (MiniMax M2.7 leaking raw reasoning into assistant content).
-        content = re.sub(
-            r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$',
-            '',
-            content,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
-        # 3. Stray orphan open/close tags that slipped through.
-        content = re.sub(
-            r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',
-            '',
-            content,
-            flags=re.IGNORECASE,
-        )
-        # 3b. Stray tool-call closers. (We do NOT strip bare <function> or
-        #     unterminated <function name="..."> because a truncated tail
-        #     during streaming may still be valuable to the user; matches
-        #     OpenClaw's intentional asymmetry.)
-        content = re.sub(
-            r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*',
-            '',
-            content,
-            flags=re.IGNORECASE,
-        )
+        _THINK_TAGS = ("think", "thinking", "reasoning", "REASONING_SCRATCHPAD", "thought")
+        for _tag in _THINK_TAGS:
+            content = AIAgent._strip_tag_with_nesting(content, _tag)
+        for _tc_name in ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls"):
+            content = re.sub(rf'<{_tc_name}\b[^>]*>.*?</{_tc_name}>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*<function\b[^>]*\bname\s*=[^>]*>(?:(?:(?!</function>).)*)</function>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$', '', content, flags=re.DOTALL | re.IGNORECASE)
+        for _tag in _THINK_TAGS:
+            _m = re.search(rf'<{_tag}\b[^>]*>', content, re.IGNORECASE)
+            if _m and not re.search(rf'</{_tag}>', content[_m.end():], re.IGNORECASE):
+                if content[_m.end():].strip():
+                    content = content[:_m.start()]
+        content = re.sub(r'</(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
+        content = re.sub(r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*', '', content, flags=re.IGNORECASE)
         return content
 
     @staticmethod

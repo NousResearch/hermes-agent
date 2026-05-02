@@ -471,3 +471,87 @@ def is_valid_namespace(candidate: Optional[str]) -> bool:
     if not candidate:
         return False
     return bool(_NAMESPACE_RE.match(candidate))
+
+
+# ── Hermes 2.8: Skill Permission MVP ────────────────────────────────────────
+
+# Trust levels
+BUNDLED = "bundled"       # shipped with Hermes, fully trusted
+INSTALLED = "installed"   # user-installed, default trust
+UNTRUSTED = "untrusted"   # third-party, restricted
+
+TRUST_LEVELS = (BUNDLED, INSTALLED, UNTRUSTED)
+
+# UNTRUSTED skill restrictions
+UNTRUSTED_RESTRICTIONS = {
+    "network": "网络请求需用户确认",
+    "file_write": "文件写入限于 workspace",
+    "env_passthrough": "环境变量仅传白名单",
+    "no_transform_hook": "不能注册 transform hook",
+}
+
+# Permission fields in skill manifest
+PERMISSION_FIELDS = ("tools", "network", "env", "hooks")
+
+
+def parse_skill_manifest(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract trust and permission info from a skill's YAML frontmatter.
+
+    Returns a manifest dict with:
+      - trust: "bundled" | "installed" | "untrusted"
+      - permissions: {tools: [...], network: bool, env: [...], hooks: [...]}
+      - triggers: [...]
+      - version: str
+    """
+    trust = frontmatter.get("trust", INSTALLED)
+    if trust not in TRUST_LEVELS:
+        trust = UNTRUSTED  # unknown trust level → restricted
+
+    permissions = {}
+    if "permissions" in frontmatter:
+        raw = frontmatter["permissions"]
+        if isinstance(raw, dict):
+            for field in PERMISSION_FIELDS:
+                if field in raw:
+                    permissions[field] = raw[field]
+        else:
+            permissions = {"tools": [], "network": False}
+
+    triggers = frontmatter.get("triggers", [])
+
+    return {
+        "trust": trust,
+        "permissions": permissions,
+        "triggers": triggers if isinstance(triggers, list) else [],
+        "version": str(frontmatter.get("version", "1.0")),
+    }
+
+
+def get_skill_restrictions(trust: str) -> List[str]:
+    """Return restriction descriptions for the given trust level."""
+    if trust == BUNDLED:
+        return []
+    if trust == INSTALLED:
+        return []
+    if trust == UNTRUSTED:
+        return list(UNTRUSTED_RESTRICTIONS.values())
+    return list(UNTRUSTED_RESTRICTIONS.values())  # unknown → treat as untrusted
+
+
+def check_skill_permission_risk(manifest: Dict[str, Any]) -> List[str]:
+    """Return risk warnings for a skill based on its manifest."""
+    risks = []
+    trust = manifest.get("trust", UNTRUSTED)
+    perms = manifest.get("permissions", {})
+
+    if trust == UNTRUSTED:
+        risks.append("⚠️ 第三方 Skill，受限运行")
+        if perms.get("network"):
+            risks.append("⚠️ 请求网络权限（UNTRUSTED skill 的网络请求需用户确认）")
+        if "bash" in perms.get("tools", []) or "terminal" in perms.get("tools", []):
+            risks.append("⚠️ 请求 shell 执行权限")
+        if perms.get("hooks"):
+            risks.append("⚠️ 请求 hook 权限（UNTRUSTED skill 不能注册 transform hook）")
+
+    return risks
+

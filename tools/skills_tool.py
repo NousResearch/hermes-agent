@@ -605,11 +605,20 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 category = _get_category_from_path(skill_md)
 
                 seen_names.add(name)
-                skills.append({
+                # Hermes 2.8: extract trust/permission manifest
+                from agent.skill_utils import parse_skill_manifest, check_skill_permission_risk
+                manifest = parse_skill_manifest(frontmatter)
+                skill_entry = {
                     "name": name,
                     "description": description,
                     "category": category,
-                })
+                    "trust": manifest.get("trust", "installed"),
+                    "permissions": manifest.get("permissions", {}),
+                }
+                risks = check_skill_permission_risk(manifest)
+                if risks:
+                    skill_entry["permission_risks"] = risks
+                skills.append(skill_entry)
 
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)

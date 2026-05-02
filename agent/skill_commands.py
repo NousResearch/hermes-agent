@@ -235,6 +235,23 @@ def _build_skill_message(
         parts.append("")
         parts.append(f"[Runtime note: {runtime_note}]")
 
+    # ── Hermes 2.8: Inject skill trust/permission manifest ──
+    frontmatter = loaded_skill.get("frontmatter") or {}
+    if frontmatter:
+        from agent.skill_utils import parse_skill_manifest, get_skill_restrictions, check_skill_permission_risk
+        manifest = parse_skill_manifest(frontmatter)
+        trust = manifest.get("trust", "installed")
+        restrictions = get_skill_restrictions(trust)
+        if restrictions:
+            parts.append("")
+            parts.append(f"[Skill trust: {trust}]")
+            for r in restrictions:
+                parts.append(f"[Skill restriction: {r}]")
+        risks = check_skill_permission_risk(manifest)
+        for risk in risks:
+            parts.append("")
+            parts.append(f"[Skill risk: {risk}]")
+
     return "\n".join(parts)
 
 

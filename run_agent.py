@@ -1860,6 +1860,7 @@ class AIAgent:
             _custom_providers = _agent_cfg.get("custom_providers")
             if not isinstance(_custom_providers, list):
                 _custom_providers = []
+        self._custom_providers = _custom_providers
 
         # Check custom_providers per-model context_length
         if _config_context_length is None and _custom_providers:
@@ -8398,6 +8399,7 @@ class AIAgent:
             supports_reasoning=self._supports_reasoning_extra_body(),
             github_reasoning_extra=self._github_models_reasoning_extra_body() if _is_gh else None,
             lmstudio_reasoning_options=self._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
+            extra_body_additions=self._get_custom_provider_extra_body(),
             anthropic_max_output=_ant_max,
             provider_name=self.provider,
         )
@@ -8522,6 +8524,49 @@ class AIAgent:
                 requested_effort = supported_efforts[0]
 
         return {"effort": requested_effort}
+
+    def _get_custom_provider_extra_body(self) -> dict | None:
+        """Look up custom_providers per-provider extra_body fields (e.g. DeepSeek thinking).
+
+        Matches the current request against custom_providers entries by URL,
+        provider name, or model name — whichever matches first.  Supports
+        per-model overrides via ``models.<id>.thinking``, falling back to
+        provider-level ``thinking``.
+        """
+        if self.provider != "custom":
+            return None
+        _cps = getattr(self, "_custom_providers", None)
+        if not _cps or not isinstance(_cps, list):
+            return None
+        _target_url = (self.base_url or "").rstrip("/")
+        if not _target_url:
+            return None
+        _model_lower = (self.model or "").lower()
+        for _cp in _cps:
+            if not isinstance(_cp, dict):
+                continue
+            _cp_url = (_cp.get("base_url") or "").rstrip("/")
+            _cp_name = (_cp.get("name") or "").strip().lower()
+            _cp_model = (_cp.get("model") or "").strip().lower()
+            # Match by URL, entry name, or model field.  The three-way OR
+            # is necessary when the agent's base_url differs from the
+            # custom_providers entry (e.g. routing through a local proxy).
+            _url_match = _cp_url == _target_url
+            _name_match = _cp_name and _cp_name == _model_lower
+            _model_match = _cp_model and _cp_model == _model_lower
+            if not (_url_match or _name_match or _model_match):
+                continue
+            # Per-model override first
+            _cp_models = _cp.get("models", {})
+            if isinstance(_cp_models, dict):
+                _mcfg = _cp_models.get(self.model or "", {})
+                if isinstance(_mcfg, dict) and "thinking" in _mcfg:
+                    return {"thinking": _mcfg["thinking"]}
+            # Provider-level fallback
+            if "thinking" in _cp:
+                return {"thinking": _cp["thinking"]}
+            break
+        return None
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """Build a normalized assistant message dict from an API response message.

@@ -380,13 +380,16 @@ class ChatCompletionsTransport(ProviderTransport):
             options["num_ctx"] = ollama_ctx
             extra_body["options"] = options
 
-        # Ollama/custom think=false
+        # Ollama/custom think=false + DeepSeek thinking=disabled
         if params.get("is_custom_provider", False):
             if reasoning_config and isinstance(reasoning_config, dict):
                 _effort = (reasoning_config.get("effort") or "").strip().lower()
                 _enabled = reasoning_config.get("enabled", True)
                 if _effort == "none" or _enabled is False:
                     extra_body["think"] = False
+                    # DeepSeek V4 uses {type: disabled} instead of Ollama's think: false.
+                    # Sending both is safe — providers ignore unknown extra_body fields.
+                    extra_body["thinking"] = {"type": "disabled"}
 
         if is_qwen:
             extra_body["vl_high_resolution_images"] = True

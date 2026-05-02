@@ -90,8 +90,9 @@ class HomeChannel:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "HomeChannel":
+        from hermes_cli.plugins import resolve_platform_id
         return cls(
-            platform=Platform(data["platform"]),
+            platform=resolve_platform_id(data["platform"]),
             chat_id=str(data["chat_id"]),
             name=data.get("name", "Home"),
         )

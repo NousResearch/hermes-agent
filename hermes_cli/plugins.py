@@ -883,6 +883,32 @@ class PluginPlatformIdentifier:
         return f"PluginPlatformIdentifier({self.value!r})"
 
 
+def resolve_platform_id(value: str):
+    """Resolve a platform-name string to a ``Platform`` enum member or
+    a ``PluginPlatformIdentifier``.
+
+    Used by ``from_dict`` deserializers for ``SessionSource``,
+    ``SessionEntry``, ``HomeChannel`` etc. Without this fallback,
+    daemon restart would lose every session whose platform was
+    contributed by a plugin (e.g., ``molecule-a2a``) because the
+    bare ``Platform(value)`` call raises ``ValueError`` for unknown
+    enum members.
+
+    The fallback is intentionally narrow: an unknown name is only
+    accepted as a plugin identifier if a currently-loaded plugin has
+    actually claimed that name via ``register_platform_adapter``. Bare
+    typos and corrupted state still raise ``ValueError`` as before, so
+    silent state-corruption doesn't slip past restore.
+    """
+    from gateway.config import Platform  # late import to avoid cycle
+    try:
+        return Platform(value)
+    except ValueError:
+        if get_plugin_platform_adapter(value) is not None:
+            return PluginPlatformIdentifier(value)
+        raise
+
+
 def get_plugin_commands() -> Dict[str, dict]:
     """Return the full plugin commands dict (name → {handler, description, plugin}).
 

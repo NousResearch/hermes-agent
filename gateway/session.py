@@ -123,8 +123,9 @@ class SessionSource:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionSource":
+        from hermes_cli.plugins import resolve_platform_id
         return cls(
-            platform=Platform(data["platform"]),
+            platform=resolve_platform_id(data["platform"]),
             chat_id=str(data["chat_id"]),
             chat_name=data.get("chat_name"),
             chat_type=data.get("chat_type", "dm"),
@@ -409,10 +410,8 @@ class SessionEntry:
         
         platform = None
         if data.get("platform"):
-            try:
-                platform = Platform(data["platform"])
-            except ValueError as e:
-                logger.debug("Unknown platform value %r: %s", data["platform"], e)
+            from hermes_cli.plugins import resolve_platform_id
+            platform = resolve_platform_id(data["platform"])
         
         return cls(
             session_key=data["session_key"],

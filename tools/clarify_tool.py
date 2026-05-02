@@ -15,8 +15,22 @@ import json
 from typing import List, Optional, Callable
 
 
-# Maximum number of predefined choices the agent can offer.
-# A 5th "Other (type your answer)" option is always appended by the UI.
+# Gateway clarify handler — registered by messaging platforms (e.g. Telegram)
+# When set, the clarify tool uses this instead of the per-call callback.
+# Signature: fn(question: str, choices: list[str]) -> str
+_gateway_clarify_handler: Optional[Callable] = None
+
+
+def register_gateway_clarify_handler(handler: Optional[Callable]) -> None:
+    """Register (or unregister) a gateway-level clarify handler.
+    
+    Called by platform adapters (telegram.py) at init time.
+    The handler sends interactive buttons and returns the user's choice.
+    """
+    global _gateway_clarify_handler
+    _gateway_clarify_handler = handler
+
+
 MAX_CHOICES = 4
 
 
@@ -55,6 +69,21 @@ def clarify_tool(
             choices = None  # empty list → open-ended
 
     if callback is None:
+        # Check for registered gateway-level handler (e.g. Telegram inline buttons)
+        gw_handler = _gateway_clarify_handler
+        if gw_handler is not None and choices:
+            try:
+                user_response = gw_handler(question, choices)
+                return json.dumps({
+                    "question": question,
+                    "choices_offered": choices,
+                    "user_response": str(user_response).strip(),
+                }, ensure_ascii=False)
+            except Exception as exc:
+                return json.dumps(
+                    {"error": f"Gateway clarify handler failed: {exc}"},
+                    ensure_ascii=False,
+                )
         return json.dumps(
             {"error": "Clarify tool is not available in this execution context."},
             ensure_ascii=False,

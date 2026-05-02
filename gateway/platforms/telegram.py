@@ -289,6 +289,68 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        # Clarify (inline button choices) pending state: id → {chat_id, question, choices, event, result}
+        self._clarify_pending: Dict[str, dict] = {}
+        # Clarify loop — filled during connect() from the async context, used by
+        # the clarify handler to schedule coroutines on the gateway's event loop.
+        self._clarify_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Register gateway clarify handler for inline button support
+        try:
+            from tools.clarify_tool import register_gateway_clarify_handler
+            import threading, json as _json
+            _self = self
+            def _clarify_handler(question, choices):
+                event = threading.Event()
+                cid = f"cl_{threading.get_ident()}_{id(event)}"
+                _chat_id = str(_self.config.home_channel.chat_id) if _self.config.home_channel else "0"
+                _self._clarify_pending[cid] = {
+                    "chat_id": _chat_id,
+                    "question": question,
+                    "choices": list(choices),
+                    "event": event,
+                    "result": None,
+                }
+                # Build inline keyboard
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                keyboard = []
+                row = []
+                for i, c in enumerate(choices):
+                    row.append(InlineKeyboardButton(c, callback_data=f"cl:{i}"))
+                    if len(row) >= 2:
+                        keyboard.append(row)
+                        row = []
+                if row:
+                    keyboard.append(row)
+                keyboard.append([InlineKeyboardButton("✗ Cancel", callback_data="cl:cancel")])
+                # Send via bot on the gateway's event loop
+                import asyncio, traceback
+                loop = _self._clarify_loop
+                if not loop or not loop.is_running():
+                    logger.warning("[Clarify] Loop not available: loop=%s running=%s", loop, loop and loop.is_running())
+                    _self._clarify_pending.pop(cid, None)
+                    return "User did not respond (error)"
+                try:
+                    coro = _self._bot.send_message(
+                        chat_id=_chat_id,
+                        text=f"❓ {question}",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="Markdown",
+                    )
+                    future = asyncio.run_coroutine_threadsafe(coro, loop)
+                    future.result(timeout=10)
+                except Exception as exc:
+                    logger.warning("[Clarify] send_message failed: %s\n%s", exc, traceback.format_exc())
+                    _self._clarify_pending.pop(cid, None)
+                    return "User did not respond (error)"
+                # Wait for button tap
+                waited = event.wait(timeout=120)
+                entry = _self._clarify_pending.pop(cid, None)
+                if not waited or not entry or entry["result"] is None:
+                    return "The user did not respond within the time limit."
+                return entry["result"]
+            register_gateway_clarify_handler(_clarify_handler)
+        except Exception:
+            pass  # non-fatal — clarify just won't have buttons
 
     def _is_callback_user_authorized(
         self,
@@ -936,6 +998,7 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
+            self._clarify_loop = asyncio.get_running_loop()
             
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(
@@ -1864,6 +1927,47 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    async def _handle_clarify_button(self, query, data: str, chat_id: str) -> None:
+        """Handle clarify inline button clicks (cl:idx)."""
+        parts = data.split(":", 1)
+        if len(parts) != 2:
+            await query.answer(text="Invalid data.")
+            return
+        choice_idx = parts[1]
+        if choice_idx == "cancel":
+            await query.answer(text="Cancelled")
+            try:
+                await query.edit_message_text(text="❌ Cancelled", reply_markup=None)
+            except Exception:
+                pass
+            for cid, entry in list(self._clarify_pending.items()):
+                if entry.get("chat_id") == chat_id and not entry["event"].is_set():
+                    entry["result"] = "__cancelled__"
+                    entry["event"].set()
+            return
+        for cid, entry in list(self._clarify_pending.items()):
+            if entry.get("chat_id") == chat_id and not entry["event"].is_set():
+                choices = entry.get("choices", [])
+                try:
+                    idx = int(choice_idx)
+                    result = choices[idx] if 0 <= idx < len(choices) else "__cancelled__"
+                except (ValueError, IndexError):
+                    result = "__cancelled__"
+                user_display = getattr(query.from_user, "first_name", "User")
+                await query.answer(text=f"Selected: {result}")
+                try:
+                    await query.edit_message_text(
+                        text=f"✅ {result}",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+                entry["result"] = result
+                entry["event"].set()
+                return
+        await query.answer(text="No pending question found.")
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -1946,6 +2050,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+            return
+
+        # --- Clarify button callbacks (cl:idx) ---
+        if data.startswith("cl:"):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_clarify_button(query, data, chat_id)
             return
 
         # --- Slash-confirm callbacks (sc:choice:confirm_id) ---

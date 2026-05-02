@@ -744,9 +744,41 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not url:
             return tool_error("url is required")
 
-        payload: Dict[str, Any] = {"path": url}
-        if args.get("reason"):
-            payload["reason"] = args["reason"]
+        # Detect local paths (absolute or relative file paths)
+        is_local = url.startswith("/") or url.startswith(".") or url.startswith("~")
+
+        if is_local:
+            # Local file: upload via temp_upload, then add via temp_file_id
+            try:
+                import pathlib
+                file_path = pathlib.Path(url).expanduser().resolve()
+                if not file_path.exists():
+                    return tool_error(f"Local file not found: {file_path}")
+                with open(file_path, "rb") as f:
+                    upload_resp = self._client._httpx.post(
+                        self._client._url("/api/v1/resources/temp_upload"),
+                        files={"file": (file_path.name, f, "application/octet-stream")},
+                        headers={k: v for k, v in self._client._headers().items()
+                                 if k != "Content-Type"},  # Let httpx set Content-Type for multipart
+                        timeout=_TIMEOUT,
+                    )
+                upload_resp.raise_for_status()
+                upload_data = upload_resp.json()
+                temp_file_id = upload_data.get("result", {}).get("temp_file_id")
+                if not temp_file_id:
+                    return tool_error(f"temp_upload failed: {upload_data}")
+
+                payload: Dict[str, Any] = {
+                    "temp_file_id": temp_file_id,
+                    "reason": args.get("reason", ""),
+                }
+            except Exception as e:
+                return tool_error(f"Local file upload failed: {e}")
+        else:
+            # Remote URL or GitHub raw content: pass path directly
+            payload = {"path": url}
+            if args.get("reason"):
+                payload["reason"] = args["reason"]
 
         resp = self._client.post("/api/v1/resources", payload)
         result = resp.get("result", {})

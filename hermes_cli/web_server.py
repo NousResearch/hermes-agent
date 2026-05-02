@@ -3126,7 +3126,7 @@ def _mount_plugin_api_routes():
             continue
         try:
             spec = importlib.util.spec_from_file_location(
-                f"hermes_dashboard_plugin_{plugin['name']}", api_path,
+                f"hermes_dashboard_plugin_{plugin['name'].replace('-', '_')}", api_path,
             )
             if spec is None or spec.loader is None:
                 continue

@@ -5,8 +5,9 @@ import errno
 import json
 import logging
 import os
+import re
 import threading
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Optional
 
 from agent.file_safety import get_read_block_error
@@ -122,6 +123,13 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     # Normalize quoted Windows-style paths copied from chats (e.g. "C:\\foo\\bar")
     # before Path() resolution.
     _raw = (filepath or "").strip().strip('"').strip("'")
+
+    # On non-Windows runtimes, pathlib treats "D:\\foo" as relative text.
+    # Detect Windows drive paths explicitly so read_file/write_file work for
+    # cross-platform gateway sessions where the target machine is Windows.
+    if re.match(r"^[A-Za-z]:[\\/]", _raw):
+        return Path(PureWindowsPath(_raw))
+
     p = Path(_raw).expanduser()
     if not p.is_absolute():
         base = _get_live_tracking_cwd(task_id) or os.environ.get(

@@ -727,7 +727,7 @@ class TestAuxiliaryPoolAwareness:
                 client, model = aux._get_cached_client(
                     "gmi",
                     "google/gemini-3.1-flash-lite-preview",
-                    base_url="https://api.gmi-serving.com/v1",
+                    base_url="https://api.qlaud.ai/v1",
                     api_key="gmi-key",
                 )
                 assert client is fake_client
@@ -736,7 +736,7 @@ class TestAuxiliaryPoolAwareness:
                 client, model = aux._get_cached_client(
                     "gmi",
                     "openai/gpt-5.4-mini",
-                    base_url="https://api.gmi-serving.com/v1",
+                    base_url="https://api.qlaud.ai/v1",
                     api_key="gmi-key",
                 )
             finally:

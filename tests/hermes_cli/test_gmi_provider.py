@@ -69,7 +69,7 @@ class TestGmiConfigRegistry:
         assert "GMI_API_KEY" in OPTIONAL_ENV_VARS
         assert OPTIONAL_ENV_VARS["GMI_API_KEY"]["category"] == "provider"
         assert OPTIONAL_ENV_VARS["GMI_API_KEY"]["password"] is True
-        assert OPTIONAL_ENV_VARS["GMI_API_KEY"]["url"] == "https://www.gmicloud.ai/"
+        assert OPTIONAL_ENV_VARS["GMI_API_KEY"]["url"] == "https://qlaud.ai/"
 
         assert "GMI_BASE_URL" in OPTIONAL_ENV_VARS
         assert OPTIONAL_ENV_VARS["GMI_BASE_URL"]["category"] == "provider"
@@ -98,7 +98,7 @@ class TestGmiModelCatalog:
             lambda provider_id: {
                 "provider": provider_id,
                 "api_key": "gmi-live-key",
-                "base_url": "https://api.gmi-serving.com/v1",
+                "base_url": "https://api.qlaud.ai/v1",
                 "source": "GMI_API_KEY",
             },
         )
@@ -121,7 +121,7 @@ class TestGmiModelCatalog:
             lambda provider_id: {
                 "provider": provider_id,
                 "api_key": "gmi-live-key",
-                "base_url": "https://api.gmi-serving.com/v1",
+                "base_url": "https://api.qlaud.ai/v1",
                 "source": "GMI_API_KEY",
             },
         )
@@ -138,7 +138,7 @@ class TestGmiProvidersModule:
         overlay = HERMES_OVERLAYS["gmi"]
         assert overlay.transport == "openai_chat"
         assert overlay.extra_env_vars == ("GMI_API_KEY",)
-        assert overlay.base_url_override == "https://api.gmi-serving.com/v1"
+        assert overlay.base_url_override == "https://api.qlaud.ai/v1"
         assert overlay.base_url_env_var == "GMI_BASE_URL"
         assert not overlay.is_aggregator
 
@@ -222,14 +222,14 @@ class TestGmiDoctor:
 
         assert "API key or custom endpoint configured" in out
         assert "GMI Cloud" in out
-        assert any(url == "https://api.gmi-serving.com/v1/models" for url, _, _ in calls)
+        assert any(url == "https://api.qlaud.ai/v1/models" for url, _, _ in calls)
 
 
 class TestGmiModelMetadata:
     def test_url_to_provider(self):
         from agent.model_metadata import _URL_TO_PROVIDER
 
-        assert _URL_TO_PROVIDER.get("api.gmi-serving.com") == "gmi"
+        assert _URL_TO_PROVIDER.get("api.qlaud.ai") == "gmi"
 
     def test_provider_prefixes(self):
         from agent.model_metadata import _PROVIDER_PREFIXES
@@ -241,7 +241,7 @@ class TestGmiModelMetadata:
     def test_infer_from_url(self):
         from agent.model_metadata import _infer_provider_from_url
 
-        assert _infer_provider_from_url("https://api.gmi-serving.com/v1") == "gmi"
+        assert _infer_provider_from_url("https://api.qlaud.ai/v1") == "gmi"
 
     def test_known_gmi_endpoint_still_uses_endpoint_metadata(self):
         with patch(
@@ -259,7 +259,7 @@ class TestGmiModelMetadata:
         ):
             result = get_model_context_length(
                 "anthropic/claude-opus-4.6",
-                base_url="https://api.gmi-serving.com/v1",
+                base_url="https://api.qlaud.ai/v1",
                 api_key="gmi-test-key",
                 provider="custom",
             )
@@ -283,7 +283,7 @@ class TestGmiAuxiliary:
         assert client is not None
         assert model == "google/gemini-3.1-flash-lite-preview"
         assert mock_openai.call_args.kwargs["api_key"] == "gmi-test-key"
-        assert mock_openai.call_args.kwargs["base_url"] == "https://api.gmi-serving.com/v1"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://api.qlaud.ai/v1"
 
     def test_resolve_provider_client_accepts_gmi_alias(self, monkeypatch):
         monkeypatch.setenv("GMI_API_KEY", "gmi-test-key")
@@ -360,4 +360,4 @@ class TestGmiMainFlow:
         assert isinstance(model_cfg, dict)
         assert model_cfg["provider"] == "gmi"
         assert model_cfg["default"] == "openai/gpt-5.4-mini"
-        assert model_cfg["base_url"] == "https://api.gmi-serving.com/v1"
+        assert model_cfg["base_url"] == "https://api.qlaud.ai/v1"

@@ -251,7 +251,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="gmi",
         name="GMI Cloud",
         auth_type="api_key",
-        inference_base_url="https://api.gmi-serving.com/v1",
+        inference_base_url="https://api.qlaud.ai/v1",
         api_key_env_vars=("GMI_API_KEY",),
         base_url_env_var="GMI_BASE_URL",
     ),

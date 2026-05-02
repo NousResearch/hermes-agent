@@ -313,7 +313,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "integrate.api.nvidia.com": "nvidia",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
-    "api.gmi-serving.com": "gmi",
+    "api.qlaud.ai": "gmi",
     "tokenhub.tencentmaas.com": "tencent-tokenhub",
     "ollama.com": "ollama-cloud",
 }

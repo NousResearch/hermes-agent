@@ -127,7 +127,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
-        assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
+        assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.qlaud.ai/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
 
     def test_oauth_providers_unchanged(self):
@@ -544,7 +544,7 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_api_key_provider_credentials("gmi")
         assert creds["provider"] == "gmi"
         assert creds["api_key"] == "gmi-secret-key"
-        assert creds["base_url"] == "https://api.gmi-serving.com/v1"
+        assert creds["base_url"] == "https://api.qlaud.ai/v1"
 
     def test_resolve_gmi_custom_base_url(self, monkeypatch):
         monkeypatch.setenv("GMI_API_KEY", "gmi-key")
@@ -656,7 +656,7 @@ class TestRuntimeProviderResolution:
         assert result["provider"] == "gmi"
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "gmi-key"
-        assert result["base_url"] == "https://api.gmi-serving.com/v1"
+        assert result["base_url"] == "https://api.qlaud.ai/v1"
 
     def test_runtime_auto_detects_api_key_provider(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "auto-kimi-key")

@@ -1481,7 +1481,7 @@ OPTIONAL_ENV_VARS = {
     "GMI_API_KEY": {
         "description": "GMI Cloud API key",
         "prompt": "GMI Cloud API key",
-        "url": "https://www.gmicloud.ai/",
+        "url": "https://qlaud.ai/",
         "password": True,
         "category": "provider",
         "advanced": True,

@@ -670,6 +670,29 @@ class TestPluginManagerList:
             assert "tools" in p
             assert "hooks" in p
 
+    def test_list_includes_static_capabilities(self, tmp_path, monkeypatch):
+        """list_plugins() exposes static plugin capability metadata."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "rsi_platform_runtime",
+            manifest_extra={
+                "capabilities": {
+                    "execution_scoped_context_supported": True,
+                    "execution_envelope_v1_producer": True,
+                }
+            },
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        listing = mgr.list_plugins()
+        plugin = next(p for p in listing if p["name"] == "rsi_platform_runtime")
+        assert plugin["capabilities"]["execution_scoped_context_supported"] is True
+        assert plugin["capabilities"]["execution_envelope_v1_producer"] is True
+
 
 
 class TestPreLlmCallTargetRouting:

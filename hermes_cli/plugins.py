@@ -187,6 +187,7 @@ class PluginManifest:
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
+    capabilities: Dict[str, Any] = field(default_factory=dict)
     source: str = ""        # "user", "project", or "entrypoint"
     path: Optional[str] = None
     # Plugin kind — see plugins.py module docstring for semantics.
@@ -897,6 +898,7 @@ class PluginManager:
                 requires_env=data.get("requires_env", []),
                 provides_tools=data.get("provides_tools", []),
                 provides_hooks=data.get("provides_hooks", []),
+                capabilities=data.get("capabilities", {}) if isinstance(data.get("capabilities"), dict) else {},
                 source=source,
                 path=str(plugin_dir),
                 kind=kind,
@@ -1108,6 +1110,7 @@ class PluginManager:
                     "tools": len(loaded.tools_registered),
                     "hooks": len(loaded.hooks_registered),
                     "commands": len(loaded.commands_registered),
+                    "capabilities": dict(loaded.manifest.capabilities or {}),
                     "error": loaded.error,
                 }
             )

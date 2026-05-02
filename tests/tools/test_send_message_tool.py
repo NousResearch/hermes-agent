@@ -213,6 +213,73 @@ class TestSendMessageTool:
             user_id="user-123",
         )
 
+    def test_inferred_session_target_uses_persistent_idempotency_receipt(self, tmp_path):
+        config = SimpleNamespace(
+            platforms={Platform.SLACK: SimpleNamespace(enabled=True, token="xoxb-test", extra={})},
+            get_home_channel=lambda _platform: None,
+        )
+        send_mock = AsyncMock(
+            return_value={
+                "success": True,
+                "platform": "slack",
+                "chat_id": "C123456789",
+                "thread_id": "171000001.000100",
+                "message_id": "171000001.000200",
+                "message_link": "https://slack.example/messages/171000001.000200",
+            }
+        )
+
+        def get_session_env(name, default=""):
+            return {
+                "HERMES_SESSION_PLATFORM": "slack",
+                "HERMES_SESSION_CHAT_ID": "C123456789",
+                "HERMES_SESSION_THREAD_ID": "171000001.000100",
+                "HERMES_SESSION_USER_ID": "U123",
+            }.get(name, default)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "RSI_EXECUTION_ID": "hexec-1"}, clear=False), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("gateway.session_context.get_session_env", side_effect=get_session_env), \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            first = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "message": "hello",
+                    },
+                    tool_call_id="call-send-1",
+                )
+            )
+            second = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "message": "hello",
+                    },
+                    tool_call_id="call-send-1",
+                )
+            )
+
+        assert first["success"] is True
+        assert first["target_source"] == "session"
+        assert first["idempotency_key"] == "rsi:hexec-1:call-send-1"
+        assert second["success"] is True
+        assert second["deduped"] is True
+        assert second["message_id"] == "171000001.000200"
+        send_mock.assert_awaited_once_with(
+            Platform.SLACK,
+            config.platforms[Platform.SLACK],
+            "C123456789",
+            "hello",
+            thread_id="171000001.000100",
+            media_files=[],
+        )
+        receipt_files = list((tmp_path / "rsi_runtime" / "deliveries").glob("*.json"))
+        assert len(receipt_files) == 1
+
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
         leaked = "very-secret-query-token-123456"

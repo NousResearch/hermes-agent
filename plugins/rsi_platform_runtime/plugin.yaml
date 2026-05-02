@@ -1,0 +1,11 @@
+name: rsi_platform_runtime
+version: "0.1.0"
+description: "RSI strict native workflow runtime envelope and delivery facts"
+provides_hooks:
+  - post_tool_call
+  - post_llm_call
+  - on_session_end
+capabilities:
+  execution_scoped_context_supported: true
+  execution_envelope_v1_producer: true
+  atomic_envelope_writer: true

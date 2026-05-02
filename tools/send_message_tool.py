@@ -6,6 +6,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -151,7 +152,7 @@ def send_message_tool(args, **kw):
     if action == "list":
         return _handle_list()
 
-    return _handle_send(args)
+    return _handle_send(args, **kw)
 
 
 def _handle_list():
@@ -163,23 +164,36 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
-def _handle_send(args):
+def _handle_send(args, **kw):
     """Send a message to a platform target."""
-    target = args.get("target", "")
+    target = str(args.get("target", "") or "").strip()
     message = args.get("message", "")
-    if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+    if not message:
+        return tool_error("'message' is required when action='send'")
 
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
-    target_ref = parts[1].strip() if len(parts) > 1 else None
-    chat_id = None
-    thread_id = None
-
-    if target_ref:
-        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    inferred_target = None
+    target_source = "explicit"
+    if not target:
+        inferred_target = _get_session_delivery_target()
+        if not inferred_target:
+            return tool_error("'target' is required when no session delivery target is bound")
+        platform_name = inferred_target["platform"]
+        target_ref = inferred_target["chat_id"]
+        chat_id = inferred_target["chat_id"]
+        thread_id = inferred_target.get("thread_id")
+        is_explicit = True
+        target_source = "session"
     else:
-        is_explicit = False
+        parts = target.split(":", 1)
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip() if len(parts) > 1 else None
+        chat_id = None
+        thread_id = None
+
+        if target_ref:
+            chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+        else:
+            is_explicit = False
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
@@ -255,12 +269,19 @@ def _handle_send(args):
         if home:
             chat_id = home.chat_id
             used_home_channel = True
+            target_source = "home_channel"
         else:
             return json.dumps({
                 "error": f"No home channel set for {platform_name} to determine where to send the message. "
                 f"Either specify a channel directly with '{platform_name}:CHANNEL_NAME', "
                 f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
             })
+
+    idempotency_key = _delivery_idempotency_key(args, kw, platform_name, chat_id, thread_id, message)
+    stored_receipt = _load_delivery_receipt(idempotency_key)
+    if stored_receipt:
+        stored_receipt["deduped"] = True
+        return json.dumps(stored_receipt)
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
@@ -302,6 +323,14 @@ def _handle_send(args):
 
         if isinstance(result, dict) and "error" in result:
             result["error"] = _sanitize_error_text(result["error"])
+        if isinstance(result, dict) and result.get("success"):
+            result.setdefault("platform", platform_name)
+            result.setdefault("chat_id", chat_id)
+            if thread_id:
+                result.setdefault("thread_id", thread_id)
+            result["target_source"] = target_source
+            result["idempotency_key"] = idempotency_key
+            _store_delivery_receipt(idempotency_key, result)
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
@@ -367,6 +396,103 @@ def _describe_media_for_mirror(media_files):
             return "[Sent audio attachment]"
         return "[Sent document attachment]"
     return f"[Sent {len(media_files)} media attachments]"
+
+
+def _get_session_delivery_target():
+    """Return the active gateway session target for inferred native sends."""
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return None
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+    if not platform or not chat_id:
+        return None
+    thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip() or None
+    return {
+        "platform": platform,
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+    }
+
+
+def _delivery_receipts_dir() -> str:
+    hermes_home = os.getenv("HERMES_HOME", os.path.expanduser("~/.hermes")).strip() or os.path.expanduser("~/.hermes")
+    return os.path.join(os.path.expanduser(hermes_home), "rsi_runtime", "deliveries")
+
+
+def _delivery_receipt_path(idempotency_key: str) -> str:
+    digest = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+    return os.path.join(_delivery_receipts_dir(), f"{digest}.json")
+
+
+def _delivery_idempotency_key(args, kw, platform_name: str, chat_id: str, thread_id: str | None, message: str) -> str:
+    explicit = str(args.get("idempotency_key") or kw.get("idempotency_key") or os.getenv("RSI_DELIVERY_IDEMPOTENCY_KEY", "") or "").strip()
+    if explicit:
+        return explicit
+    execution_id = os.getenv("RSI_EXECUTION_ID", "").strip()
+    tool_call_id = str(kw.get("tool_call_id") or args.get("tool_call_id") or "").strip()
+    if execution_id and tool_call_id:
+        return f"rsi:{execution_id}:{tool_call_id}"
+    material = json.dumps(
+        {
+            "execution_id": execution_id,
+            "platform": platform_name,
+            "chat_id": str(chat_id or ""),
+            "thread_id": str(thread_id or ""),
+            "message_sha256": hashlib.sha256(str(message or "").encode("utf-8")).hexdigest(),
+        },
+        sort_keys=True,
+    )
+    return "rsi:auto:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _load_delivery_receipt(idempotency_key: str):
+    if not idempotency_key:
+        return None
+    path = _delivery_receipt_path(idempotency_key)
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as handle:
+            parsed = json.load(handle)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict) or not parsed.get("success"):
+        return None
+    return parsed
+
+
+def _store_delivery_receipt(idempotency_key: str, receipt) -> None:
+    if not idempotency_key or not isinstance(receipt, dict):
+        return
+    path = _delivery_receipt_path(idempotency_key)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temp_path = os.path.join(os.path.dirname(path), f"{os.path.basename(path)}.{os.getpid()}.{time.time_ns()}.tmp")
+    payload = dict(receipt)
+    payload["idempotency_key"] = idempotency_key
+    try:
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=True, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        try:
+            dir_fd = os.open(os.path.dirname(path), getattr(os, "O_DIRECTORY", 0) | os.O_RDONLY)
+        except OSError:
+            dir_fd = None
+        if dir_fd is not None:
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    except Exception:
+        try:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        except Exception:
+            pass
 
 
 def _get_cron_auto_delivery_target():

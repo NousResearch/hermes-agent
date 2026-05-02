@@ -11,6 +11,7 @@ import json
 import os
 import urllib.request
 import urllib.error
+import urllib.parse
 import time
 from difflib import get_close_matches
 from pathlib import Path
@@ -1115,6 +1116,82 @@ def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
     return [mid for mid, _ in fetch_ai_gateway_models(force_refresh=force_refresh)]
 
 
+def fetch_google_generative_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Fetch Google Gemini model IDs from the Generative Language models API."""
+    if not api_key:
+        try:
+            from hermes_cli.config import get_env_value
+
+            api_key = (
+                get_env_value("GOOGLE_API_KEY")
+                or get_env_value("GEMINI_API_KEY")
+                or ""
+            )
+        except Exception:
+            api_key = os.getenv("GOOGLE_API_KEY", "") or os.getenv("GEMINI_API_KEY", "")
+    api_key = str(api_key or "").strip()
+    if not api_key:
+        return None
+
+    if not base_url:
+        try:
+            from hermes_cli.config import get_env_value
+
+            base_url = get_env_value("GEMINI_BASE_URL") or ""
+        except Exception:
+            base_url = os.getenv("GEMINI_BASE_URL", "")
+    base = str(base_url or "https://generativelanguage.googleapis.com/v1beta").strip().rstrip("/")
+    if not base:
+        return None
+
+    out: list[str] = []
+    seen: set[str] = set()
+    page_token = ""
+    for _ in range(10):
+        params = {"key": api_key}
+        if page_token:
+            params["pageToken"] = page_token
+        url = f"{base}/models?{urllib.parse.urlencode(params)}"
+        req = urllib.request.Request(
+            url,
+            headers={"Accept": "application/json", "User-Agent": _HERMES_USER_AGENT},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode())
+        except Exception:
+            return out or None
+
+        items = payload.get("models")
+        if not isinstance(items, list):
+            return out or None
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            methods = item.get("supportedGenerationMethods")
+            if isinstance(methods, list) and not {
+                "generateContent",
+                "streamGenerateContent",
+            }.intersection(str(method) for method in methods):
+                continue
+            raw_name = str(item.get("name") or item.get("id") or "").strip()
+            if raw_name.startswith("models/"):
+                raw_name = raw_name.split("/", 1)[1]
+            if raw_name and raw_name not in seen:
+                seen.add(raw_name)
+                out.append(raw_name)
+
+        page_token = str(payload.get("nextPageToken") or "").strip()
+        if not page_token:
+            break
+
+    return out or None
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -1930,6 +2007,20 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
     if normalized == "nous":
+        try:
+            from hermes_cli.config import get_env_value
+
+            api_key = (get_env_value("NOUS_API_KEY") or "").strip()
+            base_url = (
+                get_env_value("NOUS_INFERENCE_BASE_URL")
+                or "https://inference-api.nousresearch.com/v1"
+            ).strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
         # Try live Nous Portal /models endpoint
         try:
             from hermes_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
@@ -1965,10 +2056,22 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
             return live
+    if normalized == "gemini":
+        live = fetch_google_generative_models()
+        if live:
+            return live
     if normalized == "openai":
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        try:
+            from hermes_cli.config import get_env_value
+            api_key = (get_env_value("OPENAI_API_KEY") or "").strip()
+        except Exception:
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if api_key:
-            base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+            try:
+                from hermes_cli.config import get_env_value
+                base_raw = (get_env_value("OPENAI_BASE_URL") or "").strip().rstrip("/")
+            except Exception:
+                base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
             base = base_raw or "https://api.openai.com/v1"
             try:
                 live = fetch_api_models(api_key, base)

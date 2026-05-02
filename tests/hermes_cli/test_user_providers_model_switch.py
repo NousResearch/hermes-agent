@@ -262,6 +262,7 @@ def test_list_authenticated_providers_openai_built_in_nonzero_total(monkeypatch)
         lambda: {"openai": {"env": ["OPENAI_API_KEY"]}},
     )
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_args, **_kwargs: ["live-openai-model"])
 
     providers = list_authenticated_providers(
         current_provider="",
@@ -273,6 +274,46 @@ def test_list_authenticated_providers_openai_built_in_nonzero_total(monkeypatch)
     row = next((p for p in providers if p.get("slug") == "openai"), None)
     assert row is not None
     assert row["total_models"] > 0
+
+
+def test_list_authenticated_providers_prefers_full_live_catalog_for_zshenv_provider(monkeypatch):
+    """Built-in provider rows should use the live /models list, not the curated subset."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "openrouter": {
+                "name": "OpenRouter",
+                "env": ["OPENROUTER_API_KEY"],
+                "api": "https://openrouter.ai/api/v1",
+                "models": {},
+            }
+        },
+    )
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["live-a", "live-b", "moonshotai/kimi-k2.6"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        current_base_url="",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+
+    row = next((p for p in providers if p.get("slug") == "openrouter"), None)
+    assert row is not None
+    assert calls == [("sk-test", "https://openrouter.ai/api/v1", {"timeout": 4.0, "api_mode": None})]
+    assert row["models"][:3] == ["live-a", "live-b", "moonshotai/kimi-k2.6"]
+    assert row["total_models"] >= 3
 
 
 def test_list_authenticated_providers_user_openai_official_url_fallback(monkeypatch):

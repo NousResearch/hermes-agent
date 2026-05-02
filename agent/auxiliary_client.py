@@ -855,8 +855,15 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     hostname = base_url_hostname(normalized)
     if hostname == "api.anthropic.com":
         return True
-    if hostname == "api.kimi.com" and "/coding" in normalized:
-        return True
+    if hostname == "api.kimi.com":
+        # Kimi exposes two different Coding Plan surfaces:
+        #   https://api.kimi.com/coding     → Anthropic Messages wire
+        #   https://api.kimi.com/coding/v1  → OpenAI chat.completions wire
+        # Only the bare /coding route should be wrapped. Treating /coding/v1
+        # as Anthropic sends requests to a non-existent messages endpoint and
+        # causes 404 resource_not_found_error for auxiliary tasks.
+        path = urlparse(normalized).path.rstrip("/")
+        return path == "/coding"
     return False
 
 

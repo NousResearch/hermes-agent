@@ -347,3 +347,34 @@ def test_rebind_token_rejects_missing_secret(monkeypatch: pytest.MonkeyPatch) ->
         json=_rebind_token_body(),
     )
     assert resp.status_code == 401
+
+
+def test_rebind_token_does_not_log_token_material(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Even partial-token logging is removed before long-running production use.
+    import logging
+
+    client, _ = _make_client(monkeypatch)
+    headers = {"X-TTM-Control-Plane-Secret": "test-secret"}
+    run_id = "11111111-1111-1111-1111-111111111111"
+    secret_token = "very-secret-bearer-credential-xyz"
+
+    client.post(
+        "/api/plugins/ttm-control-plane/runs/dispatch",
+        json=_dispatch_body(),
+        headers=headers,
+    )
+    with caplog.at_level(logging.INFO):
+        client.post(
+            f"/api/plugins/ttm-control-plane/runs/{run_id}/rebind-token",
+            json=_rebind_token_body(new_token=secret_token),
+            headers=headers,
+        )
+
+    rebind_logs = [r.getMessage() for r in caplog.records if "rebind-token" in r.getMessage()]
+    assert rebind_logs, "expected at least one rebind-token log entry"
+    for line in rebind_logs:
+        assert secret_token not in line
+        # No prefix either (first 8 chars).
+        assert secret_token[:8] not in line

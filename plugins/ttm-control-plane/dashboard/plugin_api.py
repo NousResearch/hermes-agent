@@ -523,12 +523,10 @@ async def rebind_token(
             detail={"reason": "run_not_found"},
         )
 
-    token_prefix = body.new_token[:8] if len(body.new_token) >= 8 else "***"
     logger.info(
-        "ttm-control-plane.rebind-token run_id=%s binding_id=%s token=%s...",
+        "ttm-control-plane.rebind-token run_id=%s binding_id=%s",
         run_id,
         body.new_binding_id,
-        token_prefix,
     )
     return {
         "status": "token_updated",

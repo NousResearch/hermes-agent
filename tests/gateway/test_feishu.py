@@ -4723,3 +4723,52 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+class TestRunInExecutor(unittest.TestCase):
+    """Tests for FeishuAdapter._run_in_executor executor-shutdown recovery."""
+
+    @unittest.skipUnless(_HAS_LARK_OAPI, "lark_oapi not installed")
+    def test_recovers_from_executor_shutdown(self):
+        """When the default executor is shut down, _run_in_executor replaces it and retries."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+
+        call_count = 0
+
+        def flaky_func(x):
+            nonlocal call_count
+            call_count += 1
+            return x * 2
+
+        async def run():
+            loop = asyncio.get_running_loop()
+            # Shut down the default executor to simulate the bug
+            import concurrent.futures
+            doomed = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            loop.set_default_executor(doomed)
+            doomed.shutdown(wait=False)
+
+            result = await adapter._run_in_executor(flaky_func, 21)
+            self.assertEqual(result, 42)
+            self.assertEqual(call_count, 1)  # succeeded on retry with new executor
+
+        asyncio.run(run())
+
+    @unittest.skipUnless(_HAS_LARK_OAPI, "lark_oapi not installed")
+    def test_propagates_non_shutdown_runtime_error(self):
+        """Non-shutdown RuntimeErrors are not caught."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = object.__new__(FeishuAdapter)
+
+        def bad_func():
+            raise RuntimeError("something else entirely")
+
+        async def run():
+            with self.assertRaises(RuntimeError) as ctx:
+                await adapter._run_in_executor(bad_func)
+            self.assertIn("something else entirely", str(ctx.exception))
+
+        asyncio.run(run())

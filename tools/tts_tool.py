@@ -6,7 +6,7 @@ Built-in TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
-- MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
+- MiniMax TTS: High-quality with voice cloning, needs VOICE_TOOLS_MINIMAX_KEY or MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - xAI TTS: Grok voices, needs XAI_API_KEY
@@ -940,9 +940,10 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     """
     import requests
 
-    api_key = (get_env_value("MINIMAX_API_KEY") or "")
+    api_key = (get_env_value("VOICE_TOOLS_MINIMAX_KEY") or get_env_value("MINIMAX_API_KEY") or "")
     if not api_key:
-        raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/")
+        raise ValueError("Neither VOICE_TOOLS_MINIMAX_KEY nor MINIMAX_API_KEY is set. "
+                         "Get one at https://platform.minimax.io/")
 
     mm_config = tts_config.get("minimax", {})
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
@@ -1831,7 +1832,7 @@ def check_tts_requirements() -> bool:
             return True
     except ImportError:
         pass
-    if get_env_value("MINIMAX_API_KEY"):
+    if get_env_value("VOICE_TOOLS_MINIMAX_KEY") or get_env_value("MINIMAX_API_KEY"):
         return True
     if get_env_value("XAI_API_KEY"):
         return True
@@ -2145,7 +2146,7 @@ if __name__ == "__main__":
         "    API Key:  "
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
-    print(f"  MiniMax:    {'API key set' if get_env_value('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
+    print(f"  MiniMax:    {'API key set' if get_env_value('VOICE_TOOLS_MINIMAX_KEY') or get_env_value('MINIMAX_API_KEY') else 'not set (VOICE_TOOLS_MINIMAX_KEY or MINIMAX_API_KEY)'}")
     print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")

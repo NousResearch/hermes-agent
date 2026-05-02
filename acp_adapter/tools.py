@@ -425,6 +425,7 @@ def _format_web_search_result(result: Optional[str]) -> Optional[str]:
 
 
 def _format_web_extract_result(result: Optional[str]) -> Optional[str]:
+    """Return only web_extract errors for ACP; success stays compact via title."""
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return None
@@ -433,20 +434,24 @@ def _format_web_extract_result(result: Optional[str]) -> Optional[str]:
     results = data.get("results")
     if not isinstance(results, list):
         return None
-    lines = [f"Web extract: {len(results)} URL{'s' if len(results) != 1 else ''}"]
+
+    failures: list[str] = []
     for item in results[:10]:
         if not isinstance(item, dict):
             continue
+        error = str(item.get("error") or "").strip()
+        if not error or error in {"None", "null"}:
+            continue
         url = str(item.get("url") or "").strip()
         title = str(item.get("title") or url or "Untitled").strip()
-        error = str(item.get("error") or "").strip()
-        status = "failed" if error and error not in {"None", "null"} else "extracted"
-        suffix = f" — {status}"
-        lines.append(f"- {title}" + (f" — {url}" if url and url != title else "") + suffix)
-        if status == "failed":
-            lines.append(f"  Error: {_truncate_text(error, limit=500)}")
-    if len(results) > 10:
-        lines.append(f"... {len(results) - 10} more result(s) omitted")
+        failures.append(
+            f"- {title}" + (f" — {url}" if url and url != title else "") + f"\n  Error: {_truncate_text(error, limit=500)}"
+        )
+
+    if not failures:
+        return None
+    lines = [f"Web extract failed for {len(failures)} URL{'s' if len(failures) != 1 else ''}"]
+    lines.extend(failures)
     return "\n".join(lines)
 
 
@@ -1139,12 +1144,16 @@ def build_tool_complete(
 ) -> ToolCallProgress:
     """Create a ToolCallUpdate (progress) event for a completed tool call."""
     kind = get_tool_kind(tool_name)
-    content = _build_tool_complete_content(
-        tool_name,
-        result,
-        function_args=function_args,
-        snapshot=snapshot,
-    )
+    if tool_name == "web_extract":
+        error_text = _format_web_extract_result(result)
+        content = [_text(error_text)] if error_text else None
+    else:
+        content = _build_tool_complete_content(
+            tool_name,
+            result,
+            function_args=function_args,
+            snapshot=snapshot,
+        )
     return acp.update_tool_call(
         tool_call_id,
         kind=kind,

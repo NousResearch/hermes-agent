@@ -412,19 +412,25 @@ class TestBuildToolComplete:
         assert "private long memory" not in text
         assert result.raw_output is None
 
-    def test_build_tool_complete_for_web_extract_summarizes_urls_without_page_content(self):
+    def test_build_tool_complete_for_web_extract_success_stays_compact(self):
         result = build_tool_complete(
             "tc-web-extract",
             "web_extract",
             '{"results":[{"url":"https://example.com","title":"Example","content":"# Intro\\nThis is extracted content."}]}',
         )
+        assert result.content is None
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_web_extract_error_shows_error(self):
+        result = build_tool_complete(
+            "tc-web-extract-error",
+            "web_extract",
+            '{"results":[{"url":"https://example.com","title":"Example","error":"timeout"}]}',
+        )
         text = result.content[0].content.text
-        assert "Web extract: 1 URL" in text
-        assert "Example" in text
+        assert "Web extract failed" in text
         assert "https://example.com" in text
-        assert "Content:" not in text
-        assert "Intro" not in text
-        assert "extracted content" not in text
+        assert "timeout" in text
         assert result.raw_output is None
 
     def test_build_tool_complete_truncates_large_output(self):

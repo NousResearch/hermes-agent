@@ -12,9 +12,17 @@ Memory provider plugins give Hermes Agent persistent, cross-session knowledge be
 Memory providers are one of two **provider plugin** types. The other is [Context Engine Plugins](/developer-guide/context-engine-plugin), which replace the built-in context compressor. Both follow the same pattern: single-select, config-driven, managed via `hermes plugins`.
 :::
 
-## Directory Structure
+## Installation Layouts
 
-Each memory provider lives in `plugins/memory/<name>/`:
+Hermes discovers memory providers from bundled directories, user-installed
+directories, and installed Python package entry points. Bundled providers take
+precedence over a user directory with the same name, which takes precedence
+over a package entry point.
+
+### Directory Provider
+
+A directory provider lives in `plugins/memory/<name>/` when bundled with
+Hermes, or in `$HERMES_HOME/plugins/<name>/` when installed by a user:
 
 ```
 plugins/memory/my-provider/
@@ -22,6 +30,22 @@ plugins/memory/my-provider/
 ├── plugin.yaml      # Metadata (name, description, hooks)
 └── README.md        # Setup instructions, config reference, tools
 ```
+
+### Packaged Provider
+
+A pip-installed provider publishes an entry point in the
+`hermes_agent.memory_providers` group. The entry-point name is the provider
+name users select in `memory.provider`; its value points to the provider's
+`register(ctx)` function:
+
+```toml title="pyproject.toml"
+[project.entry-points."hermes_agent.memory_providers"]
+my-provider = "my_provider:register"
+```
+
+The package can keep its provider implementation, skills, and other resources
+inside its normal Python package layout. No copy under
+`$HERMES_HOME/plugins/` is required.
 
 ## The MemoryProvider ABC
 
@@ -138,6 +162,27 @@ def register(ctx) -> None:
     """Called by the memory plugin discovery system."""
     ctx.register_memory_provider(MyMemoryProvider())
 ```
+
+A provider may also expose read-only skills from the same callback. Skills are
+qualified by the entry-point name and are loaded only when that memory provider
+is active:
+
+```python
+from pathlib import Path
+
+SKILLS_DIR = Path(__file__).parent / "skills"
+
+def register(ctx) -> None:
+    ctx.register_memory_provider(MyMemoryProvider())
+    ctx.register_skill(
+        "maintenance",
+        SKILLS_DIR / "maintenance" / "SKILL.md",
+        "Maintain the provider's memory store",
+    )
+```
+
+With the `my-provider` entry point active, the skill is available as
+`my-provider:maintenance` through `skill_view()`.
 
 ## plugin.yaml
 

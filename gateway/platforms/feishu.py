@@ -1,4 +1,3 @@
-import subprocess
 """
 Feishu/Lark platform adapter.
 
@@ -57,6 +56,7 @@ import logging
 import mimetypes
 import os
 import re
+import subprocess
 import threading
 import time
 import uuid
@@ -2701,6 +2701,7 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
+            or getattr(message, "root_id", None)
             or None
         )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
@@ -3887,18 +3888,21 @@ class FeishuAdapter(BasePlatformAdapter):
                     metadata=metadata,
                 )
             else:
-    if resolved_message_type == "audio":
-        duration_ms = _get_audio_duration_ms(file_path)
-        payload = json.dumps({"file_key": file_key, "duration": duration_ms}, ensure_ascii=False)
-    else:
-        payload = json.dumps({"file_key": file_key}, ensure_ascii=False)
-    message_response = await self._feishu_send_with_retry(
-        chat_id=chat_id,
-        msg_type=resolved_message_type,
-        payload=payload,
-        reply_to=reply_to,
-        metadata=metadata,
-    )
+                if resolved_message_type == "audio":
+                    duration_ms = _get_audio_duration_ms(file_path)
+                    payload_obj = {"file_key": file_key}
+                    if duration_ms > 0:
+                        payload_obj["duration"] = duration_ms
+                    payload = json.dumps(payload_obj, ensure_ascii=False)
+                else:
+                    payload = json.dumps({"file_key": file_key}, ensure_ascii=False)
+                message_response = await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type=resolved_message_type,
+                    payload=payload,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
@@ -4456,21 +4460,31 @@ def _poll_registration(
 
 try:
     import qrcode as _qrcode_mod
+except (ImportError, TypeError):
+    _qrcode_mod = None  # type: ignore[assignment]
+
 
 def _get_audio_duration_ms(file_path: str) -> int:
     """Extract audio duration in milliseconds using ffprobe."""
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", file_path],
-            capture_output=True, text=True, timeout=10
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return int(float(result.stdout.strip()) * 1000)
     except Exception:
         return 0
-
-except (ImportError, TypeError):
-    _qrcode_mod = None  # type: ignore[assignment]
 
 
 def _render_qr(url: str) -> bool:

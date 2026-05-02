@@ -13,6 +13,7 @@ concurrently under distinct configurations).
 
 import hashlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -22,6 +23,8 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Optional
 from utils import atomic_json_write
+
+logger = logging.getLogger(__name__)
 
 if sys.platform == "win32":
     import msvcrt
@@ -355,7 +358,21 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
     if not resolved_lock_path.exists():
         return False
 
-    handle = open(resolved_lock_path, "a+", encoding="utf-8")
+    try:
+        handle = open(resolved_lock_path, "a+", encoding="utf-8")
+    except PermissionError:
+        # Lock file is owned by another user (e.g. root after entrypoint bypass).
+        # Self-heal: remove the stale file so subsequent checks work normally.
+        logger.warning(
+            "gateway.lock at %s not accessible (PermissionError); "
+            "removing stale lock file.",
+            resolved_lock_path,
+        )
+        try:
+            resolved_lock_path.unlink()
+        except OSError:
+            pass
+        return False
     try:
         if _try_acquire_file_lock(handle):
             _release_file_lock(handle)

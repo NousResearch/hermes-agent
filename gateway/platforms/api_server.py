@@ -805,6 +805,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        x_user_token: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -856,6 +857,7 @@ class APIServerAdapter(BasePlatformAdapter):
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
             platform="api_server",
+            x_user_token=x_user_token,
             stream_delta_callback=stream_delta_callback,
             reasoning_callback=reasoning_callback,
             clarify_callback=clarify_callback,
@@ -982,6 +984,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        x_user_token = request.headers.get("x-user", "").strip() or None
         if provided_session_id:
             if not self._api_key:
                 logger.warning(
@@ -1129,6 +1132,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
                 model_override=model_name,
+                x_user_token=x_user_token,
             ))
 
             return await self._write_sse_chat_completion(
@@ -2703,6 +2707,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         model_override: str = None,
+        x_user_token: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2720,6 +2725,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                x_user_token=x_user_token,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

@@ -877,6 +877,7 @@ class AIAgent:
         platform: str = None,
         user_id: str = None,
         user_name: str = None,
+        x_user_token: str = None,
         chat_id: str = None,
         chat_name: str = None,
         chat_type: str = None,
@@ -949,6 +950,7 @@ class AIAgent:
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
         self._user_id = user_id  # Platform user identifier (gateway sessions)
+        self._x_user_token = x_user_token  # Raw JWT from x-user header (API server)
         self._user_name = user_name
         self._chat_id = chat_id
         self._chat_name = chat_name
@@ -9402,6 +9404,7 @@ class AIAgent:
                         session_id=self.session_id,
                         model=self.model,
                         platform=getattr(self, "platform", None) or "",
+                        x_user_token=getattr(self, "_x_user_token", None) or "",
                     )
                 except Exception as exc:
                     logger.warning("on_session_start hook failed: %s", exc)
@@ -9507,6 +9510,7 @@ class AIAgent:
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
                 sender_id=getattr(self, "_user_id", None) or "",
+                x_user_token=getattr(self, "_x_user_token", None) or "",
             )
             _ctx_parts: list[str] = []
             for r in _pre_results:

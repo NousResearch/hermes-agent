@@ -114,12 +114,14 @@ _SESSIONS: Dict[str, _ActiveObjects] = {}
 class _ActiveObjects:
     """In-flight Langfuse observations for a single session."""
 
-    __slots__ = ("trace", "user_message", "assistant_response", "active_generations", "active_spans")
+    __slots__ = ("trace", "user_message", "assistant_response", "user_id", "company_id", "active_generations", "active_spans")
 
     def __init__(self) -> None:
         self.trace: Any = None  # LangfuseSpan (root)
         self.user_message: str = ""  # latest user message (from pre_llm_call)
         self.assistant_response: str = ""  # latest assistant response (from post_llm_call)
+        self.user_id: str = ""  # decoded from x-user JWT (pre_llm_call)
+        self.company_id: str = ""  # decoded from x-user JWT (pre_llm_call)
         self.active_generations: Dict[str, Any] = {}
         self.active_spans: Dict[str, Any] = {}
 
@@ -155,7 +157,7 @@ def _init_client() -> Any:
                 secret_key=lf_cfg["secret_key"],
                 host=lf_cfg["host"],
             )
-            logger.info("langfuse-tracing: client initialised host=%s", lf_cfg["host"])
+            logger.info("Langfuse 客户端初始化完成: %s", lf_cfg["host"])
         except Exception as exc:
             logger.debug("langfuse-tracing: failed to initialise client: %s", exc)
             _CLIENT = None
@@ -197,17 +199,9 @@ def _create_trace(
             user_id=session_id[:64],
             session_id=session_id[:64],
         )
-        label = "(lazy)" if lazy else ""
-        logger.info(
-            "langfuse: trace created %s session=%s model=%s platform=%s",
-            label,
-            session_id[:20],
-            model,
-            platform,
-        )
         return trace
     except Exception as exc:
-        logger.warning("langfuse: trace creation error: %s", exc)
+        logger.warning("Langfuse trace 创建失败: %s", exc)
         return None
 
 
@@ -219,7 +213,7 @@ def _create_trace(
 def _on_session_start(**kwargs: Any) -> None:
     """Create the Langfuse trace for this session.
 
-    Hermes kwargs: session_id, model, platform
+    Hermes kwargs: session_id, model, platform, x_user_token
     """
     client = _init_client()
     if client is None:
@@ -234,7 +228,39 @@ def _on_session_start(**kwargs: Any) -> None:
 
     trace = _create_trace(client, session_id, model, platform)
     if trace is not None:
-        _get_session(session_id).trace = trace
+        active = _get_session(session_id)
+        active.trace = trace
+
+        # 解析 x-user JWT，提取用户和企业信息
+        x_user_token = kwargs.get("x_user_token", "") or ""
+        if x_user_token:
+            jwt_payload = _decode_jwt_payload(x_user_token)
+            user_id = str(jwt_payload.get("id", "")) or None
+            company_id = str(jwt_payload.get("companyId", "")) or None
+            if user_id or company_id:
+                logger.info("解析 x-user JWT 成功: 用户=%s, 企业=%s",
+                             user_id or "-", company_id or "-")
+            if user_id:
+                active.user_id = user_id
+            if company_id:
+                active.company_id = company_id
+            if user_id or company_id:
+                tags = [platform] if platform else []
+                meta: Dict[str, Any] = {"platform": platform}
+                if user_id:
+                    meta["user_id"] = user_id
+                if company_id:
+                    meta["company_id"] = company_id
+                    tags.append(f"company:{company_id}")
+                try:
+                    active.trace.update_trace(
+                        user_id=user_id or session_id[:64],
+                        session_id=session_id[:64],
+                        tags=tags,
+                        metadata=meta,
+                    )
+                except Exception as exc:
+                    logger.warning("update_trace 失败: %s", exc)
 
 
 def _on_session_end(**kwargs: Any) -> None:
@@ -258,13 +284,10 @@ def _on_session_end(**kwargs: Any) -> None:
             }
         )
     except Exception as exc:
-        logger.warning("langfuse: on_session_end update error: %s", exc)
+        logger.warning("on_session_end 更新失败: %s", exc)
 
     if kwargs.get("completed") or kwargs.get("interrupted"):
-        logger.info("langfuse: session end (final) session=%s", session_id[:20])
         _flush_and_cleanup(session_id)
-    else:
-        logger.info("langfuse: turn end session=%s", session_id[:20])
 
 
 def _on_session_finalize(**kwargs: Any) -> None:
@@ -284,17 +307,36 @@ def _on_session_finalize(**kwargs: Any) -> None:
                     }
                 )
         except Exception as exc:
-            logger.warning("langfuse: on_session_finalize update error: %s", exc)
+            logger.warning("on_session_finalize 更新失败: %s", exc)
 
-    logger.info("langfuse: session finalized session=%s", session_id[:20])
     _flush_and_cleanup(session_id)
 
 
+def _decode_jwt_payload(token: str) -> Dict[str, Any]:
+    """Decode a JWT payload without signature verification.
+
+    Returns an empty dict on any parse failure.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {}
+        payload = parts[1]
+        # base64url: replace URL-safe chars, add padding
+        payload = payload.replace("-", "+").replace("_", "/")
+        payload += "=" * ((4 - len(payload) % 4) % 4)
+        decoded = __import__("base64").b64decode(payload)
+        return __import__("json").loads(decoded)
+    except Exception as exc:
+        logger.warning("JWT 解析失败: %s", exc)
+        return {}
+
+
 def _on_pre_llm_call(**kwargs: Any) -> None:
-    """Store the user message and update trace input before each turn.
+    """Store user message and update trace attributes before each turn.
 
     Hermes kwargs: session_id, user_message, conversation_history,
-                    is_first_turn, model, platform
+                    is_first_turn, model, platform, sender_id, x_user_token
     """
     session_id = kwargs.get("session_id", "") or ""
     user_message = kwargs.get("user_message", "") or ""
@@ -311,13 +353,40 @@ def _on_pre_llm_call(**kwargs: Any) -> None:
 
     try:
         active.trace.update(input={"user_message": _truncate(user_message, 10000)})
-        logger.info(
-            "langfuse: turn input session=%s msg_len=%d",
-            session_id[:20],
-            len(user_message),
-        )
+
+        # 解析 x-user JWT，提取用户和企业信息
+        x_user_token = kwargs.get("x_user_token", "") or ""
+        if x_user_token:
+            jwt_payload = _decode_jwt_payload(x_user_token)
+            user_id = str(jwt_payload.get("id", "")) or None
+            company_id = str(jwt_payload.get("companyId", "")) or None
+
+            # 存入状态供其他 hook 读取
+            active.user_id = user_id or ""
+            active.company_id = company_id or ""
+
+            if user_id or company_id:
+                tags = [kwargs.get("platform", "")]
+                meta: Dict[str, Any] = {"platform": kwargs.get("platform", "")}
+                if user_id:
+                    meta["user_id"] = user_id
+                if company_id:
+                    meta["company_id"] = company_id
+                    tags.append(f"company:{company_id}")
+
+                active.trace.update_trace(
+                    user_id=user_id or session_id[:64],
+                    session_id=session_id[:64],
+                    tags=tags,
+                    metadata=meta,
+                )
+                logger.info("解析 x-user JWT 成功: 用户=%s, 企业=%s",
+                             user_id or "-", company_id or "-")
+            else:
+                logger.warning("JWT 解析成功但缺少 id/companyId 字段: %s",
+                               list(jwt_payload.keys()))
     except Exception as exc:
-        logger.warning("langfuse: pre_llm_call error: %s", exc)
+        logger.warning("pre_llm_call 异常: %s", exc)
 
 
 def _on_post_llm_call(**kwargs: Any) -> None:
@@ -341,13 +410,8 @@ def _on_post_llm_call(**kwargs: Any) -> None:
         active.trace.update(
             output={"assistant_response": _truncate(assistant_response, 10000)}
         )
-        logger.info(
-            "langfuse: turn output session=%s resp_len=%d",
-            session_id[:20],
-            len(assistant_response),
-        )
     except Exception as exc:
-        logger.warning("langfuse: post_llm_call error: %s", exc)
+        logger.warning("post_llm_call 异常: %s", exc)
 
 
 def _ensure_trace(
@@ -390,10 +454,6 @@ def _on_pre_api_request(**kwargs: Any) -> None:
 
     active = _ensure_trace(session_id, model, platform)
     if active is None:
-        logger.info(
-            "langfuse: pre_api_request skipped - client not available session=%s",
-            session_id[:20],
-        )
         return
 
     task_id = kwargs.get("task_id", "")
@@ -423,14 +483,8 @@ def _on_pre_api_request(**kwargs: Any) -> None:
             },
         )
         active.active_generations[gen_key] = gen
-        logger.info(
-            "langfuse: gen start model=%s #%s session=%s",
-            model,
-            api_call_count,
-            session_id[:20],
-        )
     except Exception as exc:
-        logger.warning("langfuse: pre_api_request error: %s", exc)
+        logger.warning("pre_api_request 异常: %s", exc)
 
 
 def _on_post_api_request(**kwargs: Any) -> None:
@@ -478,17 +532,14 @@ def _on_post_api_request(**kwargs: Any) -> None:
             },
         )
         gen.end()
-        logger.info(
-            "langfuse: gen end model=%s #%s tokens(in=%s out=%s total=%s) dur=%.1fs",
-            kwargs.get("model", ""),
-            api_call_count,
-            usage.get("input_tokens", 0),
-            usage.get("output_tokens", 0),
-            usage.get("total_tokens", 0),
-            kwargs.get("api_duration", 0),
-        )
+        logger.info("LLM 调用完成: model=%s tokens(in=%s out=%s total=%s) 耗时=%.1fs",
+                     kwargs.get("model", ""),
+                     usage.get("input_tokens", 0),
+                     usage.get("output_tokens", 0),
+                     usage.get("total_tokens", 0),
+                     kwargs.get("api_duration", 0))
     except Exception as exc:
-        logger.warning("langfuse: post_api_request error: %s", exc)
+        logger.warning("post_api_request 异常: %s", exc)
 
 
 def _on_pre_tool_call(**kwargs: Any) -> None:
@@ -519,13 +570,8 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
             },
         )
         active.active_spans[tool_call_id] = span
-        logger.info(
-            "langfuse: tool start %s session=%s",
-            kwargs.get("tool_name", ""),
-            session_id[:20],
-        )
     except Exception as exc:
-        logger.warning("langfuse: pre_tool_call error: %s", exc)
+        logger.warning("pre_tool_call 异常: %s", exc)
 
 
 def _on_post_tool_call(**kwargs: Any) -> None:
@@ -555,11 +601,8 @@ def _on_post_tool_call(**kwargs: Any) -> None:
             },
         )
         span.end()
-        logger.info(
-            "langfuse: tool end %s dur=%sms", kwargs.get("tool_name", ""), duration_ms
-        )
     except Exception as exc:
-        logger.warning("langfuse: post_tool_call error: %s", exc)
+        logger.warning("post_tool_call 异常: %s", exc)
 
 
 # -- Helpers ------------------------------------------------------------
@@ -605,21 +648,13 @@ def _flush_and_cleanup(session_id: str) -> None:
         except Exception:
             pass
 
-    logger.info(
-        "langfuse: flush session=%s (dangling: %d gen, %d span)",
-        session_id[:20],
-        dangling_gen,
-        dangling_span,
-    )
-
-    # Flush to backend
+    # 发送到 Langfuse 后端
     client = _init_client()
     if client:
         try:
             client.flush()
-            logger.info("langfuse: client flush done")
         except Exception as exc:
-            logger.warning("langfuse: client flush error: %s", exc)
+            logger.warning("Langfuse flush 失败: %s", exc)
 
     # Remove session state
     with _STATE_LOCK:
@@ -675,4 +710,9 @@ def register(ctx: Any) -> None:
         or _get_env("LANGFUSE_BASE_URL")
         or "https://cloud.langfuse.com"
     )
-    logger.info("langfuse-tracing: plugin registered (host=%s)", host)
+    logger.info("Langfuse 插件注册完成: %s", host)
+
+if __name__ == "__main__":
+    jwt_token = "eyJhbGciOiJIUzUxMiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjEyMyIsImNvbXBhbnlJZCI6IjEyMzEyMyJ9.xQfvluj44irrX3xM641CGbzw0TOcxeLIHoDKIhebCtSjzsRc8oCdTq_e3EMpbT_UtJuC_O91de-xgVQXkYvX7g"
+    dict = _decode_jwt_payload(jwt_token)
+    print(dict)

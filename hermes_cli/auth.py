@@ -1201,6 +1201,8 @@ def resolve_provider(
         return "openrouter"
     if normalized == "custom":
         return "custom"
+    if normalized.startswith("custom:"):
+        return normalized  # e.g. "custom:my-endpoint"
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":
@@ -4719,9 +4721,16 @@ def logout_command(args) -> None:
     """Clear auth state for a provider."""
     provider_id = getattr(args, "provider", None)
 
-    if provider_id and not is_known_auth_provider(provider_id):
-        print(f"Unknown provider: {provider_id}")
-        raise SystemExit(1)
+    if provider_id:
+        normalized = (provider_id or "").strip().lower()
+        is_valid = (
+            is_known_auth_provider(provider_id)
+            or normalized.startswith("custom:")
+            or normalized == "custom"
+        )
+        if not is_valid:
+            print(f"Unknown provider: {provider_id}")
+            raise SystemExit(1)
 
     active = get_active_provider()
     target = provider_id or active or _logout_default_provider_from_config()

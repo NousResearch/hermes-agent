@@ -1586,13 +1586,26 @@ def list_authenticated_providers(
             _grp_url_norm = _pair_key[1]
             if _grp_url_norm and _grp_url_norm in _builtin_endpoints:
                 continue
+            # Seed with config-declared models, then try live /models endpoint
+            # for named custom providers via provider_model_ids().
+            models_list = list(grp["models"])
+            if slug.startswith("custom:"):
+                try:
+                    from hermes_cli.models import provider_model_ids
+                    live = provider_model_ids(slug)
+                    if live:
+                        for m in live:
+                            if m not in models_list:
+                                models_list.append(m)
+                except Exception:
+                    pass  # Non-blocking — config models still available
             results.append({
                 "slug": slug,
                 "name": grp["name"],
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": grp["models"],
-                "total_models": len(grp["models"]),
+                "models": models_list,
+                "total_models": len(models_list),
                 "source": "user-config",
                 "api_url": grp["api_url"],
             })

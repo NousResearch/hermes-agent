@@ -2001,6 +2001,48 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             live = fetch_api_models(api_key, base_url)
             if live:
                 return live
+    # Named custom providers (e.g. "custom:my-endpoint").
+    # Delegate to resolve_custom_provider() for schema-safe resolution,
+    # then extract api_key from the matching config entry.
+    if normalized.startswith("custom:"):
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.providers import (
+                custom_provider_slug,
+                resolve_custom_provider,
+            )
+            config = load_config()
+            cp = config.get("custom_providers") if isinstance(config, dict) else None
+            pdef = resolve_custom_provider(normalized, cp)
+            if pdef and pdef.base_url:
+                # Extract api_key from the matching config entry
+                # (ProviderDef does not carry the raw api_key for custom providers).
+                api_key = ""
+                if cp:
+                    for entry in cp:
+                        if not isinstance(entry, dict):
+                            continue
+                        dn = (entry.get("name") or "").strip()
+                        if not dn:
+                            continue
+                        if custom_provider_slug(dn) == normalized:
+                            api_key = (entry.get("api_key") or "").strip()
+                            break
+                try:
+                    live = fetch_api_models(api_key, pdef.base_url, timeout=8.0)
+                    if live:
+                        return live
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Failed to probe custom provider '%s' at %s: %s",
+                        normalized, pdef.base_url, e,
+                    )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).debug(
+                "Could not resolve custom provider '%s': %s", normalized, e,
+            )
     # Bedrock uses live discovery keyed by the resolved AWS region so that
     # EU/AP users see eu.*/ap.* model IDs instead of the static us.* list.
     # Note: early return intentionally skips _MODELS_DEV_PREFERRED merge

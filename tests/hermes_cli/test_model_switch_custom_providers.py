@@ -5,9 +5,12 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+from unittest.mock import patch
+
 import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
+from hermes_cli.auth import resolve_provider, is_known_auth_provider
 
 
 _MOCK_VALIDATION = {
@@ -109,6 +112,11 @@ def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     with all models collected, not N duplicate rows."""
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    # Mock fetch_api_models so live probing does not hit ollama.com (#17478)
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda api_key, base_url, timeout=6.0: None,
+    )
 
     providers = list_authenticated_providers(
         current_provider="openrouter",
@@ -506,3 +514,157 @@ def test_lmstudio_picker_skips_probe_when_not_configured(monkeypatch):
     )
 
     assert "base_url" not in captured
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Named custom provider support: custom:<name> syntax
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_resolve_provider_accepts_custom_named(monkeypatch):
+    """resolve_provider('custom:endpoint') should return 'custom:endpoint'
+    without raising 'Unknown provider'."""
+    assert resolve_provider("custom:my-endpoint") == "custom:my-endpoint"
+    assert resolve_provider("CUSTOM:Some-API") == "custom:some-api"
+
+
+def test_provider_model_ids_probes_custom_named(monkeypatch):
+    """provider_model_ids('custom:endpoint') should probe /models and return
+    live model list."""
+    from hermes_cli.models import provider_model_ids
+
+    mock_config = {
+        "custom_providers": [
+            {
+                "name": "Test Endpoint",
+                "base_url": "http://test.local/v1",
+                "api_key": "test-key-123",
+            }
+        ]
+    }
+
+    captured_args = {}
+
+    def _fake_fetch(api_key=None, base_url=None, timeout=5.0):
+        captured_args["api_key"] = api_key
+        captured_args["base_url"] = base_url
+        return ["model-alpha", "model-beta"]
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: mock_config)
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fake_fetch)
+
+    result = provider_model_ids("custom:test-endpoint")
+
+    assert result == ["model-alpha", "model-beta"]
+    assert captured_args["api_key"] == "test-key-123"
+    assert captured_args["base_url"] == "http://test.local/v1"
+
+
+def test_provider_model_ids_logs_on_probe_failure(monkeypatch, caplog):
+    """When /models probe fails for a named custom provider, a warning is
+    logged but no exception is raised."""
+    import logging
+    from hermes_cli.models import provider_model_ids
+
+    mock_config = {
+        "custom_providers": [
+            {
+                "name": "Bad Endpoint",
+                "base_url": "http://bad.local/v1",
+                "api_key": "key",
+            }
+        ]
+    }
+
+    def _fail_fetch(api_key=None, base_url=None, timeout=5.0):
+        raise ConnectionError("Connection refused")
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: mock_config)
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", _fail_fetch)
+
+    with caplog.at_level(logging.WARNING):
+        result = provider_model_ids("custom:bad-endpoint")
+
+    # Should return empty list (no models), not raise
+    assert result == []
+    # Should have logged a warning
+    assert any("Failed to probe" in r.message for r in caplog.records)
+    assert any("custom:bad-endpoint" in r.message for r in caplog.records)
+
+
+def test_provider_model_ids_no_config_returns_none(monkeypatch):
+    """provider_model_ids('custom:endpoint') when the provider is not in
+    config should return empty list gracefully."""
+    from hermes_cli.models import provider_model_ids
+
+    mock_config = {"custom_providers": []}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: mock_config)
+
+    result = provider_model_ids("custom:nonexistent")
+    assert result == []
+
+
+def test_model_switch_live_probing_custom_named(monkeypatch):
+    """list_authenticated_providers should call provider_model_ids() for
+    named custom providers and merge live models with config models."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    def _fake_pmi(slug, **kwargs):
+        if slug == "custom:my-endpoint":
+            return ["config-model", "live-only-model"]
+        return None
+
+    monkeypatch.setattr(
+        "hermes_cli.models.provider_model_ids",
+        _fake_pmi,
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "My Endpoint",
+                "base_url": "http://test.local/v1",
+                "model": "config-model",
+            }
+        ],
+        max_models=50,
+    )
+
+    my_rows = [p for p in providers if p.get("is_user_defined")]
+    assert len(my_rows) == 1
+    # Should have both the config model and the live-discovered model
+    assert "config-model" in my_rows[0]["models"]
+    assert "live-only-model" in my_rows[0]["models"]
+    assert my_rows[0]["total_models"] == 2
+
+
+def test_model_switch_probe_failure_nonblocking(monkeypatch):
+    """If provider_model_ids raises for a custom provider, the picker
+    should still show config-declared models."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    monkeypatch.setattr(
+        "hermes_cli.models.provider_model_ids",
+        lambda slug, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Faulty Endpoint",
+                "base_url": "http://faulty.local/v1",
+                "model": "fallback-model",
+            }
+        ],
+        max_models=50,
+    )
+
+    rows = [p for p in providers if p.get("is_user_defined")]
+    assert len(rows) == 1
+    # Config model should still be present despite probe failure
+    assert rows[0]["models"] == ["fallback-model"]

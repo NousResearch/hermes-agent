@@ -2604,7 +2604,7 @@ class HermesCLI:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
-                    parts.append(f"cmp {compressions}")
+                    parts.append(f"🗜️ {compressions}")
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
@@ -2618,7 +2618,7 @@ class HermesCLI:
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
             if compressions:
-                parts.append(f"cmp {compressions}")
+                parts.append(f"🗜️ {compressions}")
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
@@ -2661,7 +2661,7 @@ class HermesCLI:
                     ]
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
-                        frags.append((self._compression_count_style(compressions), f"cmp {compressions}"))
+                        frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
                     frags.extend([
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
@@ -2689,7 +2689,7 @@ class HermesCLI:
                     ]
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
-                        frags.append((self._compression_count_style(compressions), f"cmp {compressions}"))
+                        frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
                     frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),

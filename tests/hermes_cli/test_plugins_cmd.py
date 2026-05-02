@@ -234,6 +234,35 @@ class TestCmdEnable:
         assert _get_enabled_set() == {"ping-island"}
 
 
+# ── cmd_disable tests ────────────────────────────────────────────────────────
+
+
+class TestCmdDisable:
+    """Test disabling installed plugins."""
+
+    def test_disable_by_directory_stores_manifest_name(self, tmp_path, monkeypatch):
+        """Directory aliases should persist the manifest key on disable too."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        plugin_dir = tmp_path / "plugins" / "ping_island"
+        plugin_dir.mkdir(parents=True)
+        plugin_dir.joinpath("plugin.yaml").write_text(
+            "name: ping-island\nversion: 1.0.0\ndescription: test plugin\n"
+        )
+
+        from hermes_cli.plugins_cmd import _get_disabled_set, cmd_disable
+
+        # First enable it, then disable
+        from hermes_cli.plugins_cmd import cmd_enable, _get_enabled_set
+
+        cmd_enable("ping_island")
+        assert _get_enabled_set() == {"ping-island"}
+
+        cmd_disable("ping_island")
+
+        assert _get_disabled_set() == {"ping-island"}
+        assert "ping-island" not in _get_enabled_set()
+
+
 # ── cmd_update tests ─────────────────────────────────────────────────────────
 
 

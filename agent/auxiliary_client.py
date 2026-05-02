@@ -266,6 +266,49 @@ _OR_HEADERS = {
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }
 
+# Truthy values for boolean env-var parsing (aligned with hermes_cli conventions).
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def openrouter_feature_headers() -> Dict[str, str]:
+    """Build OpenRouter feature headers driven by environment variables.
+
+    Returned headers are merged on top of ``_OR_HEADERS`` at every OpenRouter
+    client construction site so that opt-in features stay consistent across
+    the main agent loop and auxiliary tasks.
+
+    Currently supported:
+
+    - ``HERMES_OPENROUTER_CACHE`` — when truthy (``1``/``true``/``yes``/``on``,
+      case-insensitive), adds ``X-OpenRouter-Cache: true`` so OpenRouter
+      serves identical request bodies from edge cache at zero token cost.
+    - ``HERMES_OPENROUTER_CACHE_TTL`` — integer seconds, clamped to OpenRouter's
+      documented [1, 86400] range, emitted as ``X-OpenRouter-Cache-TTL``.
+      Ignored when caching is disabled or the value is not a positive int.
+
+    See https://openrouter.ai/announcements/response-caching.
+    """
+    extras: Dict[str, str] = {}
+    cache_flag = os.environ.get("HERMES_OPENROUTER_CACHE", "").strip().lower()
+    if cache_flag in _TRUTHY_ENV_VALUES:
+        extras["X-OpenRouter-Cache"] = "true"
+        ttl_raw = os.environ.get("HERMES_OPENROUTER_CACHE_TTL", "").strip()
+        if ttl_raw.isdigit():
+            ttl = int(ttl_raw)
+            if 1 <= ttl <= 86400:
+                extras["X-OpenRouter-Cache-TTL"] = str(ttl)
+    return extras
+
+
+def openrouter_default_headers() -> Dict[str, str]:
+    """Return the full OpenRouter ``default_headers`` dict (attribution + features).
+
+    Use this at every ``OpenAI(...)``/``AsyncOpenAI(...)`` construction site
+    that targets ``openrouter.ai`` so feature flags (response caching, future
+    additions) propagate everywhere with one helper call.
+    """
+    return {**_OR_HEADERS, **openrouter_feature_headers()}
+
 # Vercel AI Gateway app attribution headers. HTTP-Referer maps to
 # referrerUrl and X-Title maps to appName in the gateway's analytics.
 from hermes_cli import __version__ as _HERMES_VERSION
@@ -1158,14 +1201,14 @@ def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Opt
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
         return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+                       default_headers=openrouter_default_headers()), _OPENROUTER_MODEL
 
     or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+                   default_headers=openrouter_default_headers()), _OPENROUTER_MODEL
 
 
 def _describe_openrouter_unavailable() -> str:
@@ -1911,7 +1954,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     }
     sync_base_url = str(sync_client.base_url)
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
-        async_kwargs["default_headers"] = dict(_OR_HEADERS)
+        async_kwargs["default_headers"] = openrouter_default_headers()
     elif base_url_host_matches(sync_base_url, "api.githubcopilot.com"):
         from hermes_cli.copilot_auth import copilot_request_headers
 

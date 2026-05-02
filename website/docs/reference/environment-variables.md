@@ -14,6 +14,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 |----------|-------------|
 | `OPENROUTER_API_KEY` | OpenRouter API key (recommended for flexibility) |
 | `OPENROUTER_BASE_URL` | Override the OpenRouter-compatible base URL |
+| `HERMES_OPENROUTER_CACHE` | Opt-in to OpenRouter [response caching](https://openrouter.ai/announcements/response-caching). Set to `1`/`true`/`yes`/`on` (case-insensitive) to add `X-OpenRouter-Cache: true` to every OpenRouter request — identical request bodies served from edge cache at zero token cost. Default off. |
+| `HERMES_OPENROUTER_CACHE_TTL` | Cache retention in seconds (1..86400). Emitted as `X-OpenRouter-Cache-TTL`; ignored when `HERMES_OPENROUTER_CACHE` is unset. Defaults to OpenRouter's 5-minute server-side default when unset. |
 | `NOUS_BASE_URL` | Override Nous Portal base URL (rarely needed; development/testing only) |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference endpoint directly |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway API key ([ai-gateway.vercel.sh](https://ai-gateway.vercel.sh)) |

@@ -133,6 +133,15 @@ class _BindingRegistry:
             if entry is not None:
                 entry.principal_token = ""
 
+    def replace_token(self, run_id: str, new_token: str) -> bool:
+        """Atomically replace the principal token; returns True if binding found."""
+        with self._lock:
+            entry = self._by_run.get(run_id)
+            if entry is None:
+                return False
+            entry.principal_token = new_token
+            return True
+
     def remove(self, run_id: str) -> None:
         with self._lock:
             self._by_run.pop(run_id, None)
@@ -202,6 +211,14 @@ class HealthResponse(BaseModel):
     auth_enforced: bool
     bindings: int
     checked_at: datetime
+
+
+class RebindTokenRequest(BaseModel):
+    """Body for POST /runs/{run_id}/rebind-token from TTM HermesAdapter.notify_rebind."""
+
+    new_binding_id: str = Field(..., min_length=1, max_length=128)
+    new_token: str = Field(..., min_length=1)
+    ingress_base_url: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -479,3 +496,43 @@ async def stop_run(
         status_code=status.HTTP_404_NOT_FOUND,
         detail={"reason": "runtime_run_ref_not_found"},
     )
+
+
+@router.post("/runs/{run_id}/rebind-token", status_code=status.HTTP_200_OK)
+async def rebind_token(
+    run_id: str,
+    body: RebindTokenRequest,
+    x_ttm_control_plane_secret: str | None = Header(default=None, alias=_SECRET_HEADER),
+) -> dict[str, Any]:
+    """Accept a new principal token from TTM after a runtime rebind.
+
+    TTM calls this via HermesAdapter.notify_rebind() after issuing a fresh
+    principal token. The plugin updates its in-memory registry so that the
+    headless agent session picks up the new bearer credential on next
+    ingress write-back.
+
+    Returns 404 when the run_id is not registered (i.e. the session has
+    already exited or was never dispatched to this plugin instance).
+    """
+    _require_secret(x_ttm_control_plane_secret)
+
+    found = _REGISTRY.replace_token(run_id, body.new_token)
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"reason": "run_not_found"},
+        )
+
+    token_prefix = body.new_token[:8] if len(body.new_token) >= 8 else "***"
+    logger.info(
+        "ttm-control-plane.rebind-token run_id=%s binding_id=%s token=%s...",
+        run_id,
+        body.new_binding_id,
+        token_prefix,
+    )
+    return {
+        "status": "token_updated",
+        "run_id": run_id,
+        "new_binding_id": body.new_binding_id,
+        "updated_at": _utcnow().isoformat(),
+    }

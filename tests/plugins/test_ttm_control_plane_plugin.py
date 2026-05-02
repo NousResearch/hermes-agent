@@ -283,3 +283,67 @@ def test_stop_removes_binding_and_allows_rebind(
     )
     assert rebind.status_code == 202
     assert rebind.json()["runtime_run_ref"] != ref
+
+
+# ---------------------------------------------------------------------------
+# Rebind-token endpoint
+# ---------------------------------------------------------------------------
+
+
+def _rebind_token_body(**overrides):
+    body = {
+        "new_binding_id": "33333333-3333-3333-3333-333333333333",
+        "new_token": "new-bearer-credential-abc123",
+        "ingress_base_url": "https://ttm.local",
+    }
+    body.update(overrides)
+    return body
+
+
+def test_rebind_token_updates_in_memory_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a TTM rebind, the plugin must replace the stored token."""
+    client, plugin = _make_client(monkeypatch)
+    headers = {"X-TTM-Control-Plane-Secret": "test-secret"}
+    run_id = "11111111-1111-1111-1111-111111111111"
+
+    # Dispatch first so the run is registered.
+    client.post(
+        "/api/plugins/ttm-control-plane/runs/dispatch",
+        json=_dispatch_body(),
+        headers=headers,
+    )
+    old_token = plugin._REGISTRY.get(run_id).principal_token  # type: ignore[union-attr]
+
+    resp = client.post(
+        f"/api/plugins/ttm-control-plane/runs/{run_id}/rebind-token",
+        json=_rebind_token_body(),
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "token_updated"
+    assert body["run_id"] == run_id
+
+    new_stored = plugin._REGISTRY.get(run_id).principal_token  # type: ignore[union-attr]
+    assert new_stored == "new-bearer-credential-abc123"
+    assert new_stored != old_token
+
+
+def test_rebind_token_404s_for_unknown_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = _make_client(monkeypatch)
+    resp = client.post(
+        "/api/plugins/ttm-control-plane/runs/not-a-real-run/rebind-token",
+        json=_rebind_token_body(),
+        headers={"X-TTM-Control-Plane-Secret": "test-secret"},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["reason"] == "run_not_found"
+
+
+def test_rebind_token_rejects_missing_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = _make_client(monkeypatch)
+    resp = client.post(
+        "/api/plugins/ttm-control-plane/runs/some-run/rebind-token",
+        json=_rebind_token_body(),
+    )
+    assert resp.status_code == 401

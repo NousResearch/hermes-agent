@@ -1237,17 +1237,28 @@ def _sync_session_key_after_compress(sid: str, session: dict) -> None:
 
 
 def _get_usage(agent) -> dict:
-    g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
+    # Try to get raw usage from the last response first as the most reliable source
+    last_usage = getattr(getattr(agent, "last_response", None), "usage", {}) or {}
+    
+    g = lambda k, fb=None: (
+        getattr(agent, k, 0) or 
+        (getattr(agent, fb, 0) if fb else 0) or 
+        last_usage.get(k, 0)
+    )
+    
     usage = {
         "model": getattr(agent, "model", "") or "",
-        "input": g("session_input_tokens", "session_prompt_tokens"),
-        "output": g("session_output_tokens", "session_completion_tokens"),
-        "cache_read": g("session_cache_read_tokens"),
-        "cache_write": g("session_cache_write_tokens"),
-        "prompt": g("session_prompt_tokens"),
-        "completion": g("session_completion_tokens"),
-        "total": g("session_total_tokens"),
-        "calls": g("session_api_calls"),
+        "input": g("session_input_tokens", "session_prompt_tokens") or last_usage.get("prompt_tokens", 0),
+        "output": g("session_output_tokens", "session_completion_tokens") or last_usage.get("completion_tokens", 0),
+        "cache_read": g("session_cache_read_tokens") or last_usage.get("cache_read_tokens", 0),
+        "cache_write": g("session_cache_write_tokens") or last_usage.get("cache_write_tokens", 0),
+        "prompt": g("session_prompt_tokens") or last_usage.get("prompt_tokens", 0),
+        "completion": g("session_completion_tokens") or last_usage.get("completion_tokens", 0),
+        "total": g("session_total_tokens") or (
+            last_usage.get("total_tokens", 0) or 
+            (g("session_input_tokens", "session_prompt_tokens") + g("session_output_tokens", "session_completion_tokens"))
+        ),
+        "calls": g("session_api_calls") or last_usage.get("api_calls", 0),
     }
     comp = getattr(agent, "context_compressor", None)
     if comp:
@@ -1260,6 +1271,7 @@ def _get_usage(agent) -> dict:
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     try:
         from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+
 
         cost = estimate_usage_cost(
             usage["model"],
@@ -1598,6 +1610,7 @@ def _agent_cbs(sid: str) -> dict:
         clarify_callback=lambda q, c: _block(
             "clarify.request", sid, {"question": q, "choices": c}
         ),
+        usage_callback=lambda usage: _emit("usage.delta", sid, {"usage": usage}),
     )
 
 
@@ -2919,7 +2932,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_message = _enrich_with_attached_images(prompt, images)
 
             def _stream(delta):
-                payload = {"text": delta}
+                usage = _get_usage(agent)
+                payload = {"text": delta, "usage": usage}
+
                 if streamer and (r := streamer.feed(delta)) is not None:
                     payload["rendered"] = r
                 _emit("message.delta", sid, payload)

@@ -614,10 +614,19 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
-      case 'message.delta':
-        turnController.recordMessageDelta(ev.payload ?? {})
-
+      case 'usage.delta': {
+        patchUiState(state => ({
+          usage: { ...state.usage, ...ev.payload.usage }
+        }))
         return
+      }
+      case 'message.delta': {
+        turnController.recordMessageDelta(ev.payload ?? {})
+        if (ev.payload?.usage) {
+          patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
+        }
+        return
+      }
       case 'message.complete': {
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 

@@ -932,6 +932,7 @@ class AIAgent:
         interim_assistant_callback: callable = None,
         tool_gen_callback: callable = None,
         status_callback: callable = None,
+        usage_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
@@ -1203,8 +1204,10 @@ class AIAgent:
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
         self.disabled_toolsets = disabled_toolsets
+        self.usage_callback = usage_callback
         
         # Model response configuration
+        self.usage_callback = usage_callback
         self.max_tokens = max_tokens  # None = use model default
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
         self.service_tier = service_tier
@@ -6794,6 +6797,7 @@ class AIAgent:
             role = "assistant"
             reasoning_parts: list = []
             usage_obj = None
+            accumulated_content = ""
             for chunk in stream:
                 last_chunk_time["t"] = time.time()
                 self._touch_activity("receiving stream response")
@@ -6805,8 +6809,13 @@ class AIAgent:
                     if hasattr(chunk, "model") and chunk.model:
                         model_name = chunk.model
                     # Usage comes in the final chunk with empty choices
+                    if hasattr(chunk, "model") and chunk.model:
+                        model_name = chunk.model
+                    
                     if hasattr(chunk, "usage") and chunk.usage:
                         usage_obj = chunk.usage
+                        if self.usage_callback:
+                            self.usage_callback(usage_obj)
                     continue
 
                 delta = chunk.choices[0].delta
@@ -6823,6 +6832,13 @@ class AIAgent:
                 # Accumulate text content — fire callback only when no tool calls
                 if delta and delta.content:
                     content_parts.append(delta.content)
+                    accumulated_content += delta.content
+                    if self.usage_callback:
+                        from agent.model_metadata import estimate_tokens_rough
+                        est = estimate_tokens_rough(accumulated_content)
+
+                        self.usage_callback({"completion_tokens": est})
+
                     if not tool_calls_acc:
                         _fire_first_delta()
                         self._fire_stream_delta(delta.content)
@@ -6918,6 +6934,11 @@ class AIAgent:
                 # Usage in the final chunk
                 if hasattr(chunk, "usage") and chunk.usage:
                     usage_obj = chunk.usage
+                    if self.usage_callback:
+                        self.usage_callback(usage_obj)
+                    if self.usage_callback:
+                        print(f"\n[DEBUG-USAGE] Stream usage detected: {usage_obj}\n", flush=True)
+                        self.usage_callback(usage_obj)
 
             # Build mock response matching non-streaming shape
             full_content = "".join(content_parts) or None

@@ -221,7 +221,7 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=120)
 
-        assert "cmp 3" in text
+        assert "🗜️ 3" in text
 
     def test_compression_count_hidden_when_zero(self):
         cli_obj = _attach_agent(
@@ -237,7 +237,7 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=120)
 
-        assert "cmp" not in text
+        assert "🗜️" not in text
 
     def test_compression_count_shown_in_medium_status_bar(self):
         cli_obj = _attach_agent(
@@ -253,7 +253,7 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=60)
 
-        assert "cmp 2" in text
+        assert "🗜️ 2" in text
 
     def test_compression_count_hidden_in_narrow_status_bar(self):
         cli_obj = _attach_agent(
@@ -269,7 +269,7 @@ class TestCLIStatusBar:
 
         text = cli_obj._build_status_bar_text(width=50)
 
-        assert "cmp" not in text
+        assert "🗜️" not in text
 
     def test_compression_count_style_thresholds(self):
         cli_obj = _make_cli()
@@ -297,9 +297,9 @@ class TestCLIStatusBar:
         frags = cli_obj._get_status_bar_fragments()
         frag_texts = [text for _, text in frags]
 
-        assert "cmp 7" in frag_texts
+        assert "🗜️ 7" in frag_texts
         frag_styles = {text: style for style, text in frags}
-        assert frag_styles["cmp 7"] == "class:status-bar-warn"
+        assert frag_styles["🗜️ 7"] == "class:status-bar-warn"
 
     def test_compression_count_absent_from_fragments_when_zero(self):
         cli_obj = _attach_agent(
@@ -317,7 +317,7 @@ class TestCLIStatusBar:
         frags = cli_obj._get_status_bar_fragments()
         frag_texts = [text for _, text in frags]
 
-        assert not any("cmp" in t for t in frag_texts)
+        assert not any("🗜️" in t for t in frag_texts)
 
     def test_minimal_tui_chrome_threshold(self):
         cli_obj = _make_cli()

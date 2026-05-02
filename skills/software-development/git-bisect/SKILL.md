@@ -38,6 +38,7 @@ git bisect good <good-commit-or-tag>
 <test-command>
 git bisect good
 git bisect bad
+git bisect skip
 
 # Or automate the loop with an exit-code-based script
 git bisect run <script-or-command>
@@ -60,7 +61,7 @@ git bisect bad
 git bisect good <good-commit-or-tag>
 ```
 
-6. For each checkout produced by Git, run the same validation command. Mark `good` only when the bug is absent, and `bad` only when it is present.
+6. For each checkout produced by Git, run the same validation command. Mark `good` only when the bug is absent, and `bad` only when it is present. If a commit cannot be judged because the environment or build is broken for unrelated reasons, use `git bisect skip`.
 7. If the test can be scripted, prefer automation:
 
 ```bash

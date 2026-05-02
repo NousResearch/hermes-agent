@@ -1117,6 +1117,48 @@ class HindsightMemoryProvider(MemoryProvider):
             t = threading.Thread(target=_start_daemon, daemon=True, name="hindsight-daemon-start")
             t.start()
 
+        # Sync bank_mission / bank_retain_mission to the Hindsight API in the
+        # background so the live bank state matches the Hermes config file.
+        if self._bank_mission or self._bank_retain_mission:
+            t_sync = threading.Thread(
+                target=self._sync_bank_settings, daemon=True,
+                name="hindsight-bank-sync",
+            )
+            t_sync.start()
+
+    def _sync_bank_settings(self) -> None:
+        """Sync bank_mission and bank_retain_mission to the Hindsight Banks API.
+
+        Called once during initialize() on a background thread so it doesn't
+        block startup.  Errors are logged at warning level and swallowed —
+        the plugin continues to work even if the sync fails (e.g. the
+        Hindsight server is temporarily unreachable).
+        """
+        try:
+            if self._bank_mission:
+                logger.debug("Syncing bank_mission to Hindsight bank %s", self._bank_id)
+                self._run_hindsight_operation(
+                    lambda client: client.aset_mission(
+                        bank_id=self._bank_id, mission=self._bank_mission
+                    )
+                )
+                logger.info("Hindsight bank %s: mission synced", self._bank_id)
+
+            if self._bank_retain_mission:
+                logger.debug("Syncing bank_retain_mission to Hindsight bank %s", self._bank_id)
+                self._run_hindsight_operation(
+                    lambda client: client._aupdate_bank_config(
+                        bank_id=self._bank_id,
+                        updates={"retain_mission": self._bank_retain_mission},
+                    )
+                )
+                logger.info("Hindsight bank %s: retain_mission synced", self._bank_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to sync bank settings to Hindsight (bank=%s): %s",
+                self._bank_id, exc,
+            )
+
     def system_prompt_block(self) -> str:
         if self._memory_mode == "context":
             return (

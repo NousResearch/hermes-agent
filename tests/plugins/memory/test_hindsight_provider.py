@@ -1445,3 +1445,64 @@ class TestShutdown:
         assert embedded._client is None
         assert provider._client is None
 
+
+
+class TestSyncBankSettings:
+    """Tests for _sync_bank_settings — syncing bank_mission / bank_retain_mission
+    to the Hindsight Banks API during initialize()."""
+
+    def test_sync_mission_calls_aset_mission(self, provider_with_config):
+        p = provider_with_config(bank_mission="Test mission for the bank")
+        p._client.aset_mission = AsyncMock(return_value={"ok": True})
+        p._client._aupdate_bank_config = AsyncMock(return_value={"ok": True})
+
+        p._sync_bank_settings()
+
+        p._client.aset_mission.assert_awaited_once_with(
+            bank_id="test-bank", mission="Test mission for the bank"
+        )
+
+    def test_sync_retain_mission_calls_aupdate_bank_config(self, provider_with_config):
+        p = provider_with_config(bank_retain_mission="Extract durable facts only")
+        p._client.aset_mission = AsyncMock(return_value={"ok": True})
+        p._client._aupdate_bank_config = AsyncMock(return_value={"ok": True})
+
+        p._sync_bank_settings()
+
+        p._client._aupdate_bank_config.assert_awaited_once_with(
+            bank_id="test-bank",
+            updates={"retain_mission": "Extract durable facts only"},
+        )
+
+    def test_sync_both_missions(self, provider_with_config):
+        p = provider_with_config(
+            bank_mission="Identity mission",
+            bank_retain_mission="Retain mission",
+        )
+        p._client.aset_mission = AsyncMock(return_value={"ok": True})
+        p._client._aupdate_bank_config = AsyncMock(return_value={"ok": True})
+
+        p._sync_bank_settings()
+
+        p._client.aset_mission.assert_awaited_once()
+        p._client._aupdate_bank_config.assert_awaited_once()
+
+    def test_sync_skipped_when_no_missions(self, provider):
+        """No API calls when neither mission is configured."""
+        provider._bank_mission = ""
+        provider._bank_retain_mission = None
+        provider._client.aset_mission = AsyncMock()
+        provider._client._aupdate_bank_config = AsyncMock()
+
+        provider._sync_bank_settings()
+
+        provider._client.aset_mission.assert_not_awaited()
+        provider._client._aupdate_bank_config.assert_not_awaited()
+
+    def test_sync_failure_is_logged_not_raised(self, provider_with_config):
+        p = provider_with_config(bank_mission="Will fail")
+        p._client.aset_mission = AsyncMock(side_effect=Exception("Connection refused"))
+        p._client._aupdate_bank_config = AsyncMock()
+
+        # Should not raise
+        p._sync_bank_settings()

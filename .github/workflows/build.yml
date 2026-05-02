@@ -14,14 +14,70 @@ on:
 permissions:
   contents: read
   packages: write
+  actions: read
+  checks: read
 
 jobs:
+  check-all-workflows:
+    runs-on: ubuntu-latest
+    outputs:
+      all-passed: ${{ steps.check.outputs.all-passed }}
+    steps:
+      - name: Check all required workflows passed
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          HEAD_SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          echo "Checking workflows for commit: $HEAD_SHA"
+          
+          # Wait and retry for up to 5 minutes to allow all workflows to complete
+          for attempt in {1..30}; do
+            # Get check runs for this commit
+            CHECKS=$(gh api repos/${{ github.repository }}/commits/$HEAD_SHA/check-runs --jq '[.check_runs[] | {name: .name, status: .status, conclusion: .conclusion}]')
+            
+            # Check Tests status
+            TEST_STATUS=$(echo "$CHECKS" | jq -r '[.[] | select(.name == "test" or .name == "e2e") | .status] | join(",")')
+            TEST_CONCLUSION=$(echo "$CHECKS" | jq -r '[.[] | select(.name == "test" or .name == "e2e") | .conclusion] | join(",")')
+            
+            # Check Nix status  
+            NIX_STATUS=$(echo "$CHECKS" | jq -r '[.[] | select(.name | startswith("nix")) | .status] | join(",")')
+            NIX_CONCLUSION=$(echo "$CHECKS" | jq -r '[.[] | select(.name | startswith("nix")) | .conclusion] | join(",")')
+            
+            echo "Tests: status=$TEST_STATUS, conclusion=$TEST_CONCLUSION"
+            echo "Nix: status=$NIX_STATUS, conclusion=$NIX_CONCLUSION"
+            
+            # Check if any are still running
+            if [[ "$TEST_STATUS" == *"in_progress"* ]] || [[ "$NIX_STATUS" == *"in_progress"* ]]; then
+              echo "Some workflows still running, waiting..."
+              sleep 10
+              continue
+            fi
+            
+            # All completed - check if all passed
+            if [[ "$TEST_CONCLUSION" == *"failure"* ]] || [[ "$TEST_CONCLUSION" == *"cancelled"* ]] || \
+               [[ "$NIX_CONCLUSION" == *"failure"* ]] || [[ "$NIX_CONCLUSION" == *"cancelled"* ]]; then
+              echo "Some required workflows failed"
+              echo "all-passed=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            
+            if [[ "$TEST_CONCLUSION" == *"success"* ]] && [[ "$NIX_CONCLUSION" == *"success"* ]]; then
+              echo "All required workflows passed"
+              echo "all-passed=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            
+            echo "Unexpected state, retrying..."
+            sleep 10
+          done
+          
+          echo "Timeout waiting for workflows"
+          echo "all-passed=false" >> $GITHUB_OUTPUT
+
   build:
-    # Only run if all required workflows succeeded
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+    needs: check-all-workflows
+    if: needs.check-all-workflows.outputs.all-passed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

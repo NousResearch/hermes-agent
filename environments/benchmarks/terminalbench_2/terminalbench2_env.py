@@ -44,7 +44,7 @@ import tempfile
 import time
 import uuid
 from collections import defaultdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 # Ensure repo root is on sys.path for imports
@@ -148,6 +148,62 @@ MODAL_INCOMPATIBLE_TASKS = {
 # Tar extraction helper
 # =============================================================================
 
+def _normalize_tar_member_parts(member_name: str) -> list:
+    """Return safe path components for a tar member or raise ValueError."""
+    normalized_name = member_name.replace("\\", "/")
+    posix_path = PurePosixPath(normalized_name)
+    windows_path = PureWindowsPath(member_name)
+
+    if (
+        not normalized_name
+        or posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+    ):
+        raise ValueError(f"Unsafe archive member path: {member_name}")
+
+    parts = [part for part in posix_path.parts if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"Unsafe archive member path: {member_name}")
+    return parts
+
+
+def _safe_extract_tar(tar: tarfile.TarFile, target_dir: Path) -> None:
+    """Extract a tar archive without allowing traversal or link entries."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_root = target_dir.resolve()
+
+    for member in tar.getmembers():
+        parts = _normalize_tar_member_parts(member.name)
+        target = target_dir.joinpath(*parts)
+        target_real = target.resolve(strict=False)
+
+        try:
+            target_real.relative_to(target_root)
+        except ValueError as exc:
+            raise ValueError(f"Unsafe archive member path: {member.name}") from exc
+
+        if member.isdir():
+            target_real.mkdir(parents=True, exist_ok=True)
+            continue
+
+        if not member.isfile():
+            raise ValueError(f"Unsupported archive member type: {member.name}")
+
+        target_real.parent.mkdir(parents=True, exist_ok=True)
+        extracted = tar.extractfile(member)
+        if extracted is None:
+            raise ValueError(f"Cannot read archive member: {member.name}")
+
+        with extracted, open(target_real, "wb") as dst:
+            shutil.copyfileobj(extracted, dst)
+
+        try:
+            os.chmod(target_real, member.mode & 0o777)
+        except OSError:
+            pass
+
+
 def _extract_base64_tar(b64_data: str, target_dir: Path):
     """Extract a base64-encoded tar.gz archive into target_dir."""
     if not b64_data:
@@ -155,7 +211,7 @@ def _extract_base64_tar(b64_data: str, target_dir: Path):
     raw = base64.b64decode(b64_data)
     buf = io.BytesIO(raw)
     with tarfile.open(fileobj=buf, mode="r:gz") as tar:
-        tar.extractall(path=str(target_dir))
+        _safe_extract_tar(tar, target_dir)
 
 
 # =============================================================================
@@ -485,6 +541,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                         temperature=self.config.agent_temperature,
                         max_tokens=self.config.max_token_length,
                         extra_body=self.config.extra_body,
+                        budget_config=self.config.build_budget_config(),
                     )
                     result = await agent.run(messages)
             else:
@@ -497,6 +554,7 @@ class TerminalBench2EvalEnv(HermesAgentBaseEnv):
                     temperature=self.config.agent_temperature,
                     max_tokens=self.config.max_token_length,
                     extra_body=self.config.extra_body,
+                    budget_config=self.config.build_budget_config(),
                 )
                 result = await agent.run(messages)
 

@@ -339,6 +339,118 @@ class TestMarkJobRun:
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "timeout"
 
+    def test_delivery_error_tracked_separately(self, tmp_cron_dir):
+        """Agent succeeds but delivery fails — both tracked independently."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=True, delivery_error="platform 'telegram' not configured")
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "ok"
+        assert updated["last_error"] is None
+        assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+
+    def test_delivery_error_cleared_on_success(self, tmp_cron_dir):
+        """Successful delivery clears the previous delivery error."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=True, delivery_error="network timeout")
+        updated = get_job(job["id"])
+        assert updated["last_delivery_error"] == "network timeout"
+        # Next run delivers successfully
+        mark_job_run(job["id"], success=True, delivery_error=None)
+        updated = get_job(job["id"])
+        assert updated["last_delivery_error"] is None
+
+    def test_both_agent_and_delivery_error(self, tmp_cron_dir):
+        """Agent fails AND delivery fails — both errors recorded."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=False, error="model timeout",
+                     delivery_error="platform 'discord' not enabled")
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "error"
+        assert updated["last_error"] == "model timeout"
+        assert updated["last_delivery_error"] == "platform 'discord' not enabled"
+
+    def test_recurring_cron_not_disabled_when_croniter_missing(self, tmp_cron_dir, monkeypatch):
+        """Regression test for issue #16265.
+
+        If the gateway runs in an env where `croniter` went missing after a
+        recurring cron job was persisted, `compute_next_run()` returns None.
+        `mark_job_run()` must NOT treat that as terminal completion — the job
+        has to stay enabled with state=error so the user notices, rather than
+        silently flipping to enabled=false, state=completed.
+        """
+        pytest.importorskip("croniter")  # need it to create the job
+        job = create_job(prompt="Recurring", schedule="0 7,15,23 * * *")
+        assert job["schedule"]["kind"] == "cron"
+
+        # Simulate the runtime env having lost croniter between job creation
+        # and this run.
+        monkeypatch.setattr("cron.jobs.HAS_CRONITER", False)
+
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        assert updated is not None, "recurring cron job was deleted"
+        assert updated["enabled"] is True, (
+            "recurring cron job was disabled despite croniter-missing being "
+            "a runtime dep issue, not a terminal completion"
+        )
+        assert updated["state"] == "error"
+        assert updated["state"] != "completed"
+        assert updated["next_run_at"] is None
+        assert updated["last_error"]
+        assert "croniter" in updated["last_error"].lower()
+
+    def test_recurring_interval_not_disabled_when_next_run_is_none(self, tmp_cron_dir, monkeypatch):
+        """Defensive sibling of the cron test — any recurring schedule that
+        somehow yields next_run_at=None must stay enabled with state=error.
+        """
+        job = create_job(prompt="Recurring", schedule="every 1h")
+        assert job["schedule"]["kind"] == "interval"
+
+        # Force compute_next_run to return None for this call — simulates
+        # any future regression where a recurring schedule loses its
+        # next-run computation (missing dep, corrupt schedule, etc.).
+        monkeypatch.setattr("cron.jobs.compute_next_run", lambda *a, **kw: None)
+
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["enabled"] is True
+        assert updated["state"] == "error"
+        assert updated["state"] != "completed"
+
+    def test_oneshot_still_completes_when_next_run_is_none(self, tmp_cron_dir):
+        """One-shot jobs must still flip to enabled=false, state=completed
+        when next_run_at cannot be computed — the #16265 fix must not
+        regress this path. We bypass create_job and craft a minimal
+        one-shot record directly so that the repeat-limit branch doesn't
+        pop the job before we observe the terminal-completion branch.
+        """
+        jobs = [{
+            "id": "oneshot-test",
+            "prompt": "Once",
+            "schedule": {"kind": "once", "run_at": "2020-01-01T00:00:00+00:00", "display": "once"},
+            "repeat": {"times": None, "completed": 0},
+            "enabled": True,
+            "state": "scheduled",
+            "next_run_at": "2020-01-01T00:00:00+00:00",
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": "2020-01-01T00:00:00+00:00",
+        }]
+        save_jobs(jobs)
+
+        mark_job_run("oneshot-test", success=True)
+
+        updated = get_job("oneshot-test")
+        assert updated is not None
+        assert updated["next_run_at"] is None
+        assert updated["enabled"] is False
+        assert updated["state"] == "completed"
+
 
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""
@@ -534,6 +646,35 @@ class TestGetDueJobs:
 
         assert get_due_jobs() == []
         assert get_job("oneshot-stale")["next_run_at"] is None
+
+
+class TestEnabledToolsets:
+    def test_enabled_toolsets_stored(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "terminal"])
+        assert job["enabled_toolsets"] == ["web", "terminal"]
+
+    def test_enabled_toolsets_persisted(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "file"])
+        fetched = get_job(job["id"])
+        assert fetched["enabled_toolsets"] == ["web", "file"]
+
+    def test_enabled_toolsets_none_when_omitted(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h")
+        assert job["enabled_toolsets"] is None
+
+    def test_enabled_toolsets_empty_list_normalizes_to_none(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=[])
+        assert job["enabled_toolsets"] is None
+
+    def test_enabled_toolsets_whitespace_entries_stripped(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", " ", "file"])
+        assert job["enabled_toolsets"] == ["web", "file"]
+
+    def test_enabled_toolsets_updated_via_update_job(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h")
+        update_job(job["id"], {"enabled_toolsets": ["web", "delegation"]})
+        fetched = get_job(job["id"])
+        assert fetched["enabled_toolsets"] == ["web", "delegation"]
 
 
 class TestSaveJobOutput:

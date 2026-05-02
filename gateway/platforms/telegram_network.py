@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
-import os
 import socket
 from typing import Iterable, Optional
 
@@ -44,12 +43,10 @@ _DOH_PROVIDERS: list[dict] = [
 _SEED_FALLBACK_IPS: list[str] = ["149.154.167.220"]
 
 
-def _resolve_proxy_url() -> str | None:
-    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
-        value = (os.environ.get(key) or "").strip()
-        if value:
-            return value
-    return None
+def _resolve_proxy_url(target_hosts=None) -> str | None:
+    # Delegate to shared implementation (env vars + macOS system proxy detection)
+    from gateway.platforms.base import resolve_proxy_url
+    return resolve_proxy_url("TELEGRAM_PROXY", target_hosts=target_hosts)
 
 
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
@@ -63,7 +60,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
 
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
         self._fallback_ips = [ip for ip in dict.fromkeys(_normalize_fallback_ips(fallback_ips))]
-        proxy_url = _resolve_proxy_url()
+        proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
@@ -112,7 +109,8 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 logger.warning("[Telegram] Fallback IP %s failed: %s", ip, exc)
                 continue
 
-        assert last_error is not None
+        if last_error is None:
+            raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
         raise last_error
 
     async def aclose(self) -> None:

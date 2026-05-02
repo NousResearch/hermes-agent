@@ -46,11 +46,11 @@ class TodoStore:
         """
         if not merge:
             # Replace mode: new list entirely
-            self._items = [self._validate(t) for t in todos]
+            self._items = [self._validate(t) for t in self._dedupe_by_id(todos)]
         else:
             # Merge mode: update existing items by id, append new ones
             existing = {item["id"]: item for item in self._items}
-            for t in todos:
+            for t in self._dedupe_by_id(todos):
                 item_id = str(t.get("id", "")).strip()
                 if not item_id:
                     continue  # Can't merge without an id
@@ -85,7 +85,7 @@ class TodoStore:
 
     def has_items(self) -> bool:
         """Check if there are any items in the list."""
-        return len(self._items) > 0
+        return bool(self._items)
 
     def format_for_injection(self) -> Optional[str]:
         """
@@ -143,6 +143,15 @@ class TodoStore:
 
         return {"id": item_id, "content": content, "status": status}
 
+    @staticmethod
+    def _dedupe_by_id(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Collapse duplicate ids, keeping the last occurrence in its position."""
+        last_index: Dict[str, int] = {}
+        for i, item in enumerate(todos):
+            item_id = str(item.get("id", "")).strip() or "?"
+            last_index[item_id] = i
+        return [todos[i] for i in sorted(last_index.values())]
+
 
 def todo_tool(
     todos: Optional[List[Dict[str, Any]]] = None,
@@ -161,7 +170,7 @@ def todo_tool(
         JSON string with the full current list and summary metadata.
     """
     if store is None:
-        return json.dumps({"error": "TodoStore not initialized"}, ensure_ascii=False)
+        return tool_error("TodoStore not initialized")
 
     if todos is not None:
         items = store.write(todos, merge)
@@ -255,7 +264,7 @@ TODO_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="todo",

@@ -36,6 +36,20 @@ Set your provider with `hermes model` or by editing `~/.hermes/.env`. See the [E
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
+### Does it work on Android / Termux?
+
+Yes — Hermes now has a tested Termux install path for Android phones.
+
+Quick install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+```
+
+For the fully explicit manual steps, supported extras, and current limitations, see the [Termux guide](../getting-started/termux.md).
+
+Important caveat: the full `.[all]` extra is not currently available on Android because the `voice` extra depends on `faster-whisper` → `ctranslate2`, and `ctranslate2` does not publish Android wheels. Use the tested `.[termux]` extra instead.
+
 ### Is my data sent anywhere?
 
 API calls go **only to the LLM provider you configure** (e.g., OpenRouter, your local Ollama instance). Hermes Agent does not collect telemetry, usage data, or analytics. Your conversations, memory, and skills are stored locally in `~/.hermes/`.
@@ -70,6 +84,10 @@ This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See
 If you set a custom `num_ctx` in Ollama (e.g., `ollama run --num_ctx 16384`), make sure to set the matching context length in Hermes — Ollama's `/api/show` reports the model's *maximum* context, not the effective `num_ctx` you configured.
 :::
 
+:::tip Timeouts with local models
+Hermes auto-detects local endpoints and relaxes streaming timeouts (read timeout raised from 120s to 1800s, stale stream detection disabled). If you still hit timeouts on very large contexts, set `HERMES_STREAM_READ_TIMEOUT=1800` in your `.env`. See the [Local LLM guide](../guides/local-llm-on-mac.md#timeouts) for details.
+:::
+
 ### How much does it cost?
 
 Hermes Agent itself is **free and open-source** (MIT license). You pay only for the LLM API usage from your chosen provider. Local models are completely free to run.
@@ -92,7 +110,7 @@ Yes. Import the `AIAgent` class and use Hermes programmatically:
 ```python
 from run_agent import AIAgent
 
-agent = AIAgent(model="openrouter/nous/hermes-3-llama-3.1-70b")
+agent = AIAgent(model="anthropic/claude-opus-4.7")
 response = agent.chat("Explain quantum computing briefly")
 ```
 
@@ -142,6 +160,33 @@ brew install python@3.12      # macOS
 
 The installer handles this automatically — if you see this error during manual installation, upgrade Python first.
 
+#### Terminal commands say `node: command not found` (or `nvm`, `pyenv`, `asdf`, …)
+
+**Cause:** Hermes builds a per-session environment snapshot by running `bash -l` once at startup. A bash login shell reads `/etc/profile`, `~/.bash_profile`, and `~/.profile`, but **does not source `~/.bashrc`** — so tools that install themselves there (`nvm`, `asdf`, `pyenv`, `cargo`, custom `PATH` exports) stay invisible to the snapshot. This most commonly happens when Hermes runs under systemd or in a minimal shell where nothing has pre-loaded the interactive shell profile.
+
+**Solution:** Hermes auto-sources `~/.bashrc` by default. If that's not enough — e.g. you're a zsh user whose PATH lives in `~/.zshrc`, or you init `nvm` from a standalone file — list the extra files to source in `~/.hermes/config.yaml`:
+
+```yaml
+terminal:
+  shell_init_files:
+    - ~/.zshrc                     # zsh users: pulls zsh-managed PATH into the bash snapshot
+    - ~/.nvm/nvm.sh                # direct nvm init (works regardless of shell)
+    - /etc/profile.d/cargo.sh      # system-wide rc files
+  # When this list is set, the default ~/.bashrc auto-source is NOT added —
+  # include it explicitly if you want both:
+  #   - ~/.bashrc
+  #   - ~/.zshrc
+```
+
+Missing files are skipped silently. Sourcing happens in bash, so files that rely on zsh-only syntax may error — if that's a concern, source just the PATH-setting portion (e.g. nvm's `nvm.sh` directly) rather than the whole rc file.
+
+To disable the auto-source behaviour (strict login-shell semantics only):
+
+```yaml
+terminal:
+  auto_source_bashrc: false
+```
+
 #### `uv: command not found`
 
 **Cause:** The `uv` package manager isn't installed or not in PATH.
@@ -168,6 +213,32 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 ---
 
 ### Provider & Model Issues
+
+#### `/model` only shows one provider / can't switch providers
+
+**Cause:** `/model` (inside a chat session) can only switch between providers you've **already configured**. If you've only set up OpenRouter, that's all `/model` will show.
+
+**Solution:** Exit your session and use `hermes model` from your terminal to add new providers:
+
+```bash
+# Exit the Hermes chat session first (Ctrl+C or /quit)
+
+# Run the full provider setup wizard
+hermes model
+
+# This lets you: add providers, run OAuth, enter API keys, configure endpoints
+```
+
+After adding a new provider via `hermes model`, start a new chat session — `/model` will now show all your configured providers.
+
+:::tip Quick reference
+| Want to... | Use |
+|-----------|-----|
+| Add a new provider | `hermes model` (from terminal) |
+| Enter/change API keys | `hermes model` (from terminal) |
+| Switch model mid-session | `/model <name>` (inside session) |
+| Switch to different configured provider | `/model provider:model` (inside session) |
+:::
 
 #### API key not working
 
@@ -199,7 +270,7 @@ Make sure the key matches the provider. An OpenAI key won't work with OpenRouter
 hermes model
 
 # Set a valid model
-hermes config set HERMES_MODEL openrouter/nous/hermes-3-llama-3.1-70b
+hermes config set HERMES_MODEL anthropic/claude-opus-4.7
 
 # Or specify per-session
 hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
@@ -357,6 +428,42 @@ lsof -i :8080
 hermes config show
 ```
 
+#### WSL: Gateway keeps disconnecting or `hermes gateway start` fails
+
+**Cause:** WSL's systemd support is unreliable. Many WSL2 installations don't have systemd enabled, and even when enabled, services may not survive WSL restarts or Windows idle shutdowns.
+
+**Solution:** Use foreground mode instead of the systemd service:
+
+```bash
+# Option 1: Direct foreground (simplest)
+hermes gateway run
+
+# Option 2: Persistent via tmux (survives terminal close)
+tmux new -s hermes 'hermes gateway run'
+# Reattach later: tmux attach -t hermes
+
+# Option 3: Background via nohup
+nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &
+```
+
+If you want to try systemd anyway, make sure it's enabled:
+
+1. Open `/etc/wsl.conf` (create it if it doesn't exist)
+2. Add:
+   ```ini
+   [boot]
+   systemd=true
+   ```
+3. From PowerShell: `wsl --shutdown`
+4. Reopen your WSL terminal
+5. Verify: `systemctl is-system-running` should say "running" or "degraded"
+
+:::tip Auto-start on Windows boot
+For reliable auto-start, use Windows Task Scheduler to launch WSL + the gateway on login:
+1. Create a task that runs `wsl -d Ubuntu -- bash -lc 'hermes gateway run'`
+2. Set it to trigger on user logon
+:::
+
 #### macOS: Node.js / ffmpeg / other tools not found by gateway
 
 **Cause:** launchd services inherit a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) that doesn't include Homebrew, nvm, cargo, or other user-installed tool directories. This commonly breaks the WhatsApp bridge (`node not found`) or voice transcription (`ffmpeg not found`).
@@ -507,19 +614,6 @@ No. Each profile has its own memory store, session database, and skills director
 
 `hermes update` pulls the latest code and reinstalls dependencies **once** (not per-profile). It then syncs updated skills to all profiles automatically. You only need to run `hermes update` once — it covers every profile on the machine.
 
-### Can I move a profile to a different machine?
-
-Yes. Export the profile to a portable archive and import it on the other machine:
-
-```bash
-# On the source machine
-hermes profile export work ./work-backup.tar.gz
-
-# Copy the file to the target machine, then:
-hermes profile import ./work-backup.tar.gz work
-```
-
-The imported profile will have all config, memories, sessions, and skills from the export. You may need to update paths or re-authenticate with providers if the new machine has a different setup.
 
 ### How many profiles can I run?
 
@@ -642,24 +736,55 @@ Skills with very long descriptions are truncated to 40 characters in the Telegra
    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
    ```
 
-2. Copy your entire `~/.hermes/` directory **except** the `hermes-agent` subdirectory (that's the code repo — the new install has its own):
+2. On the **source machine**, create a full backup:
+   ```bash
+   hermes backup
+   ```
+   This creates a zip of your entire `~/.hermes/` directory — config, API keys, memories, skills, sessions, and profiles — saved to your home directory as `~/hermes-backup-<timestamp>.zip`.
+
+3. Copy the zip to the new machine and import it:
    ```bash
    # On the source machine
-   rsync -av --exclude='hermes-agent' ~/.hermes/ newmachine:~/.hermes/
+   scp ~/hermes-backup-<timestamp>.zip newmachine:~/
+
+   # On the new machine
+   hermes import ~/hermes-backup-<timestamp>.zip
    ```
 
-   Or use profile export/import:
-   ```bash
-   # On source machine
-   hermes profile export default ./hermes-backup.tar.gz
+4. On the new machine, run `hermes setup` to verify API keys and provider config are working.
 
-   # On target machine
-   hermes profile import ./hermes-backup.tar.gz default
-   ```
+### Moving a single profile to another machine
 
-3. On the new machine, run `hermes setup` to verify API keys and provider config are working. Re-authenticate any messaging platforms (especially WhatsApp, which uses QR pairing).
+**Scenario:** You want to move or share one specific profile — not your full installation.
 
-The `~/.hermes/` directory contains everything: `config.yaml`, `.env`, `SOUL.md`, `memories/`, `skills/`, `state.db` (sessions), `cron/`, and any custom plugins. The code itself lives in `~/.hermes/hermes-agent/` and is installed fresh.
+```bash
+# On the source machine
+hermes profile export work ./work-backup.tar.gz
+
+# Copy the file to the target machine, then:
+hermes profile import ./work-backup.tar.gz work
+```
+
+The imported profile will have all config, memories, sessions, and skills from the export. You may need to update paths or re-authenticate with providers if the new machine has a different setup.
+
+### `hermes backup` vs `hermes profile export`
+
+| Feature | `hermes backup` | `hermes profile export` |
+| :--- | :--- | :--- |
+| **Use Case** | **Full machine migration** | **Porting/sharing a specific profile** |
+| **Scope** | Global (entire `~/.hermes` directory) | Local (single profile directory) |
+| **Includes** | All profiles, global config, API keys, sessions | Single profile: SOUL.md, memories, sessions, skills |
+| **Credentials** | **Included** (`.env` and `auth.json`) | **Excluded** (stripped for safe sharing) |
+| **Format** | `.zip` | `.tar.gz` |
+
+**Manual fallback (rsync):** If you prefer to copy files directly, exclude the code repo:
+```bash
+rsync -av --exclude='hermes-agent' ~/.hermes/ newmachine:~/.hermes/
+```
+
+:::tip
+`hermes backup` produces a consistent snapshot even while Hermes is actively running. The restored archive excludes machine-local runtime files like `gateway.pid` and `cron.pid`.
+:::
 
 ### Permission denied when reloading shell after install
 
@@ -701,7 +826,7 @@ hermes config show | head -20
 hermes model
 
 # Or test with a known-good model
-hermes chat -q "hello" --model anthropic/claude-sonnet-4.6
+hermes chat -q "hello" --model anthropic/claude-opus-4.7
 ```
 
 If using OpenRouter, make sure your API key has credits. A 400 from OpenRouter often means the model requires a paid plan or the model ID has a typo.

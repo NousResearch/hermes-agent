@@ -1,6 +1,9 @@
 """Tests for trajectory_compressor.py — config, metrics, and compression logic."""
 
+import importlib
 import json
+import os
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
@@ -12,6 +15,94 @@ from trajectory_compressor import (
     AggregateMetrics,
     TrajectoryCompressor,
 )
+
+
+def test_import_loads_env_from_hermes_home(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / ".env").write_text("OPENROUTER_API_KEY=from-hermes-home\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    sys.modules.pop("trajectory_compressor", None)
+    importlib.import_module("trajectory_compressor")
+
+    assert os.getenv("OPENROUTER_API_KEY") == "from-hermes-home"
+
+
+def test_generate_summary_kimi_omits_temperature():
+    """Kimi models should have temperature omitted — server manages it."""
+    config = CompressionConfig(
+        summarization_model="kimi-for-coding",
+        temperature=0.3,
+        summary_target_tokens=100,
+        max_retries=1,
+    )
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+    compressor.logger = MagicMock()
+    compressor._use_call_llm = False
+    compressor.client = MagicMock()
+    compressor.client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
+    )
+
+    metrics = TrajectoryMetrics()
+    result = compressor._generate_summary("tool output", metrics)
+
+    assert result.startswith("[CONTEXT SUMMARY]:")
+    assert "temperature" not in compressor.client.chat.completions.create.call_args.kwargs
+
+
+def test_generate_summary_public_moonshot_kimi_k2_5_omits_temperature():
+    """kimi-k2.5 on the public Moonshot API should not get a forced temperature."""
+    config = CompressionConfig(
+        summarization_model="kimi-k2.5",
+        base_url="https://api.moonshot.ai/v1",
+        temperature=0.3,
+        summary_target_tokens=100,
+        max_retries=1,
+    )
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+    compressor.logger = MagicMock()
+    compressor._use_call_llm = False
+    compressor.client = MagicMock()
+    compressor.client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
+    )
+
+    metrics = TrajectoryMetrics()
+    result = compressor._generate_summary("tool output", metrics)
+
+    assert result.startswith("[CONTEXT SUMMARY]:")
+    assert "temperature" not in compressor.client.chat.completions.create.call_args.kwargs
+
+
+def test_generate_summary_public_moonshot_cn_kimi_k2_5_omits_temperature():
+    """kimi-k2.5 on api.moonshot.cn should not get a forced temperature."""
+    config = CompressionConfig(
+        summarization_model="kimi-k2.5",
+        base_url="https://api.moonshot.cn/v1",
+        temperature=0.3,
+        summary_target_tokens=100,
+        max_retries=1,
+    )
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+    compressor.logger = MagicMock()
+    compressor._use_call_llm = False
+    compressor.client = MagicMock()
+    compressor.client.chat.completions.create.return_value = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="[CONTEXT SUMMARY]: summary"))]
+    )
+
+    metrics = TrajectoryMetrics()
+    result = compressor._generate_summary("tool output", metrics)
+
+    assert result.startswith("[CONTEXT SUMMARY]:")
+    assert "temperature" not in compressor.client.chat.completions.create.call_args.kwargs
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,12 @@ This document lists all authoritative sources used to build this skill, organize
 
 ---
 
+## Origin & Attribution
+
+The writing philosophy, citation verification workflow, and conference reference materials in this skill were originally compiled by **[Orchestra Research](https://github.com/orchestra-research)** as the `ml-paper-writing` skill (January 2026), drawing on Neel Nanda's blog post and other researcher guides listed below. The skill was integrated into hermes-agent by teknium (January 2026), then expanded into the current `research-paper-writing` pipeline by SHL0MS (April 2026, PR #4654), which added experiment design, execution monitoring, iterative refinement, and submission phases while preserving the original writing philosophy and reference files.
+
+---
+
 ## Writing Philosophy & Guides
 
 ### Primary Sources (Must-Read)

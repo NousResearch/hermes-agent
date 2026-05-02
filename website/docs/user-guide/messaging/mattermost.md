@@ -281,6 +281,23 @@ If this returns your bot's user info, the token is valid. If it returns an error
 
 **Fix**: Add your User ID to `MATTERMOST_ALLOWED_USERS` in `~/.hermes/.env` and restart the gateway. Remember: the User ID is a 26-character alphanumeric string, not your `@username`.
 
+## Per-Channel Prompts
+
+Assign ephemeral system prompts to specific Mattermost channels. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.
+
+```yaml
+mattermost:
+  channel_prompts:
+    "channel_id_abc123": |
+      You are a research assistant. Focus on academic sources,
+      citations, and concise synthesis.
+    "channel_id_def456": |
+      Code review mode. Be precise about edge cases and
+      performance implications.
+```
+
+Keys are Mattermost channel IDs (find them in the channel URL or via the API). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
+
 ## Security
 
 :::warning

@@ -7,7 +7,7 @@ Queries multiple models in parallel via OpenRouter, scores responses
 on quality/filteredness/speed, returns the best unfiltered answer.
 
 Usage in execute_code:
-    exec(open(os.path.expanduser("~/.hermes/skills/red-teaming/godmode/scripts/godmode_race.py")).read())
+    exec(open(os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "skills/red-teaming/godmode/scripts/godmode_race.py")).read())
     
     result = race_models(
         query="Your query here",
@@ -20,7 +20,6 @@ Usage in execute_code:
 
 import os
 import re
-import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -404,7 +403,6 @@ def race_godmode_classic(query, api_key=None, timeout=60):
     Each combo uses a different model paired with its best-performing jailbreak prompt.
     Returns the best result across all combos.
     """
-    from collections import namedtuple
     
     HALL_OF_FAME = [
         {

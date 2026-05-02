@@ -93,6 +93,24 @@ def cron_list(show_all: bool = False):
         script = job.get("script")
         if script:
             print(f"    Script:    {script}")
+        workdir = job.get("workdir")
+        if workdir:
+            print(f"    Workdir:   {workdir}")
+
+        # Execution history
+        last_status = job.get("last_status")
+        if last_status:
+            last_run = job.get("last_run_at", "?")
+            if last_status == "ok":
+                status_display = color("ok", Colors.GREEN)
+            else:
+                status_display = color(f"{last_status}: {job.get('last_error', '?')}", Colors.RED)
+            print(f"    Last run:  {last_run}  {status_display}")
+
+        delivery_err = job.get("last_delivery_error")
+        if delivery_err:
+            print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
+
         print()
 
     from hermes_cli.gateway import find_gateway_pids
@@ -153,6 +171,7 @@ def cron_create(args):
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
+        workdir=getattr(args, "workdir", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -165,6 +184,8 @@ def cron_create(args):
     job_data = result.get("job", {})
     if job_data.get("script"):
         print(f"  Script: {job_data['script']}")
+    if job_data.get("workdir"):
+        print(f"  Workdir: {job_data['workdir']}")
     print(f"  Next run: {result['next_run_at']}")
     return 0
 
@@ -203,6 +224,7 @@ def cron_edit(args):
         repeat=getattr(args, "repeat", None),
         skills=final_skills,
         script=getattr(args, "script", None),
+        workdir=getattr(args, "workdir", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -218,6 +240,8 @@ def cron_edit(args):
         print("  Skills: none")
     if updated.get("script"):
         print(f"  Script: {updated['script']}")
+    if updated.get("workdir"):
+        print(f"  Workdir: {updated['workdir']}")
     return 0
 
 

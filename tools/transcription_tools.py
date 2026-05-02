@@ -2,12 +2,15 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with three providers:
+Provides speech-to-text transcription with six providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
+  - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
+  - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
+    Inverse Text Normalization, diarization, 21 languages.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -37,9 +40,21 @@ from utils import is_truthy_value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
 
-from hermes_constants import get_hermes_home
-
 logger = logging.getLogger(__name__)
+
+def get_env_value(name, default=None):
+    """Read env values through the live config module.
+
+    Tests may monkeypatch and later restore ``hermes_cli.config.get_env_value``
+    before this module is imported. Resolve the helper at call time so STT does
+    not keep a stale imported function for the rest of the test process.
+    """
+    try:
+        from hermes_cli.config import get_env_value as _get_env_value
+    except ImportError:
+        return os.getenv(name, default)
+    value = _get_env_value(name)
+    return default if value is None else value
 
 # ---------------------------------------------------------------------------
 # Optional imports — graceful degradation
@@ -57,6 +72,7 @@ def _safe_find_spec(module_name: str) -> bool:
 
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
+_HAS_MISTRAL = _safe_find_spec("mistralai")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -67,14 +83,16 @@ DEFAULT_LOCAL_MODEL = "base"
 DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
+DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
+XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 
-SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac"}
+SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
@@ -90,23 +108,6 @@ _local_model_name: Optional[str] = None
 # Config helpers
 # ---------------------------------------------------------------------------
 
-
-def get_stt_model_from_config() -> Optional[str]:
-    """Read the STT model name from ~/.hermes/config.yaml.
-
-    Returns the value of ``stt.model`` if present, otherwise ``None``.
-    Silently returns ``None`` on any error (missing file, bad YAML, etc.).
-    """
-    try:
-        import yaml
-        cfg_path = get_hermes_home() / "config.yaml"
-        if cfg_path.exists():
-            with open(cfg_path) as f:
-                data = yaml.safe_load(f) or {}
-            return data.get("stt", {}).get("model")
-    except Exception:
-        pass
-    return None
 
 
 def _load_stt_config() -> dict:
@@ -171,10 +172,29 @@ def _has_local_command() -> bool:
     return _get_local_command_template() is not None
 
 
-def _normalize_local_command_model(model_name: Optional[str]) -> str:
+def _normalize_local_model(model_name: Optional[str]) -> str:
+    """Return a valid faster-whisper model size, mapping cloud-only names to the default.
+
+    Cloud providers like OpenAI use names such as ``whisper-1`` which are not
+    valid for faster-whisper (which expects ``tiny``, ``base``, ``small``,
+    ``medium``, or ``large-v*``).  When such a name is detected we fall back to
+    the default local model and emit a warning so the user knows what happened.
+    """
     if not model_name or model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
+        if model_name and (model_name in OPENAI_MODELS or model_name in GROQ_MODELS):
+            logger.warning(
+                "STT model '%s' is a cloud-only name and cannot be used with the local "
+                "provider. Falling back to '%s'. Set stt.local.model to a valid "
+                "faster-whisper size (tiny, base, small, medium, large-v3).",
+                model_name,
+                DEFAULT_LOCAL_MODEL,
+            )
         return DEFAULT_LOCAL_MODEL
     return model_name
+
+
+def _normalize_local_command_model(model_name: Optional[str]) -> str:
+    return _normalize_local_model(model_name)
 
 
 def _get_provider(stt_config: dict) -> str:
@@ -216,7 +236,7 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "groq":
-            if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+            if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
                 return "groq"
             logger.warning(
                 "STT provider 'groq' configured but GROQ_API_KEY not set"
@@ -231,20 +251,43 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "mistral":
+            if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
+                return "mistral"
+            logger.warning(
+                "STT provider 'mistral' configured but mistralai package "
+                "not installed or MISTRAL_API_KEY not set"
+            )
+            return "none"
+
+        if provider == "xai":
+            if get_env_value("XAI_API_KEY"):
+                return "xai"
+            logger.warning(
+                "STT provider 'xai' configured but XAI_API_KEY not set"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai ---------
+    # --- Auto-detect (no explicit provider): local > groq > openai > mistral > xai -
 
     if _HAS_FASTER_WHISPER:
         return "local"
     if _has_local_command():
         return "local_command"
-    if _HAS_OPENAI and os.getenv("GROQ_API_KEY"):
+    if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
+    if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
+        logger.info("No local STT available, using Mistral Voxtral Transcribe API")
+        return "mistral"
+    if get_env_value("XAI_API_KEY"):
+        logger.info("No local STT available, using xAI Grok STT API")
+        return "xai"
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -284,6 +327,66 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+# Substrings that identify a missing/unloadable CUDA runtime library.  When
+# ctranslate2 (the backend for faster-whisper) cannot dlopen one of these, the
+# "auto" device picker has already committed to CUDA and the model can no
+# longer be used — we fall back to CPU and reload.
+#
+# Deliberately narrow: we match on library-name tokens and dlopen phrasing so
+# we DO NOT accidentally catch legitimate runtime failures like "CUDA out of
+# memory" — those should surface to the user, not silently fall back to CPU
+# (a 32GB audio clip on CPU at int8 isn't useful either).
+_CUDA_LIB_ERROR_MARKERS = (
+    "libcublas",
+    "libcudnn",
+    "libcudart",
+    "cannot be loaded",
+    "cannot open shared object",
+    "no kernel image is available",
+    "no CUDA-capable device",
+    "CUDA driver version is insufficient",
+)
+
+
+def _looks_like_cuda_lib_error(exc: BaseException) -> bool:
+    """Heuristic: is this exception a missing/broken CUDA runtime library?
+
+    ctranslate2 raises plain RuntimeError with messages like
+    ``Library libcublas.so.12 is not found or cannot be loaded``.  We want to
+    catch missing/unloadable shared libs and driver-mismatch errors, NOT
+    legitimate runtime failures ("CUDA out of memory", model bugs, etc.).
+    """
+    msg = str(exc)
+    return any(marker in msg for marker in _CUDA_LIB_ERROR_MARKERS)
+
+
+def _load_local_whisper_model(model_name: str):
+    """Load faster-whisper with graceful CUDA → CPU fallback.
+
+    faster-whisper's ``device="auto"`` picks CUDA when the ctranslate2 wheel
+    ships CUDA shared libs, even on hosts where the NVIDIA runtime
+    (``libcublas.so.12`` / ``libcudnn*``) isn't installed — common on WSL2
+    without CUDA-on-WSL, headless servers, and CPU-only developer machines.
+    On those hosts the load itself sometimes succeeds and the dlopen failure
+    only surfaces at first ``transcribe()`` call.
+
+    We try ``auto`` first (fast CUDA path when it works), and on any CUDA
+    library load failure fall back to CPU + int8.
+    """
+    from faster_whisper import WhisperModel
+    try:
+        return WhisperModel(model_name, device="auto", compute_type="auto")
+    except Exception as exc:
+        if not _looks_like_cuda_lib_error(exc):
+            raise
+        logger.warning(
+            "faster-whisper CUDA load failed (%s) — falling back to CPU (int8). "
+            "Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.",
+            exc,
+        )
+        return WhisperModel(model_name, device="cpu", compute_type="int8")
+
+
 def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
     global _local_model, _local_model_name
@@ -292,15 +395,45 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
-        from faster_whisper import WhisperModel
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
         if _local_model is None or _local_model_name != model_name:
             logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
+            _local_model = _load_local_whisper_model(model_name)
             _local_model_name = model_name
 
-        segments, info = _local_model.transcribe(file_path, beam_size=5)
-        transcript = " ".join(segment.text.strip() for segment in segments)
+        # Language: config.yaml (stt.local.language) > env var > auto-detect.
+        _forced_lang = (
+            _load_stt_config().get("local", {}).get("language")
+            or os.getenv(LOCAL_STT_LANGUAGE_ENV)
+            or None
+        )
+        transcribe_kwargs = {"beam_size": 5}
+        if _forced_lang:
+            transcribe_kwargs["language"] = _forced_lang
+
+        try:
+            segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
+            transcript = " ".join(segment.text.strip() for segment in segments)
+        except Exception as exc:
+            # CUDA runtime libs sometimes only fail at dlopen-on-first-use,
+            # AFTER the model loaded successfully.  Evict the broken cached
+            # model, reload on CPU, retry once.  Without this the module-
+            # global `_local_model` is poisoned and every subsequent voice
+            # message on this process fails identically until restart.
+            if not _looks_like_cuda_lib_error(exc):
+                raise
+            logger.warning(
+                "faster-whisper CUDA runtime failed mid-transcribe (%s) — "
+                "evicting cached model and retrying on CPU (int8).",
+                exc,
+            )
+            _local_model = None
+            _local_model_name = None
+            from faster_whisper import WhisperModel
+            _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            _local_model_name = model_name
+            segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
+            transcript = " ".join(segment.text.strip() for segment in segments)
 
         logger.info(
             "Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
@@ -348,7 +481,12 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             ),
         }
 
-    language = os.getenv(LOCAL_STT_LANGUAGE_ENV, DEFAULT_LOCAL_STT_LANGUAGE)
+    # Language: config.yaml (stt.local.language) > env var > "en" default.
+    language = (
+        _load_stt_config().get("local", {}).get("language")
+        or os.getenv(LOCAL_STT_LANGUAGE_ENV)
+        or DEFAULT_LOCAL_STT_LANGUAGE
+    )
     normalized_model = _normalize_local_command_model(model_name)
 
     try:
@@ -403,7 +541,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
 
 def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using Groq Whisper API (free tier available)."""
-    api_key = os.getenv("GROQ_API_KEY")
+    api_key = get_env_value("GROQ_API_KEY")
     if not api_key:
         return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
 
@@ -506,6 +644,144 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
+# Provider: mistral (Voxtral Transcribe API)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using Mistral Voxtral Transcribe API.
+
+    Uses the ``mistralai`` Python SDK to call ``/v1/audio/transcriptions``.
+    Requires ``MISTRAL_API_KEY`` environment variable.
+    """
+    api_key = get_env_value("MISTRAL_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "MISTRAL_API_KEY not set"}
+
+    try:
+        from mistralai.client import Mistral
+
+        with Mistral(api_key=api_key) as client:
+            with open(file_path, "rb") as audio_file:
+                result = client.audio.transcriptions.complete(
+                    model=model_name,
+                    file={"content": audio_file, "file_name": Path(file_path).name},
+                )
+
+            transcript_text = _extract_transcript_text(result)
+            logger.info(
+                "Transcribed %s via Mistral API (%s, %d chars)",
+                Path(file_path).name, model_name, len(transcript_text),
+            )
+            return {"success": True, "transcript": transcript_text, "provider": "mistral"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("Mistral transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Mistral transcription failed: {type(e).__name__}"}
+
+
+# ---------------------------------------------------------------------------
+# Provider: xAI (Grok STT API)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using xAI Grok STT API.
+
+    Uses the ``POST /v1/stt`` REST endpoint with multipart/form-data.
+    Supports Inverse Text Normalization, diarization, and word-level timestamps.
+    Requires ``XAI_API_KEY`` environment variable.
+    """
+    api_key = get_env_value("XAI_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "XAI_API_KEY not set"}
+
+    stt_config = _load_stt_config()
+    xai_config = stt_config.get("xai", {})
+    base_url = str(
+        xai_config.get("base_url")
+        or get_env_value("XAI_STT_BASE_URL")
+        or XAI_STT_BASE_URL
+    ).strip().rstrip("/")
+    language = str(
+        xai_config.get("language")
+        or os.getenv("HERMES_LOCAL_STT_LANGUAGE")
+        or DEFAULT_LOCAL_STT_LANGUAGE
+    ).strip()
+    # .get("format", True) already defaults to True when the key is absent;
+    # is_truthy_value only normalizes truthy/falsy strings from config.
+    use_format = is_truthy_value(xai_config.get("format", True))
+    use_diarize = is_truthy_value(xai_config.get("diarize", False))
+
+    try:
+        import requests
+        from tools.xai_http import hermes_xai_user_agent
+
+        data: Dict[str, str] = {}
+        if language:
+            data["language"] = language
+        if use_format:
+            data["format"] = "true"
+        if use_diarize:
+            data["diarize"] = "true"
+
+        with open(file_path, "rb") as audio_file:
+            response = requests.post(
+                f"{base_url}/stt",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "User-Agent": hermes_xai_user_agent(),
+                },
+                files={
+                    "file": (Path(file_path).name, audio_file),
+                },
+                data=data,
+                timeout=120,
+            )
+
+        if response.status_code != 200:
+            detail = ""
+            try:
+                err_body = response.json()
+                detail = err_body.get("error", {}).get("message", "") or response.text[:300]
+            except Exception:
+                detail = response.text[:300]
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"xAI STT API error (HTTP {response.status_code}): {detail}",
+            }
+
+        result = response.json()
+        transcript_text = result.get("text", "").strip()
+
+        if not transcript_text:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "xAI STT returned empty transcript",
+            }
+
+        logger.info(
+            "Transcribed %s via xAI Grok STT (lang=%s, %.1fs audio, %d chars)",
+            Path(file_path).name,
+            result.get("language", language),
+            result.get("duration", 0),
+            len(transcript_text),
+        )
+
+        return {"success": True, "transcript": transcript_text, "provider": "xai"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("xAI STT transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"xAI STT transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -547,7 +823,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     if provider == "local":
         local_cfg = stt_config.get("local", {})
-        model_name = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        model_name = _normalize_local_model(
+            model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        )
         return _transcribe_local(file_path, model_name)
 
     if provider == "local_command":
@@ -566,6 +844,16 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
         return _transcribe_openai(file_path, model_name)
 
+    if provider == "mistral":
+        mistral_cfg = stt_config.get("mistral", {})
+        model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
+        return _transcribe_mistral(file_path, model_name)
+
+    if provider == "xai":
+        # xAI Grok STT doesn't use a model parameter — pass through for logging
+        model_name = model or "grok-stt"
+        return _transcribe_xai(file_path, model_name)
+
     # No provider available
     return {
         "success": False,
@@ -573,7 +861,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         "error": (
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
-            "set GROQ_API_KEY for free Groq Whisper, or set VOICE_TOOLS_OPENAI_KEY "
+            "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
+            "Voxtral Transcribe, set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }

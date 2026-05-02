@@ -112,6 +112,54 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+## Sending Generated Files from Docker-backed Terminals
+
+If your terminal backend is `docker`, keep in mind that Telegram attachments are
+sent by the **gateway process**, not from inside the container. That means the
+final `MEDIA:/...` path must be readable on the host where the gateway is
+running.
+
+Common pitfall:
+
+- the agent writes a file inside Docker to `/workspace/report.txt`
+- the model emits `MEDIA:/workspace/report.txt`
+- Telegram delivery fails because `/workspace/report.txt` only exists inside the
+  container, not on the host
+
+Recommended pattern:
+
+```yaml
+terminal:
+  backend: docker
+  docker_volumes:
+    - "/home/user/.hermes/cache/documents:/output"
+```
+
+Then:
+
+- write files inside Docker to `/output/...`
+- emit the **host-visible** path in `MEDIA:`, for example:
+  `MEDIA:/home/user/.hermes/cache/documents/report.txt`
+
+If you already have a `docker_volumes:` section, add the new mount to the same
+list. YAML duplicate keys silently override earlier ones.
+
+### Supported `MEDIA:` file extensions
+
+The gateway extracts `MEDIA:/path/to/file` tags from agent replies and ships the referenced file as a platform-native attachment. Supported extensions across all gateway platforms:
+
+| Category | Extensions |
+|---|---|
+| Images | `png`, `jpg`, `jpeg`, `gif`, `webp`, `bmp`, `tiff`, `svg` |
+| Audio | `mp3`, `wav`, `ogg`, `m4a`, `opus`, `flac`, `aac` |
+| Video | `mp4`, `mov`, `webm`, `mkv`, `avi` |
+| **Documents** | `pdf`, `txt`, `md`, `csv`, `json`, `xml`, `html`, `yaml`, `yml`, `log` |
+| **Office** | `docx`, `xlsx`, `pptx`, `odt`, `ods`, `odp` |
+| **Archives** | `zip`, `rar`, `7z`, `tar`, `gz`, `bz2` |
+| **Books / packages** | `epub`, `apk`, `ipa` |
+
+Anything on this list delivered as a native attachment on platforms that support it (Telegram, Discord, Signal, Slack, WhatsApp, Feishu, Matrix, etc.); on platforms without native support it falls back to a link or plain-text indicator. The **bold** categories were added in the last few releases — if you were relying on the model saying `here is the file: /path/to/report.docx` instead, swap to `MEDIA:/path/to/report.docx` for native delivery.
+
 ## Webhook Mode
 
 By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.
@@ -131,15 +179,15 @@ Add the following to `~/.hermes/.env`:
 
 ```bash
 TELEGRAM_WEBHOOK_URL=https://my-app.fly.dev/telegram
+TELEGRAM_WEBHOOK_SECRET="$(openssl rand -hex 32)"  # required
 # TELEGRAM_WEBHOOK_PORT=8443        # optional, default 8443
-# TELEGRAM_WEBHOOK_SECRET=mysecret  # optional, recommended
 ```
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `TELEGRAM_WEBHOOK_URL` | Yes | Public HTTPS URL where Telegram will send updates. The URL path is auto-extracted (e.g., `/telegram` from the example above). |
+| `TELEGRAM_WEBHOOK_SECRET` | **Yes** (when `TELEGRAM_WEBHOOK_URL` is set) | Secret token that Telegram echoes in every webhook request for verification. The gateway refuses to start without it — see [GHSA-3vpc-7q5r-276h](https://github.com/NousResearch/hermes-agent/security/advisories/GHSA-3vpc-7q5r-276h). Generate with `openssl rand -hex 32`. |
 | `TELEGRAM_WEBHOOK_PORT` | No | Local port the webhook server listens on (default: `8443`). |
-| `TELEGRAM_WEBHOOK_SECRET` | No | Secret token for verifying that updates actually come from Telegram. **Strongly recommended** for production deployments. |
 
 When `TELEGRAM_WEBHOOK_URL` is set, the gateway starts an HTTP webhook server instead of polling. When unset, polling mode is used — no behavior change from previous versions.
 
@@ -171,6 +219,27 @@ fly deploy
 ```
 
 The gateway log should show: `[telegram] Connected to Telegram (webhook mode)`.
+
+## Proxy Support
+
+If Telegram's API is blocked or you need to route traffic through a proxy, set a Telegram-specific proxy URL. This takes priority over the generic `HTTPS_PROXY` / `HTTP_PROXY` env vars.
+
+**Option 1: config.yaml (recommended)**
+
+```yaml
+telegram:
+  proxy_url: "socks5://127.0.0.1:1080"
+```
+
+**Option 2: environment variable**
+
+```bash
+TELEGRAM_PROXY=socks5://127.0.0.1:1080
+```
+
+Supported schemes: `http://`, `https://`, `socks5://`.
+
+The proxy applies to both the main Telegram connection and the fallback IP transport. If no Telegram-specific proxy is set, the gateway falls back to `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (or macOS system proxy auto-detection).
 
 ## Home Channel
 
@@ -228,6 +297,7 @@ Hermes Agent works in Telegram group chats with a few considerations:
   - replies to one of the bot's messages
   - `@botusername` mentions
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
+- Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
 ### Example group trigger configuration
@@ -239,9 +309,13 @@ telegram:
   require_mention: true
   mention_patterns:
     - "^\\s*chompy\\b"
+  ignored_threads:
+    - 31
+    - "42"
 ```
 
 This example allows all the usual direct triggers plus messages that begin with `chompy`, even if they do not use an `@mention`.
+Messages in Telegram topics `31` and `42` are always ignored before the mention and free-response checks run.
 
 ### Notes on `mention_patterns`
 
@@ -266,6 +340,16 @@ If you work on several long-running projects, topics keep their context separate
 Each topic gets its own conversation session, history, and context — completely isolated from the others.
 
 ### Configuration
+
+:::caution Prerequisites
+Before adding topics to your config, the user must **enable Topics mode** in the DM chat with the bot:
+
+1. Open your private chat with the Hermes bot in Telegram
+2. Tap the bot's name at the top to open chat info
+3. Enable **Topics** (the toggle to turn the chat into a forum)
+
+Without this, Hermes will log `The chat is not a forum` on startup and skip topic creation. This is a Telegram client-side setting — the bot cannot enable it programmatically.
+:::
 
 Add topics under `platforms.telegram.extra.dm_topics` in `~/.hermes/config.yaml`:
 
@@ -383,38 +467,89 @@ To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and loo
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
 - **Message streaming:** Bot API 9.x added support for streaming long responses, which can improve perceived latency for lengthy agent replies.
 
-## Webhook Mode
+## Rendering: Tables and Link Previews
 
-By default, the Telegram adapter connects via **long polling** — the gateway makes outbound connections to Telegram's servers. This works everywhere but keeps a persistent connection open.
+Telegram's MarkdownV2 has no native table syntax — pipe tables render as backslash-escaped noise if passed through raw. Hermes normalizes markdown tables automatically:
 
-**Webhook mode** is an alternative where Telegram pushes updates to your server over HTTPS. This is ideal for **serverless and cloud deployments** (Fly.io, Railway, etc.) where inbound HTTP can wake a suspended machine.
+- **Small tables** are flattened into **row-group bullets** — each row becomes a readable bulleted list under the column headings. Good for 2–4 columns and short cells.
+- **Larger or wider tables** fall back to a **fenced code block** with aligned columns so nothing collapses. A one-line prompt hint is added so the agent knows to prefer prose follow-ups over more tables on Telegram.
 
-### Configuration
+There's nothing to configure — the adapter picks the right fallback per message. If you want the legacy "always code-block" behavior, disable table normalization by setting `telegram.pretty_tables: false` in `config.yaml` (default: `true`).
 
-Set the `TELEGRAM_WEBHOOK_URL` environment variable to enable webhook mode:
-
-```bash
-# Required — your public HTTPS endpoint
-TELEGRAM_WEBHOOK_URL=https://app.fly.dev/telegram
-
-# Optional — local listen port (default: 8443)
-TELEGRAM_WEBHOOK_PORT=8443
-
-# Optional — secret token for update verification (auto-generated if not set)
-TELEGRAM_WEBHOOK_SECRET=my-secret-token
-```
-
-Or in `~/.hermes/config.yaml`:
+**Link previews.** Telegram auto-generates link previews for URLs in bot messages. If you'd rather suppress those (long `/tools` output, agent reply that mentions ten links, etc.):
 
 ```yaml
-telegram:
-  webhook_mode: true
+gateway:
+  platforms:
+    telegram:
+      extra:
+        disable_link_previews: true
 ```
 
-When `TELEGRAM_WEBHOOK_URL` is set, the gateway starts an HTTP server listening on `0.0.0.0:<port>` and registers the webhook URL with Telegram. The URL path is extracted from the webhook URL (defaults to `/telegram`).
+When enabled, Hermes attaches Telegram's `LinkPreviewOptions(is_disabled=True)` to every outgoing message and falls back to the legacy `disable_web_page_preview` parameter on older `python-telegram-bot` versions.
 
-:::warning
-Telegram requires a **valid TLS certificate** on the webhook endpoint. Self-signed certificates will be rejected. Use a reverse proxy (nginx, Caddy) or a platform that provides TLS termination (Fly.io, Railway, Cloudflare Tunnel).
+## Group Allowlisting
+
+Telegram groups and forum chats have two orthogonal gates you can configure:
+
+- **Sender user IDs** (`group_allow_from` / `TELEGRAM_GROUP_ALLOWED_USERS`) — sender-scoped allowlist that applies only to group/forum messages. Use this when you want specific users to be able to invoke the bot in groups without adding them to `TELEGRAM_ALLOWED_USERS` (which would also give them DM access).
+- **Chat IDs** (`group_allowed_chats` / `TELEGRAM_GROUP_ALLOWED_CHATS`) — chat-scoped allowlist. Any member of these groups/forums can interact with the bot. Useful for team/support bots where group membership itself is the access signal.
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        # Global access (DMs + groups). Users here can always invoke the bot.
+        allow_from:
+          - "123456789"
+        # Sender IDs allowed in groups/forums only. Does NOT grant DM access.
+        group_allow_from:
+          - "987654321"
+        # Entire groups/forums — any member is authorized.
+        group_allowed_chats:
+          - "-1001234567890"
+```
+
+Equivalent env vars:
+
+```bash
+TELEGRAM_ALLOWED_USERS="123456789"
+TELEGRAM_GROUP_ALLOWED_USERS="987654321"
+TELEGRAM_GROUP_ALLOWED_CHATS="-1001234567890"
+```
+
+Behavior:
+
+- `TELEGRAM_ALLOWED_USERS` covers all chat types (DMs, groups, forums).
+- `TELEGRAM_GROUP_ALLOWED_USERS` only authorizes the listed senders in groups/forums. They still can't DM the bot unless listed in `TELEGRAM_ALLOWED_USERS`.
+- A chat in `TELEGRAM_GROUP_ALLOWED_CHATS` authorizes every member of that chat, regardless of sender.
+- Use `*` in any of these to allow any sender/chat.
+- This layers on top of existing mention/pattern triggers and on top of `group_topics` + `ignored_threads`.
+
+### Migration from before PR #17686
+
+Prior to this split, `TELEGRAM_GROUP_ALLOWED_USERS` was the only knob and users put **chat IDs** in it. For backward compatibility, chat-ID-shaped values (starting with `-`) in `TELEGRAM_GROUP_ALLOWED_USERS` are still honored as chat IDs and a deprecation warning is logged once. Migration:
+
+```bash
+# Old (still works, but deprecated)
+TELEGRAM_GROUP_ALLOWED_USERS="-1001234567890"
+
+# New
+TELEGRAM_GROUP_ALLOWED_CHATS="-1001234567890"
+```
+
+## Interactive Model Picker
+
+When you send `/model` with no arguments in a Telegram chat, Hermes shows an interactive inline keyboard for switching models:
+
+1. **Provider selection** — buttons showing each available provider with model counts (e.g., "OpenAI (15)", "✓ Anthropic (12)" for the current provider).
+2. **Model selection** — paginated model list with **Prev**/**Next** navigation, a **Back** button to return to providers, and **Cancel**.
+
+The current model and provider are displayed at the top. All navigation happens by editing the same message in-place (no chat clutter).
+
+:::tip
+If you know the exact model name, type `/model <name>` directly to skip the picker. You can also type `/model <name> --global` to persist the change across sessions.
 :::
 
 ## DNS-over-HTTPS Fallback IPs
@@ -449,6 +584,92 @@ platforms:
 :::tip
 You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network.
 :::
+
+## Proxy Support
+
+If your network requires an HTTP proxy to reach the internet (common in corporate environments), the Telegram adapter automatically reads standard proxy environment variables and routes all connections through the proxy.
+
+### Supported variables
+
+The adapter checks these environment variables in order, using the first one that is set:
+
+1. `HTTPS_PROXY`
+2. `HTTP_PROXY`
+3. `ALL_PROXY`
+4. `https_proxy` / `http_proxy` / `all_proxy` (lowercase variants)
+
+### Configuration
+
+Set the proxy in your environment before starting the gateway:
+
+```bash
+export HTTPS_PROXY=http://proxy.example.com:8080
+hermes gateway
+```
+
+Or add it to `~/.hermes/.env`:
+
+```bash
+HTTPS_PROXY=http://proxy.example.com:8080
+```
+
+The proxy applies to both the primary transport and all fallback IP transports. No additional Hermes configuration is needed — if the environment variable is set, it's used automatically.
+
+:::note
+This covers the custom fallback transport layer that Hermes uses for Telegram connections. The standard `httpx` client used elsewhere already respects proxy env vars natively.
+:::
+
+## Message Reactions
+
+The bot can add emoji reactions to messages as visual processing feedback:
+
+- 👀 when the bot starts processing your message
+- ✅ when the response is delivered successfully
+- ❌ if an error occurs during processing
+
+Reactions are **disabled by default**. Enable them in `config.yaml`:
+
+```yaml
+telegram:
+  reactions: true
+```
+
+Or via environment variable:
+
+```bash
+TELEGRAM_REACTIONS=true
+```
+
+:::note
+Unlike Discord (where reactions are additive), Telegram's Bot API replaces all bot reactions in a single call. The transition from 👀 to ✅/❌ happens atomically — you won't see both at once.
+:::
+
+:::tip
+If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
+:::
+
+## Per-Channel Prompts
+
+Assign ephemeral system prompts to specific Telegram groups or forum topics. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.
+
+```yaml
+telegram:
+  channel_prompts:
+    "-1001234567890": |
+      You are a research assistant. Focus on academic sources,
+      citations, and concise synthesis.
+    "42":  |
+      This topic is for creative writing feedback. Be warm and
+      constructive.
+```
+
+Keys are chat IDs (groups/supergroups) or forum topic IDs. For forum groups, topic-level prompts override the group-level prompt:
+
+- Message in topic `42` inside group `-1001234567890` → uses topic `42`'s prompt
+- Message in topic `99` (no explicit entry) → falls back to group `-1001234567890`'s prompt
+- Message in a group with no entry → no channel prompt applied
+
+Numeric YAML keys are automatically normalized to strings.
 
 ## Troubleshooting
 

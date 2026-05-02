@@ -1,0 +1,14 @@
+{
+  "name": "example",
+  "label": "Example",
+  "description": "Example dashboard plugin — demonstrates the plugin SDK",
+  "icon": "Sparkles",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/example",
+    "position": "after:skills"
+  },
+  "slots": ["sessions:top"],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

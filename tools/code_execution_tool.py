@@ -18,7 +18,7 @@ Architecture (two transports):
   2. Parent ships both files to the remote environment
   3. Script runs inside the terminal backend (Docker/SSH/Modal/Daytona/etc.)
   4. Tool calls are written as request files; a polling thread on the parent
-     reads them via execute_oneshot(), dispatches, and writes response files
+     reads them via env.execute(), dispatches, and writes response files
   5. The script polls for response files and continues
 
 In both cases, only the script's stdout is returned to the LLM; intermediate
@@ -29,10 +29,12 @@ Remote execution additionally requires Python 3 in the terminal backend.
 """
 
 import base64
+import functools
 import json
 import logging
 import os
 import platform
+import shlex
 import signal
 import socket
 import subprocess
@@ -71,7 +73,24 @@ MAX_STDERR_BYTES = 10_000    # 10 KB
 
 def check_sandbox_requirements() -> bool:
     """Code execution sandbox requires a POSIX OS for Unix domain sockets."""
-    return SANDBOX_AVAILABLE
+    if not SANDBOX_AVAILABLE:
+        return False
+
+    try:
+        from tools.terminal_tool import (
+            _check_vercel_sandbox_requirements,
+            _get_env_config,
+        )
+
+        config = _get_env_config()
+    except Exception:
+        logger.debug("Could not resolve terminal config for execute_code availability", exc_info=True)
+        return False
+
+    if config.get("env_type") == "vercel_sandbox":
+        return _check_vercel_sandbox_requirements(config)
+
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -205,9 +224,14 @@ def retry(fn, max_attempts=3, delay=2):
 
 _UDS_TRANSPORT_HEADER = '''\
 """Auto-generated Hermes tools RPC stubs."""
-import json, os, socket, shlex, time
+import json, os, socket, shlex, threading, time
 
 _sock = None
+# The RPC server handles a single client connection serially and has no
+# request-id in the protocol, so concurrent _call() invocations from multiple
+# threads (e.g. ThreadPoolExecutor) would race on the shared socket and get
+# each other's responses. Serialize the entire send+recv round-trip.
+_call_lock = threading.Lock()
 ''' + _COMMON_HELPERS + '''\
 
 def _connect():
@@ -220,17 +244,18 @@ def _connect():
 
 def _call(tool_name, args):
     """Send a tool call to the parent process and return the parsed result."""
-    conn = _connect()
     request = json.dumps({"tool": tool_name, "args": args}) + "\\n"
-    conn.sendall(request.encode())
-    buf = b""
-    while True:
-        chunk = conn.recv(65536)
-        if not chunk:
-            raise RuntimeError("Agent process disconnected")
-        buf += chunk
-        if buf.endswith(b"\\n"):
-            break
+    with _call_lock:
+        conn = _connect()
+        conn.sendall(request.encode())
+        buf = b""
+        while True:
+            chunk = conn.recv(65536)
+            if not chunk:
+                raise RuntimeError("Agent process disconnected")
+            buf += chunk
+            if buf.endswith(b"\\n"):
+                break
     raw = buf.decode().strip()
     result = json.loads(raw)
     if isinstance(result, str):
@@ -246,24 +271,30 @@ def _call(tool_name, args):
 
 _FILE_TRANSPORT_HEADER = '''\
 """Auto-generated Hermes tools RPC stubs (file-based transport)."""
-import json, os, shlex, time
+import json, os, shlex, tempfile, threading, time
 
-_RPC_DIR = os.environ.get("HERMES_RPC_DIR", "/tmp/hermes_rpc")
+_RPC_DIR = os.environ.get("HERMES_RPC_DIR") or os.path.join(tempfile.gettempdir(), "hermes_rpc")
 _seq = 0
+# `_seq += 1` is not atomic (read-modify-write), so concurrent _call()
+# invocations from multiple threads could allocate the same sequence number
+# and clobber each other's request files. Guard seq allocation with a lock.
+_seq_lock = threading.Lock()
 ''' + _COMMON_HELPERS + '''\
 
 def _call(tool_name, args):
     """Send a tool call request via file-based RPC and wait for response."""
     global _seq
-    _seq += 1
-    seq_str = f"{_seq:06d}"
+    with _seq_lock:
+        _seq += 1
+        seq = _seq
+    seq_str = f"{seq:06d}"
     req_file = os.path.join(_RPC_DIR, f"req_{seq_str}")
     res_file = os.path.join(_RPC_DIR, f"res_{seq_str}")
 
     # Write request atomically (write to .tmp, then rename)
     tmp = req_file + ".tmp"
     with open(tmp, "w") as f:
-        json.dump({"tool": tool_name, "args": args, "seq": _seq}, f)
+        json.dump({"tool": tool_name, "args": args, "seq": seq}, f)
     os.rename(tmp, req_file)
 
     # Wait for response with adaptive polling
@@ -300,7 +331,7 @@ def _call(tool_name, args):
 # ---------------------------------------------------------------------------
 
 # Terminal parameters that must not be used from ephemeral sandbox scripts
-_TERMINAL_BLOCKED_PARAMS = {"background", "check_interval", "pty"}
+_TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
 
 
 def _rpc_server_loop(
@@ -344,7 +375,7 @@ def _rpc_server_loop(
                 try:
                     request = json.loads(line.decode())
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                    resp = json.dumps({"error": f"Invalid RPC request: {exc}"})
+                    resp = tool_error(f"Invalid RPC request: {exc}")
                     conn.sendall((resp + "\n").encode())
                     continue
 
@@ -396,7 +427,7 @@ def _rpc_server_loop(
                         devnull.close()
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
-                    result = json.dumps({"error": str(exc)})
+                    result = tool_error(str(exc))
 
                 tool_call_counter[0] += 1
                 call_duration = time.monotonic() - call_start
@@ -438,9 +469,10 @@ def _get_or_create_env(task_id: str):
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _task_env_overrides,
+        _resolve_container_task_id,
     )
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _resolve_container_task_id(task_id)
 
     # Fast path: environment already exists
     with _env_lock:
@@ -478,13 +510,15 @@ def _get_or_create_env(task_id: str):
         cwd = overrides.get("cwd") or config["cwd"]
 
         container_config = None
-        if env_type in ("docker", "singularity", "modal", "daytona"):
+        if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
                 "container_disk": config.get("container_disk", 51200),
                 "container_persistent": config.get("container_persistent", True),
+                "vercel_runtime": config.get("vercel_runtime", ""),
                 "docker_volumes": config.get("docker_volumes", []),
+                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
             }
 
         ssh_config = None
@@ -536,11 +570,28 @@ def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
     quotes are fine.
     """
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-    env.execute_oneshot(
-        f"echo '{encoded}' | base64 -d > {remote_path}",
+    quoted_remote_path = shlex.quote(remote_path)
+    env.execute(
+        f"echo '{encoded}' | base64 -d > {quoted_remote_path}",
         cwd="/",
         timeout=30,
     )
+
+
+def _env_temp_dir(env: Any) -> str:
+    """Return a writable temp dir for env-backed execute_code sandboxes."""
+    get_temp_dir = getattr(env, "get_temp_dir", None)
+    if callable(get_temp_dir):
+        try:
+            temp_dir = get_temp_dir()
+            if isinstance(temp_dir, str) and temp_dir.startswith("/"):
+                return temp_dir.rstrip("/") or "/"
+        except Exception as exc:
+            logger.debug("Could not resolve execute_code env temp dir: %s", exc)
+    candidate = tempfile.gettempdir()
+    if isinstance(candidate, str) and candidate.startswith("/"):
+        return candidate.rstrip("/") or "/"
+    return "/tmp"
 
 
 def _rpc_poll_loop(
@@ -555,19 +606,20 @@ def _rpc_poll_loop(
 ):
     """Poll the remote filesystem for tool call requests and dispatch them.
 
-    Runs in a background thread.  Uses ``env.execute_oneshot()`` so it can
-    operate concurrently with the script-execution thread that holds
-    ``env.execute()`` (important for persistent-shell backends like SSH).
+    Runs in a background thread.  Each ``env.execute()`` spawns an
+    independent process, so these calls run safely concurrent with the
+    script-execution thread.
     """
     from model_tools import handle_function_call
 
     poll_interval = 0.1  # 100 ms
 
+    quoted_rpc_dir = shlex.quote(rpc_dir)
     while not stop_event.is_set():
         try:
             # List pending request files (skip .tmp partials)
-            ls_result = env.execute_oneshot(
-                f"ls -1 {rpc_dir}/req_* 2>/dev/null || true",
+            ls_result = env.execute(
+                f"ls -1 {quoted_rpc_dir}/req_* 2>/dev/null || true",
                 cwd="/",
                 timeout=10,
             )
@@ -589,9 +641,10 @@ def _rpc_poll_loop(
 
                 call_start = time.monotonic()
 
+                quoted_req_file = shlex.quote(req_file)
                 # Read request
-                read_result = env.execute_oneshot(
-                    f"cat {req_file}",
+                read_result = env.execute(
+                    f"cat {quoted_req_file}",
                     cwd="/",
                     timeout=10,
                 )
@@ -600,7 +653,7 @@ def _rpc_poll_loop(
                 except (json.JSONDecodeError, ValueError):
                     logger.debug("Malformed RPC request in %s", req_file)
                     # Remove bad request to avoid infinite retry
-                    env.execute_oneshot(f"rm -f {req_file}", cwd="/", timeout=5)
+                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
                     continue
 
                 tool_name = request.get("tool", "")
@@ -608,6 +661,7 @@ def _rpc_poll_loop(
                 seq = request.get("seq", 0)
                 seq_str = f"{seq:06d}"
                 res_file = f"{rpc_dir}/res_{seq_str}"
+                quoted_res_file = shlex.quote(res_file)
 
                 # Enforce allow-list
                 if tool_name not in allowed_tools:
@@ -648,7 +702,7 @@ def _rpc_poll_loop(
                     except Exception as exc:
                         logger.error("Tool call failed in remote sandbox: %s",
                                      exc, exc_info=True)
-                        tool_result = json.dumps({"error": str(exc)})
+                        tool_result = tool_error(str(exc))
 
                     tool_call_counter[0] += 1
                     call_duration = time.monotonic() - call_start
@@ -664,15 +718,15 @@ def _rpc_poll_loop(
                 encoded_result = base64.b64encode(
                     tool_result.encode("utf-8")
                 ).decode("ascii")
-                env.execute_oneshot(
-                    f"echo '{encoded_result}' | base64 -d > {res_file}.tmp"
-                    f" && mv {res_file}.tmp {res_file}",
+                env.execute(
+                    f"echo '{encoded_result}' | base64 -d > {quoted_res_file}.tmp"
+                    f" && mv {quoted_res_file}.tmp {quoted_res_file}",
                     cwd="/",
                     timeout=60,
                 )
 
                 # Remove the request file
-                env.execute_oneshot(f"rm -f {req_file}", cwd="/", timeout=5)
+                env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
 
         except Exception as e:
             if not stop_event.is_set():
@@ -693,7 +747,6 @@ def _execute_remote(
     the remote environment, and tool calls are proxied through a polling
     thread that communicates via request/response files.
     """
-    from tools.terminal_tool import _interrupt_event
 
     _cfg = _load_config()
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
@@ -708,7 +761,10 @@ def _execute_remote(
     env, env_type = _get_or_create_env(effective_task_id)
 
     sandbox_id = uuid.uuid4().hex[:12]
-    sandbox_dir = f"/tmp/hermes_exec_{sandbox_id}"
+    temp_dir = _env_temp_dir(env)
+    sandbox_dir = f"{temp_dir}/hermes_exec_{sandbox_id}"
+    quoted_sandbox_dir = shlex.quote(sandbox_dir)
+    quoted_rpc_dir = shlex.quote(f"{sandbox_dir}/rpc")
 
     tool_call_log: list = []
     tool_call_counter = [0]
@@ -718,7 +774,7 @@ def _execute_remote(
 
     try:
         # Verify Python is available on the remote
-        py_check = env.execute_oneshot(
+        py_check = env.execute(
             "command -v python3 >/dev/null 2>&1 && echo OK",
             cwd="/", timeout=15,
         )
@@ -735,8 +791,8 @@ def _execute_remote(
             })
 
         # Create sandbox directory on remote
-        env.execute_oneshot(
-            f"mkdir -p {sandbox_dir}/rpc", cwd="/", timeout=10,
+        env.execute(
+            f"mkdir -p {quoted_rpc_dir}", cwd="/", timeout=10,
         )
 
         # Generate and ship files
@@ -760,7 +816,7 @@ def _execute_remote(
 
         # Build environment variable prefix for the script
         env_prefix = (
-            f"HERMES_RPC_DIR={sandbox_dir}/rpc "
+            f"HERMES_RPC_DIR={shlex.quote(f'{sandbox_dir}/rpc')} "
             f"PYTHONDONTWRITEBYTECODE=1"
         )
         tz = os.getenv("HERMES_TIMEZONE", "").strip()
@@ -771,7 +827,7 @@ def _execute_remote(
         logger.info("Executing code on %s backend (task %s)...",
                      env_type, effective_task_id[:8])
         script_result = env.execute(
-            f"cd {sandbox_dir} && {env_prefix} python3 script.py",
+            f"cd {quoted_sandbox_dir} && {env_prefix} python3 script.py",
             timeout=timeout,
         )
 
@@ -807,8 +863,8 @@ def _execute_remote(
 
         # Clean up remote sandbox dir
         try:
-            env.execute_oneshot(
-                f"rm -rf {sandbox_dir}", cwd="/", timeout=15,
+            env.execute(
+                f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15,
             )
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
@@ -848,7 +904,18 @@ def _execute_remote(
     }
 
     if status == "timeout":
-        result["error"] = f"Script timed out after {timeout}s and was killed."
+        timeout_msg = f"Script timed out after {timeout}s and was killed."
+        result["error"] = timeout_msg
+        # Include timeout message in output so the LLM always surfaces it
+        # to the user (see local path comment — same reasoning, #10807).
+        if stdout_text:
+            result["output"] = stdout_text + f"\n\n⏰ {timeout_msg}"
+        else:
+            result["output"] = f"⏰ {timeout_msg}"
+        logger.warning(
+            "execute_code (remote) timed out after %ss (limit %ss) with %d tool calls",
+            duration, timeout, tool_call_counter[0],
+        )
     elif status == "interrupted":
         result["output"] = (
             stdout_text + "\n[execution interrupted — user sent a new message]"
@@ -891,7 +958,7 @@ def execute_code(
         })
 
     if not code or not code.strip():
-        return json.dumps({"error": "No code provided."})
+        return tool_error("No code provided.")
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config
@@ -901,8 +968,8 @@ def execute_code(
 
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
-    # Import interrupt event from terminal_tool (cooperative cancellation)
-    from tools.terminal_tool import _interrupt_event
+    # Import per-thread interrupt check (cooperative cancellation)
+    from tools.interrupt import is_interrupted as _is_interrupted
 
     # Resolve config
     _cfg = _load_config()
@@ -944,6 +1011,7 @@ def execute_code(
         # --- Start UDS server ---
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server_sock.bind(sock_path)
+        os.chmod(sock_path, 0o600)
         server_sock.listen(1)
 
         rpc_thread = threading.Thread(
@@ -965,7 +1033,8 @@ def execute_code(
         # (terminal.env_passthrough) are passed through.
         _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                               "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
-                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
+                              "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA",
+                              "HERMES_")
         _SECRET_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL",
                               "PASSWD", "AUTH")
         try:
@@ -987,19 +1056,44 @@ def execute_code(
         child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Ensure the hermes-agent root is importable in the sandbox so
-        # repo-root modules are available to child scripts.
+        # repo-root modules are available to child scripts.  We also prepend
+        # the staging tmpdir so ``from hermes_tools import ...`` resolves even
+        # when the subprocess CWD is not tmpdir (project mode).
         _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         _existing_pp = child_env.get("PYTHONPATH", "")
-        child_env["PYTHONPATH"] = _hermes_root + (os.pathsep + _existing_pp if _existing_pp else "")
+        _pp_parts = [tmpdir, _hermes_root]
+        if _existing_pp:
+            _pp_parts.append(_existing_pp)
+        child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
         # Inject user's configured timezone so datetime.now() in sandboxed
-        # code reflects the correct wall-clock time.
+        # code reflects the correct wall-clock time.  Only TZ is set —
+        # HERMES_TIMEZONE is an internal Hermes setting and must not leak
+        # into child processes.
         _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
         if _tz_name:
             child_env["TZ"] = _tz_name
+        child_env.pop("HERMES_TIMEZONE", None)
+
+        # Per-profile HOME isolation: redirect system tool configs into
+        # {HERMES_HOME}/home/ when that directory exists.
+        from hermes_constants import get_subprocess_home
+        _profile_home = get_subprocess_home()
+        if _profile_home:
+            child_env["HOME"] = _profile_home
+
+        # Resolve interpreter + CWD based on execute_code mode.
+        #   - strict : today's behavior (sys.executable + tmpdir CWD).
+        #   - project: user's venv python + session's working directory, so
+        #              project deps like pandas and user files resolve.
+        # Env scrubbing and tool whitelist apply identically in both modes.
+        _mode = _get_execution_mode()
+        _child_python = _resolve_child_python(_mode)
+        _child_cwd = _resolve_child_cwd(_mode, tmpdir)
+        _script_path = os.path.join(tmpdir, "script.py")
 
         proc = subprocess.Popen(
-            [sys.executable, "script.py"],
-            cwd=tmpdir,
+            [_child_python, _script_path],
+            cwd=_child_cwd,
             env=child_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1083,8 +1177,12 @@ def execute_code(
         stderr_reader.start()
 
         status = "success"
+        _activity_state = {
+            "last_touch": time.monotonic(),
+            "start": exec_start,
+        }
         while proc.poll() is None:
-            if _interrupt_event.is_set():
+            if _is_interrupted():
                 _kill_process_group(proc)
                 status = "interrupted"
                 break
@@ -1092,6 +1190,13 @@ def execute_code(
                 _kill_process_group(proc, escalate=True)
                 status = "timeout"
                 break
+            # Periodic activity touch so the gateway's inactivity timeout
+            # doesn't kill the agent during long code execution (#10807).
+            try:
+                from tools.environments.base import touch_activity_if_due
+                touch_activity_if_due(_activity_state, "execute_code running")
+            except Exception:
+                pass
             time.sleep(0.2)
 
         # Wait for readers to finish draining
@@ -1145,7 +1250,20 @@ def execute_code(
         }
 
         if status == "timeout":
-            result["error"] = f"Script timed out after {timeout}s and was killed."
+            timeout_msg = f"Script timed out after {timeout}s and was killed."
+            result["error"] = timeout_msg
+            # Include timeout message in output so the LLM always surfaces it
+            # to the user.  When output is empty, models often treat the result
+            # as "nothing happened" and produce an empty response, which the
+            # gateway stream consumer silently drops (#10807).
+            if stdout_text:
+                result["output"] = stdout_text + f"\n\n⏰ {timeout_msg}"
+            else:
+                result["output"] = f"⏰ {timeout_msg}"
+            logger.warning(
+                "execute_code timed out after %ss (limit %ss) with %d tool calls",
+                duration, timeout, tool_call_counter[0],
+            )
         elif status == "interrupted":
             result["output"] = stdout_text + "\n[execution interrupted — user sent a new message]"
         elif exit_code != 0:
@@ -1222,12 +1340,143 @@ def _kill_process_group(proc, escalate: bool = False):
 
 
 def _load_config() -> dict:
-    """Load code_execution config from CLI_CONFIG if available."""
+    """Load code_execution config without importing the interactive CLI.
+
+    This helper is called while building the module-level execute_code schema
+    during tool discovery.  Importing ``cli`` here pulls prompt_toolkit/Rich and
+    a large chunk of the classic REPL onto every agent startup path, including
+    ``hermes --tui`` where it is never used.  Read the lightweight raw config
+    instead; the config layer already caches by (mtime, size), and an absent
+    key cleanly falls back to DEFAULT_EXECUTION_MODE.
+    """
     try:
-        from cli import CLI_CONFIG
-        return CLI_CONFIG.get("code_execution", {})
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config().get("code_execution", {})
+        return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Execution mode resolution (strict vs project)
+# ---------------------------------------------------------------------------
+
+# Valid values for code_execution.mode. Kept as a module constant so tests
+# and the config layer can reference the canonical set.
+EXECUTION_MODES = ("project", "strict")
+DEFAULT_EXECUTION_MODE = "project"
+
+
+def _get_execution_mode() -> str:
+    """Return the active execute_code mode — 'project' or 'strict'.
+
+    Reads ``code_execution.mode`` from config.yaml; invalid values fall back
+    to ``DEFAULT_EXECUTION_MODE`` ('project') with a log warning.
+
+    Mode semantics:
+      - ``project`` (default): scripts run in the session's working directory
+        with the active virtual environment's python, so project dependencies
+        (pandas, torch, project packages) and files resolve naturally.
+      - ``strict``: scripts run in an isolated temp directory with
+        ``sys.executable`` (hermes-agent's python). Reproducible and the
+        interpreter is guaranteed to work, but project deps and relative paths
+        won't resolve.
+
+    Env scrubbing and tool whitelist apply identically in both modes.
+    """
+    cfg_value = str(_load_config().get("mode", DEFAULT_EXECUTION_MODE)).strip().lower()
+    if cfg_value in EXECUTION_MODES:
+        return cfg_value
+    logger.warning(
+        "Ignoring code_execution.mode=%r (expected one of %s), falling back to %r",
+        cfg_value, EXECUTION_MODES, DEFAULT_EXECUTION_MODE,
+    )
+    return DEFAULT_EXECUTION_MODE
+
+
+@functools.lru_cache(maxsize=32)
+def _is_usable_python(python_path: str) -> bool:
+    """Check whether a candidate Python interpreter is usable for execute_code.
+
+    Requires Python 3.8+ (f-strings and stdlib modules the RPC stubs need).
+    Cached so we don't fork a subprocess on every execute_code call.
+    """
+    try:
+        result = subprocess.run(
+            [python_path, "-c",
+             "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)"],
+            timeout=5,
+            capture_output=True,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return False
+
+
+def _resolve_child_python(mode: str) -> str:
+    """Pick the Python interpreter for the execute_code subprocess.
+
+    In ``strict`` mode, always ``sys.executable`` — guaranteed to work and
+    keeps behavior fully reproducible across sessions.
+
+    In ``project`` mode, prefer the user's active virtualenv/conda env's
+    python so ``import pandas`` etc. work. Falls back to ``sys.executable``
+    if no venv is detected, the candidate binary is missing/not executable,
+    or it fails a Python 3.8+ version check.
+    """
+    if mode != "project":
+        return sys.executable
+
+    if _IS_WINDOWS:
+        exe_names = ("python.exe", "python3.exe")
+        subdirs = ("Scripts",)
+    else:
+        exe_names = ("python", "python3")
+        subdirs = ("bin",)
+
+    for var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
+        root = os.environ.get(var, "").strip()
+        if not root:
+            continue
+        for subdir in subdirs:
+            for exe in exe_names:
+                candidate = os.path.join(root, subdir, exe)
+                if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
+                    continue
+                if _is_usable_python(candidate):
+                    return candidate
+                # Found the interpreter but it failed the version check —
+                # log once and fall through to sys.executable.
+                logger.info(
+                    "execute_code: skipping %s=%s (Python version < 3.8 or broken). "
+                    "Using sys.executable instead.", var, candidate,
+                )
+                return sys.executable
+
+    return sys.executable
+
+
+def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
+    """Resolve the working directory for the execute_code subprocess.
+
+    - ``strict``: the staging tmpdir (today's behavior).
+    - ``project``: the session's TERMINAL_CWD (same as the terminal tool), or
+      ``os.getcwd()`` if TERMINAL_CWD is unset or doesn't point at a real dir.
+      Falls back to the staging tmpdir as a last resort so we never invoke
+      Popen with a nonexistent cwd.
+    """
+    if mode != "project":
+        return staging_dir
+    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    if raw:
+        expanded = os.path.expanduser(raw)
+        if os.path.isdir(expanded):
+            return expanded
+    here = os.getcwd()
+    if os.path.isdir(here):
+        return here
+    return staging_dir
 
 
 # ---------------------------------------------------------------------------
@@ -1261,15 +1510,24 @@ _TOOL_DOC_LINES = [
 ]
 
 
-def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
+def build_execute_code_schema(enabled_sandbox_tools: set = None,
+                              mode: str = None) -> dict:
     """Build the execute_code schema with description listing only enabled tools.
 
     When tools are disabled via ``hermes tools`` (e.g. web is turned off),
     the schema description should NOT mention web_search / web_extract —
     otherwise the model thinks they are available and keeps trying to use them.
+
+    ``mode`` controls the working-directory sentence in the description:
+      - ``'strict'``: scripts run in a temp dir (not the session's CWD)
+      - ``'project'`` (default): scripts run in the session's CWD with the
+        active venv's python
+    If ``mode`` is None, the current ``code_execution.mode`` config is read.
     """
     if enabled_sandbox_tools is None:
         enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    if mode is None:
+        mode = _get_execution_mode()
 
     # Build tool documentation lines for only the enabled tools
     tool_lines = "\n".join(
@@ -1285,6 +1543,20 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     else:
         import_str = "..."
 
+    # Mode-specific CWD guidance. Project mode is the default and matches
+    # terminal()'s filesystem/interpreter; strict mode retains the isolated
+    # temp-dir staging and hermes-agent's own python.
+    if mode == "strict":
+        cwd_note = (
+            "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
+            "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files."
+        )
+    else:
+        cwd_note = (
+            "Scripts run in the session's working directory with the active venv's python, "
+            "so project deps (pandas, etc.) and relative paths work like in terminal()."
+        )
+
     description = (
         "Run a Python script that can call Hermes tools programmatically. "
         "Use this when you need 3+ tool calls with processing logic between them, "
@@ -1297,8 +1569,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
-        "terminal() is foreground-only (no background or pty). "
-        "If the session uses a cloud sandbox backend, treat it as resumable task state rather than a durable always-on machine.\n\n"
+        "terminal() is foreground-only (no background or pty).\n\n"
+        f"{cwd_note}\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
         "datetime, collections, etc.) for processing between tool calls.\n\n"
         "Also available (no import needed — built into hermes_tools):\n"
@@ -1327,12 +1599,13 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     }
 
 
-# Default schema used at registration time (all sandbox tools listed)
+# Default schema used at registration time (all sandbox tools listed,
+# current configured mode).  model_tools.py rebuilds per-session anyway.
 EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="execute_code",
@@ -1344,4 +1617,5 @@ registry.register(
         enabled_tools=kw.get("enabled_tools")),
     check_fn=check_sandbox_requirements,
     emoji="🐍",
+    max_result_size_chars=100_000,
 )

@@ -62,6 +62,11 @@ from atroposlib.type_definitions import Item
 
 from environments.agent_loop import AgentResult, HermesAgentLoop
 from environments.tool_context import ToolContext
+from tools.budget_config import (
+    DEFAULT_RESULT_SIZE_CHARS,
+    DEFAULT_TURN_BUDGET_CHARS,
+    DEFAULT_PREVIEW_SIZE_CHARS,
+)
 
 # Import hermes-agent toolset infrastructure
 from model_tools import get_tool_definitions
@@ -160,6 +165,32 @@ class HermesAgentEnvConfig(BaseEnvConfig):
         "Options: hermes, mistral, llama3_json, qwen, deepseek_v3, etc.",
     )
 
+    # --- Tool result budget ---
+    # Defaults imported from tools.budget_config (single source of truth).
+    default_result_size_chars: int = Field(
+        default=DEFAULT_RESULT_SIZE_CHARS,
+        description="Default per-tool threshold (chars) for persisting large results "
+        "to sandbox. Results exceeding this are written to /tmp/hermes-results/ "
+        "and replaced with a preview. Per-tool registry values take precedence "
+        "unless overridden via tool_result_overrides.",
+    )
+    turn_budget_chars: int = Field(
+        default=DEFAULT_TURN_BUDGET_CHARS,
+        description="Aggregate char budget per assistant turn. If all tool results "
+        "in a single turn exceed this, the largest are persisted to disk first.",
+    )
+    preview_size_chars: int = Field(
+        default=DEFAULT_PREVIEW_SIZE_CHARS,
+        description="Size of the inline preview shown after a tool result is persisted.",
+    )
+    tool_result_overrides: Optional[Dict[str, int]] = Field(
+        default=None,
+        description="Per-tool threshold overrides (chars). Keys are tool names, "
+        "values are char thresholds. Overrides both the default and registry "
+        "per-tool values. Example: {'terminal': 10000, 'search_files': 5000}. "
+        "Note: read_file is pinned to infinity and cannot be overridden.",
+    )
+
     # --- Provider-specific parameters ---
     # Passed as extra_body to the OpenAI client's chat.completions.create() call.
     # Useful for OpenRouter provider preferences, transforms, route settings, etc.
@@ -175,6 +206,16 @@ class HermesAgentEnvConfig(BaseEnvConfig):
         "chat.completions.create(). Used for OpenRouter provider preferences, "
         "transforms, and other provider-specific settings.",
     )
+
+    def build_budget_config(self):
+        """Build a BudgetConfig from env config fields."""
+        from tools.budget_config import BudgetConfig
+        return BudgetConfig(
+            default_result_size=self.default_result_size_chars,
+            turn_budget=self.turn_budget_chars,
+            preview_size=self.preview_size_chars,
+            tool_overrides=dict(self.tool_result_overrides) if self.tool_result_overrides else {},
+        )
 
 
 class HermesAgentBaseEnv(BaseEnv):
@@ -490,6 +531,7 @@ class HermesAgentBaseEnv(BaseEnv):
                         temperature=self.config.agent_temperature,
                         max_tokens=self.config.max_token_length,
                         extra_body=self.config.extra_body,
+                        budget_config=self.config.build_budget_config(),
                     )
                     result = await agent.run(messages)
             except NotImplementedError:
@@ -507,6 +549,7 @@ class HermesAgentBaseEnv(BaseEnv):
                     temperature=self.config.agent_temperature,
                     max_tokens=self.config.max_token_length,
                     extra_body=self.config.extra_body,
+                    budget_config=self.config.build_budget_config(),
                 )
                 result = await agent.run(messages)
         else:
@@ -520,6 +563,7 @@ class HermesAgentBaseEnv(BaseEnv):
                 temperature=self.config.agent_temperature,
                 max_tokens=self.config.max_token_length,
                 extra_body=self.config.extra_body,
+                budget_config=self.config.build_budget_config(),
             )
             result = await agent.run(messages)
 

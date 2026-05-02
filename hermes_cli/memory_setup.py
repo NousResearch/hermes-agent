@@ -12,6 +12,8 @@ import os
 import sys
 from pathlib import Path
 
+from hermes_constants import get_hermes_home
+
 
 # ---------------------------------------------------------------------------
 # Curses-based interactive picker (same pattern as hermes tools)
@@ -23,85 +25,13 @@ def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -
     items: list of (label, description) tuples.
     Returns selected index, or default on escape/quit.
     """
-    try:
-        import curses
-        result = [default]
-
-        def _menu(stdscr):
-            curses.curs_set(0)
-            if curses.has_colors():
-                curses.start_color()
-                curses.use_default_colors()
-                curses.init_pair(1, curses.COLOR_GREEN, -1)
-                curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                curses.init_pair(3, curses.COLOR_CYAN, -1)
-            cursor = default
-
-            while True:
-                stdscr.clear()
-                max_y, max_x = stdscr.getmaxyx()
-
-                # Title
-                try:
-                    stdscr.addnstr(0, 0, title, max_x - 1,
-                                   curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0))
-                    stdscr.addnstr(1, 0, "  ↑↓ navigate  ⏎ select  q quit", max_x - 1,
-                                   curses.color_pair(3) if curses.has_colors() else curses.A_DIM)
-                except curses.error:
-                    pass
-
-                for i, (label, desc) in enumerate(items):
-                    y = i + 3
-                    if y >= max_y - 1:
-                        break
-                    arrow = "→" if i == cursor else " "
-                    line = f" {arrow}  {label}"
-                    if desc:
-                        line += f"  {desc}"
-
-                    attr = curses.A_NORMAL
-                    if i == cursor:
-                        attr = curses.A_BOLD
-                        if curses.has_colors():
-                            attr |= curses.color_pair(1)
-                    try:
-                        stdscr.addnstr(y, 0, line[:max_x - 1], max_x - 1, attr)
-                    except curses.error:
-                        pass
-
-                stdscr.refresh()
-                key = stdscr.getch()
-
-                if key in (curses.KEY_UP, ord('k')):
-                    cursor = (cursor - 1) % len(items)
-                elif key in (curses.KEY_DOWN, ord('j')):
-                    cursor = (cursor + 1) % len(items)
-                elif key in (curses.KEY_ENTER, 10, 13):
-                    result[0] = cursor
-                    return
-                elif key in (27, ord('q')):
-                    return
-
-        curses.wrapper(_menu)
-        return result[0]
-
-    except Exception:
-        # Fallback: numbered input
-        print(f"\n  {title}\n")
-        for i, (label, desc) in enumerate(items):
-            marker = "→" if i == default else " "
-            d = f"  {desc}" if desc else ""
-            print(f"  {marker} {i + 1}. {label}{d}")
-        while True:
-            try:
-                val = input(f"\n  Select [1-{len(items)}] ({default + 1}): ")
-                if not val:
-                    return default
-                idx = int(val) - 1
-                if 0 <= idx < len(items):
-                    return idx
-            except (ValueError, EOFError):
-                return default
+    from hermes_cli.curses_ui import curses_radiolist
+    # Format (label, desc) tuples into display strings
+    display_items = [
+        f"{label}  {desc}" if desc else label
+        for label, desc in items
+    ]
+    return curses_radiolist(title, display_items, selected=default, cancel_returns=default)
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
@@ -128,9 +58,11 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
     import subprocess
-    from pathlib import Path as _Path
+    from plugins.memory import find_provider_dir
 
-    plugin_dir = _Path(__file__).parent.parent / "plugins" / "memory" / provider_name
+    plugin_dir = find_provider_dir(provider_name)
+    if not plugin_dir:
+        return
     yaml_path = plugin_dir / "plugin.yaml"
     if not yaml_path.exists():
         return
@@ -275,7 +207,7 @@ def cmd_setup_provider(provider_name: str) -> None:
         config["memory"] = {}
 
     if hasattr(provider, "post_setup"):
-        hermes_home = str(Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))))
+        hermes_home = str(get_hermes_home())
         provider.post_setup(hermes_home, config)
         return
 
@@ -326,7 +258,7 @@ def cmd_setup(args) -> None:
     # If the provider has a post_setup hook, delegate entirely to it.
     # The hook handles its own config, connection test, and activation.
     if hasattr(provider, "post_setup"):
-        hermes_home = str(Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))))
+        hermes_home = str(get_hermes_home())
         provider.post_setup(hermes_home, config)
         return
 
@@ -336,7 +268,7 @@ def cmd_setup(args) -> None:
     if not isinstance(provider_config, dict):
         provider_config = {}
 
-    env_path = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))) / ".env"
+    env_path = get_hermes_home() / ".env"
     env_writes = {}
 
     if schema:
@@ -394,13 +326,16 @@ def cmd_setup(args) -> None:
                 val = _prompt(desc, default=str(effective_default) if effective_default else None)
                 if val:
                     provider_config[key] = val
+                    # Also write to .env if this field has an env_var
+                    if env_var and env_var not in env_writes:
+                        env_writes[env_var] = val
 
     # Write activation key to config.yaml
     config["memory"]["provider"] = name
     save_config(config)
 
     # Write non-secret config to provider's native location
-    hermes_home = str(Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))))
+    hermes_home = str(get_hermes_home())
     if provider_config and hasattr(provider, "save_config"):
         try:
             provider.save_config(provider_config, hermes_home)
@@ -426,7 +361,7 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
 
     existing_lines = []
     if env_path.exists():
-        existing_lines = env_path.read_text().splitlines()
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
 
     updated_keys = set()
     new_lines = []
@@ -479,12 +414,13 @@ def cmd_status(args) -> None:
                     else:
                         print(f"  Status:    not available ✗")
                         schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
-                        secrets = [f for f in schema if f.get("secret")]
-                        if secrets:
+                        # Check all fields that have env_var (both secret and non-secret)
+                        required_fields = [f for f in schema if f.get("env_var")]
+                        if required_fields:
                             print(f"  Missing:")
-                            for s in secrets:
-                                env_var = s.get("env_var", "")
-                                url = s.get("url", "")
+                            for f in required_fields:
+                                env_var = f.get("env_var", "")
+                                url = f.get("url", "")
                                 is_set = bool(os.environ.get(env_var))
                                 mark = "✓" if is_set else "✗"
                                 line = f"    {mark} {env_var}"

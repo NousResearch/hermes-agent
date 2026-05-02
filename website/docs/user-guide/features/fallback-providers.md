@@ -21,7 +21,15 @@ When your main LLM provider encounters errors — rate limits, server overload, 
 
 ### Configuration
 
-Add a `fallback_model` section to `~/.hermes/config.yaml`:
+The easiest path is the interactive manager:
+
+```bash
+hermes fallback
+```
+
+`hermes fallback` reuses the provider picker from `hermes model` — same provider list, same credential prompts, same validation. Press `a` to add a fallback, `↑`/`↓` to reorder, `d` to remove, `q` to save and exit. Changes persist under `model.fallback_providers` in `config.yaml`.
+
+If you'd rather edit the YAML directly, add a `fallback_model` section to `~/.hermes/config.yaml`:
 
 ```yaml
 fallback_model:
@@ -31,13 +39,17 @@ fallback_model:
 
 Both `provider` and `model` are **required**. If either is missing, the fallback is disabled.
 
+:::note `fallback_model` vs `fallback_providers`
+`fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat. `fallback_providers` (plural, list) supports multiple fallbacks tried in order; `hermes fallback` writes to this key. When both are set, Hermes merges them with `fallback_providers` taking priority.
+:::
+
 ### Supported Providers
 
 | Provider | Value | Requirements |
 |----------|-------|-------------|
 | AI Gateway | `ai-gateway` | `AI_GATEWAY_API_KEY` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` |
-| Nous Portal | `nous` | `hermes login` (OAuth) |
+| Nous Portal | `nous` | `hermes auth` (OAuth) |
 | OpenAI Codex | `openai-codex` | `hermes model` (ChatGPT OAuth) |
 | GitHub Copilot | `copilot` | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` |
 | GitHub Copilot ACP | `copilot-acp` | External process (editor integration) |
@@ -47,23 +59,40 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | MiniMax | `minimax` | `MINIMAX_API_KEY` |
 | MiniMax (China) | `minimax-cn` | `MINIMAX_CN_API_KEY` |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` |
+| NVIDIA NIM | `nvidia` | `NVIDIA_API_KEY` (optional: `NVIDIA_BASE_URL`) |
+| Ollama Cloud | `ollama-cloud` | `OLLAMA_API_KEY` |
+| Google Gemini (OAuth) | `google-gemini-cli` | `hermes model` (Google OAuth; optional: `HERMES_GEMINI_PROJECT_ID`) |
+| Google AI Studio | `gemini` | `GOOGLE_API_KEY` (alias: `GEMINI_API_KEY`) |
+| xAI (Grok) | `xai` (alias `grok`) | `XAI_API_KEY` (optional: `XAI_BASE_URL`) |
+| AWS Bedrock | `bedrock` | Standard boto3 auth (`AWS_REGION` + `AWS_PROFILE` or `AWS_ACCESS_KEY_ID`) |
+| Qwen Portal (OAuth) | `qwen-oauth` | `hermes model` (Qwen Portal OAuth; optional: `HERMES_QWEN_BASE_URL`) |
+| MiniMax (OAuth) | `minimax-oauth` | `hermes model` (MiniMax portal OAuth) |
 | OpenCode Zen | `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
+| Xiaomi MiMo | `xiaomi` | `XIAOMI_API_KEY` |
+| Arcee AI | `arcee` | `ARCEEAI_API_KEY` |
+| GMI Cloud | `gmi` | `GMI_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
+| Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` (falls back to `DASHSCOPE_API_KEY`) |
+| Kimi / Moonshot (China) | `kimi-coding-cn` | `KIMI_CN_API_KEY` |
+| StepFun | `stepfun` | `STEPFUN_API_KEY` |
+| Tencent TokenHub | `tencent-tokenhub` | `TOKENHUB_API_KEY` |
+| Azure AI Foundry | `azure-foundry` | `AZURE_FOUNDRY_API_KEY` + `AZURE_FOUNDRY_BASE_URL` |
+| LM Studio (local) | `lmstudio` | `LM_API_KEY` (or none for local) + `LM_BASE_URL` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
-| Custom endpoint | `custom` | `base_url` + `api_key_env` (see below) |
+| Custom endpoint | `custom` | `base_url` + `key_env` (see below) |
 
 ### Custom Endpoint Fallback
 
-For a custom OpenAI-compatible endpoint, add `base_url` and optionally `api_key_env`:
+For a custom OpenAI-compatible endpoint, add `base_url` and optionally `key_env`:
 
 ```yaml
 fallback_model:
   provider: custom
   model: my-local-model
   base_url: http://localhost:8000/v1
-  api_key_env: MY_LOCAL_KEY          # env var name containing the API key
+  key_env: MY_LOCAL_KEY              # env var name containing the API key
 ```
 
 ### When Fallback Triggers
@@ -85,8 +114,8 @@ When triggered, Hermes:
 
 The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.
 
-:::info One-Shot
-Fallback activates **at most once** per session. If the fallback provider also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops.
+:::info Per-Turn, Not Per-Session
+Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
 :::
 
 ### Examples
@@ -119,7 +148,7 @@ fallback_model:
   provider: custom
   model: llama-3.1-70b
   base_url: http://localhost:8000/v1
-  api_key_env: LOCAL_API_KEY
+  key_env: LOCAL_API_KEY
 ```
 
 **Codex OAuth as fallback:**
@@ -155,11 +184,12 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 |------|-------------|-----------|
 | Vision | Image analysis, browser screenshots | `auxiliary.vision` |
 | Web Extract | Web page summarization | `auxiliary.web_extract` |
-| Compression | Context compression summaries | `auxiliary.compression` or `compression.summary_provider` |
+| Compression | Context compression summaries | `auxiliary.compression` |
 | Session Search | Past session summarization | `auxiliary.session_search` |
 | Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
-| Memory Flush | Memory consolidation | `auxiliary.flush_memories` |
+| Approval | Smart command-approval classification | `auxiliary.approval` |
+| Title Generation | Session title summaries | `auxiliary.title_generation` |
 
 ### Auto-Detection Chain
 
@@ -169,7 +199,7 @@ When a task's provider is set to `"auto"` (the default), Hermes tries providers 
 
 ```text
 OpenRouter → Nous Portal → Custom endpoint → Codex OAuth →
-API-key providers (z.ai, Kimi, MiniMax, Hugging Face, Anthropic) → give up
+API-key providers (z.ai, Kimi, MiniMax, Xiaomi MiMo, Hugging Face, Anthropic) → give up
 ```
 
 **For vision tasks:**
@@ -204,6 +234,9 @@ auxiliary:
   session_search:
     provider: "auto"
     model: ""
+    timeout: 30
+    max_concurrency: 3
+    extra_body: {}
 
   skills_hub:
     provider: "auto"
@@ -212,19 +245,16 @@ auxiliary:
   mcp:
     provider: "auto"
     model: ""
-
-  flush_memories:
-    provider: "auto"
-    model: ""
 ```
 
-Every task above follows the same **provider / model / base_url** pattern. Context compression uses its own top-level block:
+Every task above follows the same **provider / model / base_url** pattern. Context compression is configured under `auxiliary.compression`:
 
 ```yaml
-compression:
-  summary_provider: main                             # Same provider options as auxiliary tasks
-  summary_model: google/gemini-3-flash-preview
-  summary_base_url: null                             # Custom OpenAI-compatible endpoint
+auxiliary:
+  compression:
+    provider: main                                    # Same provider options as other auxiliary tasks
+    model: google/gemini-3-flash-preview
+    base_url: null                                    # Custom OpenAI-compatible endpoint
 ```
 
 And the fallback model uses:
@@ -236,17 +266,38 @@ fallback_model:
   # base_url: http://localhost:8000/v1               # Optional custom endpoint
 ```
 
+For `auxiliary.session_search`, Hermes also supports:
+
+- `max_concurrency` to limit how many session summaries run at once
+- `extra_body` to pass provider-specific OpenAI-compatible request fields through on the summarization calls
+
+Example:
+
+```yaml
+auxiliary:
+  session_search:
+    provider: main
+    model: glm-4.5-air
+    max_concurrency: 2
+    extra_body:
+      enable_thinking: false
+```
+
+If your provider does not support a native OpenAI-compatible reasoning-control field, `extra_body` will not help for that part; in that case `max_concurrency` is still useful for reducing request-burst 429s.
+
 All three — auxiliary, compression, fallback — work the same way: set `provider` to pick who handles the request, `model` to pick which model, and `base_url` to point at a custom endpoint (overrides provider).
 
 ### Provider Options for Auxiliary Tasks
+
+These options apply to `auxiliary:`, `compression:`, and `fallback_model:` configs only — `"main"` is **not** a valid value for your top-level `model.provider`. For custom endpoints, use `provider: custom` in your `model:` section (see [AI Providers](/docs/integrations/providers)).
 
 | Provider | Description | Requirements |
 |----------|-------------|-------------|
 | `"auto"` | Try providers in order until one works (default) | At least one provider configured |
 | `"openrouter"` | Force OpenRouter | `OPENROUTER_API_KEY` |
-| `"nous"` | Force Nous Portal | `hermes login` |
+| `"nous"` | Force Nous Portal | `hermes auth` |
 | `"codex"` | Force Codex OAuth | `hermes model` → Codex |
-| `"main"` | Use whatever provider the main agent uses | Active main provider configured |
+| `"main"` | Use whatever provider the main agent uses (auxiliary tasks only) | Active main provider configured |
 | `"anthropic"` | Force Anthropic native | `ANTHROPIC_API_KEY` or Claude Code credentials |
 
 ### Direct Endpoint Override
@@ -267,15 +318,18 @@ auxiliary:
 
 ## Context Compression Fallback
 
-Context compression has a legacy configuration path in addition to the auxiliary system:
+Context compression uses the `auxiliary.compression` config block to control which model and provider handles summarization:
 
 ```yaml
-compression:
-  summary_provider: "auto"                    # auto | openrouter | nous | main
-  summary_model: "google/gemini-3-flash-preview"
+auxiliary:
+  compression:
+    provider: "auto"                              # auto | openrouter | nous | main
+    model: "google/gemini-3-flash-preview"
 ```
 
-This is equivalent to configuring `auxiliary.compression.provider` and `auxiliary.compression.model`. If both are set, the `auxiliary.compression` values take precedence.
+:::info Legacy migration
+Older configs with `compression.summary_model` / `compression.summary_provider` / `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17).
+:::
 
 If no provider is available for compression, Hermes drops middle conversation turns without generating a summary rather than failing the session.
 
@@ -319,13 +373,14 @@ See [Scheduled Tasks (Cron)](/docs/user-guide/features/cron) for full configurat
 
 | Feature | Fallback Mechanism | Config Location |
 |---------|-------------------|----------------|
-| Main agent model | `fallback_model` in config.yaml — one-shot failover on errors | `fallback_model:` (top-level) |
+| Main agent model | `fallback_model` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_model:` (top-level) |
 | Vision | Auto-detection chain + internal OpenRouter retry | `auxiliary.vision` |
 | Web extraction | Auto-detection chain + internal OpenRouter retry | `auxiliary.web_extract` |
-| Context compression | Auto-detection chain, degrades to no-summary if unavailable | `auxiliary.compression` or `compression.summary_provider` |
+| Context compression | Auto-detection chain, degrades to no-summary if unavailable | `auxiliary.compression` |
 | Session search | Auto-detection chain | `auxiliary.session_search` |
 | Skills hub | Auto-detection chain | `auxiliary.skills_hub` |
 | MCP helpers | Auto-detection chain | `auxiliary.mcp` |
-| Memory flush | Auto-detection chain | `auxiliary.flush_memories` |
+| Approval classification | Auto-detection chain | `auxiliary.approval` |
+| Title generation | Auto-detection chain | `auxiliary.title_generation` |
 | Delegation | Provider override only (no automatic fallback) | `delegation.provider` / `delegation.model` |
 | Cron jobs | Per-job provider override only (no automatic fallback) | Per-job `provider` / `model` |

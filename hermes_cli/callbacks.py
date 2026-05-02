@@ -25,7 +25,7 @@ def clarify_callback(cli, question, choices):
 
     timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
     response_queue = queue.Queue()
-    is_open_ended = not choices or len(choices) == 0
+    is_open_ended = not choices
 
     cli._clarify_state = {
         "question": question,
@@ -63,47 +63,6 @@ def clarify_callback(cli, question, choices):
     )
 
 
-def sudo_password_callback(cli) -> str:
-    """Prompt for sudo password through the TUI.
-
-    Sets up a password input area and blocks until the user responds.
-    """
-    timeout = 45
-    response_queue = queue.Queue()
-
-    cli._sudo_state = {"response_queue": response_queue}
-    cli._sudo_deadline = _time.monotonic() + timeout
-
-    if hasattr(cli, "_app") and cli._app:
-        cli._app.invalidate()
-
-    while True:
-        try:
-            result = response_queue.get(timeout=1)
-            cli._sudo_state = None
-            cli._sudo_deadline = 0
-            if hasattr(cli, "_app") and cli._app:
-                cli._app.invalidate()
-            if result:
-                cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
-            else:
-                cprint(f"\n{_DIM}  ⏭ Skipped{_RST}")
-            return result
-        except queue.Empty:
-            remaining = cli._sudo_deadline - _time.monotonic()
-            if remaining <= 0:
-                break
-            if hasattr(cli, "_app") and cli._app:
-                cli._app.invalidate()
-
-    cli._sudo_state = None
-    cli._sudo_deadline = 0
-    if hasattr(cli, "_app") and cli._app:
-        cli._app.invalidate()
-    cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
-    return ""
-
-
 def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
     """Prompt for a secret value through the TUI (e.g. API keys for skills).
 
@@ -116,12 +75,12 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         if not hasattr(cli, "_secret_deadline"):
             cli._secret_deadline = 0
         try:
-            value = getpass.getpass(f"{prompt} (hidden, Enter to skip): ")
+            value = getpass.getpass(f"{prompt} (hidden, ESC or empty Enter to skip): ")
         except (EOFError, KeyboardInterrupt):
             value = ""
 
         if not value:
-            cprint(f"\n{_DIM}  ⏭ Secret entry cancelled{_RST}")
+            cprint(f"\n{_DIM}  ⏭ Secret entry skipped{_RST}")
             return {
                 "success": True,
                 "reason": "cancelled",
@@ -174,7 +133,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
                 cli._app.invalidate()
 
             if not value:
-                cprint(f"\n{_DIM}  ⏭ Secret entry cancelled{_RST}")
+                cprint(f"\n{_DIM}  ⏭ Secret entry skipped{_RST}")
                 return {
                     "success": True,
                     "reason": "cancelled",

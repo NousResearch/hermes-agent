@@ -121,7 +121,7 @@ class TestSendWithReplyToMode:
         adapter = adapter_factory(reply_to_mode="off")
         adapter._bot = MagicMock()
         adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
-        adapter.truncate_message = lambda content, max_len: ["chunk1", "chunk2", "chunk3"]
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2", "chunk3"]
 
         await adapter.send("12345", "test content", reply_to="999")
 
@@ -133,7 +133,7 @@ class TestSendWithReplyToMode:
         adapter = adapter_factory(reply_to_mode="first")
         adapter._bot = MagicMock()
         adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
-        adapter.truncate_message = lambda content, max_len: ["chunk1", "chunk2", "chunk3"]
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2", "chunk3"]
 
         await adapter.send("12345", "test content", reply_to="999")
 
@@ -148,7 +148,7 @@ class TestSendWithReplyToMode:
         adapter = adapter_factory(reply_to_mode="all")
         adapter._bot = MagicMock()
         adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
-        adapter.truncate_message = lambda content, max_len: ["chunk1", "chunk2", "chunk3"]
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2", "chunk3"]
 
         await adapter.send("12345", "test content", reply_to="999")
 
@@ -162,7 +162,7 @@ class TestSendWithReplyToMode:
         adapter = adapter_factory(reply_to_mode="all")
         adapter._bot = MagicMock()
         adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
-        adapter.truncate_message = lambda content, max_len: ["chunk1", "chunk2"]
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1", "chunk2"]
 
         await adapter.send("12345", "test content", reply_to=None)
 
@@ -175,7 +175,7 @@ class TestSendWithReplyToMode:
         adapter = adapter_factory(reply_to_mode="first")
         adapter._bot = MagicMock()
         adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
-        adapter.truncate_message = lambda content, max_len: ["single chunk"]
+        adapter.truncate_message = lambda content, max_len, **kw: ["single chunk"]
 
         await adapter.send("12345", "test", reply_to="999")
 

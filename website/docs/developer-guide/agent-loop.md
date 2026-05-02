@@ -6,7 +6,7 @@ description: "Detailed walkthrough of AIAgent execution, API modes, tools, callb
 
 # Agent Loop Internals
 
-The core orchestration engine is `run_agent.py`'s `AIAgent` class — roughly 9,200 lines that handle everything from prompt assembly to tool dispatch to provider failover.
+The core orchestration engine is `run_agent.py`'s `AIAgent` class — roughly 13,700 lines that handle everything from prompt assembly to tool dispatch to provider failover.
 
 ## Core Responsibilities
 
@@ -72,7 +72,7 @@ run_conversation()
      - anthropic_messages: convert via anthropic_adapter.py
   6. Inject ephemeral prompt layers (budget warnings, context pressure)
   7. Apply prompt caching markers if on Anthropic
-  8. Make interruptible API call (_api_call_with_interrupt)
+  8. Make interruptible API call (_interruptible_api_call)
   9. Parse response:
      - If tool_calls: execute them, append results, loop back to step 5
      - If text response: persist session, flush memory if needed, return
@@ -105,16 +105,17 @@ Providers validate these sequences and will reject malformed histories.
 
 ## Interruptible API Calls
 
-API requests are wrapped in `_api_call_with_interrupt()` which runs the actual HTTP call in a background thread while monitoring an interrupt event:
+API requests are wrapped in `_interruptible_api_call()` which runs the actual HTTP call in a background thread while monitoring an interrupt event:
 
 ```text
-┌──────────────────────┐     ┌──────────────┐
-│  Main thread         │     │  API thread   │
-│  wait on:            │────▶│  HTTP POST    │
-│  - response ready    │     │  to provider  │
-│  - interrupt event   │     └──────────────┘
-│  - timeout           │
-└──────────────────────┘
+┌────────────────────────────────────────────────────┐
+│  Main thread                  API thread           │
+│                                                    │
+│   wait on:                     HTTP POST           │
+│    - response ready     ───▶   to provider         │
+│    - interrupt event                               │
+│    - timeout                                       │
+└────────────────────────────────────────────────────┘
 ```
 
 When interrupted (user sends new message, `/stop` command, or signal):
@@ -151,9 +152,11 @@ for each tool_call in response.tool_calls:
 Some tools are intercepted by `run_agent.py` *before* reaching `handle_function_call()`:
 
 | Tool | Why intercepted |
-|------|-----------------|
+|------|--------------------|
 | `todo` | Reads/writes agent-local task state |
 | `memory` | Writes to persistent memory files with character limits |
+| `session_search` | Queries session history via the agent's session DB |
+| `delegate_task` | Spawns subagent(s) with isolated context |
 
 These tools modify agent state directly and return synthetic tool results without going through the registry.
 
@@ -179,8 +182,7 @@ These tools modify agent state directly and return synthetic tool results withou
 The agent tracks iterations via `IterationBudget`:
 
 - Default: 90 iterations (configurable via `agent.max_turns`)
-- Shared across parent and child agents — a subagent consumes from the parent's budget
-- At 70%+ usage, `_get_budget_warning()` appends a `[BUDGET WARNING: ...]` to the last tool result
+- Each agent gets its own budget. Subagents get independent budgets capped at `delegation.max_iterations` (default 50) — total iterations across parent + subagents can exceed the parent's cap
 - At 100%, the agent stops and returns a summary of work done
 
 ### Fallback Model
@@ -220,9 +222,10 @@ After each turn:
 
 | File | Purpose |
 |------|---------|
-| `run_agent.py` | AIAgent class — the complete agent loop (~9,200 lines) |
+| `run_agent.py` | AIAgent class — the complete agent loop (~13,700 lines) |
 | `agent/prompt_builder.py` | System prompt assembly from memory, skills, context files, personality |
-| `agent/context_compressor.py` | Conversation compression algorithm |
+| `agent/context_engine.py` | ContextEngine ABC — pluggable context management |
+| `agent/context_compressor.py` | Default engine — lossy summarization algorithm |
 | `agent/prompt_caching.py` | Anthropic prompt caching markers and cache metrics |
 | `agent/auxiliary_client.py` | Auxiliary LLM client for side tasks (vision, summarization) |
 | `model_tools.py` | Tool schema collection, `handle_function_call()` dispatch |

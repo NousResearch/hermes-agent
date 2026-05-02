@@ -110,7 +110,7 @@ class _FakeResponse:
 def test_managed_modal_execute_polls_until_completed(monkeypatch):
     _install_fake_tools_package()
     managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
-    modal_common = sys.modules["tools.environments.modal_common"]
+    modal_common = sys.modules["tools.environments.modal_utils"]
 
     calls = []
     poll_count = {"value": 0}
@@ -173,7 +173,7 @@ def test_managed_modal_create_sends_a_stable_idempotency_key(monkeypatch):
 def test_managed_modal_execute_cancels_on_interrupt(monkeypatch):
     interrupt_event = _install_fake_tools_package()
     managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
-    modal_common = sys.modules["tools.environments.modal_common"]
+    modal_common = sys.modules["tools.environments.modal_utils"]
 
     calls = []
 
@@ -215,7 +215,7 @@ def test_managed_modal_execute_cancels_on_interrupt(monkeypatch):
 def test_managed_modal_execute_returns_descriptive_error_on_missing_exec(monkeypatch):
     _install_fake_tools_package()
     managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
-    modal_common = sys.modules["tools.environments.modal_common"]
+    modal_common = sys.modules["tools.environments.modal_utils"]
 
     def fake_request(method, url, headers=None, json=None, timeout=None):
         if method == "POST" and url.endswith("/v1/sandboxes"):
@@ -293,10 +293,10 @@ def test_managed_modal_rejects_host_credential_passthrough():
 def test_managed_modal_execute_times_out_and_cancels(monkeypatch):
     _install_fake_tools_package()
     managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
-    modal_common = sys.modules["tools.environments.modal_common"]
+    modal_common = sys.modules["tools.environments.modal_utils"]
 
     calls = []
-    monotonic_values = iter([0.0, 12.5])
+    monotonic_values = iter([0.0, 0.0, 0.0, 12.5, 12.5])
 
     def fake_request(method, url, headers=None, json=None, timeout=None):
         calls.append((method, url, json, timeout))

@@ -37,16 +37,25 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 
 ```json
 {
-  "id": "job_abc123",
+  "id": "a1b2c3d4e5f6",
   "name": "Daily briefing",
   "prompt": "Summarize today's AI news and funding rounds",
-  "schedule": "0 9 * * *",
+  "schedule": {
+    "kind": "cron",
+    "expr": "0 9 * * *",
+    "display": "0 9 * * *"
+  },
   "skills": ["ai-funding-daily-report"],
   "deliver": "telegram:-1001234567890",
-  "repeat": null,
+  "repeat": {
+    "times": null,
+    "completed": 42
+  },
   "state": "scheduled",
-  "next_run": "2025-01-16T09:00:00Z",
-  "run_count": 42,
+  "enabled": true,
+  "next_run_at": "2025-01-16T09:00:00Z",
+  "last_run_at": "2025-01-15T09:00:00Z",
+  "last_status": "ok",
   "created_at": "2025-01-01T00:00:00Z",
   "model": null,
   "provider": null,
@@ -93,7 +102,7 @@ tick()
 
 ### Gateway Integration
 
-In gateway mode, the scheduler tick is integrated into the gateway's main event loop. The gateway calls `scheduler.tick()` on its periodic maintenance cycle, which runs alongside message handling.
+In gateway mode, the scheduler runs in a dedicated background thread (`_start_cron_ticker` in `gateway/run.py`) that calls `scheduler.tick()` every 60 seconds alongside message handling.
 
 In CLI mode, cron jobs only fire when `hermes cron` commands are run or during active CLI sessions.
 
@@ -132,6 +141,22 @@ import requests, json
 # Print summary to stdout — agent analyzes and reports
 ```
 
+The script timeout defaults to 120 seconds. `_get_script_timeout()` resolves the limit through a three-layer chain:
+
+1. **Module-level override** — `_SCRIPT_TIMEOUT` (for tests/monkeypatching). Only used when it differs from the default.
+2. **Environment variable** — `HERMES_CRON_SCRIPT_TIMEOUT`
+3. **Config** — `cron.script_timeout_seconds` in `config.yaml` (read via `load_config()`)
+4. **Default** — 120 seconds
+
+### Provider Recovery
+
+`run_job()` passes the user's configured fallback providers and credential pool into the `AIAgent` instance:
+
+- **Fallback providers** — reads `fallback_providers` (list) or `fallback_model` (legacy dict) from `config.yaml`, matching the gateway's `_load_fallback_model()` pattern. Passed as `fallback_model=` to `AIAgent.__init__`, which normalizes both formats into a fallback chain.
+- **Credential pool** — loads via `load_pool(provider)` from `agent.credential_pool` using the resolved runtime provider name. Only passed when the pool has credentials (`pool.has_credentials()`). Enables same-provider key rotation on 429/rate-limit errors.
+
+This mirrors the gateway's behavior — without it, cron agents would fail on rate limits without attempting recovery.
+
 ## Delivery Model
 
 Cron job results can be delivered to any supported platform:
@@ -153,6 +178,9 @@ Cron job results can be delivered to any supported platform:
 | DingTalk | `dingtalk` | Deliver to DingTalk |
 | Feishu | `feishu` | Deliver to Feishu |
 | WeCom | `wecom` | Deliver to WeCom |
+| Weixin | `weixin` | Deliver to Weixin (WeChat) |
+| BlueBubbles | `bluebubbles` | Deliver to iMessage via BlueBubbles |
+| QQ Bot | `qqbot` | Deliver to QQ (Tencent) via Official API v2 |
 
 For Telegram topics, use the format `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-1001234567890:17585`).
 
@@ -177,7 +205,7 @@ Cron-run sessions have the `cronjob` toolset disabled. This prevents:
 
 ## Locking
 
-The scheduler uses file-based locking to prevent overlapping ticks from executing the same due-job batch twice. This is important in gateway mode where multiple maintenance cycles could overlap if a previous tick takes longer than the tick interval.
+The scheduler uses cross-process file-based locking (`fcntl.flock` on Unix, `msvcrt.locking` on Windows) to prevent overlapping ticks from executing the same due-job batch twice — even between the gateway's in-process ticker and a standalone `hermes cron` / manual `tick()` call. If the lock cannot be acquired, `tick()` returns 0 immediately.
 
 ## CLI Interface
 
@@ -185,7 +213,7 @@ The `hermes cron` CLI provides direct job management:
 
 ```bash
 hermes cron list                    # Show all jobs
-hermes cron add                     # Interactive job creation
+hermes cron create                  # Interactive job creation (alias: add)
 hermes cron edit <job_id>           # Edit job configuration
 hermes cron pause <job_id>          # Pause a running job
 hermes cron resume <job_id>         # Resume a paused job

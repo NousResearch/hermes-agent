@@ -7,7 +7,6 @@ from gateway.session import (
     _hash_id,
     _hash_sender_id,
     _hash_chat_id,
-    _looks_like_phone,
 )
 from gateway.config import Platform, HomeChannel
 
@@ -38,14 +37,6 @@ class TestHashHelpers:
         result = _hash_chat_id("12345")
         assert len(result) == 12
         assert "12345" not in result
-
-    def test_looks_like_phone(self):
-        assert _looks_like_phone("+15551234567")
-        assert _looks_like_phone("15551234567")
-        assert _looks_like_phone("+1-555-123-4567")
-        assert not _looks_like_phone("alice")
-        assert not _looks_like_phone("user-123")
-        assert not _looks_like_phone("")
 
 
 # ---------------------------------------------------------------------------

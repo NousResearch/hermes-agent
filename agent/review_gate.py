@@ -45,15 +45,6 @@ MAX_REVISIONS = 1
 
 
 @dataclass
-class CheckResult:
-    check_id: str
-    question: str
-    passed: bool
-    check_type: str  # "rule" | "llm"
-    detail: str = ""
-
-
-@dataclass
 class ReviewResult:
     task_id: str
     checked_at: str
@@ -327,44 +318,27 @@ class ReviewGate:
         revision_count: int,
     ) -> tuple:
         """Returns (needs_revision: bool, instruction: str)."""
-        reasons = []
-
-        # 1. No Task Card (structural)
-        has_tc = rule_checks.get("has_task_card", {})
-        if has_tc.get("pass") is False:
-            reasons.append("缺少 Task Card")
-
-        # 2. No compiled_intent
-        has_ci = rule_checks.get("has_compiled_intent", {})
-        if has_ci.get("pass") is False:
-            reasons.append("缺少 compiled_intent")
-
-        # 3. No result_summary
-        has_rs = rule_checks.get("has_result_summary", {})
-        if has_rs.get("pass") is False:
-            reasons.append("缺少 result_summary")
-
-        # 4. Not addressing success_criteria
-        sc = rule_checks.get("success_criteria_addressed", {})
-        if sc.get("pass") is False:
-            reasons.append("未回应所有 success_criteria")
-
-        # 5. Any rule check fails
-        failed_rules = [
-            c["id"] for c in rule_checks.values()
-            if c.get("pass") is False
+        # Collect failed blocking-rule IDs
+        failed_blocking = [
+            cid for cid in BLOCKING_RULE_IDS
+            if rule_checks.get(cid, {}).get("pass") is False
         ]
-        if failed_rules:
-            reasons.append(f"Rule checks 未通过: {failed_rules}")
+        if failed_blocking:
+            reasons.append(f"结构性检查未通过: {failed_blocking}")
 
-        # 6. Quality score < threshold and no revision yet
+        # Any other rule check fails (non-blocking rules)
+        failed_other = [
+            c["id"] for c in rule_checks.values()
+            if c.get("pass") is False and c["id"] not in BLOCKING_RULE_IDS
+        ]
+        if failed_other:
+            reasons.append(f"Rule checks 未通过: {failed_other}")
+
+        # Quality score < threshold and no revision yet
         if quality_score < QUALITY_THRESHOLD and revision_count < 1:
             reasons.append(
                 f"质量评分 {quality_score} < {QUALITY_THRESHOLD}，需要修改"
             )
-
-        # 7. needs_revision = true (from previous review) and no revision yet
-        # (handled by revision_count < 1 + quality_score logic)
 
         if reasons:
             return True, "; ".join(reasons)

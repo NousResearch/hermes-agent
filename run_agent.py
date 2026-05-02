@@ -14299,7 +14299,14 @@ class AIAgent:
                 memory_store = getattr(self, "_memory_store", None)
                 if memory_store is not None:
                     try:
-                        mem_entries = memory_store._parse_entries("user")
+                        # Read from both stores: user preferences in USER.md,
+                        # project context / principles in MEMORY.md
+                        mem_entries = []
+                        for target in ("user", "memory"):
+                            try:
+                                mem_entries.extend(memory_store._parse_entries(target))
+                            except Exception:
+                                pass
                         if mem_entries:
                             dummy_llm = {
                                 "matches_user_preferences": {"question": "", "pass": None},
@@ -14348,7 +14355,7 @@ class AIAgent:
 
         # ── Hermes 2.8: Final event log entries ──
         tc = getattr(self, "_current_task_card", None)
-        if tc is not None:
+        if tc is not None and not _review_blocked:
             try:
                 if completed and not interrupted:
                     self._event_log.log_execution_completed(

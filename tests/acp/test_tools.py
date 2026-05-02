@@ -189,15 +189,13 @@ class TestBuildToolStart:
         assert "ls -la /tmp" in text
 
     def test_build_tool_start_for_read_file(self):
-        """read_file should include the path in content."""
+        """read_file start should stay compact; completion carries file contents."""
         args = {"path": "/etc/hosts", "offset": 1, "limit": 50}
         result = build_tool_start("tc-3", "read_file", args)
         assert isinstance(result, ToolCallStart)
         assert result.kind == "read"
-        assert len(result.content) >= 1
-        content_item = result.content[0]
-        assert isinstance(content_item, ContentToolCallContent)
-        assert "/etc/hosts" in content_item.content.text
+        assert result.content is None
+        assert result.raw_input is None
 
     def test_build_tool_start_for_search(self):
         """search_files should include pattern in content."""

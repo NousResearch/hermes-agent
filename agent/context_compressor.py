@@ -387,6 +387,13 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        # ── qwen_aware extensions ────────────────────────────────────────
+        qwen_aware_enabled: bool = False,
+        dedup_operations: bool = False,
+        anchor_first_assistant: bool = False,
+        threshold_absolute_max: int | None = None,
+        message_threshold: int | None = None,
+        turn_threshold: int | None = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -398,6 +405,20 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+
+        # qwen_aware extensions (must precede self.threshold_tokens calculation)
+        self.qwen_aware_enabled = qwen_aware_enabled
+        self.dedup_operations = dedup_operations
+        self.anchor_first_assistant = anchor_first_assistant
+        self.threshold_absolute_max = threshold_absolute_max
+        self.message_threshold = message_threshold
+        self.turn_threshold = turn_threshold
+
+        # Per-event metrics scratch + result handle
+        from agent.compaction_result import CompactionResult  # noqa: E402 — top-level import in Task 6
+        self.last_compaction_result: "CompactionResult | None" = None
+        self._last_trigger: str | None = None
+        self._last_op_deduped: int = 0
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,

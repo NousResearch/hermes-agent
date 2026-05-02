@@ -1809,6 +1809,17 @@ class AIAgent:
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
+        # Read the qwen-aware extensions (all optional, defaults preserve current behavior)
+        _qa_cfg = _compression_cfg.get("qwen_aware") or {}
+        if not isinstance(_qa_cfg, dict):
+            _qa_cfg = {}
+        qwen_aware_enabled = bool(_qa_cfg.get("enabled", False))
+        qwen_aware_dedup_operations = bool(_qa_cfg.get("dedup_operations", False))
+        qwen_aware_anchor_first_assistant = bool(_qa_cfg.get("anchor_first_assistant", False))
+        qwen_aware_threshold_absolute_max = _qa_cfg.get("threshold_absolute_max")  # None or int
+        qwen_aware_message_threshold = _qa_cfg.get("message_threshold")  # None or int
+        qwen_aware_turn_threshold = _qa_cfg.get("turn_threshold")  # None or int
+
         # Read optional explicit context_length override for the auxiliary
         # compression model. Custom endpoints often cannot report this via
         # /models, so the startup feasibility check needs the config hint.
@@ -1991,6 +2002,13 @@ class AIAgent:
                 config_context_length=_config_context_length,
                 provider=self.provider,
                 api_mode=self.api_mode,
+                # qwen_aware
+                qwen_aware_enabled=qwen_aware_enabled,
+                dedup_operations=qwen_aware_dedup_operations,
+                anchor_first_assistant=qwen_aware_anchor_first_assistant,
+                threshold_absolute_max=qwen_aware_threshold_absolute_max,
+                message_threshold=qwen_aware_message_threshold,
+                turn_threshold=qwen_aware_turn_threshold,
             )
         self.compression_enabled = compression_enabled
 

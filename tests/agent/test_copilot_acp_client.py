@@ -280,6 +280,21 @@ def test_classify_claude_response_format_mismatch_retryable():
     assert "not a Bash/Read tool permission problem" in message
 
 
+def test_classify_unsupported_claude_acp_args_non_retryable():
+    category, retryable, message = classify_acp_failure(
+        stderr_text="error: unknown option '--acp'",
+        exception_text="ACP process exited early while waiting for initialize.",
+        command_text="claude",
+        command_args=("--acp", "--stdio"),
+    )
+
+    assert category == "unsupported_cli_args"
+    assert retryable is False
+    assert "ACP subprocess failed before protocol startup." in message
+    assert "does not support the requested ACP args" in message
+    assert "Current claude CLI does not expose --acp." in message
+
+
 def test_classify_non_retryable_permission_failure():
     category, retryable, message = classify_acp_failure(
         stderr_text="Permission denied while starting tool",
@@ -327,6 +342,27 @@ def test_run_prompt_does_not_retry_non_transient_failure(monkeypatch, tmp_path):
 
     with pytest.raises(ACPInvocationError, match="Permission denied"):
         client._run_prompt("hello", timeout_seconds=30.0)
+
+    assert calls["count"] == 1
+
+
+def test_run_prompt_does_not_retry_unsupported_cli_args(monkeypatch, tmp_path):
+    client = _make_home_client(tmp_path)
+    calls = {"count": 0}
+
+    def _fake_once(prompt_text, *, timeout_seconds):
+        calls["count"] += 1
+        raise ACPInvocationError(
+            "ACP subprocess failed before protocol startup.\n"
+            "The configured command does not support the requested ACP args.\n"
+            "Current claude CLI does not expose --acp.",
+            category="unsupported_cli_args",
+            retryable=False,
+        )
+
+    monkeypatch.setattr(client, "_run_prompt_once", _fake_once)
+    with pytest.raises(ACPInvocationError, match="Current claude CLI does not expose --acp."):
+        client._run_prompt("hello", timeout_seconds=1)
 
     assert calls["count"] == 1
 

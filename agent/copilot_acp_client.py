@@ -71,6 +71,13 @@ _TIMEOUT_PATTERNS = ("timed out", "timeout")
 _HTTP_500_PATTERNS = ("api error: 500", "http 500", "500 internal server error")
 _INVALID_JSON_PATTERNS = ("unexpected token", "is not valid json", "json parse", "jsondecodeerror")
 _SSE_PATTERNS = ("event:", "data:")
+_UNSUPPORTED_ARGS_PATTERNS = (
+    "unknown option",
+    "unrecognized option",
+    "unsupported option",
+    "invalid option",
+    "no such option",
+)
 _NON_RETRYABLE_PATTERNS = (
     "401",
     "403",
@@ -125,12 +132,51 @@ def _format_failure_diagnostics(stdout_text: str, stderr_text: str) -> str:
     return "\n\nDiagnostics:\n" + "\n\n".join(parts)
 
 
+def _extract_unsupported_option(text: str) -> str | None:
+    match = re.search(
+        r"(?:unknown|unrecognized|unsupported|invalid|no such)\s+option\s+['\"]?(--[A-Za-z0-9][A-Za-z0-9-]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _format_unsupported_args_message(
+    *,
+    combined_text: str,
+    diagnostics: str,
+    command_text: str,
+    command_args: tuple[str, ...],
+) -> str:
+    command_name = Path(command_text or "").name or "configured command"
+    unsupported_option = _extract_unsupported_option(combined_text)
+    lines = [
+        "ACP subprocess failed before protocol startup.",
+        "The configured command does not support the requested ACP args.",
+    ]
+    if unsupported_option and command_name == "claude" and unsupported_option == "--acp":
+        lines.append("Current claude CLI does not expose --acp.")
+    elif unsupported_option:
+        lines.append(f"Current {command_name} CLI does not expose {unsupported_option}.")
+    elif command_args:
+        lines.append(
+            f"Current {command_name} CLI does not support the configured ACP arguments: {' '.join(command_args)}."
+        )
+    else:
+        lines.append(f"Current {command_name} CLI does not support the configured ACP arguments.")
+    return "\n".join(lines) + diagnostics
+
+
 def classify_acp_failure(
     *,
     stdout_text: str = "",
     stderr_text: str = "",
     exception_text: str = "",
     timed_out: bool = False,
+    command_text: str = "",
+    command_args: tuple[str, ...] = (),
 ) -> tuple[str, bool, str]:
     combined = "\n".join(part for part in (exception_text, stdout_text, stderr_text) if part).strip()
     lowered = combined.lower()
@@ -141,6 +187,18 @@ def classify_acp_failure(
             "timeout",
             True,
             "ACP subprocess timed out waiting for a response." + diagnostics,
+        )
+
+    if any(pattern in lowered for pattern in _UNSUPPORTED_ARGS_PATTERNS):
+        return (
+            "unsupported_cli_args",
+            False,
+            _format_unsupported_args_message(
+                combined_text=combined,
+                diagnostics=diagnostics,
+                command_text=command_text,
+                command_args=command_args,
+            ),
         )
 
     if any(pattern in lowered for pattern in _NON_RETRYABLE_PATTERNS):
@@ -681,6 +739,8 @@ class CopilotACPClient:
                         stdout_text="\n".join(stdout_tail).strip(),
                         stderr_text="\n".join(stderr_tail).strip(),
                         exception_text=f"ACP method {method} failed: {err.get('message') or err}",
+                        command_text=self._acp_command,
+                        command_args=tuple(self._acp_args),
                     )
                     raise ACPInvocationError(
                         failure_message,
@@ -696,6 +756,8 @@ class CopilotACPClient:
                     stdout_text=stdout_text,
                     stderr_text=stderr_text,
                     exception_text=f"ACP process exited early while waiting for {method}.",
+                    command_text=self._acp_command,
+                    command_args=tuple(self._acp_args),
                 )
                 raise ACPInvocationError(
                     failure_message,
@@ -707,6 +769,8 @@ class CopilotACPClient:
                 stderr_text=stderr_text,
                 exception_text=f"Timed out waiting for ACP response to {method} after {timeout_seconds:.1f}s.",
                 timed_out=True,
+                command_text=self._acp_command,
+                command_args=tuple(self._acp_args),
             )
             raise ACPInvocationError(
                 failure_message,

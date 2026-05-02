@@ -13251,6 +13251,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except OSError:
                     pass
 
+    async def _send_queued_followup_first_response(
+        self,
+        adapter,
+        source,
+        response: str,
+        metadata,
+        session_key,
+    ) -> None:
+        """Deliver the agent's first response before draining a queued
+        follow-up, stripping ``MEDIA:`` tags so chained ``/queue`` items
+        don't drop their attachments (#18539).
+
+        Without this, the queue-drain path called ``adapter.send(raw_text)``
+        directly — the per-item ``MEDIA:/path`` markers leaked through as
+        plain text and only the last queue item's files reached the
+        platform. Mirrors the normal ``_process_message_background`` path:
+        ``extract_media`` first, send the cleaned text, then upload each
+        file via ``send_voice`` (when flagged voice) or ``send_document``.
+        """
+        media_files, cleaned_text = adapter.extract_media(response)
+        await adapter.send(
+            source.chat_id,
+            cleaned_text,
+            metadata=metadata,
+        )
+        for media_path, is_voice in media_files or []:
+            try:
+                if is_voice and hasattr(adapter, "send_voice"):
+                    await adapter.send_voice(
+                        chat_id=source.chat_id,
+                        audio_path=media_path,
+                        metadata=metadata,
+                    )
+                else:
+                    await adapter.send_document(
+                        chat_id=source.chat_id,
+                        file_path=media_path,
+                        metadata=metadata,
+                    )
+            except Exception as media_err:
+                logger.warning(
+                    "Queued follow-up for session %s: failed to deliver MEDIA file %s: %s",
+                    session_key or "?", media_path, media_err,
+                )
+
     async def _deliver_media_from_response(
         self,
         response: str,
@@ -19980,10 +20025,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
-                            await adapter.send(
-                                source.chat_id,
+                            await self._send_queued_followup_first_response(
+                                adapter,
+                                source,
                                 first_response,
                                 metadata=_status_thread_metadata,
+                                session_key=session_key,
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)

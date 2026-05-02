@@ -856,6 +856,31 @@ def switch_model(
         except Exception:
             pass
 
+    # --- Custom providers entry override: if raw_input matches a custom_providers
+    #     entry by name, use its base_url/api_key so the request goes direct
+    #     instead of through the inherited proxy (e.g. SkillClaw → MiniMax).
+    #     Only triggers on exact name match, does not affect normal proxy routing.
+    if custom_providers and isinstance(custom_providers, list):
+        _raw_lower = raw_input.strip().lower()
+        for _cp in custom_providers:
+            if not isinstance(_cp, dict):
+                continue
+            _cp_name = (_cp.get("name") or "").strip().lower()
+            if _cp_name and _cp_name == _raw_lower:
+                _cp_base = (_cp.get("base_url") or "").strip()
+                _cp_key = (_cp.get("api_key") or "").strip()
+                if _cp_base:
+                    base_url = _cp_base
+                    api_key = _cp_key or api_key
+                    api_mode = ""  # clear so determine_api_mode re-detects from URL
+                    provider_label = _cp.get("name") or provider_label
+                    logger.info(
+                        "Custom providers entry '%s' matched raw_input, "
+                        "overriding base_url to %s",
+                        _cp_name, _cp_base,
+                    )
+                break
+
     # --- Direct alias override: use exact base_url from the alias if set ---
     if resolved_alias:
         _ensure_direct_aliases()

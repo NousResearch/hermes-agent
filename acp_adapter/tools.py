@@ -960,18 +960,11 @@ def build_tool_start(
         )
 
     if tool_name == "read_file":
-        path = arguments.get("path", "")
-        offset = arguments.get("offset")
-        limit = arguments.get("limit")
-        bits = []
-        if offset:
-            bits.append(f"from line {offset}")
-        if limit:
-            bits.append(f"limit {limit}")
-        suffix = f" ({', '.join(bits)})" if bits else ""
-        content = [_text(f"Reading {path}{suffix}")]
+        # The title and location already identify the file. Sending a synthetic
+        # "Reading ..." content block makes Zed render an unhelpful Output
+        # section before the real file contents arrive on completion.
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id, title, kind=kind, content=None, locations=locations,
         )
 
     if tool_name == "search_files":

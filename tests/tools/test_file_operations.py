@@ -336,6 +336,88 @@ class TestSearchPathValidation:
         assert "search failed" in result.error.lower() or "Search error" in result.error
 
 
+class TestSearchContentFallbackHiddenPaths:
+    """Regression: _search_with_grep must return matches when the search root
+    is under a hidden ancestor (e.g. ~/.hermes/notes/). GNU grep's
+    --exclude-dir matches every directory component in the traversal — including
+    the search root itself — so a bare '.*' silently drops every result when
+    the caller explicitly searched a hidden tree. See issue #18473."""
+
+    def _make_env(self, captured: list):
+        env = MagicMock()
+        env.cwd = "/"
+
+        def execute(command, **kwargs):
+            captured.append(command)
+            return {"output": "", "returncode": 1}  # exit 1 = no matches (clean)
+
+        env.execute.side_effect = execute
+        return env
+
+    def test_hidden_root_omits_exclude_dir_in_grep_fallback(self, monkeypatch):
+        """When search root has a hidden ancestor, the grep cmd must NOT
+        carry --exclude-dir='.*' (it would match the root and drop all results)."""
+        captured: list = []
+        ops = ShellFileOperations(self._make_env(captured))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        ops._search_content(
+            "NEEDLE", "/home/user/.hermes/notes", None, limit=50, offset=0,
+            output_mode="content", context=0,
+        )
+
+        grep_cmds = [c for c in captured if c.startswith("grep ")]
+        assert grep_cmds, "expected a grep invocation"
+        assert "--exclude-dir='.*'" not in grep_cmds[0], grep_cmds[0]
+
+    def test_normal_root_keeps_exclude_dir_in_grep_fallback(self, monkeypatch):
+        """When search root is non-hidden, the grep cmd must keep
+        --exclude-dir='.*' to skip .git/, .cache/, etc. during recursion."""
+        captured: list = []
+        ops = ShellFileOperations(self._make_env(captured))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        ops._search_content(
+            "NEEDLE", "/home/user/repo", None, limit=50, offset=0,
+            output_mode="content", context=0,
+        )
+
+        grep_cmds = [c for c in captured if c.startswith("grep ")]
+        assert grep_cmds, "expected a grep invocation"
+        assert "--exclude-dir='.*'" in grep_cmds[0], grep_cmds[0]
+
+    def test_relative_hidden_root_omits_exclude_dir(self, monkeypatch):
+        """Relative paths with a hidden component (e.g. '.hermes/notes')
+        are also recognized as hidden roots."""
+        captured: list = []
+        ops = ShellFileOperations(self._make_env(captured))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        ops._search_content(
+            "NEEDLE", ".hermes/notes", None, limit=50, offset=0,
+            output_mode="content", context=0,
+        )
+
+        grep_cmds = [c for c in captured if c.startswith("grep ")]
+        assert grep_cmds, "expected a grep invocation"
+        assert "--exclude-dir='.*'" not in grep_cmds[0], grep_cmds[0]
+
+    def test_dot_only_components_do_not_count_as_hidden(self, monkeypatch):
+        """Search root '.' (cwd) or '..' must NOT be treated as a hidden ancestor."""
+        captured: list = []
+        ops = ShellFileOperations(self._make_env(captured))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "grep")
+
+        ops._search_content(
+            "NEEDLE", ".", None, limit=50, offset=0,
+            output_mode="content", context=0,
+        )
+
+        grep_cmds = [c for c in captured if c.startswith("grep ")]
+        assert grep_cmds, "expected a grep invocation"
+        assert "--exclude-dir='.*'" in grep_cmds[0], grep_cmds[0]
+
+
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):
         result = file_ops.write_file("~/.ssh/authorized_keys", "evil key")

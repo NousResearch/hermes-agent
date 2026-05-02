@@ -10394,16 +10394,28 @@ class GatewayRunner:
                 return
 
             metadata = {"thread_id": thread_id} if thread_id else None
-            await adapter.send(
+            result = await adapter.send(
                 chat_id,
                 "♻ Gateway restarted successfully. Your session continues.",
                 metadata=metadata,
             )
-            logger.info(
-                "Sent restart notification to %s:%s",
-                platform_str,
-                chat_id,
-            )
+            # adapter.send() catches provider errors (e.g. "Chat not found")
+            # and returns SendResult(success=False) rather than raising, so
+            # we must inspect the result before claiming success — otherwise
+            # the log line is misleading and hides real delivery failures.
+            if getattr(result, "success", False):
+                logger.info(
+                    "Sent restart notification to %s:%s",
+                    platform_str,
+                    chat_id,
+                )
+            else:
+                logger.warning(
+                    "Restart notification to %s:%s was not delivered: %s",
+                    platform_str,
+                    chat_id,
+                    getattr(result, "error", "unknown error"),
+                )
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
         finally:

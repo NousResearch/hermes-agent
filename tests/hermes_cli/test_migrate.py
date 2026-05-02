@@ -6,13 +6,15 @@ import sys
 from types import SimpleNamespace
 from pathlib import Path
 
+import pytest
 import yaml
 
 from hermes_cli.migration import (
     MIGRATION_FORMAT,
-    doctor_sync_repo,
-    export_profile_sync,
-    import_profile_sync,
+    MigrationError,
+    doctor_migration_bundle,
+    export_migration_bundle,
+    import_migration_bundle,
     run_migrate,
 )
 
@@ -24,6 +26,18 @@ def _write_legacy_sync_manifest(repo: Path) -> None:
         "version: 1\n"
         "created_at: '2026-04-29T00:00:00+00:00'\n"
         "source_device: test-device\n",
+        encoding="utf-8",
+    )
+
+
+def _write_migration_manifest(bundle: Path) -> None:
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "manifest.yaml").write_text(
+        "format: hermes-profile-migration\n"
+        "version: 1\n"
+        "created_at: '2026-04-29T00:00:00+00:00'\n"
+        "source_device: test-device\n"
+        "profiles: []\n",
         encoding="utf-8",
     )
 
@@ -50,9 +64,17 @@ def _public_ops(result):
     ]
 
 
-def test_export_writes_structured_repo_and_excludes_runtime_state(tmp_path):
+def _assert_verify_and_doctor_fail(bundle: Path, capsys) -> None:
+    for action in ("verify", "doctor"):
+        with pytest.raises(SystemExit) as exc:
+            run_migrate(SimpleNamespace(migrate_action=action, repo=str(bundle)))
+        assert exc.value.code == 1
+        capsys.readouterr()
+
+
+def test_export_writes_structured_bundle_and_excludes_runtime_state(tmp_path):
     home = tmp_path / "home"
-    repo = tmp_path / "sync-repo"
+    repo = tmp_path / "migration-bundle"
     (home / "memories").mkdir(parents=True)
     (home / "skills" / "my-skill").mkdir(parents=True)
     (home / "skins").mkdir()
@@ -89,7 +111,7 @@ def test_export_writes_structured_repo_and_excludes_runtime_state(tmp_path):
     (home / "skills" / "my-skill" / "SKILL.md").write_text("# My Skill\n", encoding="utf-8")
     (home / "skins" / "cyber.yaml").write_text("name: cyber\n", encoding="utf-8")
 
-    result = export_profile_sync(repo, hermes_home=home, device_id="Laptop 1")
+    result = export_migration_bundle(repo, hermes_home=home, device_id="Laptop 1")
 
     assert result.ok
     assert (repo / "manifest.yaml").exists()
@@ -122,12 +144,12 @@ def test_export_writes_structured_repo_and_excludes_runtime_state(tmp_path):
     assert "sk-test-secret" not in exported_text
     assert "sk-secret-memory" not in exported_text
     assert any("unknown migration ownership" in warning for warning in result.warnings)
-    assert doctor_sync_repo(repo).ok
+    assert doctor_migration_bundle(repo).ok
 
 
 def test_import_dry_run_does_not_write_and_actual_uses_same_plan(tmp_path):
     home = tmp_path / "home"
-    repo = tmp_path / "sync-repo"
+    repo = tmp_path / "migration-bundle"
     home.mkdir()
     _write_legacy_sync_manifest(repo)
     (repo / "config").mkdir()
@@ -140,14 +162,14 @@ def test_import_dry_run_does_not_write_and_actual_uses_same_plan(tmp_path):
     (repo / "soul").mkdir()
     (repo / "soul" / "SOUL.md").write_text("remote soul\n", encoding="utf-8")
 
-    dry_run = import_profile_sync(repo, hermes_home=home, device_id="laptop", dry_run=True)
+    dry_run = import_migration_bundle(repo, hermes_home=home, device_id="laptop", dry_run=True)
 
     assert dry_run.ok
     assert not (home / "config.yaml").exists()
     assert not (home / "SOUL.md").exists()
     assert {op["target"] for op in dry_run.plan} == {"config.yaml", "SOUL.md"}
 
-    actual = import_profile_sync(repo, hermes_home=home, device_id="laptop", dry_run=False)
+    actual = import_migration_bundle(repo, hermes_home=home, device_id="laptop", dry_run=False)
 
     assert actual.ok
     assert _public_ops(actual) == _public_ops(dry_run)
@@ -157,7 +179,7 @@ def test_import_dry_run_does_not_write_and_actual_uses_same_plan(tmp_path):
 
 def test_import_merges_remote_and_local_memory_entries(tmp_path):
     home = tmp_path / "home"
-    repo = tmp_path / "sync-repo"
+    repo = tmp_path / "migration-bundle"
     (home / "memories").mkdir(parents=True)
     _write_legacy_sync_manifest(repo)
     (repo / "memory").mkdir()
@@ -168,7 +190,7 @@ def test_import_merges_remote_and_local_memory_entries(tmp_path):
     )
     (home / "memories" / "MEMORY.md").write_text("# Memory\n- local memory\n", encoding="utf-8")
 
-    result = import_profile_sync(repo, hermes_home=home, device_id="laptop", dry_run=False)
+    result = import_migration_bundle(repo, hermes_home=home, device_id="laptop", dry_run=False)
 
     assert result.ok
     memory_text = (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
@@ -180,18 +202,18 @@ def test_import_merges_remote_and_local_memory_entries(tmp_path):
 
 def test_import_keeps_local_soul_and_writes_conflict_file(tmp_path):
     home = tmp_path / "home"
-    repo = tmp_path / "sync-repo"
+    repo = tmp_path / "migration-bundle"
     home.mkdir()
     _write_legacy_sync_manifest(repo)
     (repo / "soul").mkdir()
     (repo / "soul" / "SOUL.md").write_text("remote soul\n", encoding="utf-8")
     (home / "SOUL.md").write_text("local soul\n", encoding="utf-8")
 
-    result = import_profile_sync(repo, hermes_home=home, device_id="laptop", dry_run=False)
+    result = import_migration_bundle(repo, hermes_home=home, device_id="laptop", dry_run=False)
 
     assert result.ok
     assert (home / "SOUL.md").read_text(encoding="utf-8") == "local soul\n"
-    conflicts = list(home.glob("SOUL.md.sync-conflict-*"))
+    conflicts = list(home.glob("SOUL.md.migration-conflict-*"))
     assert len(conflicts) == 1
     assert conflicts[0].read_text(encoding="utf-8") == "remote soul\n"
     assert any("Conflict for SOUL.md" in warning for warning in result.warnings)
@@ -199,7 +221,7 @@ def test_import_keeps_local_soul_and_writes_conflict_file(tmp_path):
 
 def test_import_applies_matching_device_config_without_overwriting_other_device(tmp_path):
     home = tmp_path / "home"
-    repo = tmp_path / "sync-repo"
+    repo = tmp_path / "migration-bundle"
     home.mkdir()
     _write_legacy_sync_manifest(repo)
     (repo / "config" / "devices").mkdir(parents=True)
@@ -219,7 +241,7 @@ def test_import_applies_matching_device_config_without_overwriting_other_device(
         encoding="utf-8",
     )
 
-    result = import_profile_sync(repo, hermes_home=home, device_id="laptop", dry_run=False)
+    result = import_migration_bundle(repo, hermes_home=home, device_id="laptop", dry_run=False)
 
     assert result.ok
     config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
@@ -228,11 +250,11 @@ def test_import_applies_matching_device_config_without_overwriting_other_device(
 
 
 def test_doctor_rejects_malformed_manifest_forbidden_paths_and_plaintext_secrets(tmp_path):
-    repo = tmp_path / "sync-repo"
+    repo = tmp_path / "migration-bundle"
     repo.mkdir()
     (repo / "manifest.yaml").write_text("format: wrong\nversion: 1\n", encoding="utf-8")
 
-    result = doctor_sync_repo(repo)
+    result = doctor_migration_bundle(repo)
 
     assert not result.ok
     assert any("invalid or missing format" in error for error in result.errors)
@@ -242,7 +264,7 @@ def test_doctor_rejects_malformed_manifest_forbidden_paths_and_plaintext_secrets
     (repo / "skills").mkdir()
     (repo / "skills" / "leak.txt").write_text("sk-live-secret-value-1234567890\n", encoding="utf-8")
 
-    result = doctor_sync_repo(repo)
+    result = doctor_migration_bundle(repo)
 
     assert not result.ok
     assert any("forbidden path" in error and "state.db" in error for error in result.errors)
@@ -259,10 +281,11 @@ def test_migrate_verify_and_doctor_accept_legacy_sync_manifest(tmp_path, capsys)
     run_migrate(SimpleNamespace(migrate_action="doctor", repo=str(repo)))
     doctor_output = capsys.readouterr().out
 
-    assert "Migration bundle OK" in verify_output
-    assert "Diagnostics:" in verify_output
+    assert "Migration bundle verified" in verify_output
+    assert "Diagnostics:" not in verify_output
     assert "Migration bundle OK" in doctor_output
     assert "Needs manual re-authentication" in doctor_output
+    assert verify_output != doctor_output
 
 
 def test_migrate_cli_subcommands_are_registered():
@@ -275,6 +298,7 @@ def test_migrate_cli_subcommands_are_registered():
 
     assert result.returncode == 0
     assert "--out" in result.stdout
+    assert "--force" in result.stdout
     assert "migration bundle" in result.stdout.lower()
 
 
@@ -330,6 +354,44 @@ def test_migrate_export_writes_migration_manifest_and_excludes_unsafe_files(
     assert "sk-should-not-export" not in exported_text
 
 
+def test_export_to_non_empty_directory_fails_without_force(tmp_path):
+    home = tmp_path / "home"
+    bundle = tmp_path / "migration-bundle"
+    home.mkdir()
+    bundle.mkdir()
+    (bundle / "old.txt").write_text("old\n", encoding="utf-8")
+
+    with pytest.raises(MigrationError, match="choose an empty directory.*--force"):
+        export_migration_bundle(bundle, hermes_home=home, device_id="laptop")
+
+
+def test_export_force_clears_existing_bundle_and_does_not_merge_old_memory(tmp_path):
+    home = tmp_path / "home"
+    bundle = tmp_path / "migration-bundle"
+    (home / "memories").mkdir(parents=True)
+    (bundle / "memory").mkdir(parents=True)
+    (bundle / "old").mkdir()
+    (bundle / "old" / "stale.txt").write_text("stale\n", encoding="utf-8")
+    (bundle / "memory" / "entries.jsonl").write_text(
+        json.dumps(_memory_entry("memory", "- stale memory"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (home / "memories" / "MEMORY.md").write_text("# Memory\n- fresh memory\n", encoding="utf-8")
+
+    result = export_migration_bundle(
+        bundle,
+        hermes_home=home,
+        device_id="laptop",
+        force=True,
+    )
+
+    assert result.ok
+    assert not (bundle / "old" / "stale.txt").exists()
+    entries_text = (bundle / "memory" / "entries.jsonl").read_text(encoding="utf-8")
+    assert "- fresh memory" in entries_text
+    assert "- stale memory" not in entries_text
+
+
 def test_migrate_export_import_round_trip_uses_portable_bundle(tmp_path, monkeypatch):
     source_home = tmp_path / "source-home"
     target_home = tmp_path / "target-home"
@@ -369,6 +431,42 @@ def test_migrate_export_import_round_trip_uses_portable_bundle(tmp_path, monkeyp
     assert target_config["model"] == "openrouter/test-model"
     assert target_config["terminal"]["cwd"] == "/source/local/path"
     assert (target_home / "SOUL.md").read_text(encoding="utf-8") == "portable soul\n"
+
+
+def test_migrate_import_warns_when_bundle_contains_skills(tmp_path, monkeypatch, capsys):
+    source_home = tmp_path / "source-home"
+    target_home = tmp_path / "target-home"
+    bundle = tmp_path / "migration-bundle"
+    (source_home / "skills" / "trusted").mkdir(parents=True)
+    target_home.mkdir()
+    (source_home / "skills" / "trusted" / "SKILL.md").write_text("# Trusted\n", encoding="utf-8")
+
+    monkeypatch.setattr("hermes_cli.migration.get_hermes_home", lambda: source_home)
+    run_migrate(
+        SimpleNamespace(
+            migrate_action="export",
+            out=str(bundle),
+            device_id="laptop",
+            force=False,
+        )
+    )
+    capsys.readouterr()
+
+    monkeypatch.setattr("hermes_cli.migration.get_hermes_home", lambda: target_home)
+    run_migrate(
+        SimpleNamespace(
+            migrate_action="import",
+            source_dir=str(bundle),
+            dry_run=True,
+            device_id="laptop",
+        )
+    )
+    output = capsys.readouterr().out
+
+    assert "may modify local skills and agent behavior" in output
+    assert "Only import bundles you created yourself or trust" in output
+    assert "Secrets are not migrated" in output
+    assert "re-authenticate" in output
 
 
 def test_migrate_export_import_includes_named_profiles(tmp_path, monkeypatch):
@@ -435,6 +533,22 @@ def test_migrate_doctor_outputs_structured_diagnostics(tmp_path, capsys):
     assert ".env, auth.json, state.db" in output
 
 
+def test_migrate_verify_and_doctor_outputs_are_different(tmp_path, capsys):
+    bundle = tmp_path / "migration-bundle"
+    _write_migration_manifest(bundle)
+
+    run_migrate(SimpleNamespace(migrate_action="verify", repo=str(bundle)))
+    verify_output = capsys.readouterr().out
+
+    run_migrate(SimpleNamespace(migrate_action="doctor", repo=str(bundle)))
+    doctor_output = capsys.readouterr().out
+
+    assert "Migration bundle verified" in verify_output
+    assert "Diagnostics:" not in verify_output
+    assert "Diagnostics:" in doctor_output
+    assert verify_output != doctor_output
+
+
 def test_migrate_verify_errors_are_clear_for_missing_or_bad_bundle(tmp_path, capsys):
     missing = tmp_path / "missing"
 
@@ -462,3 +576,59 @@ def test_migrate_verify_errors_are_clear_for_missing_or_bad_bundle(tmp_path, cap
 
     captured = capsys.readouterr()
     assert "skills/files exists without skills/manifest.yaml" in captured.err
+
+
+def test_bundle_rejects_parent_traversal_skill_manifest_path(tmp_path, capsys):
+    bundle = tmp_path / "migration-bundle"
+    _write_migration_manifest(bundle)
+    (bundle / "skills").mkdir()
+    (bundle / "skills" / "manifest.yaml").write_text(
+        "version: 1\n"
+        "files:\n"
+        "  - path: ../evil.md\n"
+        "    sha256: ignored\n",
+        encoding="utf-8",
+    )
+
+    result = doctor_migration_bundle(bundle)
+
+    assert not result.ok
+    assert any("unsafe skill path" in error and "../evil.md" in error for error in result.errors)
+    _assert_verify_and_doctor_fail(bundle, capsys)
+
+
+def test_bundle_rejects_windows_absolute_skill_manifest_path(tmp_path, capsys):
+    bundle = tmp_path / "migration-bundle"
+    _write_migration_manifest(bundle)
+    (bundle / "skills").mkdir()
+    (bundle / "skills" / "manifest.yaml").write_text(
+        "version: 1\n"
+        "files:\n"
+        "  - path: C:\\\\Users\\\\alice\\\\SKILL.md\n"
+        "    sha256: ignored\n",
+        encoding="utf-8",
+    )
+
+    result = doctor_migration_bundle(bundle)
+
+    assert not result.ok
+    assert any("unsafe skill path" in error and "C:" in error for error in result.errors)
+    _assert_verify_and_doctor_fail(bundle, capsys)
+
+
+def test_bundle_rejects_symlink(tmp_path, capsys):
+    bundle = tmp_path / "migration-bundle"
+    _write_migration_manifest(bundle)
+    target = bundle / "target.txt"
+    link = bundle / "linked.txt"
+    target.write_text("target\n", encoding="utf-8")
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable in this environment: {exc}")
+
+    result = doctor_migration_bundle(bundle)
+
+    assert not result.ok
+    assert any("symlink present" in error and "linked.txt" in error for error in result.errors)
+    _assert_verify_and_doctor_fail(bundle, capsys)

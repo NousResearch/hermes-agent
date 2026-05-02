@@ -27,10 +27,10 @@ from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write
 
 
-SYNC_FORMAT = "hermes-profile-sync"
+LEGACY_SYNC_FORMAT = "hermes-profile-sync"
 MIGRATION_FORMAT = "hermes-profile-migration"
-SUPPORTED_FORMATS = frozenset({SYNC_FORMAT, MIGRATION_FORMAT})
-SYNC_VERSION = 1
+SUPPORTED_FORMATS = frozenset({LEGACY_SYNC_FORMAT, MIGRATION_FORMAT})
+MIGRATION_VERSION = 1
 MEMORY_CREATED_AT = "1970-01-01T00:00:00Z"
 
 _MISSING = object()
@@ -180,8 +180,8 @@ _DIAGNOSTIC_KEYS = (
 
 
 @dataclass
-class SyncResult:
-    """Result object returned by sync operations."""
+class MigrationResult:
+    """Result object returned by migration operations."""
 
     repo: Path
     ok: bool = True
@@ -209,11 +209,9 @@ def run_migrate(args) -> None:
 
     This is the user-facing product workflow from #6078: local portability
     across machines, operating systems, reinstalls, and path changes without
-    implying cloud or background sync.
+    implying cloud service, network transfer, or background multi-device behavior.
     """
     action = getattr(args, "migrate_action", None)
-    if action == "verify":
-        action = "doctor"
     _run_profile_transfer_command(
         action,
         args,
@@ -234,10 +232,11 @@ def _run_profile_transfer_command(
     """Dispatch shared portable profile export/import/validation commands."""
     try:
         if action == "export":
-            result = export_profile_sync(
+            result = export_migration_bundle(
                 Path(args.out),
                 device_id=getattr(args, "device_id", None),
                 manifest_format=manifest_format,
+                force=bool(getattr(args, "force", False)),
             )
             _print_export_result(result, bundle_label=bundle_label)
             if not result.ok:
@@ -245,11 +244,13 @@ def _run_profile_transfer_command(
             return
 
         if action == "import":
-            result = import_profile_sync(
+            result = import_migration_bundle(
                 Path(getattr(args, "source_dir")),
                 dry_run=bool(getattr(args, "dry_run", False)),
                 device_id=getattr(args, "device_id", None),
             )
+            if result.ok and _bundle_contains_skills(Path(getattr(args, "source_dir"))):
+                _print_import_safety_notice()
             _print_plan_result(
                 result,
                 dry_run=bool(getattr(args, "dry_run", False)),
@@ -259,13 +260,20 @@ def _run_profile_transfer_command(
                 sys.exit(1)
             return
 
+        if action == "verify":
+            result = doctor_migration_bundle(Path(args.repo))
+            _print_verify_result(result, bundle_label=bundle_label)
+            if not result.ok:
+                sys.exit(1)
+            return
+
         if action == "doctor":
-            result = doctor_sync_repo(Path(args.repo))
+            result = doctor_migration_bundle(Path(args.repo))
             _print_doctor_result(result, bundle_label=bundle_label)
             if not result.ok:
                 sys.exit(1)
             return
-    except SyncError as exc:
+    except MigrationError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
@@ -276,26 +284,27 @@ def _run_profile_transfer_command(
     sys.exit(2)
 
 
-class SyncError(RuntimeError):
+class MigrationError(RuntimeError):
     """Raised for invalid migration bundles or unsafe migration operations."""
 
 
-def export_profile_sync(
+def export_migration_bundle(
     out_dir: Path,
     *,
     hermes_home: Path | None = None,
     device_id: str | None = None,
     manifest_format: str = MIGRATION_FORMAT,
-) -> SyncResult:
+    force: bool = False,
+) -> MigrationResult:
     """Export portable Hermes profile state into *out_dir*."""
     hermes_home = hermes_home or get_hermes_home()
     out_dir = out_dir.expanduser().resolve()
     device_id = normalize_device_id(device_id or default_device_id(hermes_home))
     if manifest_format not in SUPPORTED_FORMATS:
-        raise SyncError(f"unsupported migration bundle format: {manifest_format}")
-    result = SyncResult(repo=out_dir)
+        raise MigrationError(f"unsupported migration bundle format: {manifest_format}")
+    result = MigrationResult(repo=out_dir)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_output_dir(out_dir, force=force, hermes_home=hermes_home)
 
     _export_home_state(
         hermes_home=hermes_home,
@@ -308,7 +317,7 @@ def export_profile_sync(
 
     manifest = {
         "format": manifest_format,
-        "version": SYNC_VERSION,
+        "version": MIGRATION_VERSION,
         "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "source_device": device_id,
         "profiles": profile_names,
@@ -316,24 +325,24 @@ def export_profile_sync(
     _write_yaml_file(out_dir / "manifest.yaml", manifest)
     result.files_written.insert(0, "manifest.yaml")
 
-    doctor = doctor_sync_repo(out_dir)
+    doctor = doctor_migration_bundle(out_dir)
     result.errors.extend(doctor.errors)
     result.ok = not result.errors
     return result
 
 
-def import_profile_sync(
+def import_migration_bundle(
     source_dir: Path,
     *,
     hermes_home: Path | None = None,
     device_id: str | None = None,
     dry_run: bool = False,
-) -> SyncResult:
+) -> MigrationResult:
     """Import portable profile state from *source_dir* into HERMES_HOME."""
     hermes_home = hermes_home or get_hermes_home()
     source_dir = source_dir.expanduser().resolve()
     device_id = normalize_device_id(device_id or default_device_id(hermes_home))
-    result = doctor_sync_repo(source_dir)
+    result = doctor_migration_bundle(source_dir)
     result.repo = source_dir
     if not result.ok:
         return result
@@ -359,10 +368,10 @@ def import_profile_sync(
     return result
 
 
-def doctor_sync_repo(repo_dir: Path) -> SyncResult:
+def doctor_migration_bundle(repo_dir: Path) -> MigrationResult:
     """Validate a local migration bundle."""
     repo_dir = repo_dir.expanduser().resolve()
-    result = SyncResult(repo=repo_dir)
+    result = MigrationResult(repo=repo_dir)
     if not repo_dir.exists():
         result.ok = False
         result.errors.append(f"migration bundle does not exist: {repo_dir}")
@@ -375,7 +384,7 @@ def doctor_sync_repo(repo_dir: Path) -> SyncResult:
     manifest_path = repo_dir / "manifest.yaml"
     try:
         manifest = _read_yaml_file(manifest_path, required=True)
-    except SyncError as exc:
+    except MigrationError as exc:
         result.ok = False
         result.errors.append(str(exc))
         return result
@@ -383,14 +392,14 @@ def doctor_sync_repo(repo_dir: Path) -> SyncResult:
     bundle_format = manifest.get("format")
     if bundle_format not in SUPPORTED_FORMATS:
         result.errors.append("manifest.yaml has invalid or missing format")
-    if manifest.get("version") != SYNC_VERSION:
+    if manifest.get("version") != MIGRATION_VERSION:
         result.errors.append("manifest.yaml has unsupported version")
 
     for path in _iter_files_for_validation(repo_dir):
         rel = path.relative_to(repo_dir)
         if path.is_symlink():
             result.errors.append(f"symlink present in migration bundle: {rel.as_posix()}")
-        elif is_forbidden_sync_path(rel):
+        elif is_forbidden_migration_path(rel):
             result.errors.append(f"forbidden path present in migration bundle: {rel.as_posix()}")
         elif _file_contains_secret(path):
             result.errors.append(f"plaintext secret-like value present in migration bundle: {rel.as_posix()}")
@@ -414,7 +423,7 @@ def doctor_sync_repo(repo_dir: Path) -> SyncResult:
 
 
 def split_config_for_export(config: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
-    """Split raw config into portable and device-local sync config maps."""
+    """Split raw config into portable and device-local migration config maps."""
     portable: dict[str, Any] = {}
     device: dict[str, Any] = {}
     warnings: list[str] = []
@@ -447,7 +456,7 @@ def _export_home_state(
     hermes_home: Path,
     bundle_root: Path,
     device_id: str,
-    result: SyncResult,
+    result: MigrationResult,
     bundle_prefix: str,
 ) -> None:
     """Export the safe portable subset of one Hermes home into *bundle_root*."""
@@ -476,9 +485,10 @@ def _export_home_state(
             _copy_file(soul_src, soul_dst)
             result.files_written.append(_bundle_rel(bundle_prefix, "soul/SOUL.md"))
 
-    memory_entries = _load_memory_entries(bundle_root / "memory" / "entries.jsonl")
-    memory_entries.update(
-        _extract_local_memory_entries(hermes_home, device_id, result.warnings)
+    memory_entries = _extract_local_memory_entries(
+        hermes_home,
+        device_id,
+        result.warnings,
     )
     _write_memory_entries(bundle_root / "memory" / "entries.jsonl", memory_entries)
     result.files_written.append(_bundle_rel(bundle_prefix, "memory/entries.jsonl"))
@@ -514,7 +524,7 @@ def _export_named_profiles(
     hermes_home: Path,
     out_dir: Path,
     device_id: str,
-    result: SyncResult,
+    result: MigrationResult,
 ) -> list[str]:
     profiles_root = hermes_home / "profiles"
     if not profiles_root.is_dir():
@@ -540,7 +550,7 @@ def _export_named_profiles(
 
 
 def _queue_home_import(
-    result: SyncResult,
+    result: MigrationResult,
     *,
     source_root: Path,
     target_home: Path,
@@ -565,7 +575,7 @@ def _queue_home_import(
             source=soul_src,
             target=target_home / "SOUL.md",
             hermes_home=hermes_home,
-            conflict_suffix=".sync-conflict",
+            conflict_suffix=".migration-conflict",
         )
 
     memory_entries = _load_memory_entries(source_root / "memory" / "entries.jsonl")
@@ -596,10 +606,10 @@ def _queue_home_import(
     )
 
 
-def _bundle_profile_names(source_dir: Path, result: SyncResult) -> list[str]:
+def _bundle_profile_names(source_dir: Path, result: MigrationResult) -> list[str]:
     try:
         manifest = _read_yaml_file(source_dir / "manifest.yaml", required=True)
-    except SyncError as exc:
+    except MigrationError as exc:
         result.errors.append(str(exc))
         result.ok = False
         return []
@@ -611,7 +621,27 @@ def _bundle_profile_names(source_dir: Path, result: SyncResult) -> list[str]:
     return [name for name in raw_profiles if isinstance(name, str) and _is_valid_profile_name(name)]
 
 
-def _inspect_bundle_scope(repo_dir: Path, result: SyncResult, *, label: str) -> None:
+def _bundle_contains_skills(source_dir: Path) -> bool:
+    source_dir = source_dir.expanduser().resolve()
+    if _tree_has_files(source_dir / "skills" / "files"):
+        return True
+
+    profiles_root = source_dir / "profiles"
+    if not profiles_root.is_dir():
+        return False
+    for profile_dir in profiles_root.iterdir():
+        if profile_dir.is_dir() and _tree_has_files(profile_dir / "skills" / "files"):
+            return True
+    return False
+
+
+def _tree_has_files(root: Path) -> bool:
+    if not root.is_dir():
+        return False
+    return any(path.is_file() for path in _iter_files(root))
+
+
+def _inspect_bundle_scope(repo_dir: Path, result: MigrationResult, *, label: str) -> None:
     config_path = repo_dir / "config" / "global.yaml"
     if config_path.exists():
         _read_yaml_for_diagnostics(config_path, result)
@@ -644,7 +674,7 @@ def _inspect_bundle_scope(repo_dir: Path, result: SyncResult, *, label: str) -> 
     if memory_path.exists():
         try:
             memory_entries = _load_memory_entries(memory_path)
-        except SyncError as exc:
+        except MigrationError as exc:
             result.errors.append(str(exc))
         else:
             _diag(result, "migrated", f"{len(memory_entries)} memory entries for {label}")
@@ -661,7 +691,7 @@ def _inspect_bundle_scope(repo_dir: Path, result: SyncResult, *, label: str) -> 
         _diag(result, "skipped", f"Skins for {label} are not present")
 
 
-def _inspect_skill_manifest(repo_dir: Path, result: SyncResult, *, label: str) -> None:
+def _inspect_skill_manifest(repo_dir: Path, result: MigrationResult, *, label: str) -> None:
     manifest_path = repo_dir / "skills" / "manifest.yaml"
     files_root = repo_dir / "skills" / "files"
     if not manifest_path.exists():
@@ -689,7 +719,7 @@ def _inspect_skill_manifest(repo_dir: Path, result: SyncResult, *, label: str) -
         if rel is None:
             result.errors.append(f"unsafe skill path in skills/manifest.yaml for {label}: {item.get('path')}")
             continue
-        if is_forbidden_sync_path(rel):
+        if is_forbidden_migration_path(rel):
             result.errors.append(f"forbidden skill path in skills/manifest.yaml for {label}: {rel.as_posix()}")
             continue
         file_path = files_root / rel
@@ -706,7 +736,7 @@ def _inspect_skill_manifest(repo_dir: Path, result: SyncResult, *, label: str) -
 def _validate_bundle_profiles(
     repo_dir: Path,
     manifest: dict[str, Any],
-    result: SyncResult,
+    result: MigrationResult,
 ) -> list[str]:
     raw_profiles = manifest.get("profiles") or []
     if not isinstance(raw_profiles, list):
@@ -733,7 +763,7 @@ def _validate_bundle_profiles(
     return profile_names
 
 
-def _add_standard_diagnostics(result: SyncResult) -> None:
+def _add_standard_diagnostics(result: MigrationResult) -> None:
     _diag(
         result,
         "skipped",
@@ -746,10 +776,10 @@ def _add_standard_diagnostics(result: SyncResult) -> None:
     )
 
 
-def _read_yaml_for_diagnostics(path: Path, result: SyncResult) -> dict[str, Any]:
+def _read_yaml_for_diagnostics(path: Path, result: MigrationResult) -> dict[str, Any]:
     try:
         return _read_yaml_file(path, required=True)
-    except SyncError as exc:
+    except MigrationError as exc:
         result.errors.append(str(exc))
         return {}
 
@@ -768,10 +798,10 @@ def _safe_bundle_rel_path(value: Any, context: str) -> Path | None:
     try:
         return Path(*parts)
     except TypeError as exc:
-        raise SyncError(f"invalid path in {context}: {value}") from exc
+        raise MigrationError(f"invalid path in {context}: {value}") from exc
 
 
-def _diag(result: SyncResult, key: str, message: str) -> None:
+def _diag(result: MigrationResult, key: str, message: str) -> None:
     entries = result.diagnostics.setdefault(key, [])
     if message not in entries:
         entries.append(message)
@@ -785,10 +815,45 @@ def _is_valid_profile_name(name: str) -> bool:
     return bool(_PROFILE_NAME_RE.match(name)) and name != "default"
 
 
+def _prepare_output_dir(out_dir: Path, *, force: bool, hermes_home: Path) -> None:
+    if out_dir.exists() and not out_dir.is_dir():
+        raise MigrationError(f"migration bundle output path is not a directory: {out_dir}")
+
+    if not out_dir.exists():
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return
+
+    if not any(out_dir.iterdir()):
+        return
+
+    if not force:
+        raise MigrationError(
+            "migration bundle output directory is not empty. "
+            "Please choose an empty directory or rerun with --force to overwrite it."
+        )
+
+    _clear_existing_output_dir(out_dir, hermes_home=hermes_home)
+
+
+def _clear_existing_output_dir(out_dir: Path, *, hermes_home: Path) -> None:
+    out_dir = out_dir.resolve()
+    hermes_home = hermes_home.resolve()
+    home = Path.home().resolve()
+    root = Path(out_dir.anchor).resolve()
+    if out_dir in {root, home, hermes_home}:
+        raise MigrationError(f"refusing to clear unsafe migration output directory: {out_dir}")
+
+    for child in out_dir.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
 def normalize_device_id(value: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip()).strip("-").lower()
     if not slug:
-        raise SyncError("device id cannot be empty")
+        raise MigrationError("device id cannot be empty")
     if len(slug) > 80:
         slug = slug[:80].rstrip("-_")
     return slug
@@ -801,7 +866,7 @@ def default_device_id(hermes_home: Path) -> str:
     return f"{slug}-{digest}"
 
 
-def is_forbidden_sync_path(rel_path: Path) -> bool:
+def is_forbidden_migration_path(rel_path: Path) -> bool:
     parts = rel_path.parts
     if any(part in _FORBIDDEN_DIRS for part in parts):
         return True
@@ -991,14 +1056,14 @@ def _load_memory_entries(path: Path) -> dict[str, dict[str, Any]]:
             try:
                 entry = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise SyncError(f"invalid memory JSONL at {path}:{line_no}: {exc}") from exc
+                raise MigrationError(f"invalid memory JSONL at {path}:{line_no}: {exc}") from exc
             if not isinstance(entry, dict):
-                raise SyncError(f"invalid memory entry at {path}:{line_no}: expected object")
+                raise MigrationError(f"invalid memory entry at {path}:{line_no}: expected object")
             entry_id = str(entry.get("id") or "")
             target = entry.get("target")
             content = entry.get("content")
             if not entry_id or target not in {"memory", "user"} or not isinstance(content, str):
-                raise SyncError(f"invalid memory entry at {path}:{line_no}: missing id/target/content")
+                raise MigrationError(f"invalid memory entry at {path}:{line_no}: missing id/target/content")
             entries[entry_id] = entry
     return entries
 
@@ -1053,7 +1118,7 @@ def _export_tree(
             if src.is_symlink():
                 warnings.append(f"Skipped {src_root.name}/{rel.as_posix()}: symlink")
                 continue
-            if is_forbidden_sync_path(rel):
+            if is_forbidden_migration_path(rel):
                 warnings.append(f"Skipped {src_root.name}/{rel.as_posix()}: forbidden path")
                 continue
             if _file_contains_secret(src):
@@ -1066,7 +1131,7 @@ def _export_tree(
 
 
 def _queue_tree_import(
-    result: SyncResult,
+    result: MigrationResult,
     src_root: Path,
     dst_root: Path,
     *,
@@ -1078,13 +1143,13 @@ def _queue_tree_import(
     skip_names = skip_names or set()
     for src in _iter_files(src_root):
         rel = src.relative_to(src_root)
-        if src.name in skip_names or is_forbidden_sync_path(rel):
+        if src.name in skip_names or is_forbidden_migration_path(rel):
             continue
         _queue_bytes_write(result, src, dst_root / rel, hermes_home=hermes_home)
 
 
 def _queue_yaml_write(
-    result: SyncResult,
+    result: MigrationResult,
     target: Path,
     data: dict[str, Any],
     *,
@@ -1095,7 +1160,7 @@ def _queue_yaml_write(
 
 
 def _queue_text_or_conflict(
-    result: SyncResult,
+    result: MigrationResult,
     *,
     source: Path,
     target: Path,
@@ -1126,7 +1191,7 @@ def _queue_text_or_conflict(
 
 
 def _queue_text_write(
-    result: SyncResult,
+    result: MigrationResult,
     target: Path,
     text: str,
     *,
@@ -1153,7 +1218,7 @@ def _queue_text_write(
 
 
 def _queue_bytes_write(
-    result: SyncResult,
+    result: MigrationResult,
     source: Path,
     target: Path,
     *,
@@ -1175,7 +1240,7 @@ def _queue_bytes_write(
     )
 
 
-def _apply_plan(result: SyncResult) -> None:
+def _apply_plan(result: MigrationResult) -> None:
     for op in result.plan:
         target = Path(op["_target"])
         if op["_kind"] == "text":
@@ -1196,14 +1261,14 @@ def _display_local_path(path: Path, hermes_home: Path) -> str:
 def _read_yaml_file(path: Path, *, required: bool) -> dict[str, Any]:
     if not path.exists():
         if required:
-            raise SyncError(f"missing required file: {path}")
+            raise MigrationError(f"missing required file: {path}")
         return {}
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:
-        raise SyncError(f"invalid YAML in {path}: {exc}") from exc
+        raise MigrationError(f"invalid YAML in {path}: {exc}") from exc
     if not isinstance(data, dict):
-        raise SyncError(f"invalid YAML in {path}: expected mapping")
+        raise MigrationError(f"invalid YAML in {path}: expected mapping")
     return data
 
 
@@ -1272,7 +1337,7 @@ def _atomic_text_write(path: Path, content: str) -> None:
         raise
 
 
-def _print_export_result(result: SyncResult, *, bundle_label: str) -> None:
+def _print_export_result(result: MigrationResult, *, bundle_label: str) -> None:
     if result.ok:
         print(f"Exported Hermes {bundle_label} to {result.repo}")
     else:
@@ -1285,7 +1350,7 @@ def _print_export_result(result: SyncResult, *, bundle_label: str) -> None:
 
 
 def _print_plan_result(
-    result: SyncResult,
+    result: MigrationResult,
     *,
     dry_run: bool,
     bundle_label: str,
@@ -1298,7 +1363,24 @@ def _print_plan_result(
         print(f"Applied {len(result.files_written)} file changes.")
 
 
-def _print_doctor_result(result: SyncResult, *, bundle_label: str) -> None:
+def _print_import_safety_notice() -> None:
+    print("Security notice:")
+    print("  This migration bundle may modify local skills and agent behavior.")
+    print("  Only import bundles you created yourself or trust.")
+    print("  Secrets are not migrated; you may need to re-authenticate after import.")
+
+
+def _print_verify_result(result: MigrationResult, *, bundle_label: str) -> None:
+    title = bundle_label[:1].upper() + bundle_label[1:]
+    if result.ok:
+        print(f"{title} verified: {result.repo}")
+        return
+
+    print(f"{title} verification failed: {result.repo}")
+    _print_warnings_errors(result)
+
+
+def _print_doctor_result(result: MigrationResult, *, bundle_label: str) -> None:
     title = bundle_label[:1].upper() + bundle_label[1:]
     if result.ok:
         print(f"{title} OK: {result.repo}")
@@ -1308,7 +1390,7 @@ def _print_doctor_result(result: SyncResult, *, bundle_label: str) -> None:
     _print_warnings_errors(result)
 
 
-def _print_warnings_errors(result: SyncResult) -> None:
+def _print_warnings_errors(result: MigrationResult) -> None:
     if result.warnings:
         print("Warnings:")
         for warning in result.warnings:
@@ -1319,7 +1401,7 @@ def _print_warnings_errors(result: SyncResult) -> None:
             print(f"  {error}", file=sys.stderr)
 
 
-def _print_diagnostics(result: SyncResult) -> None:
+def _print_diagnostics(result: MigrationResult) -> None:
     print("Diagnostics:")
     labels = {
         "migrated": "Migrated",
@@ -1337,7 +1419,7 @@ def _print_diagnostics(result: SyncResult) -> None:
             print(f"    - {entry}")
 
 
-def _public_plan(result: SyncResult) -> dict[str, Any]:
+def _public_plan(result: MigrationResult) -> dict[str, Any]:
     operations = []
     for op in result.plan:
         operations.append(

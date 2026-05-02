@@ -9008,6 +9008,11 @@ Examples:
         "--device-id",
         help="Device identifier for device-local config (default: derived from host)",
     )
+    migrate_export.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing non-empty migration bundle directory",
+    )
 
     migrate_import = migrate_subparsers.add_parser(
         "import",

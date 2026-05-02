@@ -75,6 +75,169 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
+    def test_schema_exposes_worker_contract_fields_top_level_and_per_task(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        task_props = props["tasks"]["items"]["properties"]
+        for field in (
+            "timeout_seconds",
+            "artifact_path",
+            "output_schema",
+            "job_id",
+            "phase",
+            "worker_role",
+        ):
+            self.assertIn(field, props)
+            self.assertIn(field, task_props)
+
+    def test_registry_dispatch_forwards_worker_contract_fields(self):
+        from tools import delegate_tool as delegate_module
+        from tools.registry import registry
+
+        parent = _make_mock_parent()
+        schema = {"type": "object", "required": ["ok"]}
+        args = {
+            "goal": "write artifact",
+            "timeout_seconds": 4.5,
+            "artifact_path": "/tmp/worker.json",
+            "output_schema": schema,
+            "job_id": "job-1",
+            "phase": "draft",
+            "worker_role": "writer",
+        }
+
+        with patch.object(delegate_module, "delegate_task", return_value='{"results": []}') as mock_delegate:
+            registry.dispatch("delegate_task", args, parent_agent=parent)
+
+        _, kwargs = mock_delegate.call_args
+        self.assertEqual(kwargs["timeout_seconds"], 4.5)
+        self.assertEqual(kwargs["artifact_path"], "/tmp/worker.json")
+        self.assertIs(kwargs["output_schema"], schema)
+        self.assertEqual(kwargs["job_id"], "job-1")
+        self.assertEqual(kwargs["phase"], "draft")
+        self.assertEqual(kwargs["worker_role"], "writer")
+        self.assertIs(kwargs["parent_agent"], parent)
+
+
+class TestDelegateWorkerContracts(unittest.TestCase):
+    def _completed_child(self):
+        child = MagicMock()
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "api_calls": 1,
+            "messages": [],
+        }
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 1,
+            "max_iterations": 50,
+            "last_activity_desc": "done",
+        }
+        child._delegate_saved_tool_names = []
+        child._credential_pool = None
+        child.session_prompt_tokens = 0
+        child.session_completion_tokens = 0
+        child.model = "test"
+        return child
+
+    def test_run_single_child_validates_json_artifact_contract(self):
+        import tempfile
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        child = self._completed_child()
+        schema = {
+            "type": "object",
+            "required": ["ok"],
+            "properties": {"ok": {"type": "boolean"}},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = os.path.join(tmpdir, "worker.json")
+            with open(artifact, "w", encoding="utf-8") as fh:
+                json.dump({"ok": True}, fh)
+
+            result = _run_single_child(
+                task_index=0,
+                goal="write artifact",
+                child=child,
+                parent_agent=parent,
+                artifact_path=artifact,
+                output_schema=schema,
+                job_id="job-1",
+                phase="draft",
+                worker_role="writer",
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["artifact_exists"])
+        self.assertTrue(result["artifact_valid"])
+        self.assertEqual(result["job_id"], "job-1")
+        self.assertEqual(result["phase"], "draft")
+        self.assertEqual(result["worker_role"], "writer")
+
+    def test_completed_child_fails_when_required_artifact_missing(self):
+        import tempfile
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        child = self._completed_child()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            artifact = os.path.join(tmpdir, "missing.json")
+            result = _run_single_child(
+                task_index=0,
+                goal="write artifact",
+                child=child,
+                parent_agent=parent,
+                artifact_path=artifact,
+                output_schema={"type": "object"},
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["exit_reason"], "artifact_missing")
+        self.assertFalse(result["artifact_exists"])
+        self.assertFalse(result["artifact_valid"])
+        self.assertIn("Artifact not found", result["error"])
+
+    def test_delegate_task_passes_per_task_contract_to_child_runner(self):
+        parent = _make_mock_parent()
+        child = self._completed_child()
+        schema = {"type": "object", "required": ["ok"]}
+
+        def fake_run(**kwargs):
+            return {
+                "task_index": kwargs["task_index"],
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 0,
+                "duration_seconds": 0,
+            }
+
+        with patch("tools.delegate_tool._build_child_agent", return_value=child), patch(
+            "tools.delegate_tool._run_single_child", side_effect=fake_run
+        ) as mock_run:
+            delegate_task(
+                tasks=[
+                    {
+                        "goal": "write artifact",
+                        "timeout_seconds": 3.25,
+                        "artifact_path": "/tmp/worker.json",
+                        "output_schema": schema,
+                        "job_id": "job-1",
+                        "phase": "draft",
+                        "worker_role": "writer",
+                    }
+                ],
+                parent_agent=parent,
+            )
+
+        _, kwargs = mock_run.call_args
+        self.assertEqual(kwargs["timeout_seconds"], 3.25)
+        self.assertEqual(kwargs["artifact_path"], "/tmp/worker.json")
+        self.assertIs(kwargs["output_schema"], schema)
+        self.assertEqual(kwargs["job_id"], "job-1")
+        self.assertEqual(kwargs["phase"], "draft")
+        self.assertEqual(kwargs["worker_role"], "writer")
+
 
 class TestChildSystemPrompt(unittest.TestCase):
     def test_goal_only(self):
@@ -1807,6 +1970,47 @@ class TestDelegateEventEnum(unittest.TestCase):
             "💭" in str(c)
             for c in parent._delegate_spinner.print_above.call_args_list
         )
+
+    def test_progress_callback_emits_lifecycle_contract_events(self):
+        parent = _make_mock_parent()
+        parent._delegate_spinner = MagicMock()
+        parent.tool_progress_callback = MagicMock()
+
+        cb = _build_child_progress_callback(
+            1,
+            "write artifact",
+            parent,
+            task_count=2,
+            job_id="job-1",
+            phase="draft",
+            worker_role="writer",
+            artifact_path="/tmp/worker.json",
+        )
+
+        cb("subagent.start", preview="starting")
+        cb(
+            "subagent.complete",
+            preview="done",
+            status="completed",
+            artifact_exists=True,
+            artifact_valid=True,
+        )
+
+        calls = parent.tool_progress_callback.call_args_list
+        event_names = [call.args[0] for call in calls]
+        self.assertIn(DelegateEvent.TASK_SPAWNED.value, event_names)
+        self.assertIn("subagent.start", event_names)
+        self.assertIn(DelegateEvent.TASK_COMPLETED.value, event_names)
+        self.assertIn("subagent.complete", event_names)
+        lifecycle_call = next(
+            call for call in calls if call.args[0] == DelegateEvent.TASK_COMPLETED.value
+        )
+        self.assertEqual(lifecycle_call.kwargs["job_id"], "job-1")
+        self.assertEqual(lifecycle_call.kwargs["phase"], "draft")
+        self.assertEqual(lifecycle_call.kwargs["worker_role"], "writer")
+        self.assertEqual(lifecycle_call.kwargs["artifact_path"], "/tmp/worker.json")
+        self.assertTrue(lifecycle_call.kwargs["artifact_exists"])
+        self.assertTrue(lifecycle_call.kwargs["artifact_valid"])
 
     def test_progress_callback_task_progress_not_misrendered(self):
         """'subagent_progress' (legacy name for TASK_PROGRESS) carries a

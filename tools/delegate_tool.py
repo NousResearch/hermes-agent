@@ -19,6 +19,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 import os
@@ -386,6 +387,212 @@ def _get_child_timeout() -> float:
     return float(DEFAULT_CHILD_TIMEOUT)
 
 
+def _coerce_timeout_seconds(value: Any, *, field: str = "timeout_seconds") -> float:
+    """Coerce a per-call/per-task timeout override to a positive finite float."""
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field} must be a positive number of seconds")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"{field} must be a positive number of seconds")
+    return timeout
+
+
+def _resolve_child_timeout(timeout_seconds: Any = None) -> float:
+    """Use a per-task timeout override when supplied, else the global config."""
+    if timeout_seconds is None:
+        return _get_child_timeout()
+    try:
+        return _coerce_timeout_seconds(timeout_seconds)
+    except ValueError as exc:
+        logger.warning("Invalid per-task timeout override %r: %s", timeout_seconds, exc)
+        return _get_child_timeout()
+
+
+def _optional_contract_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _matches_json_schema_type(value: Any, expected: str) -> bool:
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "null":
+        return value is None
+    return True
+
+
+def _validate_json_schema_subset(value: Any, schema: Any, path: str = "$") -> Optional[str]:
+    """Validate the small JSON-schema subset needed for worker artifacts."""
+    if not isinstance(schema, dict) or not schema:
+        return None
+    expected_type = schema.get("type")
+    expected_types = expected_type if isinstance(expected_type, list) else [expected_type]
+    expected_types = [t for t in expected_types if isinstance(t, str)]
+    if expected_types and not any(_matches_json_schema_type(value, t) for t in expected_types):
+        return f"{path} expected type {'/'.join(expected_types)}"
+    if isinstance(value, dict):
+        required = schema.get("required") or []
+        if isinstance(required, list):
+            for key in required:
+                if isinstance(key, str) and key not in value:
+                    return f"{path} missing required field {key!r}"
+        properties = schema.get("properties") or {}
+        if isinstance(properties, dict):
+            for key, child_schema in properties.items():
+                if key in value:
+                    child_error = _validate_json_schema_subset(value[key], child_schema, f"{path}.{key}")
+                    if child_error:
+                        return child_error
+    return None
+
+
+def _artifact_contract_metadata(
+    *,
+    artifact_path: Any = None,
+    output_schema: Any = None,
+    job_id: Any = None,
+    phase: Any = None,
+    worker_role: Any = None,
+) -> Dict[str, Any]:
+    meta: Dict[str, Any] = {}
+    for key, value in (
+        ("artifact_path", artifact_path),
+        ("job_id", job_id),
+        ("phase", phase),
+        ("worker_role", worker_role),
+    ):
+        text = _optional_contract_text(value)
+        if text is not None:
+            meta[key] = text
+    if output_schema is not None:
+        meta["output_schema"] = output_schema
+    return meta
+
+
+def _evaluate_artifact_contract(
+    *,
+    artifact_path: Any = None,
+    output_schema: Any = None,
+    job_id: Any = None,
+    phase: Any = None,
+    worker_role: Any = None,
+) -> Dict[str, Any]:
+    """Return artifact existence/validation fields for a worker contract."""
+    meta = _artifact_contract_metadata(
+        artifact_path=artifact_path,
+        output_schema=output_schema,
+        job_id=job_id,
+        phase=phase,
+        worker_role=worker_role,
+    )
+    if "artifact_path" not in meta:
+        return meta
+    path_text = meta["artifact_path"]
+    path = os.path.abspath(os.path.expanduser(path_text))
+    exists = os.path.isfile(path)
+    meta["artifact_exists"] = exists
+    meta["artifact_valid"] = False
+    if not exists:
+        meta["artifact_error"] = f"Artifact not found: {path_text}"
+        return meta
+    if output_schema is None:
+        meta["artifact_valid"] = True
+        return meta
+    schema = output_schema
+    if isinstance(schema, str):
+        try:
+            schema = json.loads(schema)
+        except Exception as exc:
+            meta["artifact_error"] = f"Invalid output_schema JSON: {exc}"
+            return meta
+    if not isinstance(schema, dict):
+        meta["artifact_error"] = "output_schema must be a JSON object"
+        return meta
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            artifact_data = json.load(fh)
+    except Exception as exc:
+        meta["artifact_error"] = f"Artifact is not valid JSON: {exc}"
+        return meta
+    error = _validate_json_schema_subset(artifact_data, schema)
+    if error:
+        meta["artifact_error"] = error
+        return meta
+    meta["artifact_valid"] = True
+    return meta
+
+
+def _apply_artifact_contract_result(
+    entry: Dict[str, Any],
+    *,
+    artifact_path: Any = None,
+    output_schema: Any = None,
+    job_id: Any = None,
+    phase: Any = None,
+    worker_role: Any = None,
+) -> Dict[str, Any]:
+    contract = _evaluate_artifact_contract(
+        artifact_path=artifact_path,
+        output_schema=output_schema,
+        job_id=job_id,
+        phase=phase,
+        worker_role=worker_role,
+    )
+    if contract:
+        entry.update(contract)
+    if artifact_path is not None and entry.get("status") == "completed" and not contract.get("artifact_valid"):
+        reason = "artifact_missing" if not contract.get("artifact_exists") else "artifact_invalid"
+        entry["status"] = "failed"
+        entry["exit_reason"] = reason
+        entry["error"] = contract.get("artifact_error") or reason.replace("_", "-")
+    return entry
+
+
+def _normalise_task_contracts(
+    task_list: List[Dict[str, Any]],
+    *,
+    top_timeout_seconds: Any = None,
+    top_job_id: Any = None,
+    top_phase: Any = None,
+) -> List[Dict[str, Any]]:
+    """Copy task specs and apply top-level defaults used by contract workers."""
+    normalised: List[Dict[str, Any]] = []
+    default_timeout = None
+    if top_timeout_seconds is not None:
+        default_timeout = _coerce_timeout_seconds(top_timeout_seconds)
+    default_job_id = _optional_contract_text(top_job_id)
+    default_phase = _optional_contract_text(top_phase)
+    for i, task in enumerate(task_list):
+        out = dict(task)
+        if default_timeout is not None and out.get("timeout_seconds") is None:
+            out["timeout_seconds"] = default_timeout
+        elif out.get("timeout_seconds") is not None:
+            out["timeout_seconds"] = _coerce_timeout_seconds(
+                out.get("timeout_seconds"), field=f"tasks[{i}].timeout_seconds"
+            )
+        if default_job_id is not None and not out.get("job_id"):
+            out["job_id"] = default_job_id
+        if default_phase is not None and not out.get("phase"):
+            out["phase"] = default_phase
+        if out.get("output_schema") is not None and not out.get("artifact_path"):
+            raise ValueError(f"tasks[{i}].output_schema requires artifact_path")
+        normalised.append(out)
+    return normalised
+
+
 def _get_max_spawn_depth() -> int:
     """Read delegation.max_spawn_depth from config, clamped to [1, 3].
 
@@ -501,8 +708,9 @@ class DelegateEvent(str, enum.Enum):
     ``_LEGACY_EVENT_MAP``.  External consumers (gateway SSE, ACP adapter,
     CLI) still receive the legacy strings during the deprecation window.
 
-    TASK_SPAWNED / TASK_COMPLETED / TASK_FAILED are reserved for
-    future orchestrator lifecycle events and are not currently emitted.
+    TASK_SPAWNED / TASK_COMPLETED / TASK_FAILED are emitted for
+    contract-driven worker lifecycle telemetry. Legacy subagent.start and
+    subagent.complete events are still relayed for existing consumers.
     """
 
     TASK_SPAWNED = "delegate.task_spawned"
@@ -655,6 +863,10 @@ def _build_child_progress_callback(
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    job_id: Optional[str] = None,
+    phase: Optional[str] = None,
+    worker_role: Optional[str] = None,
+    artifact_path: Optional[str] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -702,6 +914,15 @@ def _build_child_progress_callback(
             kw["model"] = model
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
+        for key, value in (
+            ("job_id", job_id),
+            ("phase", phase),
+            ("worker_role", worker_role),
+            ("artifact_path", artifact_path),
+        ):
+            text = _optional_contract_text(value)
+            if text is not None:
+                kw[key] = text
         kw["tool_count"] = _tool_count[0]
         return kw
 
@@ -731,10 +952,18 @@ def _build_child_progress_callback(
                     spinner.print_above(f" {prefix}├─ 🔀 {short}")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
+            _relay(DelegateEvent.TASK_SPAWNED.value, preview=preview or goal_label or "", **kwargs)
             _relay("subagent.start", preview=preview or goal_label or "", **kwargs)
             return
 
         if event_type == "subagent.complete":
+            status = str(kwargs.get("status") or "").lower()
+            lifecycle_event = (
+                DelegateEvent.TASK_COMPLETED.value
+                if status == "completed"
+                else DelegateEvent.TASK_FAILED.value
+            )
+            _relay(lifecycle_event, preview=preview, **kwargs)
             _relay("subagent.complete", preview=preview, **kwargs)
             return
 
@@ -764,6 +993,14 @@ def _build_child_progress_callback(
             return
 
         if event == DelegateEvent.TASK_TOOL_COMPLETED:
+            return
+
+        if event in {
+            DelegateEvent.TASK_SPAWNED,
+            DelegateEvent.TASK_COMPLETED,
+            DelegateEvent.TASK_FAILED,
+        }:
+            _relay(event.value, preview=preview or tool_name or "", **kwargs)
             return
 
         if event == DelegateEvent.TASK_PROGRESS:
@@ -852,6 +1089,11 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Optional worker-contract metadata relayed through lifecycle callbacks.
+    job_id: Optional[str] = None,
+    phase: Optional[str] = None,
+    worker_role: Optional[str] = None,
+    artifact_path: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -958,6 +1200,10 @@ def _build_child_agent(
         depth=tui_depth,
         model=effective_model_for_cb,
         toolsets=child_toolsets,
+        job_id=job_id,
+        phase=phase,
+        worker_role=worker_role,
+        artifact_path=artifact_path,
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
@@ -1244,6 +1490,13 @@ def _run_single_child(
     goal: str,
     child=None,
     parent_agent=None,
+    *,
+    timeout_seconds: Any = None,
+    artifact_path: Any = None,
+    output_schema: Any = None,
+    job_id: Any = None,
+    phase: Any = None,
+    worker_role: Any = None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
@@ -1409,7 +1662,7 @@ def _run_single_child(
 
         # Run child with a hard timeout to prevent indefinite blocking
         # when the child's API call or tool-level HTTP request hangs.
-        child_timeout = _get_child_timeout()
+        child_timeout = _resolve_child_timeout(timeout_seconds)
         _timeout_executor = ThreadPoolExecutor(
             max_workers=1,
             # Install a non-interactive approval callback in the worker thread
@@ -1513,7 +1766,7 @@ def _run_single_child(
             else:
                 _err = str(_timeout_exc)
 
-            return {
+            entry = {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
                 "summary": None,
@@ -1524,6 +1777,14 @@ def _run_single_child(
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
             }
+            return _apply_artifact_contract_result(
+                entry,
+                artifact_path=artifact_path,
+                output_schema=output_schema,
+                job_id=job_id,
+                phase=phase,
+                worker_role=worker_role,
+            )
         finally:
             # Shut down executor without waiting — if the child thread
             # is stuck on blocking I/O, wait=True would hang forever.
@@ -1640,6 +1901,17 @@ def _run_single_child(
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
+        _apply_artifact_contract_result(
+            entry,
+            artifact_path=artifact_path,
+            output_schema=output_schema,
+            job_id=job_id,
+            phase=phase,
+            worker_role=worker_role,
+        )
+        status = entry.get("status", status)
+        exit_reason = entry.get("exit_reason", exit_reason)
+
         # Cross-agent file-state reminder.  If this subagent wrote any
         # files the parent had already read, surface it so the parent
         # knows to re-read before editing — the scenario that motivated
@@ -1727,6 +1999,17 @@ def _run_single_child(
                 complete_kwargs["cost_usd"] = float(_cost_usd)
             except (TypeError, ValueError):
                 pass
+        for _contract_key in (
+            "artifact_path",
+            "artifact_exists",
+            "artifact_valid",
+            "artifact_error",
+            "job_id",
+            "phase",
+            "worker_role",
+        ):
+            if _contract_key in entry:
+                complete_kwargs[_contract_key] = entry[_contract_key]
 
         if child_progress_cb:
             try:
@@ -1750,7 +2033,7 @@ def _run_single_child(
                 )
             except Exception as e:
                 logger.debug("Progress callback failure relay failed: %s", e)
-        return {
+        entry = {
             "task_index": task_index,
             "status": "error",
             "summary": None,
@@ -1759,6 +2042,14 @@ def _run_single_child(
             "duration_seconds": duration,
             "_child_role": getattr(child, "_delegate_role", None),
         }
+        return _apply_artifact_contract_result(
+            entry,
+            artifact_path=artifact_path,
+            output_schema=output_schema,
+            job_id=job_id,
+            phase=phase,
+            worker_role=worker_role,
+        )
 
     finally:
         # Stop the heartbeat thread so it doesn't keep touching parent activity
@@ -1818,6 +2109,12 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    timeout_seconds: Any = None,
+    artifact_path: Any = None,
+    output_schema: Any = None,
+    job_id: Any = None,
+    phase: Any = None,
+    worker_role: Any = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1905,13 +2202,34 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "timeout_seconds": timeout_seconds,
+                "artifact_path": artifact_path,
+                "output_schema": output_schema,
+                "job_id": job_id,
+                "phase": phase,
+                "worker_role": worker_role,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
     if not task_list:
         return tool_error("No tasks provided.")
+
+    try:
+        task_list = _normalise_task_contracts(
+            task_list,
+            top_timeout_seconds=timeout_seconds,
+            top_job_id=job_id,
+            top_phase=phase,
+        )
+    except ValueError as exc:
+        return tool_error(str(exc))
 
     # Validate each task has a goal
     for i, task in enumerate(task_list):
@@ -1964,6 +2282,10 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+                job_id=t.get("job_id"),
+                phase=t.get("phase"),
+                worker_role=t.get("worker_role"),
+                artifact_path=t.get("artifact_path"),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -1975,7 +2297,18 @@ def delegate_task(
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
+        result = _run_single_child(
+            task_index=_i,
+            goal=_t["goal"],
+            child=child,
+            parent_agent=parent_agent,
+            timeout_seconds=_t.get("timeout_seconds"),
+            artifact_path=_t.get("artifact_path"),
+            output_schema=_t.get("output_schema"),
+            job_id=_t.get("job_id"),
+            phase=_t.get("phase"),
+            worker_role=_t.get("worker_role"),
+        )
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
@@ -1991,6 +2324,12 @@ def delegate_task(
                     goal=t["goal"],
                     child=child,
                     parent_agent=parent_agent,
+                    timeout_seconds=t.get("timeout_seconds"),
+                    artifact_path=t.get("artifact_path"),
+                    output_schema=t.get("output_schema"),
+                    job_id=t.get("job_id"),
+                    phase=t.get("phase"),
+                    worker_role=t.get("worker_role"),
                 )
                 futures[future] = i
 
@@ -2431,6 +2770,21 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "timeout_seconds": {
+                "type": "number",
+                "description": "Optional wall-clock timeout for this delegated task. In batch mode this is the default for tasks that do not set their own timeout_seconds.",
+            },
+            "artifact_path": {
+                "type": "string",
+                "description": "Expected worker artifact path for single-task mode. If supplied, completed workers are downgraded to failed when the artifact is missing or invalid.",
+            },
+            "output_schema": {
+                "type": "object",
+                "description": "Optional JSON-schema subset for validating a JSON worker artifact at artifact_path.",
+            },
+            "job_id": {"type": "string", "description": "Optional job identifier included in lifecycle events and results."},
+            "phase": {"type": "string", "description": "Optional workflow phase included in lifecycle events and results."},
+            "worker_role": {"type": "string", "description": "Optional worker role included in lifecycle events and results."},
             "tasks": {
                 "type": "array",
                 "items": {
@@ -2460,6 +2814,21 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "timeout_seconds": {
+                            "type": "number",
+                            "description": "Per-task wall-clock timeout override in seconds.",
+                        },
+                        "artifact_path": {
+                            "type": "string",
+                            "description": "Expected worker artifact path for this task.",
+                        },
+                        "output_schema": {
+                            "type": "object",
+                            "description": "Optional JSON-schema subset for validating the JSON artifact.",
+                        },
+                        "job_id": {"type": "string", "description": "Optional job identifier for lifecycle events/results."},
+                        "phase": {"type": "string", "description": "Optional workflow phase for lifecycle events/results."},
+                        "worker_role": {"type": "string", "description": "Optional worker role for lifecycle events/results."},
                     },
                     "required": ["goal"],
                 },
@@ -2524,6 +2893,12 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        timeout_seconds=args.get("timeout_seconds"),
+        artifact_path=args.get("artifact_path"),
+        output_schema=args.get("output_schema"),
+        job_id=args.get("job_id"),
+        phase=args.get("phase"),
+        worker_role=args.get("worker_role"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

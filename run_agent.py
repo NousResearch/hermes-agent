@@ -60,6 +60,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from agent.task_card import TaskCard, save_task_card
 from agent.session_event_log import EventLog
+from agent.review_gate import ReviewGate
 
 
 _OPENAI_CLS_CACHE: Optional[type] = None
@@ -1714,6 +1715,9 @@ class AIAgent:
 
         # Hermes 2.8: Event Log for task lifecycle traceability
         self._event_log = EventLog()
+
+        # Hermes 2.8: Review Gate for quality assurance before delivery
+        self._review_gate = ReviewGate()
         
         # Load config once for memory, skills, and compression sections
         try:
@@ -14284,6 +14288,41 @@ class AIAgent:
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
 
+        # ── Hermes 2.8: Review Gate ──
+        tc = getattr(self, "_current_task_card", None)
+        _review_blocked = False
+        _review_risks = []
+        if tc is not None and completed and final_response:
+            try:
+                review_result = self._review_gate.check(
+                    task_card=tc,
+                    result_summary=(final_response or "")[:500],
+                )
+                tc.review_result = review_result.to_dict()
+                save_task_card(tc)
+                self._event_log.log_task_updated(
+                    task_id=tc.task_id,
+                    session_id=self.session_id,
+                    updated_fields=["review_result"],
+                )
+
+                if ReviewGate.is_blocked(review_result):
+                    _review_blocked = True
+                    _review_risks = review_result.risks
+                    self._event_log.log_status_changed(
+                        task_id=tc.task_id,
+                        session_id=self.session_id,
+                        from_status="running",
+                        to_status="reviewing",
+                        reason=f"Review blocked: {review_result.revision_instruction}",
+                    )
+                    tc.status = "reviewing"
+                    save_task_card(tc)
+                elif ReviewGate.allows_degraded_delivery(review_result):
+                    _review_risks = review_result.risks
+            except Exception:
+                logger.warning("Review Gate check failed", exc_info=True)
+
         # ── Hermes 2.8: Final event log entries ──
         tc = getattr(self, "_current_task_card", None)
         if tc is not None:
@@ -14468,6 +14507,9 @@ class AIAgent:
             "estimated_cost_usd": self.session_estimated_cost_usd,
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
+            # Hermes 2.8: Review Gate result
+            "review_blocked": _review_blocked,
+            "review_risks": _review_risks,
         }
         if self._tool_guardrail_halt_decision is not None:
             result["guardrail"] = self._tool_guardrail_halt_decision.to_metadata()

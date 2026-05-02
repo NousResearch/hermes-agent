@@ -106,6 +106,16 @@ describe('input metrics helpers', () => {
     expect(composerPromptWidth('Ψ >')).toBe(4)
   })
 
+  it('scales for compound prompt symbols (transcript gutter parity)', () => {
+    // messageLine.tsx reuses composerPromptWidth() so the saved transcript
+    // gutter accommodates the same wider prompt glyphs the composer does.
+    // Without this, compound branding glyphs were clipped against the old
+    // hardcoded width=3 and the message body visually attached to the
+    // glyph (#18996).
+    expect(composerPromptWidth('❯❯')).toBe(3)
+    expect(composerPromptWidth('❯❯❯')).toBe(4)
+  })
+
   it('reserves gutters on wide panes without starving narrow composer width', () => {
     expect(stableComposerColumns(100, 3)).toBe(93)
     expect(stableComposerColumns(100, 5)).toBe(91)

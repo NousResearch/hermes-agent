@@ -4,25 +4,27 @@ import android.content.Context
 import android.content.res.AssetManager
 import android.os.Build
 import android.system.Os
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 object HermesLinuxSubsystemBridge {
     private const val ASSET_ROOT = "hermes-linux"
     private const val STATE_FILE_NAME = "linux-subsystem-state.json"
     private const val EXECUTION_MODE = "embedded_termux"
+    private const val SYSTEM_SHELL_MODE = "android_system_shell"
+    private const val SYSTEM_SHELL_PATH = "/system/bin/sh"
 
     fun ensureInstalled(context: Context): JSONObject {
         val androidAbi = selectAndroidAbi()
         readState(context)?.let { state ->
-            if (
-                state.optString("android_abi") != androidAbi ||
-                state.optString("execution_mode") == "android_system_shell"
-            ) {
+            if (state.optString("android_abi") != androidAbi) {
                 reset(context)
                 return@let
             }
-            val bashFile = File(state.optString("bash_path", state.optString("shell_path")))
+            val shellPath = state.optString("shell_path", state.optString("bash_path"))
+            val bashFile = File(state.optString("bash_path", shellPath))
             val prefixDirPath = state.optString("prefix_path").ifBlank {
                 bashFile.parentFile?.parentFile?.absolutePath.orEmpty()
             }
@@ -33,9 +35,11 @@ object HermesLinuxSubsystemBridge {
                 markExecutableTree(File(prefixDir, "bin"))
                 markExecutableTree(File(prefixDir, "libexec"))
             }
-            if (bashFile.isFile && bashFile.canExecute()) {
+            val homeDir = File(state.optString("home_path").ifBlank { prefixDirPath })
+            if (canLaunchShell(shellPath, homeDir, buildRunEnvironment(state))) {
                 return state
             }
+            reset(context)
         }
 
         val installRoot = File(context.filesDir, "hermes-home/linux/$androidAbi")
@@ -52,7 +56,7 @@ object HermesLinuxSubsystemBridge {
         val manifest = JSONObject(readAssetText(context.assets, "$ASSET_ROOT/$androidAbi/manifest.json"))
         recreateLinks(prefixDir, manifest)
         val bashPath = File(prefixDir, "bin/bash").absolutePath
-        val state = JSONObject().apply {
+        val embeddedState = JSONObject().apply {
             put("enabled", true)
             put("execution_mode", EXECUTION_MODE)
             put("android_abi", androidAbi)
@@ -67,6 +71,12 @@ object HermesLinuxSubsystemBridge {
             put("tmp_path", File(prefixDir, "tmp").absolutePath)
             put("root_packages", manifest.optJSONArray("root_packages"))
             put("packages", manifest.optJSONArray("packages"))
+        }
+        val state = if (canLaunchShell(bashPath, File(prefixDir, "home"), buildRunEnvironment(embeddedState))) {
+            embeddedState
+        } else {
+            installRoot.deleteRecursively()
+            systemShellState(context, androidAbi)
         }
         stateFile(context).apply {
             parentFile?.mkdirs()
@@ -96,8 +106,85 @@ object HermesLinuxSubsystemBridge {
         File(context.filesDir, "hermes-home/native-shell").deleteRecursively()
     }
 
+    fun buildRunEnvironment(state: JSONObject): Map<String, String> {
+        val prefixPath = state.optString("prefix_path")
+        val binPath = state.optString("bin_path")
+        val libPath = state.optString("lib_path")
+        val homePath = state.optString("home_path").ifBlank { prefixPath }
+        val tmpPath = state.optString("tmp_path").ifBlank { homePath.ifBlank { prefixPath } }
+        return mapOf(
+            "PREFIX" to prefixPath,
+            "TERMUX_PREFIX" to prefixPath,
+            "PATH" to listOf(binPath, "/system/bin", "/system/xbin", System.getenv("PATH").orEmpty())
+                .filter { it.isNotBlank() }
+                .distinct()
+                .joinToString(":"),
+            "LD_LIBRARY_PATH" to listOf(libPath, System.getenv("LD_LIBRARY_PATH").orEmpty())
+                .filter { it.isNotBlank() }
+                .distinct()
+                .joinToString(":"),
+            "HOME" to homePath,
+            "TMPDIR" to tmpPath,
+            "ANDROID_DATA" to "/data",
+            "ANDROID_ROOT" to "/system",
+            "HERMES_ANDROID_EXECUTION_MODE" to state.optString("execution_mode"),
+            "TERM" to "xterm-256color",
+            "LANG" to "C.UTF-8",
+        )
+    }
+
     private fun stateFile(context: Context): File {
         return File(context.filesDir, "hermes-home/linux/$STATE_FILE_NAME")
+    }
+
+    private fun systemShellState(context: Context, androidAbi: String): JSONObject {
+        val nativeRoot = File(context.filesDir, "hermes-home/native-shell")
+        val homeDir = File(nativeRoot, "home").apply { mkdirs() }
+        val tmpDir = File(nativeRoot, "tmp").apply { mkdirs() }
+        return JSONObject().apply {
+            put("enabled", true)
+            put("execution_mode", SYSTEM_SHELL_MODE)
+            put("android_abi", androidAbi)
+            put("termux_arch", "")
+            put("uses_termux", false)
+            put("prefix_path", nativeRoot.absolutePath)
+            put("shell_path", SYSTEM_SHELL_PATH)
+            put("bash_path", "")
+            put("bin_path", "/system/bin")
+            put("lib_path", "")
+            put("home_path", homeDir.absolutePath)
+            put("tmp_path", tmpDir.absolutePath)
+            put("root_packages", JSONArray())
+            put("packages", JSONArray())
+        }
+    }
+
+    private fun canLaunchShell(
+        shellPath: String,
+        workingDirectory: File,
+        environment: Map<String, String>,
+    ): Boolean {
+        if (shellPath.isBlank()) {
+            return false
+        }
+        if (!shellPath.startsWith("/system/") && !File(shellPath).canExecute()) {
+            return false
+        }
+        return runCatching {
+            workingDirectory.mkdirs()
+            val process = ProcessBuilder(shellPath, "-c", "exit 0")
+                .directory(workingDirectory)
+                .apply { environment().putAll(environment) }
+                .start()
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.destroy()
+                if (!process.waitFor(1, TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                }
+                return@runCatching false
+            }
+            process.exitValue() == 0
+        }.getOrDefault(false)
     }
 
     private fun selectAndroidAbi(): String {

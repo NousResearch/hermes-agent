@@ -53,10 +53,7 @@ object LlamaCppServerController {
         }
         val bashPath = linuxState.optString("bash_path")
         val prefixPath = linuxState.optString("prefix_path")
-        val binPath = linuxState.optString("bin_path")
-        val libPath = linuxState.optString("lib_path")
         val homePath = linuxState.optString("home_path")
-        val tmpPath = linuxState.optString("tmp_path")
         if (bashPath.isBlank() || prefixPath.isBlank()) {
             return LocalBackendStatus(
                 backendKind = BackendKind.LLAMA_CPP,
@@ -80,15 +77,7 @@ object LlamaCppServerController {
                 .directory(File(homePath.ifBlank { prefixPath }))
                 .redirectErrorStream(true)
                 .apply {
-                    environment().putAll(
-                        buildRunEnvironment(
-                            prefixPath = prefixPath,
-                            binPath = binPath,
-                            libPath = libPath,
-                            homePath = homePath,
-                            tmpPath = tmpPath,
-                        )
-                    )
+                    environment().putAll(HermesLinuxSubsystemBridge.buildRunEnvironment(linuxState))
                 }
                 .start()
             process = startedProcess
@@ -143,25 +132,6 @@ object LlamaCppServerController {
         activeModelPath = ""
         activeModelName = ""
         recentLog = ""
-    }
-
-    private fun buildRunEnvironment(
-        prefixPath: String,
-        binPath: String,
-        libPath: String,
-        homePath: String,
-        tmpPath: String,
-    ): Map<String, String> {
-        val env = mutableMapOf<String, String>()
-        env["PREFIX"] = prefixPath
-        env["TERMUX_PREFIX"] = prefixPath
-        env["PATH"] = listOf(binPath, System.getenv("PATH").orEmpty()).filter { it.isNotBlank() }.joinToString(":")
-        env["LD_LIBRARY_PATH"] = listOf(libPath, System.getenv("LD_LIBRARY_PATH").orEmpty()).filter { it.isNotBlank() }.joinToString(":")
-        env["HOME"] = homePath.ifBlank { prefixPath }
-        env["TMPDIR"] = tmpPath.ifBlank { homePath.ifBlank { prefixPath } }
-        env["TERM"] = "xterm-256color"
-        env["LANG"] = "C.UTF-8"
-        return env
     }
 
     private fun shellQuote(value: String): String {

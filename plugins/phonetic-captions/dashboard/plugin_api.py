@@ -94,7 +94,7 @@ _STYLE_DEFAULTS: dict[str, Any] = {
     "outline_color": "&H00000000",
     "outline_width": 3,
     "alignment": 2,
-    "margin_bottom": 80,
+    "margin_edge": 80,
     "max_line_length": 42,
 }
 
@@ -284,12 +284,12 @@ async def save_style(job_id: str, payload: StylePayload):
     data = _load_caption_job(job_id)
     new_style = payload.model_dump()["style"]
     _log.info(
-        "save_style job=%s alignment=%s margin_bottom=%s",
-        job_id, new_style.get("alignment"), new_style.get("margin_bottom"),
+        "save_style job=%s alignment=%s margin_edge=%s",
+        job_id, new_style.get("alignment"), new_style.get("margin_edge"),
     )
     data["style"] = new_style
     _save_caption_job_data(job_id, data)
-    return {"ok": True, "saved": {"alignment": new_style.get("alignment"), "margin_bottom": new_style.get("margin_bottom")}}
+    return {"ok": True, "saved": {"alignment": new_style.get("alignment"), "margin_edge": new_style.get("margin_edge")}}
 
 
 @router.post("/jobs/{job_id}/burn")
@@ -305,8 +305,8 @@ async def reburn_job(job_id: str):
     video_path = data.get("video_path", "")
 
     _log.info(
-        "reburn_job job=%s alignment=%s margin_bottom=%s video=%s",
-        job_id, style.get("alignment"), style.get("margin_bottom"), video_path,
+        "reburn_job job=%s alignment=%s margin_edge=%s video=%s",
+        job_id, style.get("alignment"), style.get("margin_edge"), video_path,
     )
 
     if not video_path or not os.path.exists(video_path):
@@ -348,7 +348,7 @@ async def reburn_job(job_id: str):
         "output_path": result_path,
         "style_used": {
             "alignment": style.get("alignment"),
-            "margin_bottom": style.get("margin_bottom"),
+            "margin_edge": style.get("margin_edge"),
             "font_size": style.get("font_size"),
         },
     }
@@ -647,7 +647,7 @@ The CaptionStyle fields and their defaults:
   outline_color (str ASS hex, default "&H00000000")
   outline_width (int, default 3)
   alignment (int ASS numpad, default 2)
-  margin_bottom (int px, default 80)
+  margin_edge (int px, default 80)
   max_line_length (int chars, default 42)
 
 Return ONLY the JSON object.
@@ -721,7 +721,7 @@ Return ONLY a JSON object with these exact 8 fields (no other keys, no prose, no
   outline_color  (str) — ASS hex e.g. "&H00000000" black, "&H000000FF" red
   outline_width  (int) — 0-5
   alignment      (int) — ASS numpad: 2 bottom-center (most common), 8 top-center
-  margin_bottom  (int) — pixels from bottom edge, typical 60-120
+  margin_edge    (int) — pixels from the nearest edge (bottom for btm-*, top for top-*, left/right for side alignments), typical 60-120
   max_line_length (int) — characters before hard-wrap, typical 30-50
 
 Return ONLY the JSON object."""

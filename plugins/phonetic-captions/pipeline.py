@@ -62,7 +62,7 @@ _DEFAULT_STYLE = {
     "outline_color": "&H00000000",   # black
     "outline_width": 3,
     "alignment": 2,                  # 2 = bottom-center (ASS numpad alignment)
-    "margin_bottom": 80,
+    "margin_edge": 80,
     "max_line_length": 42,
 }
 
@@ -134,12 +134,19 @@ def _build_ass_content(segments: list[dict], style: dict) -> str:
     outline = _ass_color(style.get("outline_color", "&H00000000"))
     outline_w = int(style.get("outline_width", 3))
     alignment = int(style.get("alignment", 2))
-    margin_v = int(style.get("margin_bottom", 80))
+    margin_v = int(style.get("margin_edge", 80))
     max_len = int(style.get("max_line_length", 42))
 
     # PHONETIC sits at the base margin; MAIN sits directly above it
     phonetic_margin = margin_v
     main_margin = margin_v + size_phonetic + 8
+
+    # For left/right-aligned positions the same margin applies to the
+    # horizontal edge; centre alignments keep a small fixed side margin.
+    _LEFT_ALIGNED = {1, 4, 7}
+    _RIGHT_ALIGNED = {3, 6, 9}
+    margin_l = margin_v if alignment in _LEFT_ALIGNED else 10
+    margin_r = margin_v if alignment in _RIGHT_ALIGNED else 10
 
     header = (
         "[Script Info]\n"
@@ -157,13 +164,13 @@ def _build_ass_content(segments: list[dict], style: dict) -> str:
     # MAIN: bold, full-size — used for both EN and VI main text
     style_main = (
         f"Style: MAIN,{font},{size_main},{primary},&H000000FF,{outline},&H80000000,"
-        f"-1,0,0,0,100,100,0,0,1,{outline_w},1,{alignment},10,10,{main_margin},1\n"
+        f"-1,0,0,0,100,100,0,0,1,{outline_w},1,{alignment},{margin_l},{margin_r},{main_margin},1\n"
     )
     # PHONETIC: smaller, italic, slightly transparent — only for VI segments
     phonetic_color = "&H99FFFFFF"  # 60% alpha white for visual hierarchy
     style_phonetic = (
         f"Style: PHONETIC,{font},{size_phonetic},{phonetic_color},&H000000FF,{outline},&H80000000,"
-        f"0,1,0,0,100,100,0,0,1,{outline_w},1,{alignment},10,10,{phonetic_margin},1\n"
+        f"0,1,0,0,100,100,0,0,1,{outline_w},1,{alignment},{margin_l},{margin_r},{phonetic_margin},1\n"
     )
 
     events_header = (

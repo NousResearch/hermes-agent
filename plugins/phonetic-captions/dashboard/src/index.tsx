@@ -81,7 +81,7 @@ interface CaptionStyle {
   outline_color: string;
   outline_width: number;
   alignment: number;
-  margin_bottom: number;
+  margin_edge: number;
   max_line_length: number;
 }
 
@@ -146,7 +146,7 @@ const STYLE_DEFAULTS: CaptionStyle = {
   outline_color: "&H00000000",
   outline_width: 3,
   alignment: 2,
-  margin_bottom: 80,
+  margin_edge: 80,
   max_line_length: 42,
 };
 
@@ -1122,7 +1122,7 @@ function PresetGallery({
             <div className="rounded border border-border bg-card p-2 space-y-1">
               <p className="text-xs font-semibold text-foreground mb-1.5">Preview:</p>
               {(Object.entries(genPreview) as [string, string | number | null][]).map(([k, v]) => {
-                const LABELS: Record<string, string> = { font: "Font", font_size: "Font size", primary_color: "Text color", outline_color: "Outline color", outline_width: "Outline width", alignment: "Alignment", margin_bottom: "Margin from edge", max_line_length: "Line length" };
+                const LABELS: Record<string, string> = { font: "Font", font_size: "Font size", primary_color: "Text color", outline_color: "Outline color", outline_width: "Outline width", alignment: "Alignment", margin_edge: "Margin from edge", max_line_length: "Line length" };
                 const displayValue = k === "alignment" && typeof v === "number"
                   ? `${ALIGNMENT_ICONS[v] ?? ""} ${ALIGNMENT_NAMES[v] ?? v}`
                   : String(v);
@@ -1254,7 +1254,7 @@ function HermesPanel({
                       {praises.length} good
                     </span>
                   )}
-                  {issues.length > 0 && <span className="text-muted-foreground text-xs ml-1">— amber · green in list</span>}
+                  {issues.length > 0 && <span className="text-muted-foreground text-xs ml-1">— amber in list</span>}
                   <button onClick={onClearQA} className="ml-auto text-muted-foreground hover:text-foreground">
                     <X className="w-3.5 h-3.5" />
                   </button>
@@ -1317,7 +1317,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   const [burning, setBurning] = useState(false);
   const [burnError, setBurnError] = useState<string | null>(null);
   const [burnSuccess, setBurnSuccess] = useState(false);
-  const [burnStyleUsed, setBurnStyleUsed] = useState<{ alignment?: number; margin_bottom?: number } | null>(null);
+  const [burnStyleUsed, setBurnStyleUsed] = useState<{ alignment?: number; margin_edge?: number } | null>(null);
   const [burnTimestamp, setBurnTimestamp] = useState(Date.now());
   const [splitState, setSplitState] = useState<{ segIdx: number; splitBefore: Set<number> } | null>(null);
 
@@ -1599,7 +1599,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
               <p className="text-xs text-success">✓ Video re-burned successfully.</p>
               {burnStyleUsed && (
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  {ALIGNMENT_NAMES[burnStyleUsed.alignment!] ?? `align ${burnStyleUsed.alignment}`} · margin {burnStyleUsed.margin_bottom}px
+                  {ALIGNMENT_NAMES[burnStyleUsed.alignment!] ?? `align ${burnStyleUsed.alignment}`} · margin {burnStyleUsed.margin_edge}px
                 </p>
               )}
             </div>
@@ -1624,17 +1624,12 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                 {segments.map((seg, idx) => {
                   const lang = (seg.lang === "vi" ? "vi" : "en") as "en" | "vi";
                   const flag = qaFlags.find((f) => f.segment_id === seg.id);
-                  const flagType = flag ? (flag.type ?? "issue") : null;
                   return (
                     <div
                       key={`${seg.id}-${idx}`}
                       ref={(el) => { if (el) segmentRefs.current.set(seg.id, el); }}
                       className={`rounded-lg border bg-card p-3 space-y-2 text-sm transition-colors ${
-                        flagType === "issue"
-                          ? "border-amber-400/60 dark:border-amber-500/50"
-                          : flagType === "praise"
-                          ? "border-emerald-400/60 dark:border-emerald-500/50"
-                          : "border-border"
+                        flag ? "border-amber-400/60 dark:border-amber-500/50" : "border-border"
                       }`}
                     >
                       <div className="flex items-center gap-2">
@@ -1713,7 +1708,7 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
                 <StyleColorField label="Outline" value={style.outline_color} onChange={(v) => setStyle((s) => s && ({ ...s, outline_color: v }))} />
                 <StyleNumberField label="Outline width" value={style.outline_width} onChange={(v) => setStyle((s) => s && ({ ...s, outline_width: v }))} />
                 <AlignmentPicker value={style.alignment} onChange={(v) => setStyle((s) => s && ({ ...s, alignment: v }))} />
-                <StyleNumberField label="Margin from edge" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
+                <StyleNumberField label="Margin from edge" value={style.margin_edge} onChange={(v) => setStyle((s) => s && ({ ...s, margin_edge: v }))} />
                 <StyleNumberField label="Line length" value={style.max_line_length} onChange={(v) => setStyle((s) => s && ({ ...s, max_line_length: v }))} />
               </div>
               <p className="text-xs text-muted-foreground mt-3">Style changes apply on the next Re-burn.</p>

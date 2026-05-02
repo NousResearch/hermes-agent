@@ -32,6 +32,12 @@ def _fake_response(*, b64=None, url=None, revised_prompt=None):
 @pytest.fixture(autouse=True)
 def _tmp_hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for key in (
+        "OPENAI_IMAGE_API_MODEL",
+        "OPENAI_IMAGE_MODEL",
+        "OPENAI_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
     yield tmp_path
 
 
@@ -119,6 +125,60 @@ class TestModelResolution:
         model_id, meta = openai_plugin._resolve_model()
         assert model_id == "gpt-image-2-high"
         assert meta["quality"] == "high"
+
+    def test_requested_tier_from_dispatcher(self):
+        model_id, meta = openai_plugin._resolve_model("gpt-image-2-low")
+        assert model_id == "gpt-image-2-low"
+        assert meta["quality"] == "low"
+
+    def test_requested_non_tier_model_does_not_change_quality_tier(self):
+        model_id, meta = openai_plugin._resolve_model("third-party-image-model")
+        assert model_id == openai_plugin.DEFAULT_MODEL
+        assert meta["quality"] == "medium"
+
+
+class TestApiModelResolution:
+    def test_default_api_model(self):
+        assert openai_plugin._resolve_api_model() == "gpt-image-2"
+
+    def test_env_var_api_model_override(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_IMAGE_API_MODEL", "krill-image-model")
+        assert openai_plugin._resolve_api_model() == "krill-image-model"
+
+    def test_config_openai_api_model(self, tmp_path):
+        import yaml
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai": {"api_model": "cfg-image-model"}}})
+        )
+        assert openai_plugin._resolve_api_model() == "cfg-image-model"
+
+    def test_requested_non_tier_model_becomes_api_model(self):
+        assert openai_plugin._resolve_api_model("third-party-image-model") == "third-party-image-model"
+
+    def test_requested_tier_does_not_become_api_model(self):
+        assert openai_plugin._resolve_api_model("gpt-image-2-high") == "gpt-image-2"
+
+    def test_top_level_non_tier_config_becomes_api_model(self, tmp_path):
+        import yaml
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"model": "third-party-image-model"}})
+        )
+        assert openai_plugin._resolve_api_model() == "third-party-image-model"
+
+    def test_config_base_url(self, tmp_path):
+        import yaml
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai": {"base_url": "https://example.test/v1"}}})
+        )
+        assert openai_plugin._resolve_base_url() == "https://example.test/v1"
+
+    def test_env_base_url_beats_config(self, tmp_path, monkeypatch):
+        import yaml
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://env.example.test/v1")
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai": {"base_url": "https://cfg.example.test/v1"}}})
+        )
+        assert openai_plugin._resolve_base_url() == "https://env.example.test/v1"
 
 
 # ── Generate ────────────────────────────────────────────────────────────────
@@ -243,6 +303,98 @@ class TestGenerate:
         assert fake_client.images.generate.call_args.kwargs["quality"] == expected_quality
         # Always the same underlying API model regardless of tier.
         assert fake_client.images.generate.call_args.kwargs["model"] == "gpt-image-2"
+
+    def test_requested_non_tier_model_sets_api_model(self, provider):
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat", model="third-party-image-model")
+
+        assert result["model"] == "gpt-image-2-medium"
+        assert result["quality"] == "medium"
+        assert fake_client.images.generate.call_args.kwargs["model"] == "third-party-image-model"
+        assert fake_client.images.generate.call_args.kwargs["quality"] == "medium"
+
+    def test_requested_tier_model_sets_quality_not_api_model(self, provider):
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+
+        with _patched_openai(fake_client):
+            result = provider.generate("a cat", model="gpt-image-2-high")
+
+        assert result["model"] == "gpt-image-2-high"
+        assert result["quality"] == "high"
+        assert fake_client.images.generate.call_args.kwargs["model"] == "gpt-image-2"
+        assert fake_client.images.generate.call_args.kwargs["quality"] == "high"
+
+    def test_configured_base_url_passed_to_openai_client(self, provider, tmp_path):
+        import yaml
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"image_gen": {"openai": {"base_url": "https://cfg.example.test/v1"}}})
+        )
+        fake_client = MagicMock()
+        fake_client.images.generate.return_value = _fake_response(b64=_b64_png())
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.return_value = fake_client
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            provider.generate("a cat")
+
+        fake_openai.OpenAI.assert_called_once_with(base_url="https://cfg.example.test/v1")
+
+    def test_client_initialization_error_returns_error_response(self, provider):
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.side_effect = ValueError("invalid base URL")
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "api_error"
+        assert "invalid base URL" in result["error"]
+
+    def test_edit_uses_configured_api_model_and_base_url(
+        self, provider, tmp_path, monkeypatch
+    ):
+        import yaml
+
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "image_gen": {
+                        "openai": {
+                            "api_model": "configured-edit-model",
+                            "base_url": "https://images.example.test/v1",
+                        }
+                    }
+                }
+            )
+        )
+        source = tmp_path / "source.png"
+        source.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        fake_client = MagicMock()
+        fake_client.images.edit.return_value = _fake_response(b64=_b64_png())
+        fake_openai = MagicMock()
+        fake_openai.OpenAI.return_value = fake_client
+
+        with patch.dict("sys.modules", {"openai": fake_openai}):
+            result = provider.generate(
+                "edit this cat",
+                image_url=str(source),
+                model="dispatcher-image-model",
+            )
+
+        assert result["success"] is True
+        assert result["modality"] == "image"
+        assert result["model"] == openai_plugin.DEFAULT_MODEL
+        assert result["quality"] == "medium"
+        fake_openai.OpenAI.assert_called_once_with(
+            base_url="https://images.example.test/v1"
+        )
+        assert fake_client.images.edit.call_args.kwargs["model"] == "configured-edit-model"
+        fake_client.images.generate.assert_not_called()
 
     @pytest.mark.parametrize("aspect,expected_size", [
         ("landscape", "1536x1024"),

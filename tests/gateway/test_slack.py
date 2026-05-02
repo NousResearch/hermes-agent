@@ -138,6 +138,21 @@ Done."""
         ]
         assert blocks[2]["text"]["text"] == "Done."
 
+    def test_preserves_literal_backslashes_and_escaped_pipes(self, adapter):
+        content = r"""| Path | Text | Escaped slash |
+|---|---|---|
+| C:\Windows | Use \| inside | one\\two |"""
+
+        _, blocks = adapter._format_message_with_blocks(content)
+
+        assert blocks is not None
+        table = blocks[0]
+        assert table["rows"][1] == [
+            {"type": "raw_text", "text": r"C:\Windows"},
+            {"type": "raw_text", "text": "Use | inside"},
+            {"type": "raw_text", "text": r"one\two"},
+        ]
+
     def test_does_not_convert_tables_inside_code_fences(self, adapter):
         content = """```md
 | A | B |

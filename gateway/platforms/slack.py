@@ -1127,22 +1127,23 @@ class SlackAdapter(BasePlatformAdapter):
 
         cells: List[str] = []
         current: List[str] = []
-        escaped = False
-        for char in stripped:
-            if escaped:
-                current.append(char)
-                escaped = False
-                continue
-            if char == "\\":
-                escaped = True
+        index = 0
+        while index < len(stripped):
+            char = stripped[index]
+            next_char = stripped[index + 1] if index + 1 < len(stripped) else ""
+
+            if char == "\\" and next_char in {"|", "\\"}:
+                current.append(next_char)
+                index += 2
                 continue
             if char == "|":
                 cells.append("".join(current).strip())
                 current = []
+                index += 1
                 continue
             current.append(char)
-        if escaped:
-            current.append("\\")
+            index += 1
+
         cells.append("".join(current).strip())
         return cells
 
@@ -1262,6 +1263,8 @@ class SlackAdapter(BasePlatformAdapter):
                 remaining = remaining[len(chunk):].lstrip("\n")
             return blocks
 
+        # Slack table cells use raw_text for plain cells or rich_text for
+        # formatted cells; they do not use standard plain_text/mrkdwn objects.
         table_block: Dict[str, Any] = {
             "type": "table",
             "column_settings": [{"is_wrapped": True} for _ in rows[0]],

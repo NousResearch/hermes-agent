@@ -1,6 +1,6 @@
 # Hackathon Build Status
 
-**Last updated**: 2 May 2026 (evening)  
+**Last updated**: 2 May 2026 (night)  
 **Deadline**: EOD Sunday 3 May 2026 (1 day remaining)
 
 ---
@@ -164,18 +164,22 @@ plugins/phonetic-captions/dashboard/
 | `POST /jobs/{id}/nl-edit` | NL instruction → AIAgent proposes JSON patch array |
 | `POST /jobs/{id}/qa` | AI quality review → returns segment flag list |
 | `GET /style/suggestion` | Cross-session style analysis via `MemoryStore` + `AIAgent` |
+| `GET /presets` | List all named style presets |
+| `PUT /presets/{name}` | Save or overwrite a named preset |
+| `DELETE /presets/{name}` | Delete a named preset |
+| `POST /presets/generate` | NL description → `AIAgent` → `CaptionStyle` (not auto-saved) |
 
 Auth: all `/api/plugins/*` routes are auth-exempt by framework design (localhost only).
 
 **Frontend** (`src/index.tsx` → `dist/index.js`):
-- Two-column layout: video player (left), segment editor + style panel (right)
+- Three-column layout (≥1280px): Col 1 video+actions, Col 2 segments+style, Col 3 ✦ Hermes panel
+- ✦ Hermes panel: Edit segments (NL edit), QA (flags + Fix→), Style presets (gallery + AI creation)
+- `PresetGallery`: named preset cards (apply/delete), Save current, Create with AI, Learned card
 - Per-segment: text, phonetic field (VI only), EN/VI badge toggle, word-level split (✂)
+- QA: amber flag borders on segment cards; flag details + scroll-to-segment in Hermes panel
 - `UploadModal`: video + optional segments JSON, auto-pipeline toggle, 2s polling with live status
-- `NLEditPanel`: text instruction → AI patch diff with per-change checkboxes → apply selected
-- QA review: amber flag borders on problem segments, "Fix with AI" pre-fills NL panel
-- Style panel: Load/Save preset (JSON, no backend), "Suggest style" from MemoryStore history
-- Re-burn: saves segments + style → FFmpeg → reloads video player
 - State-based routing (`useState` + `window.history.pushState`) — no react-router-dom
+- Bundle: 42.1 kB IIFE
 
 **Core files minimally touched**: `web/src/App.tsx` (1-line catch-all guard for hard-refresh deep-link fix)
 
@@ -301,12 +305,36 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 
 ---
 
+### 8. Named Preset Library + 3-Column Editor ✅ (2 May — plan v5)
+
+#### a) Named Style Preset Library
+- Server-side preset store at `~/.hermes/caption-presets/{name}.json`
+- 4 new API endpoints: `GET /presets`, `PUT /presets/{name}`, `DELETE /presets/{name}`, `POST /presets/generate`
+- `PresetGallery` component: named preset cards (click to apply, ✕ to delete)
+- "Save current" button with inline name input → card added to gallery
+- "Learned" card surfaces the MemoryStore suggestion (amber border, ✦ icon) with Apply + Save as actions
+- Replaces old file-based Load/Save JSON buttons entirely
+
+#### b) AI Style Creation
+- Expandable "Create with AI" section in preset gallery
+- NL description → `POST /presets/generate` → `AIAgent` → `CaptionStyle` preview
+- Preview shows all 8 style fields; user names and saves to gallery OR just applies without saving
+
+#### c) Three-Column Editor Layout
+- Grid: Col 1 (360px) video + actions, Col 2 (flex) segments + style fields, Col 3 (380px) ✦ Hermes panel
+- Responsive: below xl (1280px) Col 3 wraps below Col 2
+- Clicking a flag in the Hermes panel scrolls to that segment card in Col 2
+- QA "Review" button moved from segment list header into Hermes panel
+
+---
+
 ### 9. Hackathon Plans — `hackathon-docs/` ✅
 
 - `PLAN_v1.md` — original Telegram-native plan (executed)
 - `PLAN_v2.md` — dashboard core-edit approach (archived)
 - `PLAN_v3.md` — plugin architecture, editor + burn (executed)
-- `PLAN.md` — v4 Hermes-integrated dashboard: upload, NL edits, QA, style memory (current)
+- `PLAN_v4.md` — Hermes-integrated dashboard: upload, NL edits, QA, style memory (executed)
+- `PLAN.md` — v5: 3-column layout, named preset library, AI style creation (current)
 
 ---
 
@@ -324,6 +352,9 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 | End-to-end smoke test | CLI caption → dashboard → edit → re-burn → download |
 | Upload smoke test | "+ New Job" → upload video → pipeline runs → editor opens with segments |
 | NL edit smoke test | Type instruction → diff shown → apply → segments updated |
+| Preset gallery smoke test | Save current style → card appears → click to apply → delete |
+| AI style creation test | "Create with AI" → describe style → preview → save → card in gallery |
+| Learned card test | Burn 3+ jobs with non-default style → amber Learned card appears |
 | Telegram flow test | Send video via Telegram → path injection → captions → dashboard link |
 
 ### P1 — Important for demo quality

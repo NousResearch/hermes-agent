@@ -1,4 +1,4 @@
-# Hermes Caption Agent — Plan v4 (Hermes-Integrated Dashboard)
+# Hermes Caption Agent — Plan v5 (3-Column Editor + Named Preset Library)
 
 **Hackathon**: Hermes Agent Creative Hackathon  
 **Prize pool**: $25k (Main $15k + Kimi Track $5k)  
@@ -7,156 +7,168 @@
 - `PLAN_v1.md` — Telegram-native pipeline (executed)
 - `PLAN_v2.md` — Dashboard core-edit approach (archived)
 - `PLAN_v3.md` — Plugin architecture, editing + burn (executed)
+- `PLAN_v4.md` — Hermes-integrated features: upload, NL edits, QA, style memory (executed)
 
 ---
 
-## What Changed from v3
+## What Changed from v4
 
-Plan v3 shipped a fully working caption editor plugin. The dashboard still required the Hermes agent tool (triggered via Telegram or CLI) to create jobs — the UI could only *edit* what the agent already made.
+Plan v4 shipped a fully Hermes-integrated editor: upload, NL segment editing, QA review, and cross-session style learning. The style interaction was still file-based (load/save `.json`) and the UI had two columns — the third panel (Hermes AI features) was bolted onto the right column alongside the segment list and style fields.
 
-Plan v4 makes the dashboard **fully self-contained** and elevates it from a simple editor into a tool that actively uses Hermes' intelligence (LLM, memory) to assist the user at every stage.
+Plan v5 makes **Hermes a first-class UI surface** with its own dedicated panel, and replaces the file-based style presets with a **server-side named preset library** that Hermes can create from natural language.
 
 ---
 
 ## New Capabilities
 
-### 1. File Upload — Dashboard-Initiated Jobs
+### 1. Three-Column Editor Layout
 
-Users can now create a caption job entirely from the dashboard, without going through the agent.
-
-**Upload modal** ("+ New Job" button on the job list):
-- Video file picker (`.mp4 .mov .avi .mkv .webm .m4v .ts .mts`)
-- Toggle: "Auto-transcribe & generate phonetics" (default ON)
-  - **ON**: uploads video → server runs Whisper + Kimi phonetics in a background thread → UI polls every 2s showing live status ("Transcribing audio…" → "Generating phonetics…") → navigates to editor when ready
-  - **OFF**: second file picker appears for a segments JSON — skips pipeline entirely, job is immediately ready
-
-**New job status lifecycle**: `pending → transcribing → generating_phonetics → ready | error`
-
-Status is stored in the job JSON and exposed via `GET /jobs/{id}/status` for polling. Existing jobs without a `status` field default to `"ready"` (backward compat).
-
----
-
-### 2. Natural Language Segment Editing
-
-A text input panel docked below the segment list. Users describe what they want in plain English; Hermes proposes a structured diff; the user approves or rejects each change individually.
-
-**Supported operations via NL:**
-- Edit text, phonetics, or language classification on any segment
-- Shift timing (`start`/`end` in seconds)
-- Merge two or more segments into one
-- Split a segment at a word boundary
-
-**Flow:**
-1. User types instruction, e.g. *"fix the diacritics in segment 4"* or *"merge segments 8 and 9"*
-2. `POST /jobs/{id}/nl-edit` → `AIAgent` (1 iteration, `quiet_mode=True`) returns a JSON patch array
-3. Frontend shows a before/after list with per-change checkboxes (all checked by default)
-4. "Apply N changes" commits selected patches to local state and auto-saves via `PUT /segments`
-5. "Dismiss" discards everything
-
-The agent never writes to disk — it only proposes. The user is always in control.
-
-**QA → NL link**: "Fix with AI" buttons on flagged segments pre-fill the NL panel with the QA suggestion, letting users review before submitting.
-
----
-
-### 3. Segment QA — AI Quality Review
-
-"Review all" button in the segments header. Sends all segments to the agent with structured QA instructions; highlights problems in the editor.
-
-**What gets flagged:**
-- Wrong language classification (Vietnamese text labelled EN or vice versa)
-- Mangled Vietnamese diacritics (Whisper artifacts)
-- Phonetic guide that doesn't phonetically match the Vietnamese text
-- Very short segments (< 0.3 s) — likely stray words, candidate for merge
-- Very long segments (> 8 s) — likely should be split
-- Empty text field
-
-**UI**: Flagged segments get an amber left border. Each flag shows the issue + a one-line suggestion + "Fix with AI" button that pre-fills the NL panel.
-
----
-
-### 4. Cross-Session Style Memory (Hermes-Powered)
-
-The style suggestion system uses Hermes' own `MemoryStore` to learn from past burns across sessions — not a simple cache of last-used values.
-
-**How it works:**
-1. **Passive accumulation**: On every successful burn, the diff between the used style and the defaults is written to `MemoryStore` as a compact entry: `"Caption style edit (job abc): {font_size: 56, primary_color: '&H0000FFFF'}"`. Zero UI, instant, uses the same memory infrastructure Hermes uses for conversation notes.
-
-2. **On-demand analysis**: Once ≥ 3 diff entries exist, a "Suggest style" button appears in the style panel. Clicking it calls `GET /style/suggestion`, which runs an `AIAgent` pass over the accumulated diffs and returns a `CaptionStyle` object + a 1-sentence explanation of the observed pattern (e.g. *"Based on 10 sessions: larger font (56), yellow text, wider bottom margin"*).
-
-3. **Inline Apply**: The suggestion appears as a dismissible banner above the style fields with an "Apply" button. Applying updates the local style state — no burn triggered, user can still tweak before committing.
-
-**Why this is better than a "last used" cache**: the agent identifies *patterns across content types*, summarises its reasoning in plain language, and keeps the memory compact via periodic summarisation. It also surfaces the reasoning to the user rather than silently overriding their choices.
-
----
-
-### 5. Style Preset File Load/Save
-
-Simple stateless import/export for sharing style configs between machines or team members.
-
-- **Load**: "Load" button → hidden file input → `FileReader` → validates required `CaptionStyle` keys → updates local style state. No backend call.
-- **Save**: "Save" button → serialises current style → `Blob` → `<a>` click → downloads `caption-style.json`. No backend call.
-
----
-
-### 6. Deep-Link on Hard Refresh Fix
-
-Plugin routes (e.g. `/captions/abc123`) now survive a hard refresh (`Cmd+R`). Previously, the React Router `*` catch-all would fire before plugin manifests had loaded, immediately redirecting to `/sessions`. Fixed by suppressing the catch-all while `pluginsLoading` is true in `web/src/App.tsx`.
-
----
-
-## Architecture (v4)
+The editor is reorganised into three distinct panels:
 
 ```
-                          ┌──────────────────────────────────────┐
-  Telegram / CLI          │  Dashboard /captions                 │
-  (trigger only)          │                                      │
-       │                  │  [+ New Job] ─── UploadModal         │
-       ▼                  │    ├── video file picker             │
-  Agent pipeline          │    ├── toggle: auto-pipeline         │
-  Whisper → Kimi          │    └── segments JSON (skip pipeline) │
-  save job JSON           │         │                            │
-  burn draft              │         ▼                            │
-  reply with link ────────┼──► JobListView (status badges)       │
-                          │         │                            │
-                          │         ▼                            │
-                          │  EditorView                          │
-                          │  ┌──────────────┬─────────────────┐  │
-                          │  │ video player │ segments list   │  │
-                          │  │              │ [Review all] ───┤  │
-                          │  │ [Re-burn]    │ flagged ←amber  │  │
-                          │  │ [Download]   │ [Fix with AI]   │  │
-                          │  │              │                 │  │
-                          │  │              │ NL Edit Panel   │  │
-                          │  │              │ [instruction]   │  │
-                          │  │              │ [patch diff]    │  │
-                          │  │              │                 │  │
-                          │  │              │ Style Panel     │  │
-                          │  │              │ [Load] [Save]   │  │
-                          │  │              │ [Suggest style] │  │
-                          │  └──────────────┴─────────────────┘  │
-                          └──────────────────────────────────────┘
+┌─────────────────┬──────────────────────────┬─────────────────────┐
+│  Col 1 (360px)  │  Col 2 (flex)            │  Col 3 (380px)      │
+│                 │                          │                     │
+│  Video player   │  Segments                │  ✦ Hermes           │
+│                 │  [Re-burn] [Download]    │                     │
+│                 │  ─────────────────────   │  ── Edit segments ──│
+│                 │  segment cards           │  [instruction input]│
+│                 │  (amber border if flagged│  [diff list]        │
+│                 │                          │                     │
+│                 │  ── Caption Style ──     │  ── QA ─────────────│
+│                 │  font / size / color /   │  [Review all]       │
+│                 │  outline / margin fields │  flag list          │
+│                 │                          │                     │
+│                 │                          │  ── Style presets ──│
+│                 │                          │  [preset cards]     │
+│                 │                          │  [Save current]     │
+│                 │                          │  [Create with AI]   │
+│                 │                          │  [Learned card]     │
+└─────────────────┴──────────────────────────┴─────────────────────┘
+```
+
+**Responsive**: on screens narrower than 1280px (xl breakpoint) col 3 wraps below col 2 — no drawer needed.
+
+**Col 1** — Video + actions:
+- Video player (unchanged)
+- Re-burn and Download buttons (moved from the old right column header)
+
+**Col 2** — Data editing:
+- Segment list with per-segment controls (text, phonetic, EN/VI toggle, split ✂)
+- Amber left border on QA-flagged segments (visual anchor — details stay in col 3)
+- Caption Style section: inline font / size / color / outline / margin fields
+
+**Col 3 — ✦ Hermes panel** (new, branded):
+- Three labelled sections:
+  1. **Edit segments** — NL instruction input + AI patch diff list
+  2. **QA** — "Review" button + flag list (clicking a flag scrolls to that segment)
+  3. **Style presets** — named preset gallery + "Save current" + "Create with AI" + Learned card
+
+---
+
+### 2. Named Preset Library
+
+Replaces the old file-based Load/Save buttons with a server-side named preset store.
+
+**Storage**: `~/.hermes/caption-presets/{name}.json` (one file per preset, sorted by mtime).
+
+**Preset gallery** in the Hermes panel:
+- Horizontal-scroll row of named cards — click any card to apply that style instantly
+- Each card has a ✕ delete button
+- "Save current" button → inline name input → `PUT /presets/{name}` → card appears in gallery
+- **Learned card** (amber border, ✦ icon): surfaced from the `GET /style/suggestion` MemoryStore analysis; not auto-saved; has its own "Save as preset" + "Apply" actions
+- All-empty state: just "Save current" and the AI creation input
+
+**New backend endpoints** (4):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /presets` | List all named presets (`[{name, style}]`) |
+| `PUT /presets/{name}` | Create or overwrite a named preset |
+| `DELETE /presets/{name}` | Remove a named preset |
+| `POST /presets/generate` | NL description → `AIAgent` → `CaptionStyle` (not saved automatically) |
+
+---
+
+### 3. AI Style Creation ("Create with AI")
+
+Users describe a visual look in plain English; Hermes returns a `CaptionStyle` object for inspection and optional save.
+
+**Flow:**
+1. Expand "Create with AI" in the style presets section
+2. Type a description, e.g. *"bold Impact font, yellow text, thick black outline — TikTok style"*
+3. `POST /presets/generate` → `AIAgent` (1 iteration) returns `CaptionStyle` JSON
+4. A preview card appears showing the 8 style fields with a name input and "Save" button
+5. User names and saves → `PUT /presets/{name}` → card added to gallery
+6. User can also "Apply" without saving (applies to local state only)
+
+The agent never saves automatically — the user always names and approves.
+
+---
+
+### 4. Hermes Panel UX Notes
+
+- Section labels use a muted separator style (not heavy headers) to keep the panel scannable
+- QA flag list: each item shows `"Segment N: <issue>"` + one-line suggestion + "Fix →" button (pre-fills the segment NL input above with the QA suggestion)
+- NL edit and style creation are **separate inputs** — one for segment operations, one for style generation — so there's no ambiguity about what will be affected
+- "Review all" moves from the segment list header into the QA section of the Hermes panel; only the amber flag borders remain on segment cards in col 2
+
+---
+
+## Architecture (v5)
+
+```
+                          ┌────────────────────────────────────────────────┐
+  Telegram / CLI          │  Dashboard /captions                           │
+  (trigger only)          │                                                │
+       │                  │  [+ New Job] ─── UploadModal                   │
+       ▼                  │    ├── video file picker                       │
+  Agent pipeline          │    ├── toggle: auto-pipeline                   │
+  Whisper → Kimi          │    └── segments JSON (skip pipeline)           │
+  save job JSON           │         │                                      │
+  burn draft              │         ▼                                      │
+  reply with link ────────┼──► JobListView (status badges)                 │
+                          │         │                                      │
+                          │         ▼                                      │
+                          │  EditorView (3-column grid)                    │
+                          │  ┌─────────┬──────────────────┬─────────────┐  │
+                          │  │ Col 1   │ Col 2            │ Col 3       │  │
+                          │  │ video   │ segments         │ ✦ Hermes    │  │
+                          │  │ Re-burn │ amber←flagged    │             │  │
+                          │  │ Download│ Caption Style    │ Edit segs   │  │
+                          │  │         │  fields          │ QA          │  │
+                          │  │         │                  │ Presets     │  │
+                          │  └─────────┴──────────────────┴─────────────┘  │
+                          └────────────────────────────────────────────────┘
                                          │
                           ┌──────────────▼──────────────────────┐
-                          │  plugin_api.py (12 routes total)    │
+                          │  plugin_api.py (16 routes total)    │
                           │                                     │
-                          │  POST /upload            ← new      │
-                          │  GET  /jobs/{id}/status  ← new      │
-                          │  POST /jobs/{id}/nl-edit ← new      │
-                          │  POST /jobs/{id}/qa      ← new      │
-                          │  GET  /style/suggestion  ← new      │
-                          │  POST /jobs/{id}/burn    ← +memory  │
+                          │  — v4 routes (unchanged) ——         │
+                          │  POST /upload                       │
+                          │  GET  /jobs/{id}/status             │
+                          │  POST /jobs/{id}/nl-edit            │
+                          │  POST /jobs/{id}/qa                 │
+                          │  GET  /style/suggestion             │
+                          │  POST /jobs/{id}/burn               │
                           │  GET  /jobs                         │
                           │  GET  /jobs/{id}                    │
                           │  PUT  /jobs/{id}/segments           │
                           │  PUT  /jobs/{id}/style              │
                           │  GET  /jobs/{id}/video              │
                           │  GET  /jobs/{id}/download           │
+                          │                                     │
+                          │  — v5 routes (new) ——               │
+                          │  GET    /presets                    │
+                          │  PUT    /presets/{name}             │
+                          │  DELETE /presets/{name}             │
+                          │  POST   /presets/generate           │
                           └─────────────────────────────────────┘
                                          │
                           ┌──────────────▼──────────────────────┐
                           │  Hermes internals                   │
-                          │  AIAgent   (nl-edit, qa, suggest)   │
+                          │  AIAgent   (nl-edit, qa, suggest,   │
+                          │             generate style)         │
                           │  MemoryStore (style diff history)   │
                           │  tools.video_caption (pipeline)     │
                           └─────────────────────────────────────┘
@@ -164,79 +176,70 @@ Plugin routes (e.g. `/captions/abc123`) now survive a hard refresh (`Cmd+R`). Pr
 
 ---
 
-## Files Changed (v4)
+## Files Changed (v5)
 
 | File | Change |
 |---|---|
-| `plugins/phonetic-captions/dashboard/plugin_api.py` | 5 new endpoints; `_run_pipeline`, `_call_agent`, `_update_job_status` helpers; `burn` writes to `MemoryStore` |
-| `plugins/phonetic-captions/dashboard/src/index.tsx` | `UploadModal`, `NLEditPanel`, QA highlighting, style suggestion banner, style preset load/save, status badges on job cards |
-| `plugins/phonetic-captions/dashboard/dist/index.js` | Rebuilt bundle (35.8 kB) |
-| `web/src/App.tsx` | Catch-all redirect suppressed during `pluginsLoading` |
-| `hermes_cli/web_dist/` | Rebuilt web dist |
+| `plugins/phonetic-captions/dashboard/plugin_api.py` | +4 preset endpoints; `_presets_dir()`, `_safe_preset_name()` helpers; `_STYLE_GENERATE_SYSTEM_PROMPT`; `PresetPayload`, `GenerateStylePayload` Pydantic models |
+| `plugins/phonetic-captions/dashboard/src/index.tsx` | New `HermesPanel` component; new `PresetGallery` component; `EditorView` refactored to 3-column grid; `NLEditPanel` inlined into `HermesPanel`; QA details moved to `HermesPanel`; remove file load/save buttons and old suggestion banner; add `CaptionPreset` type |
+| `plugins/phonetic-captions/dashboard/dist/index.js` | Rebuilt bundle |
+
+No other core files touched.
 
 ---
 
 ## Testing Flows
 
-### Test A — Upload with auto-pipeline
+### Test D — Preset gallery basics
 
-1. Open dashboard → Captions tab → "+ New Job"
-2. Select a `.mp4` file; leave "Auto-transcribe" ON → "Create Job"
-3. Modal shows "Transcribing audio…" → "Generating phonetics…"
-4. Editor opens automatically with segments populated
-5. **Verify**: segments have `lang` set; Vietnamese segments have `phonetic` field
+1. Open any job in the editor
+2. In the Hermes panel → Style presets section → "Save current" → type name "default-white"
+3. A card labelled "default-white" appears in the gallery
+4. Change font size to 64 in the style fields
+5. Click "default-white" card → font size resets to saved value
+6. Click ✕ on the card → card disappears; backend confirms `DELETE /presets/default-white`
 
-### Test B — Upload with manual segments
+### Test E — Create style with AI
 
-1. "+ New Job" → select video → uncheck "Auto-transcribe" → upload a segments `.json` → "Create Job"
-2. Editor opens immediately (no pipeline wait)
-3. **Verify**: segments match the uploaded JSON exactly
+1. Hermes panel → Style presets → "Create with AI" (expand)
+2. Type: *"Large bold yellow Impact text at the bottom, thick black outline"*
+3. "Generating…" spinner → preview card appears with `font: Impact`, `primary_color: &H0000FFFF`, etc.
+4. Enter name "tiktok-bold" → Save → card added to gallery
+5. Click "tiktok-bold" card → style fields update; video Re-burn reflects new look
 
-### Test C — NL segment editing
+### Test F — Learned preset card
 
-1. Open any job with segments
-2. Type *"fix the diacritics in segment 3"* → Enter
-3. Diff list appears with proposed `text`/`phonetic` changes, all checked
-4. Uncheck one change → "Apply N changes"
-5. **Verify**: only checked changes appear in the list; `PUT /segments` fires (check network tab)
-6. Type *"merge segments 4 and 5"* → apply
-7. **Verify**: single merged segment, IDs renumbered
-
-### Test D — Segment QA
-
-1. Open a freshly transcribed job (likely has Whisper diacritics issues)
-2. Click "Review all"
-3. **Verify**: flagged segments get amber border; flag shows issue + suggestion
-4. Click "Fix with AI" → NL panel pre-fills with suggestion text
-5. Submit → apply patch → flags cleared on next "Review all"
-
-### Test E — Style memory suggestion
-
-1. Open 3+ different jobs; change style settings (e.g. font_size → 56, text color → yellow); Re-burn each
-2. Open a new job → Style panel → "Suggest style" button visible
-3. Click → amber banner with explanation (e.g. *"Based on N sessions: font_size 56, yellow text"*)
+1. Burn 3+ jobs with non-default style (e.g. font_size 56, yellow primary color)
+2. Open a new job; Hermes panel → Style presets → amber "Learned" card appears
+3. Card shows: *"Based on N sessions: larger font (56), yellow text"* (example)
 4. Click "Apply" → style fields update
-5. **Verify**: banner is dismissible; suggestion persists across page reloads
+5. Click "Save as preset" → name input → saves to gallery as named card
 
-### Test F — Style preset round-trip
+### Test G — QA in Hermes panel
 
-1. Set custom style → "Save" → `caption-style.json` downloads
-2. Open a different job → "Load" → select the file
-3. **Verify**: style fields match saved values; no burn triggered
+1. Open any job → Hermes panel → QA section → "Review"
+2. Flags appear in the Hermes panel (segment N: issue + suggestion)
+3. Corresponding segment cards in col 2 gain amber left borders
+4. Click a flag → segment list scrolls to that card
+5. "Fix →" on a flag → segment NL input above is pre-filled; submit → diff appears
 
-### Test G — Hard refresh deep-link
+### Test H — 3-column responsive
 
-1. Navigate to an open job at `/captions/abc123`
-2. Press `Cmd+Shift+R`
-3. **Verify**: page reloads to the same job editor, not `/sessions`
+1. Open editor at ≥ 1280px viewport → 3 columns visible side by side
+2. Narrow browser to < 1280px → Hermes panel stacks below the segment list
+3. Re-burn and Download buttons remain in col 1 at all widths
 
 ---
 
-## Known Limitations
+## Submission Checklist (EOD Sunday)
 
-| Item | Notes |
-|---|---|
-| NL split op | Split via NL returns `{op: "split", at_word_index}` but the frontend defers this to the interactive `SplitEditor` UI (word-chip picker); a note in the diff list directs the user to the ✂ button |
-| Style suggestion threshold | Requires ≥ 3 burns with non-default styles before "Suggest" appears |
-| NL/QA requires model config | `_call_agent` reads the configured model from `config.yaml`; errors gracefully with 502 if unset |
-| Upload size | File picker has no explicit limit; validated server-side only by extension |
+- [ ] 3-column layout renders correctly in Chrome
+- [ ] Preset gallery: save, apply, delete all work
+- [ ] AI style generation returns valid `CaptionStyle` JSON
+- [ ] Learned card appears after ≥ 3 burns with non-default style
+- [ ] QA flags appear in Hermes panel + amber borders on segment cards
+- [ ] NL segment edits still work from Hermes panel
+- [ ] Re-burn and Download accessible from col 1
+- [ ] Hard refresh on `/captions/{id}` still works
+- [ ] Upload modal still works (v4 regression check)
+- [ ] End-to-end: Telegram video → agent → dashboard → edit → preset → re-burn → download

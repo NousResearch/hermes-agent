@@ -20,10 +20,12 @@ import {
   ShieldCheck,
   X,
   Check,
-  Lightbulb,
-  FileDown,
   FileUp,
   Loader2,
+  Sparkles,
+  Trash2,
+  Plus,
+  ChevronDown,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -112,6 +114,11 @@ interface StyleSuggestion {
   available: boolean;
   style?: CaptionStyle;
   explanation?: string;
+}
+
+interface CaptionPreset {
+  name: string;
+  style: CaptionStyle;
 }
 
 // ---------------------------------------------------------------------------
@@ -691,6 +698,400 @@ function NLEditPanel({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Preset Gallery (inside Hermes Panel)
+// ---------------------------------------------------------------------------
+
+function PresetGallery({
+  style,
+  onApply,
+}: {
+  style: CaptionStyle;
+  onApply: (s: CaptionStyle) => void;
+}) {
+  const [presets, setPresets] = useState<CaptionPreset[]>([]);
+  const [suggestion, setSuggestion] = useState<StyleSuggestion | null>(null);
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false);
+
+  // Save current
+  const [savingName, setSavingName] = useState("");
+  const [showSaveInput, setShowSaveInput] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // AI generation
+  const [showGenerate, setShowGenerate] = useState(false);
+  const [genDesc, setGenDesc] = useState("");
+  const [genLoading, setGenLoading] = useState(false);
+  const [genPreview, setGenPreview] = useState<CaptionStyle | null>(null);
+  const [genName, setGenName] = useState("");
+  const [genError, setGenError] = useState<string | null>(null);
+
+  const loadPresets = useCallback(() => {
+    fetchJSON(`${API}/presets`)
+      .then((data: CaptionPreset[]) => setPresets(data))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    loadPresets();
+    fetchJSON(`${API}/style/suggestion`)
+      .then((s: StyleSuggestion) => setSuggestion(s))
+      .catch(() => {});
+  }, [loadPresets]);
+
+  const handleDelete = async (name: string) => {
+    await fetchJSON(`${API}/presets/${encodeURIComponent(name)}`, { method: "DELETE" });
+    loadPresets();
+  };
+
+  const handleSaveCurrent = async () => {
+    if (!savingName.trim()) return;
+    setSaving(true);
+    try {
+      await fetchJSON(`${API}/presets/${encodeURIComponent(savingName.trim())}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ style }),
+      });
+      setSavingName("");
+      setShowSaveInput(false);
+      loadPresets();
+    } catch { /* ignore */ }
+    setSaving(false);
+  };
+
+  const handleGenerate = async () => {
+    if (!genDesc.trim()) return;
+    setGenLoading(true);
+    setGenError(null);
+    setGenPreview(null);
+    try {
+      const res = await fetchJSON(`${API}/presets/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: genDesc }),
+      });
+      setGenPreview(res.style);
+    } catch (e: any) {
+      setGenError(String(e));
+    }
+    setGenLoading(false);
+  };
+
+  const handleSaveGenerated = async () => {
+    if (!genPreview || !genName.trim()) return;
+    setSaving(true);
+    try {
+      await fetchJSON(`${API}/presets/${encodeURIComponent(genName.trim())}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ style: genPreview }),
+      });
+      setGenPreview(null);
+      setGenDesc("");
+      setGenName("");
+      setShowGenerate(false);
+      loadPresets();
+    } catch { /* ignore */ }
+    setSaving(false);
+  };
+
+  return (
+    <div className="space-y-3">
+      {/* Learned preset card */}
+      {suggestion?.available && !suggestionDismissed && suggestion.style && (
+        <div className="rounded-lg border border-amber-400/50 bg-amber-400/5 p-3">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="text-xs font-semibold text-amber-400">Learned</span>
+            <button
+              onClick={() => setSuggestionDismissed(true)}
+              className="ml-auto text-muted-foreground hover:text-foreground"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+          {suggestion.explanation && (
+            <p className="text-xs text-amber-400/80 mb-2">{suggestion.explanation}</p>
+          )}
+          <div className="flex gap-2">
+            <button
+              onClick={() => onApply(suggestion.style!)}
+              className="flex-1 px-2 py-1 rounded bg-amber-400/20 text-amber-400 text-xs font-medium hover:bg-amber-400/30 transition-colors"
+            >
+              Apply
+            </button>
+            <button
+              onClick={async () => {
+                const name = prompt("Preset name:");
+                if (!name?.trim()) return;
+                await fetchJSON(`${API}/presets/${encodeURIComponent(name.trim())}`, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ style: suggestion.style }),
+                });
+                loadPresets();
+              }}
+              className="px-2 py-1 rounded border border-amber-400/30 text-amber-400 text-xs font-medium hover:bg-amber-400/10 transition-colors"
+            >
+              Save as…
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Named preset cards */}
+      {presets.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {presets.map((p) => (
+            <div
+              key={p.name}
+              className="flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-lg border border-border bg-card text-xs text-foreground group hover:border-ring/50 transition-colors"
+            >
+              <button
+                onClick={() => onApply(p.style)}
+                className="font-medium hover:text-primary transition-colors"
+                title={`Apply preset: ${p.name}`}
+              >
+                {p.name}
+              </button>
+              <button
+                onClick={() => handleDelete(p.name)}
+                className="text-muted-foreground/40 hover:text-destructive transition-colors p-0.5 rounded"
+                title={`Delete preset: ${p.name}`}
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Save current style */}
+      {!showSaveInput ? (
+        <button
+          onClick={() => setShowSaveInput(true)}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          Save current style
+        </button>
+      ) : (
+        <div className="flex gap-2">
+          <input
+            className="flex-1 min-w-0 bg-card border border-border rounded px-2 py-1 text-xs text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/30 placeholder:text-muted-foreground"
+            placeholder="Preset name…"
+            value={savingName}
+            onChange={(e) => setSavingName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !saving && handleSaveCurrent()}
+            autoFocus
+          />
+          <button
+            onClick={handleSaveCurrent}
+            disabled={!savingName.trim() || saving}
+            className="px-2 py-1 rounded bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity"
+          >
+            {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+          </button>
+          <button
+            onClick={() => { setShowSaveInput(false); setSavingName(""); }}
+            className="px-2 py-1 rounded border border-border text-xs text-foreground hover:bg-accent transition-colors"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      {/* AI style generation */}
+      <button
+        onClick={() => setShowGenerate(!showGenerate)}
+        className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <Sparkles className="w-3.5 h-3.5" />
+        Create with AI
+        <ChevronDown className={`w-3 h-3 transition-transform ${showGenerate ? "rotate-180" : ""}`} />
+      </button>
+
+      {showGenerate && (
+        <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-2">
+          <div className="flex gap-2">
+            <input
+              className="flex-1 min-w-0 bg-card border border-border rounded px-2 py-1.5 text-xs text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring/30 placeholder:text-muted-foreground"
+              placeholder="e.g. bold yellow Impact, thick outline, TikTok style…"
+              value={genDesc}
+              onChange={(e) => setGenDesc(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && !genLoading && handleGenerate()}
+              disabled={genLoading}
+            />
+            <button
+              onClick={handleGenerate}
+              disabled={!genDesc.trim() || genLoading}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity"
+            >
+              {genLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+              {genLoading ? "…" : "Go"}
+            </button>
+          </div>
+          {genError && (
+            <p className="text-xs text-destructive">{genError}</p>
+          )}
+          {genPreview && (
+            <div className="rounded border border-border bg-card p-2 space-y-1">
+              <p className="text-xs font-semibold text-foreground mb-1.5">Preview:</p>
+              {(Object.entries(genPreview) as [string, string | number][]).map(([k, v]) => (
+                <div key={k} className="flex gap-2 text-xs">
+                  <span className="text-muted-foreground w-28 shrink-0">{k}</span>
+                  <span className="text-foreground font-mono">{String(v)}</span>
+                </div>
+              ))}
+              <div className="flex gap-2 mt-2 pt-2 border-t border-border">
+                <input
+                  className="flex-1 min-w-0 bg-card border border-border rounded px-2 py-1 text-xs text-foreground outline-none focus:border-ring placeholder:text-muted-foreground"
+                  placeholder="Name this preset…"
+                  value={genName}
+                  onChange={(e) => setGenName(e.target.value)}
+                />
+                <button
+                  onClick={handleSaveGenerated}
+                  disabled={!genName.trim() || saving}
+                  className="px-2 py-1 rounded bg-primary text-primary-foreground text-xs font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => { onApply(genPreview); }}
+                  className="px-2 py-1 rounded border border-border text-xs text-foreground hover:bg-accent transition-colors"
+                >
+                  Apply
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Hermes Panel (Col 3)
+// ---------------------------------------------------------------------------
+
+function HermesPanel({
+  jobId,
+  segments,
+  qaFlags,
+  qaLoading,
+  qaError,
+  nlPrefill,
+  style,
+  onApplyPatches,
+  onQAReview,
+  onClearQA,
+  onFlagClick,
+  onFixWithAI,
+  onApplyStyle,
+}: {
+  jobId: string;
+  segments: CaptionSegment[];
+  qaFlags: QAFlag[];
+  qaLoading: boolean;
+  qaError: string | null;
+  nlPrefill?: string;
+  style: CaptionStyle;
+  onApplyPatches: (patches: NLPatch[]) => void;
+  onQAReview: () => void;
+  onClearQA: () => void;
+  onFlagClick: (segmentId: number) => void;
+  onFixWithAI: (suggestion: string) => void;
+  onApplyStyle: (s: CaptionStyle) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-0 h-full">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
+        <Sparkles className="w-4 h-4 text-primary" />
+        <span className="text-sm font-semibold text-foreground">Hermes</span>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+
+        {/* ── Edit segments ── */}
+        <section>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Edit segments</p>
+          <NLEditPanel
+            jobId={jobId}
+            segments={segments}
+            onApplyPatches={onApplyPatches}
+            prefillInstruction={nlPrefill}
+          />
+        </section>
+
+        {/* ── QA ── */}
+        <section>
+          <div className="flex items-center gap-2 mb-3">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex-1">QA</p>
+            <button
+              onClick={onQAReview}
+              disabled={qaLoading || segments.length === 0}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-border text-xs font-medium text-foreground hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {qaLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+              {qaLoading ? "Reviewing…" : "Review"}
+            </button>
+          </div>
+          {qaError && (
+            <p className="text-xs text-destructive mb-2">{qaError}</p>
+          )}
+          {qaFlags.length === 0 && !qaLoading && (
+            <p className="text-xs text-muted-foreground">No issues found. Run Review to check.</p>
+          )}
+          {qaFlags.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-1 text-xs text-amber-500 mb-1">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                {qaFlags.length} issue{qaFlags.length !== 1 ? "s" : ""} — amber segments in list
+                <button onClick={onClearQA} className="ml-auto text-muted-foreground hover:text-foreground">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {qaFlags.map((f, i) => (
+                <div key={i} className="rounded-lg border border-amber-400/30 bg-amber-400/5 p-2.5 space-y-1">
+                  <button
+                    onClick={() => onFlagClick(f.segment_id)}
+                    className="text-xs font-semibold text-amber-400 hover:underline text-left w-full"
+                  >
+                    Segment #{f.segment_id + 1}
+                  </button>
+                  <p className="text-xs text-foreground">{f.issue}</p>
+                  <p className="text-xs text-muted-foreground">{f.suggestion}</p>
+                  <button
+                    onClick={() => onFixWithAI(f.suggestion)}
+                    className="text-xs text-primary hover:underline"
+                  >
+                    Fix →
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ── Style presets ── */}
+        <section>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Style presets</p>
+          <PresetGallery style={style} onApply={onApplyStyle} />
+        </section>
+
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Editor View (3-column layout)
+// ---------------------------------------------------------------------------
+
 function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   const [job, setJob] = useState<CaptionJob | null>(null);
   const [segments, setSegments] = useState<CaptionSegment[]>([]);
@@ -701,7 +1102,6 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   const [burnError, setBurnError] = useState<string | null>(null);
   const [burnSuccess, setBurnSuccess] = useState(false);
   const [burnTimestamp, setBurnTimestamp] = useState(Date.now());
-  const videoRef = useRef<HTMLVideoElement>(null);
   const [splitState, setSplitState] = useState<{ segIdx: number; splitBefore: Set<number> } | null>(null);
 
   // QA state
@@ -712,10 +1112,8 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
   // NL panel pre-fill (from QA "Fix with AI")
   const [nlPrefill, setNlPrefill] = useState<string | undefined>(undefined);
 
-  // Style suggestion state
-  const [styleSuggestion, setStyleSuggestion] = useState<StyleSuggestion | null>(null);
-  const [styleSuggestionDismissed, setStyleSuggestionDismissed] = useState(false);
-  const styleFileRef = useRef<HTMLInputElement>(null);
+  // Ref for scrolling to a flagged segment
+  const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   useEffect(() => {
     setLoading(true);
@@ -728,13 +1126,6 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
       })
       .catch((e: any) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, [jobId]);
-
-  // Check if a style suggestion is available (non-blocking)
-  useEffect(() => {
-    fetchJSON(`${API}/style/suggestion`)
-      .then((s: StyleSuggestion) => setStyleSuggestion(s))
-      .catch(() => {});
   }, [jobId]);
 
   const updateSegment = useCallback((idx: number, field: keyof CaptionSegment, value: string) => {
@@ -867,36 +1258,6 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
     }, 0);
   }, [jobId, segments]);
 
-  const handleLoadStylePreset = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const parsed = JSON.parse(reader.result as string);
-        const required = ["font", "font_size", "primary_color", "outline_color", "outline_width", "alignment", "margin_bottom", "max_line_length"];
-        const missing = required.filter((k) => !(k in parsed));
-        if (missing.length > 0) throw new Error(`Missing fields: ${missing.join(", ")}`);
-        setStyle(parsed as CaptionStyle);
-      } catch (err) {
-        setBurnError(`Invalid style preset: ${err}`);
-      }
-      e.target.value = "";
-    };
-    reader.readAsText(file);
-  };
-
-  const handleSaveStylePreset = () => {
-    if (!style) return;
-    const blob = new Blob([JSON.stringify(style, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "caption-style.json";
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   const handleReburn = async () => {
     if (!style) return;
     setBurning(true);
@@ -982,16 +1343,15 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
         </span>
       </div>
 
-      {/* ── Body ── */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* ── 3-column body ── */}
+      {/* On xl+ screens: 3 side-by-side columns. Below xl: col 3 wraps below col 2. */}
+      <div className="flex-1 overflow-hidden flex flex-wrap xl:flex-nowrap">
 
-        {/* ── Left: video + actions ── */}
-        <div className="w-[420px] shrink-0 flex flex-col border-r border-border overflow-y-auto">
+        {/* ── Col 1: Video + actions (360px) ── */}
+        <div className="w-full xl:w-[360px] xl:shrink-0 flex flex-col border-r border-border overflow-y-auto">
           <div className="p-4">
             <VideoPlayer src={`${API}/jobs/${jobId}/video?t=${burnTimestamp}`} />
           </div>
-
-          {/* Actions */}
           <div className="px-4 pb-3 flex gap-2">
             <button
               onClick={handleReburn}
@@ -1009,8 +1369,6 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
               Download
             </button>
           </div>
-
-          {/* Feedback */}
           {burnError && (
             <div className="mx-4 mb-3 flex items-start gap-2 rounded-lg bg-destructive/10 border border-destructive/30 px-3 py-2">
               <AlertCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />
@@ -1022,207 +1380,138 @@ function EditorView({ jobId, onBack }: { jobId: string; onBack: () => void }) {
               <p className="text-xs text-success">✓ Video re-burned successfully.</p>
             </div>
           )}
-
         </div>
 
-        {/* ── Right: segment editor + style settings ── */}
-        <div className="flex-1 overflow-y-auto p-5">
+        {/* ── Col 2: Segments + style fields (flex) ── */}
+        <div className="flex-1 min-w-0 overflow-y-auto p-5 border-r border-border">
           <div className="max-w-2xl mx-auto">
-          <div className="flex items-center gap-2 mb-4">
-            <h2 className="text-base font-semibold text-foreground">Segments</h2>
-            <span className="text-xs text-muted-foreground flex-1">{segments.length} total · edits are saved on Re-burn</span>
-            <button
-              onClick={handleQAReview}
-              disabled={qaLoading || segments.length === 0}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-border text-xs font-medium text-foreground hover:bg-accent disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              {qaLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
-              {qaLoading ? "Reviewing…" : "Review all"}
-            </button>
-          </div>
-          {qaError && (
-            <div className="mb-3 flex items-start gap-2 text-xs text-destructive">
-              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              {qaError}
+            <div className="flex items-center gap-2 mb-4">
+              <h2 className="text-base font-semibold text-foreground">Segments</h2>
+              <span className="text-xs text-muted-foreground flex-1">{segments.length} total · edits are saved on Re-burn</span>
             </div>
-          )}
-          {qaFlags.length > 0 && (
-            <div className="mb-3 flex items-center gap-2 text-xs text-amber-500">
-              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-              {qaFlags.length} issue{qaFlags.length !== 1 ? "s" : ""} found — flagged segments are highlighted
-              <button onClick={() => setQaFlags([])} className="ml-auto text-muted-foreground hover:text-foreground">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
 
-          {segments.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground border border-dashed border-border rounded-xl">
-              <p className="text-sm">No segments in this job.</p>
-              <p className="text-xs mt-1 text-muted-foreground/70">The transcription may have returned nothing.</p>
-            </div>
-          ) : (
-            <div className="space-y-2 pb-2">
-              {segments.map((seg, idx) => {
-                const lang = (seg.lang === "vi" ? "vi" : "en") as "en" | "vi";
-                const flag = qaFlags.find((f) => f.segment_id === seg.id);
-                return (
-                  <div
-                    key={`${seg.id}-${idx}`}
-                    className={`rounded-lg border bg-card p-3 space-y-2 text-sm transition-colors ${
-                      flag ? "border-amber-400/60 dark:border-amber-500/50" : "border-border"
-                    }`}
-                  >
-                    {flag && (
-                      <div className="flex items-start gap-2 text-xs text-amber-500">
-                        <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                        <span className="flex-1">{flag.issue}</span>
+            {segments.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-muted-foreground border border-dashed border-border rounded-xl">
+                <p className="text-sm">No segments in this job.</p>
+                <p className="text-xs mt-1 text-muted-foreground/70">The transcription may have returned nothing.</p>
+              </div>
+            ) : (
+              <div className="space-y-2 pb-2">
+                {segments.map((seg, idx) => {
+                  const lang = (seg.lang === "vi" ? "vi" : "en") as "en" | "vi";
+                  const flag = qaFlags.find((f) => f.segment_id === seg.id);
+                  return (
+                    <div
+                      key={`${seg.id}-${idx}`}
+                      ref={(el) => { if (el) segmentRefs.current.set(seg.id, el); }}
+                      className={`rounded-lg border bg-card p-3 space-y-2 text-sm transition-colors ${
+                        flag ? "border-amber-400/60 dark:border-amber-500/50" : "border-border"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono text-muted-foreground w-7 shrink-0 text-right">#{idx + 1}</span>
+                        <span className="text-xs tabular-nums text-muted-foreground shrink-0 w-[5.5rem]">
+                          {formatTime(seg.start)}–{formatTime(seg.end)}
+                        </span>
                         <button
-                          onClick={() => setNlPrefill(flag.suggestion)}
-                          className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline whitespace-nowrap"
-                        >
-                          Fix with AI
-                        </button>
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono text-muted-foreground w-7 shrink-0 text-right">#{idx + 1}</span>
-                      <span className="text-xs tabular-nums text-muted-foreground shrink-0 w-[5.5rem]">
-                        {formatTime(seg.start)}–{formatTime(seg.end)}
-                      </span>
-                      <button
-                        onClick={() => toggleLang(idx)}
-                        title="Toggle EN / VI"
-                        className={`px-2 py-0.5 rounded text-xs font-semibold shrink-0 transition-colors ${
-                          lang === "vi"
-                            ? "bg-blue-500/20 text-blue-300 hover:bg-blue-500/30"
-                            : "bg-secondary text-secondary-foreground hover:bg-accent"
-                        }`}
-                      >
-                        {lang.toUpperCase()}
-                      </button>
-                      <input
-                        className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-border focus:border-ring outline-none px-1 py-0.5 transition-colors text-foreground"
-                        value={seg.text}
-                        onChange={(e) => updateSegment(idx, "text", e.target.value)}
-                        placeholder="(no text)"
-                      />
-                      {(seg.words?.length ?? 0) >= 2 && (
-                        <button
-                          onClick={() =>
-                            splitState?.segIdx === idx
-                              ? setSplitState(null)
-                              : openSplit(idx)
-                          }
-                          title="Split segment at word boundary"
-                          className={`shrink-0 p-1 rounded transition-colors ${
-                            splitState?.segIdx === idx
-                              ? "text-orange-500"
-                              : "text-muted-foreground/40 hover:text-muted-foreground"
+                          onClick={() => toggleLang(idx)}
+                          title="Toggle EN / VI"
+                          className={`px-2 py-0.5 rounded text-xs font-semibold shrink-0 transition-colors ${
+                            lang === "vi"
+                              ? "bg-blue-500/20 text-blue-300 hover:bg-blue-500/30"
+                              : "bg-secondary text-secondary-foreground hover:bg-accent"
                           }`}
                         >
-                          <Scissors className="w-3.5 h-3.5" />
+                          {lang.toUpperCase()}
                         </button>
+                        <input
+                          className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-border focus:border-ring outline-none px-1 py-0.5 transition-colors text-foreground"
+                          value={seg.text}
+                          onChange={(e) => updateSegment(idx, "text", e.target.value)}
+                          placeholder="(no text)"
+                        />
+                        {(seg.words?.length ?? 0) >= 2 && (
+                          <button
+                            onClick={() =>
+                              splitState?.segIdx === idx
+                                ? setSplitState(null)
+                                : openSplit(idx)
+                            }
+                            title="Split segment at word boundary"
+                            className={`shrink-0 p-1 rounded transition-colors ${
+                              splitState?.segIdx === idx
+                                ? "text-orange-500"
+                                : "text-muted-foreground/40 hover:text-muted-foreground"
+                            }`}
+                          >
+                            <Scissors className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      {lang === "vi" && (
+                        <div className="flex items-center gap-2 pl-[calc(1.75rem+5.5rem+3rem+0.75rem)]">
+                          <span className="text-xs text-muted-foreground shrink-0">phonetic</span>
+                          <input
+                            className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-border focus:border-ring outline-none px-1 py-0.5 italic text-muted-foreground transition-colors"
+                            value={seg.phonetic}
+                            onChange={(e) => updateSegment(idx, "phonetic", e.target.value)}
+                            placeholder="[pronunciation guide]"
+                          />
+                        </div>
+                      )}
+                      {splitState?.segIdx === idx && (
+                        <SplitEditor
+                          seg={seg}
+                          splitBefore={splitState.splitBefore}
+                          onToggle={toggleSplitPoint}
+                          onApply={applyWordSplit}
+                          onCancel={() => setSplitState(null)}
+                        />
                       )}
                     </div>
-                    {lang === "vi" && (
-                      <div className="flex items-center gap-2 pl-[calc(1.75rem+5.5rem+3rem+0.75rem)]">
-                        <span className="text-xs text-muted-foreground shrink-0">phonetic</span>
-                        <input
-                          className="flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-border focus:border-ring outline-none px-1 py-0.5 italic text-muted-foreground transition-colors"
-                          value={seg.phonetic}
-                          onChange={(e) => updateSegment(idx, "phonetic", e.target.value)}
-                          placeholder="[pronunciation guide]"
-                        />
-                      </div>
-                    )}
-                    {splitState?.segIdx === idx && (
-                      <SplitEditor
-                        seg={seg}
-                        splitBefore={splitState.splitBefore}
-                        onToggle={toggleSplitPoint}
-                        onApply={applyWordSplit}
-                        onCancel={() => setSplitState(null)}
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* ── NL Edit Panel (always shown below segments) ── */}
-          <NLEditPanel
-            jobId={jobId}
-            segments={segments}
-            onApplyPatches={handleApplyNLPatches}
-            prefillInstruction={nlPrefill}
-          />
-
-          {/* ── Style settings (below NL panel) ── */}
-          <div className="border-t border-border mt-6 pb-8">
-            <div className="flex items-center gap-2 mt-6 mb-4">
-              <h2 className="text-base font-semibold text-foreground flex-1">Caption Style</h2>
-              {/* Style preset buttons */}
-              <input
-                ref={styleFileRef}
-                type="file"
-                accept=".json"
-                className="hidden"
-                onChange={handleLoadStylePreset}
-              />
-              <button
-                onClick={() => styleFileRef.current?.click()}
-                className="flex items-center gap-1 px-2.5 py-1 rounded border border-border text-xs font-medium text-foreground hover:bg-accent transition-colors"
-                title="Load a style preset from a JSON file"
-              >
-                <FileUp className="w-3.5 h-3.5" />
-                Load
-              </button>
-              <button
-                onClick={handleSaveStylePreset}
-                className="flex items-center gap-1 px-2.5 py-1 rounded border border-border text-xs font-medium text-foreground hover:bg-accent transition-colors"
-                title="Save current style as a JSON preset"
-              >
-                <FileDown className="w-3.5 h-3.5" />
-                Save
-              </button>
-              {styleSuggestion?.available && !styleSuggestionDismissed && (
-                <button
-                  onClick={() => {
-                    if (styleSuggestion.style) setStyle(styleSuggestion.style);
-                    setStyleSuggestionDismissed(true);
-                  }}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded border border-amber-400/50 bg-amber-400/10 text-xs font-medium text-amber-500 hover:bg-amber-400/20 transition-colors"
-                  title={styleSuggestion.explanation}
-                >
-                  <Lightbulb className="w-3.5 h-3.5" />
-                  Suggest
-                </button>
-              )}
-            </div>
-            {/* Style suggestion explanation banner */}
-            {styleSuggestion?.available && !styleSuggestionDismissed && styleSuggestion.explanation && (
-              <div className="flex items-start gap-2 mb-3 rounded-lg border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-xs text-amber-500">
-                <Lightbulb className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                <span className="flex-1">{styleSuggestion.explanation}</span>
-                <button onClick={() => setStyleSuggestionDismissed(true)} className="text-muted-foreground hover:text-foreground">
-                  <X className="w-3.5 h-3.5" />
-                </button>
+                  );
+                })}
               </div>
             )}
-            <div className="space-y-2.5">
-              <StyleField label="Font" value={style.font} onChange={(v) => setStyle((s) => s && ({ ...s, font: v }))} placeholder="e.g. Arial, Impact, Trebuchet MS" />
-              <StyleNumberField label="Font size" value={style.font_size} onChange={(v) => setStyle((s) => s && ({ ...s, font_size: v }))} />
-              <StyleColorField label="Text color" value={style.primary_color} onChange={(v) => setStyle((s) => s && ({ ...s, primary_color: v }))} />
-              <StyleColorField label="Outline" value={style.outline_color} onChange={(v) => setStyle((s) => s && ({ ...s, outline_color: v }))} />
-              <StyleNumberField label="Outline width" value={style.outline_width} onChange={(v) => setStyle((s) => s && ({ ...s, outline_width: v }))} />
-              <StyleNumberField label="Bottom margin" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
+
+            {/* ── Caption Style fields ── */}
+            <div className="border-t border-border mt-6 pb-8">
+              <h2 className="text-base font-semibold text-foreground mt-6 mb-4">Caption Style</h2>
+              <div className="space-y-2.5">
+                <StyleField label="Font" value={style.font} onChange={(v) => setStyle((s) => s && ({ ...s, font: v }))} placeholder="e.g. Arial, Impact, Trebuchet MS" />
+                <StyleNumberField label="Font size" value={style.font_size} onChange={(v) => setStyle((s) => s && ({ ...s, font_size: v }))} />
+                <StyleColorField label="Text color" value={style.primary_color} onChange={(v) => setStyle((s) => s && ({ ...s, primary_color: v }))} />
+                <StyleColorField label="Outline" value={style.outline_color} onChange={(v) => setStyle((s) => s && ({ ...s, outline_color: v }))} />
+                <StyleNumberField label="Outline width" value={style.outline_width} onChange={(v) => setStyle((s) => s && ({ ...s, outline_width: v }))} />
+                <StyleNumberField label="Bottom margin" value={style.margin_bottom} onChange={(v) => setStyle((s) => s && ({ ...s, margin_bottom: v }))} />
+              </div>
+              <p className="text-xs text-muted-foreground mt-3">Style changes apply on the next Re-burn.</p>
             </div>
-            <p className="text-xs text-muted-foreground mt-3">Style changes apply on the next Re-burn.</p>
-          </div>
           </div>
         </div>
+
+        {/* ── Col 3: Hermes panel (380px) ── */}
+        <div className="w-full xl:w-[380px] xl:shrink-0 border-t xl:border-t-0 border-border overflow-y-auto">
+          <HermesPanel
+            jobId={jobId}
+            segments={segments}
+            qaFlags={qaFlags}
+            qaLoading={qaLoading}
+            qaError={qaError}
+            nlPrefill={nlPrefill}
+            style={style}
+            onApplyPatches={handleApplyNLPatches}
+            onQAReview={handleQAReview}
+            onClearQA={() => setQaFlags([])}
+            onFlagClick={(segId) => {
+              const el = segmentRefs.current.get(segId);
+              if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+            }}
+            onFixWithAI={(suggestion) => setNlPrefill(suggestion)}
+            onApplyStyle={(s) => setStyle(s)}
+          />
+        </div>
+
       </div>
     </div>
   );

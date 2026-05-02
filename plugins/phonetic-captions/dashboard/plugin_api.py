@@ -559,3 +559,104 @@ async def style_suggestion():
         return {"available": False}
 
     return {"available": True, "style": suggestion["style"], "explanation": suggestion.get("explanation", "")}
+
+
+# ---------------------------------------------------------------------------
+# Named preset library
+# ---------------------------------------------------------------------------
+
+def _presets_dir() -> Path:
+    return get_hermes_home() / "caption-presets"
+
+
+def _safe_preset_name(name: str) -> str:
+    """Sanitize a preset name to a safe filename stem (alphanumeric + dash/underscore/space)."""
+    safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in name).strip()
+    if not safe:
+        raise HTTPException(status_code=400, detail="Invalid preset name")
+    return safe
+
+
+_STYLE_GENERATE_SYSTEM_PROMPT = """You are a caption style assistant for bilingual EN/VI short-form videos.
+The user will describe a visual style in natural language.
+Return ONLY a JSON object with these exact 8 fields (no other keys, no prose, no markdown fences):
+  font           (str) — font family name, e.g. "Impact", "Arial", "Trebuchet MS"
+  font_size      (int) — point size, typical range 36-72
+  primary_color  (str) — ASS hex &HAABBGGRR e.g. "&H00FFFFFF" white, "&H0000FFFF" yellow
+  outline_color  (str) — ASS hex e.g. "&H00000000" black, "&H000000FF" red
+  outline_width  (int) — 0-5
+  alignment      (int) — ASS numpad: 2 bottom-center (most common), 8 top-center
+  margin_bottom  (int) — pixels from bottom edge, typical 60-120
+  max_line_length (int) — characters before hard-wrap, typical 30-50
+
+Return ONLY the JSON object."""
+
+
+class PresetPayload(BaseModel):
+    style: dict[str, Any]
+
+
+class GenerateStylePayload(BaseModel):
+    description: str
+
+
+@router.get("/presets")
+async def list_presets():
+    """List all saved named style presets, newest first."""
+    d = _presets_dir()
+    if not d.exists():
+        return []
+    presets = []
+    for f in sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            presets.append({"name": f.stem, "style": data})
+        except (json.JSONDecodeError, OSError):
+            continue
+    return presets
+
+
+@router.put("/presets/{name}")
+async def save_preset(name: str, payload: PresetPayload):
+    """Create or overwrite a named style preset."""
+    safe = _safe_preset_name(name)
+    d = _presets_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{safe}.json").write_text(
+        json.dumps(payload.style, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return {"ok": True, "name": safe}
+
+
+@router.delete("/presets/{name}")
+async def delete_preset(name: str):
+    """Delete a named style preset (no-op if it does not exist)."""
+    safe = _safe_preset_name(name)
+    f = _presets_dir() / f"{safe}.json"
+    if f.exists():
+        f.unlink()
+    return {"ok": True}
+
+
+@router.post("/presets/generate")
+async def generate_style(payload: GenerateStylePayload):
+    """Generate a CaptionStyle from a natural-language description (not saved automatically)."""
+    if not payload.description.strip():
+        raise HTTPException(status_code=400, detail="description is required")
+
+    user_message = f"Style description: {payload.description}"
+    try:
+        raw = await asyncio.to_thread(_call_agent, _STYLE_GENERATE_SYSTEM_PROMPT, user_message)
+        clean = raw.strip()
+        if clean.startswith("```"):
+            clean = "\n".join(clean.splitlines()[1:])
+            if clean.endswith("```"):
+                clean = clean[: clean.rfind("```")]
+        style = json.loads(clean)
+        if not isinstance(style, dict):
+            raise ValueError("Agent did not return a JSON object")
+    except Exception as exc:
+        _log.warning("generate-style agent call failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Agent error: {exc}") from exc
+
+    return {"style": style}

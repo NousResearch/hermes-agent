@@ -2741,16 +2741,16 @@ async def get_usage_analytics(days: int = 30):
             FROM sessions WHERE started_at > ?
         """, (cutoff,))
         totals = dict(cur3.fetchone())
-        insights_report = InsightsEngine(db).generate(days=days)
-        skills = insights_report.get("skills", {
-            "summary": {
-                "total_skill_loads": 0,
-                "total_skill_edits": 0,
-                "total_skill_actions": 0,
-                "distinct_skills_used": 0,
-            },
-            "top_skills": [],
-        })
+        # Compute only the skill breakdown — the dashboard endpoint discards
+        # every other section InsightsEngine.generate() builds (sessions,
+        # tools, models, platforms, activity, top_sessions). Calling generate()
+        # here scanned/parsed every assistant tool_calls row twice (once for
+        # _get_tool_usage, once for _get_skill_usage) and head-of-line blocked
+        # the FastAPI event loop on multi-second DB+JSON work for unrelated
+        # endpoints. Compose the two skill-only helpers directly instead.
+        engine = InsightsEngine(db)
+        skill_usage = engine._get_skill_usage(cutoff)
+        skills = engine._compute_skill_breakdown(skill_usage)
 
         return {
             "daily": daily,

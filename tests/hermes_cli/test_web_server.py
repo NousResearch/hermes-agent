@@ -972,6 +972,35 @@ class TestNewEndpoints:
             "top_skills": [],
         }
 
+    def test_analytics_usage_skips_full_insights_generate(self):
+        """/api/analytics/usage must not invoke InsightsEngine.generate() —
+        that scans/parses every assistant tool_calls row twice (once for
+        _get_tool_usage, once for _get_skill_usage) and head-of-line blocks
+        the FastAPI event loop on multi-second work, even though the
+        endpoint discards every section but `skills`. See issue #18511."""
+        import agent.insights as insights_module
+
+        original_generate = insights_module.InsightsEngine.generate
+        calls = []
+
+        def _spy(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return original_generate(self, *args, **kwargs)
+
+        insights_module.InsightsEngine.generate = _spy
+        try:
+            resp = self.client.get("/api/analytics/usage?days=7")
+            assert resp.status_code == 200
+            assert "skills" in resp.json()
+        finally:
+            insights_module.InsightsEngine.generate = original_generate
+
+        assert calls == [], (
+            "get_usage_analytics() should not invoke "
+            "InsightsEngine.generate() — the dashboard endpoint only needs "
+            "the skill breakdown."
+        )
+
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB
 

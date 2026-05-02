@@ -300,13 +300,20 @@ class InsightsEngine:
         """Extract per-skill usage from assistant tool calls."""
         skill_counts: Dict[str, Dict[str, Any]] = {}
 
+        # Pre-filter at SQL: only the two skill-related tool names ever count
+        # toward skill usage, so any row whose tool_calls JSON does not contain
+        # the literal substring "skill_view" or "skill_manage" cannot
+        # contribute. This avoids parsing tens of thousands of unrelated
+        # tool_calls JSON blobs in Python on dashboards / large session DBs.
         if source:
             cursor = self._conn.execute(
                 """SELECT m.tool_calls, m.timestamp
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ? AND s.source = ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
+                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL
+                     AND (m.tool_calls LIKE '%skill_view%'
+                          OR m.tool_calls LIKE '%skill_manage%')""",
                 (cutoff, source),
             )
         else:
@@ -315,7 +322,9 @@ class InsightsEngine:
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
+                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL
+                     AND (m.tool_calls LIKE '%skill_view%'
+                          OR m.tool_calls LIKE '%skill_manage%')""",
                 (cutoff,),
             )
 

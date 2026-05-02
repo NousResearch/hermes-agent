@@ -382,6 +382,56 @@ class TestInsightsPopulated:
         skill_names = [s["skill"] for s in skills["top_skills"]]
         assert "systematic-debugging" not in skill_names
 
+    def test_get_skill_usage_ignores_non_skill_tool_calls(self, db):
+        """SQL prefilter on _get_skill_usage must not change semantics — rows
+        whose tool_calls JSON contains the literal substring "skill_view" or
+        "skill_manage" only inside an argument value (not as the function
+        name) must still be excluded by the Python-side filter."""
+        now = time.time()
+        db.create_session(
+            session_id="prefilter-test", source="cli", model="anthropic/test",
+        )
+        # Real skill_view call — must count.
+        db.append_message(
+            "prefilter-test",
+            role="assistant",
+            content="loading",
+            tool_calls=[
+                {"function": {"name": "skill_view",
+                              "arguments": '{"name":"real-skill"}'}},
+            ],
+        )
+        # Non-skill tool whose arguments mention "skill_view" as a substring —
+        # the row will pass the SQL LIKE prefilter but must NOT be counted
+        # by the Python-side `name in {"skill_view","skill_manage"}` check.
+        db.append_message(
+            "prefilter-test",
+            role="assistant",
+            content="searching",
+            tool_calls=[
+                {"function": {"name": "search_files",
+                              "arguments": '{"pattern":"skill_view"}'}},
+            ],
+        )
+        # Non-skill tool with no skill substring at all — must be excluded by
+        # the SQL LIKE prefilter (perf-only, not a correctness assertion).
+        db.append_message(
+            "prefilter-test",
+            role="assistant",
+            content="reading",
+            tool_calls=[
+                {"function": {"name": "read_file",
+                              "arguments": '{"path":"/tmp/x"}'}},
+            ],
+        )
+
+        engine = InsightsEngine(db)
+        usage = engine._get_skill_usage(cutoff=now - 86400)
+        assert len(usage) == 1
+        assert usage[0]["skill"] == "real-skill"
+        assert usage[0]["view_count"] == 1
+        assert usage[0]["manage_count"] == 0
+
     def test_activity_patterns(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)

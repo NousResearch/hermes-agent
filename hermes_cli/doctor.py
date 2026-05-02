@@ -253,7 +253,12 @@ def run_doctor(args):
         check_ok(f"{_DHH}/.env file exists")
         
         # Check for common issues
-        content = env_path.read_text()
+        try:
+            content = env_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # Windows locales (e.g., GBK) can choke on UTF-8 .env files when
+            # default-decoding without an explicit encoding.
+            content = env_path.read_text(encoding="utf-8", errors="replace")
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
         else:

@@ -493,7 +493,20 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
     """
     toolset = TOOLSETS.get(name)
     if toolset:
-        return toolset
+        # Built-in toolsets can be extended by plugins at runtime. Merge the
+        # static TOOLSETS definition with live registry membership so plugin
+        # tools targeting existing toolsets are not dropped.
+        try:
+            from tools.registry import registry
+            static_tools = list(toolset.get("tools", []))
+            dynamic_tools = registry.get_tool_names_for_toolset(name)
+            merged_tools = list(dict.fromkeys([*static_tools, *dynamic_tools]))
+            return {
+                **toolset,
+                "tools": merged_tools,
+            }
+        except Exception:
+            return toolset
 
     try:
         from tools.registry import registry

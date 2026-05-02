@@ -327,6 +327,14 @@ class ContextCompressor(ContextEngine):
       5. On subsequent compactions, iteratively update the previous summary
     """
 
+    # Operation-key derivation. The key identifies "the resource the call acts on"
+    # so that earlier calls on the same resource can collapse to the latest one.
+    # Mirrors forgecode's `Operation` enum (transformers/trim_context_summary.rs).
+    # Tool names match the Hermes registry verified at this commit:
+    # read_file / write_file / patch in tools/file_tools.py, terminal in
+    # tools/terminal_tool.py. New file ops added later should be added here too.
+    _FILE_OPS = {"read_file", "write_file", "patch"}
+
     @property
     def name(self) -> str:
         return "compressor"
@@ -600,6 +608,17 @@ class ContextCompressor(ContextEngine):
             else:
                 content_hashes[h] = (i, msg.get("tool_call_id", "?"))
 
+        # Pass 1.5: operation-keyed dedup (qwen_aware extension)
+        if getattr(self, "dedup_operations", False):
+            result, op_deduped = self._dedup_by_operation(result)
+            pruned += op_deduped
+            # Track separately so CompactionResult.operations_deduped (Task 6)
+            # reports only this pass, not Pass 1's content-hash dedup or Pass 2's
+            # summarize-pass.
+            self._last_op_deduped = op_deduped
+        else:
+            self._last_op_deduped = 0
+
         # Pass 2: Replace old tool results with informative summaries
         for i in range(prune_boundary):
             msg = result[i]
@@ -649,6 +668,128 @@ class ContextCompressor(ContextEngine):
                 result[i] = {**msg, "tool_calls": new_tcs}
 
         return result, pruned
+
+    @staticmethod
+    def _operation_key(tool_name: str, args_json: str) -> "tuple[str, str] | None":
+        """Return ``(category, identifier)`` for a tool call, or ``None`` if not dedupable.
+
+        File ops on the same path share a key (read/write/patch all collapse).
+        Terminal commands key on the command string. Anything else returns
+        ``None`` and is never deduped — including ``patch`` in V4A multi-file
+        mode (no ``path`` arg) and ``web_extract`` (multi-URL ``urls`` arg).
+        """
+        try:
+            args = json.loads(args_json) if args_json else {}
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(args, dict):
+            return None
+        if tool_name in ContextCompressor._FILE_OPS:
+            path = args.get("path")
+            return ("file", path) if isinstance(path, str) and path else None
+        if tool_name == "terminal":
+            cmd = args.get("command")
+            return ("shell", cmd) if isinstance(cmd, str) and cmd else None
+        return None
+
+    def _dedup_by_operation(
+        self, messages: List[Dict[str, Any]],
+    ) -> "tuple[List[Dict[str, Any]], int]":
+        """Replace earlier tool results from same-key operations with a
+        back-reference, keeping the most recent result intact.
+
+        Semantics match forgecode's TrimContextSummary: read/write/patch on
+        the same path share a key. Walking forward, when we see a tool result
+        whose key matches a prior tool result, the prior one is replaced
+        with a `[Superseded ...]` back-reference. The latest tool result
+        holds the post-state and is what the model needs.
+
+        Already-Pass-1-deduped entries (content starts with ``[Duplicate``)
+        are left alone — they were marked by a different mechanism and
+        re-stamping would double-count.
+
+        Returns ``(new_messages, deduped_count)``.
+        """
+        if not getattr(self, "dedup_operations", False) or not messages:
+            return messages, 0
+
+        result = [m.copy() for m in messages]
+
+        # Build index: tool_call_id -> (tool_name, args_json)
+        # Mirrors the same shape as _prune_old_tool_results' call_id_to_tool index.
+        call_index: Dict[str, tuple] = {}
+        for msg in result:
+            if msg.get("role") != "assistant":
+                continue
+            for tc in msg.get("tool_calls") or []:
+                cid = self._get_tool_call_id(tc)
+                if not cid:
+                    continue
+                if isinstance(tc, dict):
+                    fn = tc.get("function") or {}
+                    name = fn.get("name", "") if isinstance(fn, dict) else ""
+                    args = fn.get("arguments", "") if isinstance(fn, dict) else ""
+                else:
+                    fn = getattr(tc, "function", None)
+                    name = getattr(fn, "name", "") if fn else ""
+                    args = getattr(fn, "arguments", "") if fn else ""
+                call_index[cid] = (name or "", args or "")
+
+        # Walk tool results in order. For each, compute its op key. If we've
+        # seen this key before, supersede the earlier result with a back-ref.
+        deduped = 0
+        last_seen: Dict[tuple, int] = {}  # op_key -> message idx
+
+        for i, msg in enumerate(result):
+            if msg.get("role") != "tool":
+                continue
+            cid = msg.get("tool_call_id") or ""
+            info = call_index.get(cid)
+            if not info:
+                continue
+            tool_name, args_json = info
+            key = self._operation_key(tool_name, args_json)
+            if key is None:
+                continue
+
+            prev_idx = last_seen.get(key)
+            if prev_idx is not None:
+                older = result[prev_idx]
+                older_content = older.get("content")
+                # Defense in depth (vision safety): if the previous tool
+                # result is multimodal (list-of-content-blocks), leave it
+                # alone. Replacing it with a string back-reference would
+                # silently drop image data. Mirrors the
+                # `if isinstance(content, list): continue` skip that
+                # _prune_old_tool_results' Pass 1 and Pass 2 already use.
+                # In practice the operation-key whitelist (file ops +
+                # terminal) makes this unreachable, but the check costs
+                # nothing and prevents future foot-guns when new tools
+                # are added to the whitelist.
+                if isinstance(older_content, list):
+                    last_seen[key] = i
+                    continue
+
+                older_str = older_content or ""
+                # Skip if Pass 1 (content-hash dedup) already marked this,
+                # or if we already superseded it.
+                if not isinstance(older_str, str) or older_str.startswith(
+                    ("[Duplicate tool output", "[Superseded by later")
+                ):
+                    last_seen[key] = i
+                    continue
+
+                result[prev_idx] = {
+                    **older,
+                    "content": (
+                        f"[Superseded by later {tool_name} call on same "
+                        f"{key[0]}={key[1]} — see message {i + 1}]"
+                    ),
+                }
+                deduped += 1
+            last_seen[key] = i
+
+        return result, deduped
 
     # ------------------------------------------------------------------
     # Summarization

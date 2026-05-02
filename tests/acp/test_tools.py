@@ -197,6 +197,16 @@ class TestBuildToolStart:
         assert result.content is None
         assert result.raw_input is None
 
+    def test_build_tool_start_for_web_extract_is_compact(self):
+        """web_extract start should stay compact; title identifies URLs."""
+        args = {"urls": ["https://example.com/docs"]}
+        result = build_tool_start("tc-web-start", "web_extract", args)
+        assert isinstance(result, ToolCallStart)
+        assert result.title == "extract: https://example.com/docs"
+        assert result.kind == "fetch"
+        assert result.content is None
+        assert result.raw_input is None
+
     def test_build_tool_start_for_search(self):
         """search_files should include pattern in content."""
         args = {"pattern": "TODO", "target": "content"}
@@ -402,7 +412,7 @@ class TestBuildToolComplete:
         assert "private long memory" not in text
         assert result.raw_output is None
 
-    def test_build_tool_complete_for_web_extract_summarizes_urls(self):
+    def test_build_tool_complete_for_web_extract_summarizes_urls_without_page_content(self):
         result = build_tool_complete(
             "tc-web-extract",
             "web_extract",
@@ -411,8 +421,10 @@ class TestBuildToolComplete:
         text = result.content[0].content.text
         assert "Web extract: 1 URL" in text
         assert "Example" in text
-        assert "Content:" in text
-        assert "Intro" in text
+        assert "https://example.com" in text
+        assert "Content:" not in text
+        assert "Intro" not in text
+        assert "extracted content" not in text
         assert result.raw_output is None
 
     def test_build_tool_complete_truncates_large_output(self):

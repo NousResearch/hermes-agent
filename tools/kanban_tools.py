@@ -40,13 +40,28 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _check_kanban_mode() -> bool:
-    """Tools are available iff the current process has ``HERMES_KANBAN_TASK``
-    set in its env, which the dispatcher sets when spawning a worker.
+    """Tools are available when either:
 
-    Humans running ``hermes chat`` see zero kanban tools. Workers spawned
-    by the kanban dispatcher (gateway-embedded by default) see all seven.
+    1. The current process has ``HERMES_KANBAN_TASK`` set in its env, which
+       the dispatcher sets when spawning a worker — same as before.
+    2. The current profile has ``kanban`` in its ``toolsets`` config — this
+       allows orchestrator profiles to create and manage kanban tasks without
+       being dispatched workers.
+
+    Humans running ``hermes chat`` with no kanban toolset see zero kanban
+    tools. Workers spawned by the dispatcher see all seven. Orchestrator
+    profiles with ``toolsets: [kanban, ...]`` also see all seven.
     """
-    return bool(os.environ.get("HERMES_KANBAN_TASK"))
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        return True
+    # Also enable when the current profile explicitly includes 'kanban'
+    # in its toolsets config. Uses load_config() which is mtime-cached,
+    # so this is cheap on repeated calls.
+    from hermes_cli.config import load_config
+    cfg = load_config()
+    if cfg and "kanban" in cfg.get("toolsets", []):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------

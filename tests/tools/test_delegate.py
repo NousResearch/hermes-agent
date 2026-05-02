@@ -727,8 +727,14 @@ class TestSubagentCostRollup(unittest.TestCase):
 
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
-        for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
+        for tool in ["delegate_task", "clarify", "memory", "send_message"]:
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
+
+    def test_execute_code_not_blocked(self):
+        # execute_code is intentionally allowed for subagents — lets them
+        # batch parallel curl calls / data filtering in a single tool call
+        # instead of 30+ individual tool turns.
+        self.assertNotIn("execute_code", DELEGATE_BLOCKED_TOOLS)
 
     def test_constants(self):
         from tools.delegate_tool import (

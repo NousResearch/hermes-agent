@@ -892,22 +892,6 @@ def _build_child_agent(
     # Note: enabled_toolsets=None means "all tools enabled" (the default),
     # so we must derive effective toolsets from the parent's loaded tools.
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
-    
-    # If enabled_toolsets is a minimal/default set (like ["hermes-acp"]) that doesn't
-    # actually cover the parent's loaded tools, derive from valid_tool_names instead.
-    # This ensures subagents get all tools the parent has, not just the default set.
-    if parent_enabled is not None and parent_agent and hasattr(parent_agent, "valid_tool_names"):
-        import model_tools
-        # Check if enabled_toolsets actually covers the loaded tools
-        loaded_toolsets = {
-            ts
-            for name in parent_agent.valid_tool_names
-            if (ts := model_tools.get_toolset_for_tool(name)) is not None
-        }
-        # If enabled_toolsets is missing tools the parent actually has, derive from loaded tools
-        if loaded_toolsets and not loaded_toolsets.issubset(set(parent_enabled)):
-            parent_enabled = None  # Force derivation from valid_tool_names
-    
     if parent_enabled is not None:
         parent_toolsets = set(parent_enabled)
     elif parent_agent and hasattr(parent_agent, "valid_tool_names"):

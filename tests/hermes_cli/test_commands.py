@@ -899,6 +899,73 @@ class TestTelegramMenuCommands:
         assert "my_enabled_skill" in menu_names
         assert "my_disabled_skill" not in menu_names
 
+    def test_external_dir_skills_included_in_telegram_menu(self, tmp_path, monkeypatch):
+        """External skills (``skills.external_dirs``) must appear in the Telegram menu.
+
+        Regression test for #8110 — external skills were visible to the
+        agent and CLI but silently excluded from gateway slash menus
+        because ``_collect_gateway_skill_entries`` only accepted skills
+        whose path started with ``SKILLS_DIR``.
+
+        Also verifies the trailing-slash boundary: a directory that
+        simply shares a prefix with a configured ``external_dirs`` entry
+        (``/tmp/my-skills-extra`` vs ``/tmp/my-skills``) must NOT be
+        admitted.
+        """
+        from unittest.mock import patch
+
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        external_dir = tmp_path / "my-skills"
+        external_dir.mkdir()
+        lookalike_dir = tmp_path / "my-skills-extra"
+        lookalike_dir.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_dir}\n"
+        )
+
+        fake_cmds = {
+            "/local-one": {
+                "name": "local-one",
+                "description": "Local",
+                "skill_md_path": f"{local_dir}/local-one/SKILL.md",
+                "skill_dir": f"{local_dir}/local-one",
+            },
+            "/morning-briefing": {
+                "name": "morning-briefing",
+                "description": "External skill",
+                "skill_md_path": f"{external_dir}/morning-briefing/SKILL.md",
+                "skill_dir": f"{external_dir}/morning-briefing",
+            },
+            "/lookalike-skill": {
+                "name": "lookalike-skill",
+                "description": "Lives in a sibling dir that shares a prefix",
+                "skill_md_path": f"{lookalike_dir}/lookalike-skill/SKILL.md",
+                "skill_dir": f"{lookalike_dir}/lookalike-skill",
+            },
+        }
+
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=[external_dir],
+            ),
+        ):
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        menu_names = {n for n, _ in menu}
+        assert "local_one" in menu_names, "local skill must appear"
+        assert "morning_briefing" in menu_names, (
+            "external skill from skills.external_dirs must appear (fixes #8110)"
+        )
+        assert "lookalike_skill" not in menu_names, (
+            "prefix-match sibling directories must not be admitted"
+        )
+
     def test_special_chars_in_skill_names_sanitized(self, tmp_path, monkeypatch):
         """Skills with +, /, or other special chars produce valid Telegram names."""
         from unittest.mock import patch

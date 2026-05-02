@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from agent.redact import redact_sensitive_text
+from copilot_remote.github_task_url import build_github_task_web_url
 from hermes_state import SessionDB
 
 
@@ -52,35 +53,8 @@ def _github_task_web_url(job: dict) -> Optional[str]:
     if not handle:
         return None
     repo_path = job.get("repo_path", "") or ""
-    if not repo_path:
-        return None
-    # Derive owner from the git remote origin URL
-    from pathlib import Path
-    import subprocess
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(repo_path), "config", "--get", "remote.origin.url"],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            url = result.stdout.strip()
-            if "://" in url:
-                parts = url.split("://", 1)[1].split("/")
-                if len(parts) >= 2:
-                    owner = parts[1]
-                    slug = Path(repo_path).name
-                    return f"https://github.com/{owner}/{slug}/tasks/{handle}"
-            elif "@" in url and ":" in url:
-                after_at = url.split("@", 1)[-1]
-                if ":" in after_at:
-                    parts = after_at.replace(":", "/").split("/")
-                    if len(parts) >= 2:
-                        owner = parts[1]
-                        slug = Path(repo_path).name
-                        return f"https://github.com/{owner}/{slug}/tasks/{handle}"
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        pass
-    return None
+    repo_slug = str(job.get("repo_slug") or job.get("repo") or "")
+    return build_github_task_web_url(repo_path, repo_slug, handle)
 
 
 def _relative_time(ts) -> str:

@@ -10,12 +10,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-import subprocess
 import uuid
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agent.redact import redact_sensitive_text
+from copilot_remote.github_task_url import build_github_task_web_url
 from copilot_remote.models import RepoEntry
 from hermes_state import SessionDB
 from tools.registry import registry
@@ -130,45 +129,6 @@ def _error(message: str) -> str:
     return json.dumps({"success": False, "error": redact_sensitive_text(message)})
 
 
-def _repo_owner_from_path(repo_path: str) -> Optional[str]:
-    """Try to derive the GitHub owner/org from the repo clone path via git remote origin URL."""
-    if not repo_path:
-        return None
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(repo_path), "config", "--get", "remote.origin.url"],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            url = result.stdout.strip()
-            # Handles https://github.com/owner/repo.git and git@github.com:owner/repo.git
-            if "://" in url:
-                parts = url.split("://", 1)[1].split("/")
-                if len(parts) >= 2:
-                    return parts[1]
-            elif "@" in url and ":" in url:
-                after_at = url.split("@", 1)[-1]
-                if ":" in after_at:
-                    parts = after_at.replace(":", "/").split("/")
-                    if len(parts) >= 2:
-                        return parts[1]
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        pass
-    return None
-
-
-def _github_task_web_url(repo_path: str, connect_handle: Optional[str]) -> Optional[str]:
-    """Build a GitHub task web URL if both owner and connect handle are available."""
-    if not connect_handle:
-        return None
-    owner = _repo_owner_from_path(repo_path)
-    if not owner:
-        return None
-    # Derive repo slug from the tail of the path (mirrors router.py convention)
-    slug = Path(repo_path).name
-    return f"https://github.com/{owner}/{slug}/tasks/{connect_handle}"
-
-
 def _job_handle(job: Dict[str, Any]) -> Optional[str]:
     """Return the launcher-extracted Copilot reconnect handle, or ``None``.
 
@@ -186,6 +146,7 @@ def _job_handle(job: Dict[str, Any]) -> Optional[str]:
 def _serialize_job(job: Dict[str, Any]) -> Dict[str, Any]:
     handle = _job_handle(job)
     repo_path = job.get("repo_path", "") or ""
+    repo_slug = str(job.get("repo_slug") or "")
     serialized: Dict[str, Any] = {
         "job_id": job.get("id"),
         "state": job.get("state"),
@@ -198,7 +159,7 @@ def _serialize_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "connect_handle": handle,
         "connect_command": f"copilot --connect={handle}" if handle else None,
         "resume_command": f"copilot --resume={handle}" if handle else None,
-        "web_url": _github_task_web_url(repo_path, handle) if handle and repo_path else None,
+        "web_url": build_github_task_web_url(repo_path, repo_slug, handle),
     }
     prompt = job.get("prompt")
     if prompt:

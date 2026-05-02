@@ -109,8 +109,10 @@ def test_launch_routes_repo_with_web_url(db, monkeypatch):
     )
     monkeypatch.setattr("tools.copilot_remote_tool._route_repo", lambda prompt: routed_repo)
     monkeypatch.setattr(
-        "tools.copilot_remote_tool._repo_owner_from_path",
-        lambda path: "RosenblattAI" if path else None,
+        "tools.copilot_remote_tool.build_github_task_web_url",
+        lambda repo_path, repo_slug, connect_handle: (
+            f"https://github.com/RosenblattAI/{repo_slug}/tasks/{connect_handle}"
+        ),
     )
 
     def fake_launch(repo, prompt, *, session_id, model=None, dry_run=False, on_complete=None):

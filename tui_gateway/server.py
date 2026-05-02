@@ -553,6 +553,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
             current["agent"] = agent
+            _apply_pending_title(current)
 
             try:
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
@@ -602,6 +603,28 @@ def _start_agent_build(sid: str, session: dict) -> None:
             ready.set()
 
     threading.Thread(target=_build, daemon=True).start()
+
+
+def _apply_pending_title(session: dict) -> None:
+    """Persist a queued user title once the session row exists.
+
+    A duplicate-title ValueError is terminal for this queued value, so clear
+    it. Transient database failures keep the pending title for the next retry.
+    """
+    pending = (session.get("pending_title") or "").strip()
+    if not pending:
+        return
+    db = _get_db()
+    if db is None:
+        return
+    key = session.get("session_key") or ""
+    try:
+        if db.set_session_title(key, pending):
+            session["pending_title"] = None
+    except ValueError:
+        session["pending_title"] = None
+    except Exception:
+        pass
 
 
 def _sess_nowait(params, rid):
@@ -2982,15 +3005,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             _emit("message.complete", sid, payload)
 
             # Apply pending_title now that the DB row exists.
-            _pending = session.get("pending_title")
-            if _pending and status == "complete":
-                _pdb = _get_db()
-                if _pdb:
-                    try:
-                        if _pdb.set_session_title(session.get("session_key") or sid, _pending):
-                            session["pending_title"] = None
-                    except Exception:
-                        pass  # Best effort — auto-title will handle it below
+            if status == "complete":
+                _apply_pending_title(session)
 
             if (
                 status == "complete"

@@ -55,12 +55,12 @@ _EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub"}
 _ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")
 
 
-def _backups_dir() -> Path:
-    return get_hermes_home() / "skills" / ".curator_backups"
+def _backups_dir(home: Path | None = None) -> Path:
+    return (home or get_hermes_home()) / "skills" / ".curator_backups"
 
 
-def _skills_dir() -> Path:
-    return get_hermes_home() / "skills"
+def _skills_dir(home: Path | None = None) -> Path:
+    return (home or get_hermes_home()) / "skills"
 
 
 def _utc_id(now: Optional[datetime] = None) -> str:
@@ -130,7 +130,7 @@ def _write_manifest(dest: Path, reason: str, archive_path: Path,
     )
 
 
-def snapshot_skills(reason: str = "manual") -> Optional[Path]:
+def snapshot_skills(reason: str = "manual", home: Path | None = None) -> Optional[Path]:
     """Create a tar.gz snapshot of ``~/.hermes/skills/`` and prune old ones.
 
     Returns the snapshot directory path, or ``None`` if the snapshot was
@@ -142,12 +142,12 @@ def snapshot_skills(reason: str = "manual") -> Optional[Path]:
         logger.debug("Curator backup disabled by config; skipping snapshot")
         return None
 
-    skills = _skills_dir()
+    skills = _skills_dir(home)
     if not skills.exists():
         logger.debug("No ~/.hermes/skills/ directory — nothing to back up")
         return None
 
-    backups = _backups_dir()
+    backups = _backups_dir(home)
     try:
         backups.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -191,16 +191,16 @@ def snapshot_skills(reason: str = "manual") -> Optional[Path]:
             pass
         return None
 
-    _prune_old(keep=get_keep())
+    _prune_old(keep=get_keep(), home=home)
     logger.info("Curator snapshot created: %s (%s)", snap_id, reason)
     return dest
 
 
-def _prune_old(keep: int) -> List[str]:
+def _prune_old(keep: int, home: Path | None = None) -> List[str]:
     """Delete regular snapshots beyond the newest *keep*. Returns deleted
     ids. Staging dirs (``.rollback-staging-*``) are implementation detail
     and pruned independently on every call."""
-    backups = _backups_dir()
+    backups = _backups_dir(home)
     if not backups.exists():
         return []
     entries: List[Tuple[str, Path]] = []

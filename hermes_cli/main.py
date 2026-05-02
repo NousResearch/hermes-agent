@@ -7305,6 +7305,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             restarted_services = []
             killed_pids = set()
+            force_sweep_pids = set()
             relaunched_profiles = []
 
             # --- Systemd services (Linux) ---
@@ -7514,6 +7515,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if not drained:
                     try:
                         os.kill(pid, _signal.SIGTERM)
+                        force_sweep_pids.add(pid)
                     except (ProcessLookupError, PermissionError):
                         pass
                 killed_pids.add(pid)
@@ -7525,6 +7527,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 try:
                     os.kill(pid, _signal.SIGTERM)
                     killed_pids.add(pid)
+                    force_sweep_pids.add(pid)
                 except (ProcessLookupError, PermissionError):
                     pass
 
@@ -7563,11 +7566,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _surviving = find_gateway_pids(
                     exclude_pids=_service_pids_after, all_profiles=True,
                 )
-                # Scope to PIDs we already tried to kill during this
-                # update (killed_pids).  Anything new is a gateway that
-                # started AFTER our restart attempt — respecting user
-                # intent, we don't kill those.
-                _stuck = [pid for pid in _surviving if pid in killed_pids]
+                # Scope to PIDs that received SIGTERM during this update.
+                # A profile PID that exited through the SIGUSR1 drain is not
+                # eligible for a later PID-only SIGKILL sweep; by then the
+                # number may be stale or reused.
+                _stuck = [pid for pid in _surviving if pid in force_sweep_pids]
                 if _stuck:
                     print()
                     print(

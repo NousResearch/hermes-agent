@@ -6,6 +6,7 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import signal
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -13,7 +14,6 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 import hermes_cli.gateway as gateway_cli
-import hermes_cli.main as cli_main
 from hermes_cli.main import cmd_update
 
 
@@ -463,8 +463,11 @@ class TestCmdUpdateLaunchdRestart:
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
-        # Graceful drain returned False → SIGTERM fallback.
-        kill.assert_called_once()
+        # Graceful drain returned False → SIGTERM fallback, then the survivor
+        # sweep escalates when the mocked process scan still reports the PID.
+        kill.assert_any_call(12345, signal.SIGTERM)
+        kill.assert_any_call(12345, signal.SIGKILL)
+        assert kill.call_count == 2
         assert "Restarting manual gateway profile(s): coder" in captured
 
     @patch("shutil.which", return_value=None)
@@ -885,9 +888,12 @@ class TestServicePidExclusion:
 
         captured = capsys.readouterr().out
         assert "Restarted" in captured
-        # Manual PID should be killed
+        # Manual PID should be stopped, then force-killed by the survivor
+        # sweep because the mocked process scan still reports it alive.
         manual_kills = [c for c in mock_kill.call_args_list if c.args[0] == MANUAL_PID]
-        assert len(manual_kills) == 1
+        assert len(manual_kills) == 2
+        assert manual_kills[0].args[1] == signal.SIGTERM
+        assert manual_kills[1].args[1] == signal.SIGKILL
         # Service PID should NOT be killed
         service_kills = [c for c in mock_kill.call_args_list if c.args[0] == SERVICE_PID]
         assert len(service_kills) == 0

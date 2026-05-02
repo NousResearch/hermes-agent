@@ -42,16 +42,16 @@ STATE_ARCHIVED = "archived"
 _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
 
 
-def _skills_dir() -> Path:
-    return get_hermes_home() / "skills"
+def _skills_dir(home: Path | None = None) -> Path:
+    return (home or get_hermes_home()) / "skills"
 
 
-def _usage_file() -> Path:
-    return _skills_dir() / ".usage.json"
+def _usage_file(home: Path | None = None) -> Path:
+    return _skills_dir(home) / ".usage.json"
 
 
-def _archive_dir() -> Path:
-    return _skills_dir() / ".archive"
+def _archive_dir(home: Path | None = None) -> Path:
+    return _skills_dir(home) / ".archive"
 
 
 def _now_iso() -> str:
@@ -106,13 +106,13 @@ def activity_count(record: Dict[str, Any]) -> int:
 # Provenance — which skills are agent-created (and thus eligible for curation)
 # ---------------------------------------------------------------------------
 
-def _read_bundled_manifest_names() -> Set[str]:
+def _read_bundled_manifest_names(home: Path | None = None) -> Set[str]:
     """Return the set of skill names that were seeded from the bundled repo.
 
     Reads ~/.hermes/skills/.bundled_manifest (format: "name:hash" per line).
     Returns empty set if the file is missing or unreadable.
     """
-    manifest = _skills_dir() / ".bundled_manifest"
+    manifest = _skills_dir(home) / ".bundled_manifest"
     if not manifest.exists():
         return set()
     names: Set[str] = set()
@@ -129,12 +129,12 @@ def _read_bundled_manifest_names() -> Set[str]:
     return names
 
 
-def _read_hub_installed_names() -> Set[str]:
+def _read_hub_installed_names(home: Path | None = None) -> Set[str]:
     """Return the set of skill names installed via the Skills Hub.
 
     Reads ~/.hermes/skills/.hub/lock.json (see tools/skills_hub.py :: HubLockFile).
     """
-    lock_path = _skills_dir() / ".hub" / "lock.json"
+    lock_path = _skills_dir(home) / ".hub" / "lock.json"
     if not lock_path.exists():
         return set()
     try:
@@ -148,18 +148,18 @@ def _read_hub_installed_names() -> Set[str]:
     return set()
 
 
-def list_agent_created_skill_names() -> List[str]:
+def list_agent_created_skill_names(home: Path | None = None) -> List[str]:
     """Enumerate skills that were authored by the agent (or user), NOT by a
     bundled or hub-installed source.
 
     The curator operates exclusively on this set. Bundled / hub skills are
     maintained by their upstream sources and must never be pruned here.
     """
-    base = _skills_dir()
+    base = _skills_dir(home)
     if not base.exists():
         return []
-    bundled = _read_bundled_manifest_names()
-    hub = _read_hub_installed_names()
+    bundled = _read_bundled_manifest_names(home)
+    hub = _read_hub_installed_names(home)
     off_limits = bundled | hub
 
     names: List[str] = []
@@ -201,9 +201,9 @@ def _read_skill_name(skill_md: Path, fallback: str) -> str:
     return fallback
 
 
-def is_agent_created(skill_name: str) -> bool:
+def is_agent_created(skill_name: str, home: Path | None = None) -> bool:
     """Whether *skill_name* is neither bundled nor hub-installed."""
-    off_limits = _read_bundled_manifest_names() | _read_hub_installed_names()
+    off_limits = _read_bundled_manifest_names(home) | _read_hub_installed_names(home)
     return skill_name not in off_limits
 
 
@@ -226,9 +226,9 @@ def _empty_record() -> Dict[str, Any]:
     }
 
 
-def load_usage() -> Dict[str, Dict[str, Any]]:
+def load_usage(home: Path | None = None) -> Dict[str, Dict[str, Any]]:
     """Read the entire .usage.json map. Returns empty dict on missing/corrupt."""
-    path = _usage_file()
+    path = _usage_file(home)
     if not path.exists():
         return {}
     try:
@@ -246,9 +246,9 @@ def load_usage() -> Dict[str, Dict[str, Any]]:
     return clean
 
 
-def save_usage(data: Dict[str, Dict[str, Any]]) -> None:
+def save_usage(data: Dict[str, Dict[str, Any]], home: Path | None = None) -> None:
     """Write the usage map atomically. Best-effort — errors are logged, not raised."""
-    path = _usage_file()
+    path = _usage_file(home)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(
@@ -270,9 +270,9 @@ def save_usage(data: Dict[str, Dict[str, Any]]) -> None:
         logger.debug("Failed to write %s: %s", path, e, exc_info=True)
 
 
-def get_record(skill_name: str) -> Dict[str, Any]:
+def get_record(skill_name: str, home: Path | None = None) -> Dict[str, Any]:
     """Return the record for *skill_name*, creating a fresh one if missing."""
-    data = load_usage()
+    data = load_usage(home)
     rec = data.get(skill_name)
     if not isinstance(rec, dict):
         return _empty_record()
@@ -283,7 +283,7 @@ def get_record(skill_name: str) -> Dict[str, Any]:
     return rec
 
 
-def _mutate(skill_name: str, mutator) -> None:
+def _mutate(skill_name: str, mutator, home: Path | None = None) -> None:
     """Load, apply *mutator(record)* in place, save. Best-effort.
 
     Bundled and hub-installed skills are NEVER recorded in the sidecar.
@@ -294,15 +294,15 @@ def _mutate(skill_name: str, mutator) -> None:
     if not skill_name:
         return
     try:
-        if not is_agent_created(skill_name):
+        if not is_agent_created(skill_name, home=home):
             return
-        data = load_usage()
+        data = load_usage(home)
         rec = data.get(skill_name)
         if not isinstance(rec, dict):
             rec = _empty_record()
         mutator(rec)
         data[skill_name] = rec
-        save_usage(data)
+        save_usage(data, home=home)
     except Exception as e:
         logger.debug("skill_usage._mutate(%s) failed: %s", skill_name, e, exc_info=True)
 
@@ -336,7 +336,7 @@ def bump_patch(skill_name: str) -> None:
     _mutate(skill_name, _apply)
 
 
-def set_state(skill_name: str, state: str) -> None:
+def set_state(skill_name: str, state: str, home: Path | None = None) -> None:
     """Set lifecycle state. No-op if *state* is invalid."""
     if state not in _VALID_STATES:
         logger.debug("set_state: invalid state %r for %s", state, skill_name)
@@ -347,7 +347,7 @@ def set_state(skill_name: str, state: str) -> None:
             rec["archived_at"] = _now_iso()
         elif state == STATE_ACTIVE:
             rec["archived_at"] = None
-    _mutate(skill_name, _apply)
+    _mutate(skill_name, _apply, home=home)
 
 
 def set_pinned(skill_name: str, pinned: bool) -> None:
@@ -373,20 +373,20 @@ def forget(skill_name: str) -> None:
 # Archive / restore
 # ---------------------------------------------------------------------------
 
-def archive_skill(skill_name: str) -> Tuple[bool, str]:
+def archive_skill(skill_name: str, home: Path | None = None) -> Tuple[bool, str]:
     """Move an agent-created skill directory to ~/.hermes/skills/.archive/.
 
     Returns (ok, message). Never archives bundled or hub skills — callers are
     responsible for checking provenance, but we double-check here as a safety net.
     """
-    if not is_agent_created(skill_name):
+    if not is_agent_created(skill_name, home=home):
         return False, f"skill '{skill_name}' is bundled or hub-installed; never archive"
 
-    skill_dir = _find_skill_dir(skill_name)
+    skill_dir = _find_skill_dir(skill_name, home=home)
     if skill_dir is None:
         return False, f"skill '{skill_name}' not found"
 
-    archive_root = _archive_dir()
+    archive_root = _archive_dir(home)
     try:
         archive_root.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -408,11 +408,11 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
         except Exception as e2:
             return False, f"failed to archive: {e2}"
 
-    set_state(skill_name, STATE_ARCHIVED)
+    set_state(skill_name, STATE_ARCHIVED, home=home)
     return True, f"archived to {dest}"
 
 
-def restore_skill(skill_name: str) -> Tuple[bool, str]:
+def restore_skill(skill_name: str, home: Path | None = None) -> Tuple[bool, str]:
     """Move an archived skill back to ~/.hermes/skills/. Restores to the flat
     top-level layout; original category nesting is NOT reconstructed.
 
@@ -421,12 +421,12 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     """
     # If a bundled or hub skill has since been installed under the same
     # name, refuse to restore rather than shadow it.
-    if not is_agent_created(skill_name):
+    if not is_agent_created(skill_name, home=home):
         return False, (
             f"skill '{skill_name}' is now bundled or hub-installed; "
             "restore would shadow the upstream version"
         )
-    archive_root = _archive_dir()
+    archive_root = _archive_dir(home)
     if not archive_root.exists():
         return False, "no archive directory"
 
@@ -444,7 +444,7 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
         return False, f"skill '{skill_name}' not found in archive"
 
     src = candidates[0]
-    dest = _skills_dir() / skill_name
+    dest = _skills_dir(home) / skill_name
     if dest.exists():
         return False, f"destination already exists: {dest}"
 
@@ -457,17 +457,17 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
         except Exception as e:
             return False, f"failed to restore: {e}"
 
-    set_state(skill_name, STATE_ACTIVE)
+    set_state(skill_name, STATE_ACTIVE, home=home)
     return True, f"restored to {dest}"
 
 
-def _find_skill_dir(skill_name: str) -> Optional[Path]:
+def _find_skill_dir(skill_name: str, home: Path | None = None) -> Optional[Path]:
     """Locate the directory for a skill by its frontmatter `name:` field.
 
     Handles both flat (~/.hermes/skills/<skill>/SKILL.md) and category-nested
     (~/.hermes/skills/<category>/<skill>/SKILL.md) layouts.
     """
-    base = _skills_dir()
+    base = _skills_dir(home)
     if not base.exists():
         return None
     for skill_md in base.rglob("SKILL.md"):
@@ -486,13 +486,13 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
 # Reporting — for the curator CLI / slash command
 # ---------------------------------------------------------------------------
 
-def agent_created_report() -> List[Dict[str, Any]]:
+def agent_created_report(home: Path | None = None) -> List[Dict[str, Any]]:
     """Return a list of {name, state, pinned, last_activity_at, ...}
     records for every agent-created skill. Missing usage records are backfilled
     with defaults so callers can always index fields."""
-    data = load_usage()
+    data = load_usage(home)
     rows: List[Dict[str, Any]] = []
-    for name in list_agent_created_skill_names():
+    for name in list_agent_created_skill_names(home):
         rec = data.get(name)
         if not isinstance(rec, dict):
             rec = _empty_record()

@@ -11,8 +11,6 @@ import types
 from run_agent import AIAgent
 from tools.delegate_tool import _get_max_concurrent_children
 
-MAX_CONCURRENT_CHILDREN = _get_max_concurrent_children()
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -116,14 +114,16 @@ class TestSanitizeApiMessages:
 class TestCapDelegateTaskCalls:
 
     def test_excess_delegates_truncated(self):
-        tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN + 2)]
+        max_concurrent_children = _get_max_concurrent_children()
+        tcs = [make_tc("delegate_task") for _ in range(max_concurrent_children + 2)]
         out = AIAgent._cap_delegate_task_calls(tcs)
         delegate_count = sum(1 for tc in out if tc.function.name == "delegate_task")
-        assert delegate_count == MAX_CONCURRENT_CHILDREN
+        assert delegate_count == max_concurrent_children
 
     def test_non_delegate_calls_preserved(self):
+        max_concurrent_children = _get_max_concurrent_children()
         tcs = (
-            [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN + 1)]
+            [make_tc("delegate_task") for _ in range(max_concurrent_children + 1)]
             + [make_tc("terminal"), make_tc("web_search")]
         )
         out = AIAgent._cap_delegate_task_calls(tcs)
@@ -132,12 +132,12 @@ class TestCapDelegateTaskCalls:
         assert "web_search" in names
 
     def test_at_limit_passes_through(self):
-        tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN)]
+        tcs = [make_tc("delegate_task") for _ in range(_get_max_concurrent_children())]
         out = AIAgent._cap_delegate_task_calls(tcs)
         assert out is tcs
 
     def test_below_limit_passes_through(self):
-        tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN - 1)]
+        tcs = [make_tc("delegate_task") for _ in range(_get_max_concurrent_children() - 1)]
         out = AIAgent._cap_delegate_task_calls(tcs)
         assert out is tcs
 
@@ -150,19 +150,20 @@ class TestCapDelegateTaskCalls:
         assert AIAgent._cap_delegate_task_calls([]) == []
 
     def test_original_list_not_mutated(self):
-        tcs = [make_tc("delegate_task") for _ in range(MAX_CONCURRENT_CHILDREN + 2)]
+        tcs = [make_tc("delegate_task") for _ in range(_get_max_concurrent_children() + 2)]
         original_len = len(tcs)
         AIAgent._cap_delegate_task_calls(tcs)
         assert len(tcs) == original_len
 
     def test_interleaved_order_preserved(self):
+        max_concurrent_children = _get_max_concurrent_children()
         delegates = [make_tc("delegate_task", f'{{"task":"{i}"}}')
-                     for i in range(MAX_CONCURRENT_CHILDREN + 1)]
+                     for i in range(max_concurrent_children + 1)]
         t1 = make_tc("terminal", '{"cmd":"ls"}')
         w1 = make_tc("web_search", '{"q":"x"}')
         tcs = [delegates[0], t1, delegates[1], w1] + delegates[2:]
         out = AIAgent._cap_delegate_task_calls(tcs)
-        expected = [delegates[0], t1, delegates[1], w1] + delegates[2:MAX_CONCURRENT_CHILDREN]
+        expected = [delegates[0], t1, delegates[1], w1] + delegates[2:max_concurrent_children]
         assert len(out) == len(expected)
         for i, (actual, exp) in enumerate(zip(out, expected)):
             assert actual is exp, f"mismatch at index {i}"

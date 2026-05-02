@@ -46,8 +46,8 @@ DEFAULT_ARCHIVE_AFTER_DAYS = 90
 # .curator_state — persistent scheduler + status
 # ---------------------------------------------------------------------------
 
-def _state_file() -> Path:
-    return get_hermes_home() / "skills" / ".curator_state"
+def _state_file(home: Path | None = None) -> Path:
+    return (home or get_hermes_home()) / "skills" / ".curator_state"
 
 
 def _default_state() -> Dict[str, Any]:
@@ -61,8 +61,8 @@ def _default_state() -> Dict[str, Any]:
     }
 
 
-def load_state() -> Dict[str, Any]:
-    path = _state_file()
+def load_state(home: Path | None = None) -> Dict[str, Any]:
+    path = _state_file(home)
     if not path.exists():
         return _default_state()
     try:
@@ -76,8 +76,8 @@ def load_state() -> Dict[str, Any]:
     return _default_state()
 
 
-def save_state(data: Dict[str, Any]) -> None:
-    path = _state_file()
+def save_state(data: Dict[str, Any], home: Path | None = None) -> None:
+    path = _state_file(home)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".curator_state_", suffix=".tmp")
@@ -235,7 +235,10 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 # Automatic state transitions (pure function, no LLM)
 # ---------------------------------------------------------------------------
 
-def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
+def apply_automatic_transitions(
+    now: Optional[datetime] = None,
+    home: Path | None = None,
+) -> Dict[str, int]:
     """Walk every agent-created skill and move active/stale/archived based on
     the latest real activity timestamp. Pinned skills are never touched.
     Returns a counter dict describing what changed."""
@@ -248,7 +251,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
 
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
 
-    for row in _u.agent_created_report():
+    for row in _u.agent_created_report(home=home):
         counts["checked"] += 1
         name = row["name"]
         if row.get("pinned"):
@@ -264,15 +267,15 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
         current = row.get("state", _u.STATE_ACTIVE)
 
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
-            ok, _msg = _u.archive_skill(name)
+            ok, _msg = _u.archive_skill(name, home=home)
             if ok:
                 counts["archived"] += 1
         elif anchor <= stale_cutoff and current == _u.STATE_ACTIVE:
-            _u.set_state(name, _u.STATE_STALE)
+            _u.set_state(name, _u.STATE_STALE, home=home)
             counts["marked_stale"] += 1
         elif anchor > stale_cutoff and current == _u.STATE_STALE:
             # Skill got used again after being marked stale — reactivate.
-            _u.set_state(name, _u.STATE_ACTIVE)
+            _u.set_state(name, _u.STATE_ACTIVE, home=home)
             counts["reactivated"] += 1
 
     return counts
@@ -426,7 +429,7 @@ CURATOR_REVIEW_PROMPT = (
 # Per-run reports — {YYYYMMDD-HHMMSS}/run.json + REPORT.md under logs/curator/
 # ---------------------------------------------------------------------------
 
-def _reports_root() -> Path:
+def _reports_root(home: Path | None = None) -> Path:
     """Directory where curator run reports are written.
 
     Lives under the profile-aware logs dir (``~/.hermes/logs/curator/``)
@@ -440,7 +443,7 @@ def _reports_root() -> Path:
     from an odd entry path (e.g. gateway-only install, bare library use)
     that bypasses both.
     """
-    root = get_hermes_home() / "logs" / "curator"
+    root = (home or get_hermes_home()) / "logs" / "curator"
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -739,13 +742,14 @@ def _write_run_report(
     before_names: Set[str],
     after_report: List[Dict[str, Any]],
     llm_meta: Dict[str, Any],
+    home: Path | None = None,
 ) -> Optional[Path]:
     """Write run.json + REPORT.md under logs/curator/{YYYYMMDD-HHMMSS}/.
 
     Returns the report directory path on success, None if the write
     couldn't happen (caller logs and continues — reporting is best-effort).
     """
-    root = _reports_root()
+    root = _reports_root(home)
     try:
         root.mkdir(parents=True, exist_ok=True)
     except Exception as e:
@@ -1099,9 +1103,9 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 # Orchestrator — spawn a forked AIAgent for the LLM review pass
 # ---------------------------------------------------------------------------
 
-def _render_candidate_list() -> str:
+def _render_candidate_list(home: Path | None = None) -> str:
     """Human/agent-readable list of agent-created skills with usage stats."""
-    rows = skill_usage.agent_created_report()
+    rows = skill_usage.agent_created_report(home=home)
     if not rows:
         return "No agent-created skills to review."
     lines = [f"Agent-created skills ({len(rows)}):\n"]
@@ -1142,11 +1146,12 @@ def run_curator_review(
     gets written and ``state.last_report_path`` still records it so users
     can read what the curator WOULD have done.
     """
+    run_home = get_hermes_home()
     start = datetime.now(timezone.utc)
     if dry_run:
         # Count candidates without mutating state.
         try:
-            report = skill_usage.agent_created_report()
+            report = skill_usage.agent_created_report(home=run_home)
             counts = {
                 "checked": len(report),
                 "marked_stale": 0,
@@ -1163,7 +1168,7 @@ def run_curator_review(
         # curator entirely until they can fix disk space.
         try:
             from agent import curator_backup
-            snap = curator_backup.snapshot_skills(reason="pre-curator-run")
+            snap = curator_backup.snapshot_skills(reason="pre-curator-run", home=run_home)
             if snap is not None and on_summary:
                 try:
                     on_summary(f"curator: snapshot created ({snap.name})")
@@ -1171,7 +1176,7 @@ def run_curator_review(
                     pass
         except Exception as e:
             logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
-        counts = apply_automatic_transitions(now=start)
+        counts = apply_automatic_transitions(now=start, home=run_home)
 
     auto_summary_parts = []
     if counts["marked_stale"]:
@@ -1187,26 +1192,26 @@ def run_curator_review(
     # last_run_at or run_count — a preview shouldn't push the next scheduled
     # real pass out. We still record a summary so `hermes curator status`
     # shows that a preview ran.
-    state = load_state()
+    state = load_state(home=run_home)
     if not dry_run:
         state["last_run_at"] = start.isoformat()
         state["run_count"] = int(state.get("run_count", 0)) + 1
     prefix = "dry-run auto: " if dry_run else "auto: "
     state["last_run_summary"] = f"{prefix}{auto_summary}"
-    save_state(state)
+    save_state(state, home=run_home)
 
     def _llm_pass():
         nonlocal auto_summary
         # Snapshot skill state BEFORE the LLM pass so the report can diff.
         try:
-            before_report = skill_usage.agent_created_report()
+            before_report = skill_usage.agent_created_report(home=run_home)
         except Exception:
             before_report = []
         before_names = {r.get("name") for r in before_report if isinstance(r, dict)}
 
         llm_meta: Dict[str, Any] = {}
         try:
-            candidate_list = _render_candidate_list()
+            candidate_list = _render_candidate_list(home=run_home)
             if "No agent-created skills" in candidate_list:
                 final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
                 llm_meta = {
@@ -1227,6 +1232,16 @@ def run_curator_review(
                 else:
                     prompt = f"{CURATOR_REVIEW_PROMPT}\n\n{candidate_list}"
                 llm_meta = _run_llm_review(prompt)
+                if not isinstance(llm_meta, dict):
+                    final = str(llm_meta or "").strip()
+                    llm_meta = {
+                        "final": final,
+                        "summary": (final[:240] + "…") if len(final) > 240 else (final or "no change"),
+                        "model": "",
+                        "provider": "",
+                        "tool_calls": [],
+                        "error": None,
+                    }
                 final_summary = (
                     f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
                 )
@@ -1243,7 +1258,7 @@ def run_curator_review(
             }
 
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
-        state2 = load_state()
+        state2 = load_state(home=run_home)
         state2["last_run_duration_seconds"] = elapsed
         state2["last_run_summary"] = final_summary
 
@@ -1251,7 +1266,7 @@ def run_curator_review(
         # reporting bug never breaks the curator itself. Report path is
         # recorded in state so `hermes curator status` can point at it.
         try:
-            after_report = skill_usage.agent_created_report()
+            after_report = skill_usage.agent_created_report(home=run_home)
         except Exception:
             after_report = []
         try:
@@ -1264,13 +1279,14 @@ def run_curator_review(
                 before_names=before_names,
                 after_report=after_report,
                 llm_meta=llm_meta,
+                home=run_home,
             )
             if report_path is not None:
                 state2["last_report_path"] = str(report_path)
         except Exception as e:
             logger.debug("Curator report write failed: %s", e, exc_info=True)
 
-        save_state(state2)
+        save_state(state2, home=run_home)
 
         if on_summary:
             try:

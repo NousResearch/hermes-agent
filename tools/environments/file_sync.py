@@ -46,6 +46,36 @@ DeleteFn = Callable[[list[str]], None]  # (remote_paths) -> raises on failure
 GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_path), ...]
 
 
+def _extract_data_tar(tar: tarfile.TarFile, destination: str) -> None:
+    """Extract regular file/directory tar data safely when filter= is unavailable."""
+    dest = Path(destination).resolve()
+    for member in tar.getmembers():
+        target = (dest / member.name).resolve()
+        try:
+            target.relative_to(dest)
+        except ValueError:
+            logger.warning("sync_back: skipping unsafe tar member outside destination: %s", member.name)
+            continue
+
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        if not member.isfile():
+            logger.debug("sync_back: skipping non-file tar member: %s", member.name)
+            continue
+
+        source = tar.extractfile(member)
+        if source is None:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with source, open(target, "wb") as out:
+            shutil.copyfileobj(source, out)
+        try:
+            os.chmod(target, member.mode & 0o777)
+        except OSError:
+            pass
+
+
 def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, str]]:
     """Enumerate all files that should be synced to a remote environment.
 
@@ -321,7 +351,12 @@ class FileSyncManager:
 
             with tempfile.TemporaryDirectory(prefix="hermes-sync-back-") as staging:
                 with tarfile.open(tf.name) as tar:
-                    tar.extractall(staging, filter="data")
+                    try:
+                        tar.extractall(staging, filter="data")
+                    except TypeError as exc:
+                        if "filter" not in str(exc):
+                            raise
+                        _extract_data_tar(tar, staging)
 
                 applied = 0
                 for dirpath, _dirnames, filenames in os.walk(staging):

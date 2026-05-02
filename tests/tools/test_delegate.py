@@ -14,6 +14,7 @@ import os
 import sys
 import threading
 import time
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -1872,6 +1873,17 @@ class TestConcurrencyDefaults(unittest.TestCase):
            return_value={"max_concurrent_children": 6})
     def test_configured_value_returned(self, mock_cfg):
         self.assertEqual(_get_max_concurrent_children(), 6)
+
+    def test_config_file_refreshes_stale_cli_config_for_concurrency(self):
+        """Live delegation concurrency should not be pinned to startup CLI_CONFIG."""
+        fake_cli = types.ModuleType("cli")
+        fake_cli.CLI_CONFIG = {"delegation": {"max_concurrent_children": 3}}
+        fresh_config = {"delegation": {"max_concurrent_children": 6}}
+
+        with patch.dict(sys.modules, {"cli": fake_cli}), patch(
+            "hermes_cli.config.load_config", return_value=fresh_config
+        ):
+            self.assertEqual(_get_max_concurrent_children(), 6)
 
 
 # =========================================================================

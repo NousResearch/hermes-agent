@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -374,6 +375,37 @@ def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
     assert "skill CURATOR" in calls[0] or "CURATOR" in calls[0]
     assert captured  # on_summary was called
     assert any("stubbed-summary" in s for s in captured)
+
+
+def test_async_run_uses_starting_home_for_state(curator_env, tmp_path, monkeypatch):
+    c = curator_env["curator"]
+    first_home = curator_env["home"]
+    second_home = tmp_path / "second-home"
+    (second_home / "skills").mkdir(parents=True)
+    _write_skill(first_home / "skills", "a")
+
+    release = threading.Event()
+    finished = threading.Event()
+
+    def _stub(prompt):
+        release.wait(timeout=5)
+        return {
+            "final": "async-stub",
+            "summary": "async-stub",
+            "model": "stub-model",
+            "provider": "stub-provider",
+            "tool_calls": [],
+            "error": None,
+        }
+
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+    c.run_curator_review(on_summary=lambda _s: finished.set(), synchronous=False)
+    monkeypatch.setenv("HERMES_HOME", str(second_home))
+
+    release.set()
+    assert finished.wait(timeout=5)
+    assert (first_home / "skills" / ".curator_state").exists()
+    assert not any((second_home / "skills").glob(".curator_state*"))
 
 
 def test_run_review_skips_llm_when_no_candidates(curator_env, monkeypatch):

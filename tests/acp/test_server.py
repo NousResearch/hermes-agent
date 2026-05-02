@@ -194,13 +194,7 @@ class TestSessionOps:
         assert isinstance(update, AvailableCommandsUpdate)
         assert update.session_update == "available_commands_update"
         assert [cmd.name for cmd in update.available_commands] == [
-            "help",
-            "model",
-            "tools",
-            "context",
-            "reset",
-            "compact",
-            "version",
+            cmd["name"] for cmd in agent._ADVERTISED_COMMANDS
         ]
         model_cmd = next(
             cmd for cmd in update.available_commands if cmd.name == "model"

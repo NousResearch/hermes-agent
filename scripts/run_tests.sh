@@ -43,6 +43,9 @@ PYTHON="$VENV/bin/python"
 
 # ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
 if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
+  if ! "$PYTHON" -m pip --version >/dev/null 2>&1; then
+    "$PYTHON" -m ensurepip --upgrade >/dev/null
+  fi
   echo "→ installing pytest-split into $VENV"
   "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
 fi

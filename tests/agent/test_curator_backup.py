@@ -283,7 +283,7 @@ def test_real_run_takes_pre_snapshot(backup_env, monkeypatch):
     )
     monkeypatch.setattr(
         curator, "apply_automatic_transitions",
-        lambda now=None: {"checked": 1, "marked_stale": 0, "archived": 0, "reactivated": 0},
+        lambda now=None, home=None: {"checked": 1, "marked_stale": 0, "archived": 0, "reactivated": 0},
     )
 
     curator.run_curator_review(synchronous=True)

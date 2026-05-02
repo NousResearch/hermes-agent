@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import tools.skills_tool as skills_tool_module
+import agent.skill_commands as skill_commands_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
@@ -124,6 +125,28 @@ class TestScanSkillCommands:
 
         assert "/knowledge-brain" in result
         assert result["/knowledge-brain"]["name"] == "knowledge-brain"
+
+    def test_preserves_cached_commands_when_scan_setup_fails(self, monkeypatch):
+        cached = {
+            "/cached-skill": {
+                "name": "cached-skill",
+                "description": "existing skill command",
+                "skill_md_path": "/tmp/cached/SKILL.md",
+                "skill_dir": "/tmp/cached",
+            }
+        }
+        monkeypatch.setattr(
+            skill_commands_module, "_skill_commands", cached.copy(), raising=False
+        )
+
+        with patch(
+            "tools.skills_tool._get_disabled_skill_names",
+            side_effect=RuntimeError("scan setup failed"),
+        ):
+            result = scan_skill_commands()
+
+        assert result == cached
+        assert skill_commands_module._skill_commands == cached
 
 
     def test_special_chars_stripped_from_cmd_key(self, tmp_path):

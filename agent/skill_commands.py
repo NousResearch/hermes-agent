@@ -219,7 +219,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
     global _skill_commands
-    _skill_commands = {}
+    scanned_commands: Dict[str, Dict[str, Any]] = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
@@ -264,7 +264,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
-                    _skill_commands[f"/{cmd_name}"] = {
+                    scanned_commands[f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
@@ -273,7 +273,8 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                 except Exception:
                     continue
     except Exception:
-        pass
+        return _skill_commands
+    _skill_commands = scanned_commands
     return _skill_commands
 
 
@@ -325,8 +326,9 @@ def reload_skills() -> Dict[str, Any]:
 
     before = _snapshot(_skill_commands)
 
-    # Rescan the skills dir. ``scan_skill_commands`` resets
-    # ``_skill_commands = {}`` internally and repopulates it.
+    # Rescan the skills dir. ``scan_skill_commands`` swaps the in-process cache
+    # only after a successful scan so a scan failure leaves existing commands
+    # available.
     new_commands = scan_skill_commands()
 
     after = _snapshot(new_commands)

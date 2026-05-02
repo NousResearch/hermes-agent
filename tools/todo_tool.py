@@ -4,8 +4,8 @@ Todo Tool Module - Planning & Task Management
 
 Provides an in-memory task list the agent uses to decompose complex tasks,
 track progress, and maintain focus across long conversations. The state
-lives on the AIAgent instance (one per session) and is re-injected into
-the conversation after context compression events.
+lives on the AIAgent instance (one per session) and a privacy-preserving
+active-task summary is re-injected after context compression events.
 
 Design:
 - Single `todo` tool: provide `todos` param to write, omit to read
@@ -89,24 +89,16 @@ class TodoStore:
 
     def format_for_injection(self) -> Optional[str]:
         """
-        Render the todo list for post-compression injection.
+        Render a privacy-preserving task summary for post-compression injection.
 
-        Returns a human-readable string to append to the compressed
-        message history, or None if the list is empty.
+        Full todo subjects are already available to the model in the original
+        todo tool result. Re-injecting them after compression can resurface
+        sensitive project names, client context, credentials, or PII into fresh
+        model context. Preserve continuity by injecting counts only.
         """
         if not self._items:
             return None
 
-        # Status markers for compact display
-        markers = {
-            "completed": "[x]",
-            "in_progress": "[>]",
-            "pending": "[ ]",
-            "cancelled": "[~]",
-        }
-
-        # Only inject pending/in_progress items — completed/cancelled ones
-        # cause the model to re-do finished work after compression.
         active_items = [
             item for item in self._items
             if item["status"] in ("pending", "in_progress")
@@ -114,12 +106,20 @@ class TodoStore:
         if not active_items:
             return None
 
-        lines = ["[Your active task list was preserved across context compression]"]
-        for item in active_items:
-            marker = markers.get(item["status"], "[?]")
-            lines.append(f"- {marker} {item['id']}. {item['content']} ({item['status']})")
+        pending = sum(1 for item in active_items if item["status"] == "pending")
+        in_progress = sum(1 for item in active_items if item["status"] == "in_progress")
 
-        return "\n".join(lines)
+        parts = []
+        if in_progress:
+            parts.append(f"{in_progress} in_progress")
+        if pending:
+            parts.append(f"{pending} pending")
+        summary = ", ".join(parts)
+
+        return (
+            "[Your active task list was preserved across context compression: "
+            f"{summary}. Call the todo tool with no parameters to inspect details if needed.]"
+        )
 
     @staticmethod
     def _validate(item: Dict[str, Any]) -> Dict[str, str]:
@@ -212,6 +212,12 @@ TODO_SCHEMA = {
         "Manage your task list for the current session. Use for complex tasks "
         "with 3+ steps or when the user provides multiple tasks. "
         "Call with no parameters to read the current list.\n\n"
+        "Privacy:\n"
+        "- Do not put secrets, credentials, raw PII, or highly sensitive "
+        "client/project identifiers in todo content.\n"
+        "- Todo content can be visible in the UI and stored in tool results.\n"
+        "- After context compression, only active todo counts are re-injected; "
+        "call the todo tool to inspect details if needed.\n\n"
         "Writing:\n"
         "- Provide 'todos' array to create/update items\n"
         "- merge=false (default): replace the entire list with a fresh plan\n"

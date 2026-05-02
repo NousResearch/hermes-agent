@@ -53,22 +53,21 @@ class TestFormatForInjection:
         store = TodoStore()
         assert store.format_for_injection() is None
 
-    def test_non_empty_has_markers(self):
+    def test_non_empty_injects_counts_without_subjects(self):
         store = TodoStore()
         store.write([
             {"id": "1", "content": "Do thing", "status": "completed"},
-            {"id": "2", "content": "Next", "status": "pending"},
-            {"id": "3", "content": "Working", "status": "in_progress"},
+            {"id": "2", "content": "Client ACME launch", "status": "pending"},
+            {"id": "3", "content": "Rotate secret token", "status": "in_progress"},
         ])
         text = store.format_for_injection()
-        # Completed items are filtered out of injection
-        assert "[x]" not in text
+        # Completed items are filtered out of injection.
         assert "Do thing" not in text
-        # Active items are included
-        assert "[ ]" in text
-        assert "[>]" in text
-        assert "Next" in text
-        assert "Working" in text
+        # Active subjects are not re-injected after compression.
+        assert "Client ACME launch" not in text
+        assert "Rotate secret token" not in text
+        assert "1 pending" in text
+        assert "1 in_progress" in text
         assert "context compression" in text.lower()
 
 

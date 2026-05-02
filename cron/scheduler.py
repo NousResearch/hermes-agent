@@ -27,7 +27,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -135,16 +135,55 @@ def _resolve_origin(job: dict) -> Optional[dict]:
 
 
 def _get_home_target_chat_id(platform_name: str) -> str:
-    """Return the configured home target chat/room ID for a delivery platform."""
+    """Return the configured home target chat/room ID for a delivery platform.
+
+    Strips an optional ``:thread_id`` suffix so callers that only need the
+    chat id keep working unchanged. Use ``_get_home_target(platform_name)``
+    for callers that also need the persisted thread / topic id (#18934).
+    """
+    chat_id, _ = _get_home_target(platform_name)
+    return chat_id
+
+
+def _get_home_target(platform_name: str) -> Tuple[str, Optional[str]]:
+    """Return the configured home target as ``(chat_id, thread_id_or_None)``.
+
+    The home-channel env var (``TELEGRAM_HOME_CHANNEL`` etc.) is persisted
+    by ``/sethome`` as either ``chat_id`` or ``chat_id:thread_id`` when the
+    command is run inside a forum topic / thread (#18934). Earlier
+    behaviour stored only ``chat_id`` and lost the topic, sending cron
+    reports to the parent chat instead of the configured topic.
+
+    Falls back to the legacy env-var name for backwards compatibility.
+    """
     env_var = _HOME_TARGET_ENV_VARS.get(platform_name.lower())
     if not env_var:
-        return ""
+        return "", None
     value = os.getenv(env_var, "")
     if not value:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
         if legacy:
             value = os.getenv(legacy, "")
-    return value
+    if not value:
+        return "", None
+
+    # Parse ``chat_id:thread_id`` via the platform-aware ref parser so the
+    # same ``-1003984902686:1`` shape used by ``deliver: telegram:<...>``
+    # is accepted here. ``_parse_target_ref`` returns ``is_explicit=True``
+    # only when the platform's regex actually matched the topic form;
+    # otherwise we treat the whole value as the chat id.
+    try:
+        from tools.send_message_tool import _parse_target_ref
+
+        parsed_chat_id, parsed_thread_id, is_explicit = _parse_target_ref(
+            platform_name.lower(), value
+        )
+        if is_explicit:
+            return (parsed_chat_id or value, parsed_thread_id)
+    except Exception:
+        pass
+
+    return value, None
 
 
 def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
@@ -165,7 +204,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
         for platform_name in _HOME_TARGET_ENV_VARS:
-            chat_id = _get_home_target_chat_id(platform_name)
+            chat_id, thread_id = _get_home_target(platform_name)
             if chat_id:
                 logger.info(
                     "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
@@ -175,7 +214,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                 return {
                     "platform": platform_name,
                     "chat_id": chat_id,
-                    "thread_id": None,
+                    "thread_id": thread_id,
                 }
         return None
 
@@ -222,14 +261,14 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     if platform_name.lower() not in _KNOWN_DELIVERY_PLATFORMS:
         return None
-    chat_id = _get_home_target_chat_id(platform_name)
+    chat_id, thread_id = _get_home_target(platform_name)
     if not chat_id:
         return None
 
     return {
         "platform": platform_name,
         "chat_id": chat_id,
-        "thread_id": None,
+        "thread_id": thread_id,
     }
 
 

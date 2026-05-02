@@ -7963,18 +7963,27 @@ class GatewayRunner:
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
+        thread_id = source.thread_id
 
         env_key = _home_target_env_var(platform_name)
+
+        # Encode the home target as ``chat_id:thread_id`` when /sethome is run
+        # inside a Telegram forum topic / Discord thread / Feishu sub-thread,
+        # otherwise just ``chat_id``. Cron delivery's home-channel resolver
+        # parses both shapes via ``_parse_target_ref`` so reports land in the
+        # exact topic instead of the parent chat (#18934).
+        env_value = f"{chat_id}:{thread_id}" if thread_id else str(chat_id)
+        thread_suffix = f" (topic {thread_id})" if thread_id else ""
 
         # Save to .env so it persists across restarts
         try:
             from hermes_cli.config import save_env_value
-            save_env_value(env_key, str(chat_id))
+            save_env_value(env_key, env_value)
         except Exception as e:
             return f"Failed to save home channel: {e}"
 
         return (
-            f"✅ Home channel set to **{chat_name}** (ID: {chat_id}).\n"
+            f"✅ Home channel set to **{chat_name}** (ID: {chat_id}{thread_suffix}).\n"
             f"Cron jobs and cross-platform messages will be delivered here."
         )
 

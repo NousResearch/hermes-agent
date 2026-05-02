@@ -145,6 +145,73 @@ class TestResolveDeliveryTarget:
             "thread_id": "17",
         }
 
+    def test_telegram_home_channel_preserves_thread_id_from_env(self, monkeypatch):
+        """When ``/sethome`` is run inside a Telegram forum topic the saved
+        env value is ``chat_id:thread_id``; cron delivery to ``telegram``
+        must hand the topic id back instead of dropping it (#18934).
+        """
+        for fallback_env in (
+            "TELEGRAM_HOME_CHANNEL",
+            "DISCORD_HOME_CHANNEL",
+        ):
+            monkeypatch.delenv(fallback_env, raising=False)
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1003984902686:17")
+
+        assert _resolve_delivery_target({"deliver": "telegram"}) == {
+            "platform": "telegram",
+            "chat_id": "-1003984902686",
+            "thread_id": "17",
+        }
+
+    def test_telegram_home_channel_without_thread_id_remains_thread_none(self, monkeypatch):
+        """A pre-#18934 env value (``chat_id`` only, no ``:thread_id``) must
+        keep working — cron delivery returns ``thread_id: None`` rather than
+        crashing on the missing colon.
+        """
+        for fallback_env in (
+            "TELEGRAM_HOME_CHANNEL",
+            "DISCORD_HOME_CHANNEL",
+        ):
+            monkeypatch.delenv(fallback_env, raising=False)
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1003984902686")
+
+        assert _resolve_delivery_target({"deliver": "telegram"}) == {
+            "platform": "telegram",
+            "chat_id": "-1003984902686",
+            "thread_id": None,
+        }
+
+    def test_telegram_origin_fallback_to_home_preserves_thread_id(self, monkeypatch):
+        """``deliver: origin`` with no origin falls back to a configured
+        home channel; the home channel's persisted topic id must survive
+        that fallback (#18934).
+        """
+        for fallback_env in (
+            "TELEGRAM_HOME_CHANNEL",
+            "DISCORD_HOME_CHANNEL",
+            "MATRIX_HOME_ROOM",
+            "MATRIX_HOME_CHANNEL",
+            "SLACK_HOME_CHANNEL",
+            "SIGNAL_HOME_CHANNEL",
+            "MATTERMOST_HOME_CHANNEL",
+            "SMS_HOME_CHANNEL",
+            "EMAIL_HOME_ADDRESS",
+            "DINGTALK_HOME_CHANNEL",
+            "BLUEBUBBLES_HOME_CHANNEL",
+            "FEISHU_HOME_CHANNEL",
+            "WECOM_HOME_CHANNEL",
+            "WEIXIN_HOME_CHANNEL",
+            "QQ_HOME_CHANNEL",
+        ):
+            monkeypatch.delenv(fallback_env, raising=False)
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1003984902686:42")
+
+        assert _resolve_delivery_target({"deliver": "origin"}) == {
+            "platform": "telegram",
+            "chat_id": "-1003984902686",
+            "thread_id": "42",
+        }
+
     def test_explicit_telegram_chat_id_without_thread_id(self):
         """deliver: 'telegram:chat_id' sets thread_id to None."""
         job = {

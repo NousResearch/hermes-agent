@@ -17,7 +17,6 @@ Usage:
 
 import json
 import random
-import os
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 import fire
@@ -138,7 +137,6 @@ def sample_from_datasets(
         List of sampled trajectory entries
     """
     from multiprocessing import Pool
-    from functools import partial
     
     random.seed(seed)
     

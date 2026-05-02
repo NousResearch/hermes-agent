@@ -1,6 +1,6 @@
-"""Docker execution environment wrapping mini-swe-agent's DockerEnvironment.
+"""Docker execution environment for sandboxed command execution.
 
-Adds security hardening (cap-drop ALL, no-new-privileges, PID limits),
+Security hardened (cap-drop ALL, no-new-privileges, PID limits),
 configurable resource limits (CPU, memory, disk), and optional filesystem
 persistence via bind mounts.
 """
@@ -11,12 +11,11 @@ import re
 import shutil
 import subprocess
 import sys
-import threading
-import time
+import uuid
 from typing import Optional
 
-from tools.environments.base import BaseEnvironment
-from tools.interrupt import is_interrupted
+from tools.environments.base import BaseEnvironment, _popen_bash
+from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +58,36 @@ def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
     return normalized
 
 
+def _normalize_env_dict(env: dict | None) -> dict[str, str]:
+    """Validate and normalize a docker_env dict to {str: str}.
+
+    Filters out entries with invalid variable names or non-string values.
+    """
+    if not env:
+        return {}
+    if not isinstance(env, dict):
+        logger.warning("docker_env is not a dict: %r", env)
+        return {}
+
+    normalized: dict[str, str] = {}
+    for key, value in env.items():
+        if not isinstance(key, str) or not _ENV_VAR_NAME_RE.match(key.strip()):
+            logger.warning("Ignoring invalid docker_env key: %r", key)
+            continue
+        key = key.strip()
+        if not isinstance(value, str):
+            # Coerce simple scalar types (int, bool, float) to string;
+            # reject complex types.
+            if isinstance(value, (int, float, bool)):
+                value = str(value)
+            else:
+                logger.warning("Ignoring non-string docker_env value for %r: %r", key, value)
+                continue
+        normalized[key] = value
+
+    return normalized
+
+
 def _load_hermes_env_vars() -> dict[str, str]:
     """Load ~/.hermes/.env values without failing Docker command execution."""
     try:
@@ -70,23 +99,41 @@ def _load_hermes_env_vars() -> dict[str, str]:
 
 
 def find_docker() -> Optional[str]:
-    """Locate the docker CLI binary.
+    """Locate the docker (or podman) CLI binary.
 
-    Checks ``shutil.which`` first (respects PATH), then probes well-known
-    install locations on macOS where Docker Desktop may not be in PATH
-    (e.g. when running as a gateway service via launchd).
+    Resolution order:
+    1. ``HERMES_DOCKER_BINARY`` env var — explicit override (e.g. ``/usr/bin/podman``)
+    2. ``docker`` on PATH via ``shutil.which``
+    3. ``podman`` on PATH via ``shutil.which``
+    4. Well-known macOS Docker Desktop install locations
 
-    Returns the absolute path, or ``None`` if docker cannot be found.
+    Returns the absolute path, or ``None`` if neither runtime can be found.
     """
     global _docker_executable
     if _docker_executable is not None:
         return _docker_executable
 
+    # 1. Explicit override via env var (e.g. for Podman on immutable distros)
+    override = os.getenv("HERMES_DOCKER_BINARY")
+    if override and os.path.isfile(override) and os.access(override, os.X_OK):
+        _docker_executable = override
+        logger.info("Using HERMES_DOCKER_BINARY override: %s", override)
+        return override
+
+    # 2. docker on PATH
     found = shutil.which("docker")
     if found:
         _docker_executable = found
         return found
 
+    # 3. podman on PATH (drop-in compatible for our use case)
+    found = shutil.which("podman")
+    if found:
+        _docker_executable = found
+        logger.info("Using podman as container runtime: %s", found)
+        return found
+
+    # 4. Well-known macOS Docker Desktop locations
     for path in _DOCKER_SEARCH_PATHS:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             _docker_executable = path
@@ -101,9 +148,15 @@ def find_docker() -> Optional[str]:
 # We drop all capabilities then add back the minimum needed:
 #   DAC_OVERRIDE - root can write to bind-mounted dirs owned by host user
 #   CHOWN/FOWNER - package managers (pip, npm, apt) need to set file ownership
+#   SETUID/SETGID - the image entrypoint drops from root to the 'hermes'
+#       user via `gosu`, which requires these caps. Combined with
+#       `no-new-privileges`, gosu still cannot escalate back to root after
+#       the drop, so the security posture is preserved. Omitted entirely
+#       when the container starts as a non-root user via --user, since
+#       no gosu drop is needed in that mode.
 # Block privilege escalation and limit PIDs.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
-_SECURITY_ARGS = [
+_BASE_SECURITY_ARGS = [
     "--cap-drop", "ALL",
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
@@ -114,6 +167,39 @@ _SECURITY_ARGS = [
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m",
     "--tmpfs", "/run:rw,noexec,nosuid,size=64m",
 ]
+
+# Extra caps needed when the container starts as root and an entrypoint
+# must drop privileges via gosu/su. Skipped when --user is passed because
+# the container already starts unprivileged and never needs to switch.
+_GOSU_CAP_ARGS = [
+    "--cap-add", "SETUID",
+    "--cap-add", "SETGID",
+]
+
+
+def _build_security_args(run_as_host_user: bool) -> list[str]:
+    """Return the security/cap/tmpfs args tailored to the privilege mode."""
+    if run_as_host_user:
+        return list(_BASE_SECURITY_ARGS)
+    return list(_BASE_SECURITY_ARGS) + list(_GOSU_CAP_ARGS)
+
+
+def _resolve_host_user_spec() -> Optional[str]:
+    """Return ``<uid>:<gid>`` for the current host user, or ``None`` on platforms
+    where this is not meaningful (e.g. Windows without posix ids).
+
+    We intentionally read ``os.getuid()``/``os.getgid()`` directly rather than
+    going through ``getpass``/``pwd`` so this stays cheap and never raises on
+    nameless UIDs (nss lookups can fail inside sandboxed launchers).
+    """
+    get_uid = getattr(os, "getuid", None)
+    get_gid = getattr(os, "getgid", None)
+    if get_uid is None or get_gid is None:
+        return None
+    try:
+        return f"{get_uid()}:{get_gid()}"
+    except Exception:  # pragma: no cover - defensive
+        return None
 
 
 _storage_opt_ok: Optional[bool] = None  # cached result across instances
@@ -209,17 +295,19 @@ class DockerEnvironment(BaseEnvironment):
         task_id: str = "default",
         volumes: list = None,
         forward_env: list[str] | None = None,
+        env: dict | None = None,
         network: bool = True,
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
+        run_as_host_user: bool = False,
     ):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
-        self._base_image = image
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
+        self._env = _normalize_env_dict(env)
         self._container_id: Optional[str] = None
         logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
@@ -227,11 +315,8 @@ class DockerEnvironment(BaseEnvironment):
             logger.warning(f"docker_volumes config is not a list: {volumes!r}")
             volumes = []
 
-        # Fail fast if Docker is not available rather than surfacing a cryptic
-        # FileNotFoundError deep inside the mini-swe-agent stack.
+        # Fail fast if Docker is not available.
         _ensure_docker_available()
-
-        from minisweagent.environments.docker import DockerEnvironment as _Docker
 
         # Build resource limit args
         resource_args = []
@@ -314,20 +399,181 @@ class DockerEnvironment(BaseEnvironment):
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
+        # Mount credential files (OAuth tokens, etc.) declared by skills.
+        # Read-only so the container can authenticate but not modify host creds.
+        try:
+            from tools.credential_files import (
+                get_credential_file_mounts,
+                get_skills_directory_mount,
+                get_cache_directory_mounts,
+            )
+
+            for mount_entry in get_credential_file_mounts():
+                volume_args.extend([
+                    "-v",
+                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting credential %s -> %s",
+                    mount_entry["host_path"],
+                    mount_entry["container_path"],
+                )
+
+            # Mount skill directories (local + external) so skill
+            # scripts/templates are available inside the container.
+            for skills_mount in get_skills_directory_mount():
+                volume_args.extend([
+                    "-v",
+                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting skills dir %s -> %s",
+                    skills_mount["host_path"],
+                    skills_mount["container_path"],
+                )
+
+            # Mount host-side cache directories (documents, images, audio,
+            # screenshots) so the agent can access uploaded files and other
+            # cached media from inside the container.  Read-only — the
+            # container reads these but the host gateway manages writes.
+            for cache_mount in get_cache_directory_mounts():
+                volume_args.extend([
+                    "-v",
+                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting cache dir %s -> %s",
+                    cache_mount["host_path"],
+                    cache_mount["container_path"],
+                )
+        except Exception as e:
+            logger.debug("Docker: could not load credential file mounts: %s", e)
+
+        # Explicit environment variables (docker_env config) — set at container
+        # creation so they're available to all processes (including entrypoint).
+        env_args = []
+        for key in sorted(self._env):
+            env_args.extend(["-e", f"{key}={self._env[key]}"])
+
+        # Optional: run the container as the host user so files written into
+        # bind-mounted dirs (/workspace, /root, docker_volumes entries) are
+        # owned by that user on the host instead of by root. Skip cleanly on
+        # platforms without POSIX uid/gid (e.g. native Windows Docker).
+        user_args: list[str] = []
+        if run_as_host_user:
+            user_spec = _resolve_host_user_spec()
+            if user_spec is not None:
+                user_args = ["--user", user_spec]
+                logger.info("Docker: running container as host user %s", user_spec)
+            else:
+                logger.warning(
+                    "docker_run_as_host_user is enabled but this platform does "
+                    "not expose POSIX uid/gid; container will start as its "
+                    "image default user."
+                )
+                # Fall back to the full cap set — without --user, an image's
+                # entrypoint may still need gosu/su to drop privileges.
+        security_args = _build_security_args(run_as_host_user and bool(user_args))
+
         logger.info(f"Docker volume_args: {volume_args}")
-        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args
+        all_run_args = (
+            security_args
+            + user_args
+            + writable_args
+            + resource_args
+            + volume_args
+            + env_args
+        )
         logger.info(f"Docker run_args: {all_run_args}")
 
         # Resolve the docker executable once so it works even when
         # /usr/local/bin is not in PATH (common on macOS gateway/service).
-        docker_exe = find_docker() or "docker"
+        self._docker_exe = find_docker() or "docker"
 
-        self._inner = _Docker(
-            image=image, cwd=cwd, timeout=timeout,
-            run_args=all_run_args,
-            executable=docker_exe,
+        # Start the container directly via `docker run -d`.
+        container_name = f"hermes-{uuid.uuid4().hex[:8]}"
+        run_cmd = [
+            self._docker_exe, "run", "-d",
+            "--init",           # tini/catatonit as PID 1 — reaps zombie children
+            "--name", container_name,
+            "-w", cwd,
+            *all_run_args,
+            image,
+            "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
+        ]
+        logger.debug(f"Starting container: {' '.join(run_cmd)}")
+        result = subprocess.run(
+            run_cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,  # image pull may take a while
+            check=True,
         )
-        self._container_id = self._inner.container_id
+        self._container_id = result.stdout.strip()
+        logger.info(f"Started container {container_name} ({self._container_id[:12]})")
+
+        # Build the init-time env forwarding args (used only by init_session
+        # to inject host env vars into the snapshot; subsequent commands get
+        # them from the snapshot file).
+        self._init_env_args = self._build_init_env_args()
+
+        # Initialize session snapshot inside the container
+        self.init_session()
+
+    def _build_init_env_args(self) -> list[str]:
+        """Build -e KEY=VALUE args for injecting host env vars into init_session.
+
+        These are used once during init_session() so that export -p captures
+        them into the snapshot.  Subsequent execute() calls don't need -e flags.
+        """
+        exec_env: dict[str, str] = dict(self._env)
+
+        explicit_forward_keys = set(self._forward_env)
+        passthrough_keys: set[str] = set()
+        try:
+            from tools.env_passthrough import get_all_passthrough
+            passthrough_keys = set(get_all_passthrough())
+        except Exception:
+            pass
+        # Explicit docker_forward_env entries are an intentional opt-in and must
+        # win over the generic Hermes secret blocklist. Only implicit passthrough
+        # keys are filtered.
+        forward_keys = explicit_forward_keys | (passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST)
+        hermes_env = _load_hermes_env_vars() if forward_keys else {}
+        for key in sorted(forward_keys):
+            value = os.getenv(key)
+            if value is None:
+                value = hermes_env.get(key)
+            if value is not None:
+                exec_env[key] = value
+
+        args = []
+        for key in sorted(exec_env):
+            args.extend(["-e", f"{key}={exec_env[key]}"])
+        return args
+
+    def _run_bash(self, cmd_string: str, *, login: bool = False,
+                  timeout: int = 120,
+                  stdin_data: str | None = None) -> subprocess.Popen:
+        """Spawn a bash process inside the Docker container."""
+        assert self._container_id, "Container not started"
+        cmd = [self._docker_exe, "exec"]
+        if stdin_data is not None:
+            cmd.append("-i")
+
+        # Only inject -e env args during init_session (login=True).
+        # Subsequent commands get env vars from the snapshot.
+        if login:
+            cmd.extend(self._init_env_args)
+
+        cmd.extend([self._container_id])
+
+        if login:
+            cmd.extend(["bash", "-l", "-c", cmd_string])
+        else:
+            cmd.extend(["bash", "-c", cmd_string])
+
+        return _popen_bash(cmd, stdin_data)
 
     @staticmethod
     def _storage_opt_supported() -> bool:
@@ -369,111 +615,31 @@ class DockerEnvironment(BaseEnvironment):
         logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
         return _storage_opt_ok
 
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
-        exec_command, sudo_stdin = self._prepare_command(command)
-        work_dir = cwd or self.cwd
-        effective_timeout = timeout or self.timeout
-
-        # Merge sudo password (if any) with caller-supplied stdin_data.
-        if sudo_stdin is not None and stdin_data is not None:
-            effective_stdin = sudo_stdin + stdin_data
-        elif sudo_stdin is not None:
-            effective_stdin = sudo_stdin
-        else:
-            effective_stdin = stdin_data
-
-        # docker exec -w doesn't expand ~, so prepend a cd into the command
-        if work_dir == "~" or work_dir.startswith("~/"):
-            exec_command = f"cd {work_dir} && {exec_command}"
-            work_dir = "/"
-
-        assert self._inner.container_id, "Container not started"
-        cmd = [self._inner.config.executable, "exec"]
-        if effective_stdin is not None:
-            cmd.append("-i")
-        cmd.extend(["-w", work_dir])
-        hermes_env = _load_hermes_env_vars() if self._forward_env else {}
-        for key in self._forward_env:
-            value = os.getenv(key)
-            if value is None:
-                value = hermes_env.get(key)
-            if value is not None:
-                cmd.extend(["-e", f"{key}={value}"])
-        for key, value in self._inner.config.env.items():
-            cmd.extend(["-e", f"{key}={value}"])
-        cmd.extend([self._inner.container_id, "bash", "-lc", exec_command])
-
-        try:
-            _output_chunks = []
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE if effective_stdin else subprocess.DEVNULL,
-                text=True,
-            )
-            if effective_stdin:
-                try:
-                    proc.stdin.write(effective_stdin)
-                    proc.stdin.close()
-                except Exception:
-                    pass
-
-            def _drain():
-                try:
-                    for line in proc.stdout:
-                        _output_chunks.append(line)
-                except Exception:
-                    pass
-
-            reader = threading.Thread(target=_drain, daemon=True)
-            reader.start()
-            deadline = time.monotonic() + effective_timeout
-
-            while proc.poll() is None:
-                if is_interrupted():
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                    reader.join(timeout=2)
-                    return {
-                        "output": "".join(_output_chunks) + "\n[Command interrupted]",
-                        "returncode": 130,
-                    }
-                if time.monotonic() > deadline:
-                    proc.kill()
-                    reader.join(timeout=2)
-                    return self._timeout_result(effective_timeout)
-                time.sleep(0.2)
-
-            reader.join(timeout=5)
-            return {"output": "".join(_output_chunks), "returncode": proc.returncode}
-        except Exception as e:
-            return {"output": f"Docker execution error: {e}", "returncode": 1}
-
     def cleanup(self):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
-        self._inner.cleanup()
-
-        if not self._persistent and self._container_id:
-            # Inner cleanup only runs `docker stop` in background; container is left
-            # as stopped. When container_persistent=false we must remove it.
-            docker_exe = find_docker() or self._inner.config.executable
+        if self._container_id:
             try:
-                subprocess.run(
-                    [docker_exe, "rm", "-f", self._container_id],
-                    capture_output=True,
-                    timeout=30,
+                # Stop in background so cleanup doesn't block
+                stop_cmd = (
+                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
+                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
                 )
+                subprocess.Popen(stop_cmd, shell=True)
             except Exception as e:
-                logger.warning("Failed to remove non-persistent container %s: %s", self._container_id, e)
+                logger.warning("Failed to stop container %s: %s", self._container_id, e)
+
+            if not self._persistent:
+                # Also schedule removal (stop only leaves it as stopped)
+                try:
+                    subprocess.Popen(
+                        f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
+                        shell=True,
+                    )
+                except Exception:
+                    pass
             self._container_id = None
 
         if not self._persistent:
-            import shutil
             for d in (self._workspace_dir, self._home_dir):
                 if d:
                     shutil.rmtree(d, ignore_errors=True)

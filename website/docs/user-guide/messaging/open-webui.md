@@ -10,15 +10,17 @@ description: "Connect Open WebUI to Hermes Agent via the OpenAI-compatible API s
 
 ## Architecture
 
-```
-┌──────────────────┐    POST /v1/chat/completions    ┌──────────────────────┐
-│   Open WebUI     │ ──────────────────────────────► │  hermes-agent        │
-│   (browser UI)   │    SSE streaming response       │  gateway API server  │
-│   port 3000      │ ◄────────────────────────────── │  port 8642           │
-└──────────────────┘                                  └──────────────────────┘
+```mermaid
+flowchart LR
+    A["Open WebUI<br/>browser UI<br/>port 3000"]
+    B["hermes-agent<br/>gateway API server<br/>port 8642"]
+    A -->|POST /v1/chat/completions| B
+    B -->|SSE streaming response| A
 ```
 
 Open WebUI connects to Hermes Agent's API server just like it would connect to OpenAI. Your agent handles the requests with its full toolset — terminal, file operations, web search, memory, skills — and returns the final response.
+
+Open WebUI talks to Hermes server-to-server, so you do not need `API_SERVER_CORS_ORIGINS` for this integration.
 
 ## Quick Setup
 
@@ -28,8 +30,7 @@ Add to `~/.hermes/.env`:
 
 ```bash
 API_SERVER_ENABLED=true
-# Optional: set a key for auth (recommended if accessible beyond localhost)
-# API_SERVER_KEY=your-secret-key
+API_SERVER_KEY=your-secret-key
 ```
 
 ### 2. Start Hermes Agent gateway
@@ -49,7 +50,7 @@ You should see:
 ```bash
 docker run -d -p 3000:8080 \
   -e OPENAI_API_BASE_URL=http://host.docker.internal:8642/v1 \
-  -e OPENAI_API_KEY=not-needed \
+  -e OPENAI_API_KEY=your-secret-key \
   --add-host=host.docker.internal:host-gateway \
   -v open-webui:/app/backend/data \
   --name open-webui \
@@ -57,15 +58,9 @@ docker run -d -p 3000:8080 \
   ghcr.io/open-webui/open-webui:main
 ```
 
-If you set an `API_SERVER_KEY`, use it instead of `not-needed`:
-
-```bash
--e OPENAI_API_KEY=your-secret-key
-```
-
 ### 4. Open the UI
 
-Go to **http://localhost:3000**. Create your admin account (the first user becomes admin). You should see **hermes-agent** in the model dropdown. Start chatting!
+Go to **http://localhost:3000**. Create your admin account (the first user becomes admin). You should see your agent in the model dropdown (named after your profile, or **hermes-agent** for the default profile). Start chatting!
 
 ## Docker Compose Setup
 
@@ -81,7 +76,7 @@ services:
       - open-webui:/app/backend/data
     environment:
       - OPENAI_API_BASE_URL=http://host.docker.internal:8642/v1
-      - OPENAI_API_KEY=not-needed
+      - OPENAI_API_KEY=your-secret-key
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: always
@@ -111,7 +106,7 @@ If you prefer to configure the connection through the UI instead of environment 
 7. Click the **checkmark** to verify the connection
 8. **Save**
 
-The **hermes-agent** model should now appear in the model dropdown.
+Your agent model should now appear in the model dropdown (named after your profile, or **hermes-agent** for the default profile).
 
 :::warning
 Environment variables only take effect on Open WebUI's **first launch**. After that, connection settings are stored in its internal database. To change them later, use the Admin UI or delete the Docker volume and start fresh.
@@ -139,10 +134,10 @@ To use the Responses API mode:
 3. Change **API Type** from "Chat Completions" to **"Responses (Experimental)"**
 4. Save
 
-With the Responses API, Open WebUI sends requests in the Responses format (`input` array + `instructions`), and Hermes Agent can preserve full tool call history across turns via `previous_response_id`.
+With the Responses API, Open WebUI sends requests in the Responses format (`input` array + `instructions`), and Hermes Agent can preserve full tool call history across turns via `previous_response_id`. When `stream: true`, Hermes also streams spec-native `function_call` and `function_call_output` items, which enables custom structured tool-call UI in clients that render Responses events.
 
 :::note
-Open WebUI currently manages conversation history client-side even in Responses mode — it sends the full message history in each request rather than using `previous_response_id`. The Responses API mode is mainly useful for future compatibility as frontends evolve.
+Open WebUI currently manages conversation history client-side even in Responses mode — it sends the full message history in each request rather than using `previous_response_id`. The main advantage of Responses mode today is the structured event stream: text deltas, `function_call`, and `function_call_output` items arrive as OpenAI Responses SSE events instead of Chat Completions chunks.
 :::
 
 ## How It Works
@@ -152,11 +147,15 @@ When you send a message in Open WebUI:
 1. Open WebUI sends a `POST /v1/chat/completions` request with your message and conversation history
 2. Hermes Agent creates an AIAgent instance with its full toolset
 3. The agent processes your request — it may call tools (terminal, file operations, web search, etc.)
-4. Tool calls happen invisibly server-side
-5. The agent's final text response is returned to Open WebUI
+4. As tools execute, **inline progress messages stream to the UI** so you can see what the agent is doing (e.g. `` `💻 ls -la` ``, `` `🔍 Python 3.12 release` ``)
+5. The agent's final text response streams back to Open WebUI
 6. Open WebUI displays the response in its chat interface
 
 Your agent has access to all the same tools and capabilities as when using the CLI or Telegram — the only difference is the frontend.
+
+:::tip Tool Progress
+With streaming enabled (the default), you'll see brief inline indicators as tools run — the tool emoji and its key argument. These appear in the response stream before the agent's final answer, giving you visibility into what's happening behind the scenes.
+:::
 
 ## Configuration Reference
 
@@ -167,7 +166,7 @@ Your agent has access to all the same tools and capabilities as when using the C
 | `API_SERVER_ENABLED` | `false` | Enable the API server |
 | `API_SERVER_PORT` | `8642` | HTTP server port |
 | `API_SERVER_HOST` | `127.0.0.1` | Bind address |
-| `API_SERVER_KEY` | _(none)_ | Bearer token for auth. No key = allow all. |
+| `API_SERVER_KEY` | _(required)_ | Bearer token for auth. Match `OPENAI_API_KEY`. |
 
 ### Open WebUI
 
@@ -195,7 +194,50 @@ Hermes Agent may be executing multiple tool calls (reading files, running comman
 
 ### "Invalid API key" errors
 
-Make sure your `OPENAI_API_KEY` in Open WebUI matches the `API_SERVER_KEY` in Hermes Agent. If no key is configured on the Hermes side, any non-empty value works.
+Make sure your `OPENAI_API_KEY` in Open WebUI matches the `API_SERVER_KEY` in Hermes Agent.
+
+## Multi-User Setup with Profiles
+
+To run separate Hermes instances per user — each with their own config, memory, and skills — use [profiles](/docs/user-guide/profiles). Each profile runs its own API server on a different port and automatically advertises the profile name as the model in Open WebUI.
+
+### 1. Create profiles and configure API servers
+
+```bash
+hermes profile create alice
+hermes -p alice config set API_SERVER_ENABLED true
+hermes -p alice config set API_SERVER_PORT 8643
+hermes -p alice config set API_SERVER_KEY alice-secret
+
+hermes profile create bob
+hermes -p bob config set API_SERVER_ENABLED true
+hermes -p bob config set API_SERVER_PORT 8644
+hermes -p bob config set API_SERVER_KEY bob-secret
+```
+
+### 2. Start each gateway
+
+```bash
+hermes -p alice gateway &
+hermes -p bob gateway &
+```
+
+### 3. Add connections in Open WebUI
+
+In **Admin Settings** → **Connections** → **OpenAI API** → **Manage**, add one connection per profile:
+
+| Connection | URL | API Key |
+|-----------|-----|---------|
+| Alice | `http://host.docker.internal:8643/v1` | `alice-secret` |
+| Bob | `http://host.docker.internal:8644/v1` | `bob-secret` |
+
+The model dropdown will show `alice` and `bob` as distinct models. You can assign models to Open WebUI users via the admin panel, giving each user their own isolated Hermes agent.
+
+:::tip Custom Model Names
+The model name defaults to the profile name. To override it, set `API_SERVER_MODEL_NAME` in the profile's `.env`:
+```bash
+hermes -p alice config set API_SERVER_MODEL_NAME "Alice's Agent"
+```
+:::
 
 ## Linux Docker (no Docker Desktop)
 

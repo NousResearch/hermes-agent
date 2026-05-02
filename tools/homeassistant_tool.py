@@ -38,6 +38,15 @@ def _get_config():
 # Regex for valid HA entity_id format (e.g. "light.living_room", "sensor.temperature_1")
 _ENTITY_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
 
+# Regex for valid HA service/domain names (e.g. "light", "turn_on", "shell_command").
+# Only lowercase ASCII letters, digits, and underscores — no slashes, dots, or
+# other characters that could allow path traversal in URL construction.
+# The domain and service are interpolated into /api/services/{domain}/{service},
+# so allowing arbitrary strings would enable SSRF via path traversal
+# (e.g. domain="../../api/config") or blocked-domain bypass
+# (e.g. domain="shell_command/../light").
+_SERVICE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
 # Service domains blocked for security -- these allow arbitrary code/command
 # execution on the HA host or enable SSRF attacks on the local network.
 # HA provides zero service-level access control; all safety must be in our layer.
@@ -221,22 +230,22 @@ def _handle_list_entities(args: dict, **kw) -> str:
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_list_entities error: %s", e)
-        return json.dumps({"error": f"Failed to list entities: {e}"})
+        return tool_error(f"Failed to list entities: {e}")
 
 
 def _handle_get_state(args: dict, **kw) -> str:
     """Handler for ha_get_state tool."""
     entity_id = args.get("entity_id", "")
     if not entity_id:
-        return json.dumps({"error": "Missing required parameter: entity_id"})
+        return tool_error("Missing required parameter: entity_id")
     if not _ENTITY_ID_RE.match(entity_id):
-        return json.dumps({"error": f"Invalid entity_id format: {entity_id}"})
+        return tool_error(f"Invalid entity_id format: {entity_id}")
     try:
         result = _run_async(_async_get_state(entity_id))
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_get_state error: %s", e)
-        return json.dumps({"error": f"Failed to get state for {entity_id}: {e}"})
+        return tool_error(f"Failed to get state for {entity_id}: {e}")
 
 
 def _handle_call_service(args: dict, **kw) -> str:
@@ -244,7 +253,15 @@ def _handle_call_service(args: dict, **kw) -> str:
     domain = args.get("domain", "")
     service = args.get("service", "")
     if not domain or not service:
-        return json.dumps({"error": "Missing required parameters: domain and service"})
+        return tool_error("Missing required parameters: domain and service")
+
+    # Validate domain/service format BEFORE the blocklist check — prevents
+    # path traversal in /api/services/{domain}/{service} and blocklist bypass
+    # via payloads like "shell_command/../light".
+    if not _SERVICE_NAME_RE.match(domain):
+        return tool_error(f"Invalid domain format: {domain!r}")
+    if not _SERVICE_NAME_RE.match(service):
+        return tool_error(f"Invalid service format: {service!r}")
 
     if domain in _BLOCKED_DOMAINS:
         return json.dumps({
@@ -254,15 +271,21 @@ def _handle_call_service(args: dict, **kw) -> str:
 
     entity_id = args.get("entity_id")
     if entity_id and not _ENTITY_ID_RE.match(entity_id):
-        return json.dumps({"error": f"Invalid entity_id format: {entity_id}"})
+        return tool_error(f"Invalid entity_id format: {entity_id}")
 
     data = args.get("data")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data) if data.strip() else None
+        except json.JSONDecodeError as e:
+            return tool_error(f"Invalid JSON string in 'data' parameter: {e}")
+
     try:
         result = _run_async(_async_call_service(domain, service, entity_id, data))
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_call_service error: %s", e)
-        return json.dumps({"error": f"Failed to call {domain}.{service}: {e}"})
+        return tool_error(f"Failed to call {domain}.{service}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +334,7 @@ def _handle_list_services(args: dict, **kw) -> str:
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_list_services error: %s", e)
-        return json.dumps({"error": f"Failed to list services: {e}"})
+        return tool_error(f"Failed to list services: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -433,9 +456,9 @@ HA_CALL_SERVICE_SCHEMA = {
                 ),
             },
             "data": {
-                "type": "object",
+                "type": "string",
                 "description": (
-                    "Additional service data. Examples: "
+                    "Additional service data as a JSON string. Examples: "
                     '{"brightness": 255, "color_name": "blue"} for lights, '
                     '{"temperature": 22, "hvac_mode": "heat"} for climate, '
                     '{"volume_level": 0.5} for media players.'
@@ -451,7 +474,7 @@ HA_CALL_SERVICE_SCHEMA = {
 # Registration
 # ---------------------------------------------------------------------------
 
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="ha_list_entities",

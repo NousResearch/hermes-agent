@@ -315,7 +315,7 @@ def print_distribution_info(distribution_name: str) -> None:
     
     print(f"\n📊 Distribution: {distribution_name}")
     print(f"   Description: {dist['description']}")
-    print(f"   Toolsets:")
+    print("   Toolsets:")
     for toolset, prob in sorted(dist["toolsets"].items(), key=lambda x: x[1], reverse=True):
         print(f"     • {toolset:15} : {prob:3}% chance")
 

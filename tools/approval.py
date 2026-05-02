@@ -8,14 +8,206 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import contextvars
 import logging
 import os
 import re
 import sys
 import threading
+import time
+import unicodedata
 from typing import Optional
+from hermes_cli.config import cfg_get
+
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+# Per-thread/per-task gateway session identity.
+# Gateway runs agent turns concurrently in executor threads, so reading a
+# process-global env var for session identity is racy. Keep env fallback for
+# legacy single-threaded callers, but prefer the context-local value when set.
+_approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "approval_session_key",
+    default="",
+)
+
+
+def _fire_approval_hook(hook_name: str, **kwargs) -> None:
+    """Invoke a plugin lifecycle hook for the approval system.
+
+    Lazy-imports the plugin manager to avoid circular imports (approval.py is
+    imported very early, long before plugins are discovered). Never raises --
+    plugin errors are logged and swallowed.
+
+    Only fires for the two approval-specific hooks in VALID_HOOKS:
+    pre_approval_request, post_approval_response.
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook
+    except Exception:
+        # Plugin system not available in this execution context
+        # (e.g. bare tool-only imports, minimal test environments).
+        return
+    try:
+        invoke_hook(hook_name, **kwargs)
+    except Exception as exc:
+        # invoke_hook() already swallows per-callback errors, so reaching here
+        # means the dispatch layer itself failed. Log and move on -- approval
+        # flow is safety-critical, plugin observability is not.
+        logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc)
+
+
+
+def set_current_session_key(session_key: str) -> contextvars.Token[str]:
+    """Bind the active approval session key to the current context."""
+    return _approval_session_key.set(session_key or "")
+
+
+def reset_current_session_key(token: contextvars.Token[str]) -> None:
+    """Restore the prior approval session key context."""
+    _approval_session_key.reset(token)
+
+
+def get_current_session_key(default: str = "default") -> str:
+    """Return the active session key, preferring context-local state.
+
+    Resolution order:
+    1. approval-specific contextvars (set by gateway before agent.run)
+    2. session_context contextvars (set by _set_session_env)
+    3. os.environ fallback (CLI, cron, tests)
+    """
+    session_key = _approval_session_key.get()
+    if session_key:
+        return session_key
+    from gateway.session_context import get_session_env
+    return get_session_env("HERMES_SESSION_KEY", default)
+
+# Sensitive write targets that should trigger approval even when referenced
+# via shell expansions like $HOME or $HERMES_HOME.
+_SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
+_HERMES_ENV_PATH = (
+    r'(?:~\/\.hermes/|'
+    r'(?:\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'\.env\b'
+)
+_PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
+_PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
+_SENSITIVE_WRITE_TARGET = (
+    r'(?:/etc/|/dev/sd|'
+    rf'{_SSH_SENSITIVE_PATH}|'
+    rf'{_HERMES_ENV_PATH})'
+)
+_PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
+_COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
+
+# =========================================================================
+# Hardline (unconditional) blocklist
+# =========================================================================
+#
+# Commands so catastrophic they should NEVER run via the agent, regardless
+# of --yolo, /yolo, approvals.mode=off, or cron approve mode.  This is a
+# floor below yolo: opting into yolo is the user trusting the agent with
+# their files and services, not trusting it to wipe the disk or power the
+# box off.
+#
+# Hardline only applies to environments that can actually damage the host
+# (local, ssh, container-host cron).  Containerized backends (docker,
+# singularity, modal, daytona) already bypass the dangerous-command layer
+# because nothing they do can touch the host, so we leave that behavior
+# alone.
+#
+# The list is deliberately tiny — only things with no recovery path:
+# filesystem destruction rooted at /, raw block device overwrites, kernel
+# shutdown/reboot, and denial-of-service commands that take the host down.
+# Recoverable-but-costly operations (git reset --hard, rm -rf /tmp/x,
+# chmod -R 777, curl|sh) stay in DANGEROUS_PATTERNS where yolo can pass
+# them through — that's what yolo is for.
+#
+# Inspired by Mercury Agent's permission-hardened blocklist
+# (https://github.com/cosmicstack-labs/mercury-agent).
+
+# Regex fragment matching the *start* of a command (i.e. positions where
+# a shell would begin parsing a new command).  Used by shutdown/reboot
+# patterns so they don't fire on "echo reboot" or "grep 'shutdown' log".
+# Matches: start of string, after command separators (; && || | newline),
+# after subshell openers ( `$(` or backtick ), optionally consuming
+# leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid).
+_CMDPOS = (
+    r'(?:^|[;&|\n`]|\$\()'         # start position
+    r'\s*'                          # optional whitespace
+    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
+    r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
+    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    r'\s*'
+)
+
+HARDLINE_PATTERNS = [
+    # rm recursive targeting the root filesystem or protected roots
+    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
+    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
+    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
+    # Filesystem format
+    (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    # Raw block device overwrites (dd + redirection)
+    (r'\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
+    # Fork bomb (classic shell form)
+    (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
+    # Kill every process on the system
+    (r'\bkill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    # System shutdown / reboot — anchor to command position (start of line,
+    # after a command separator, or after sudo/env wrappers) so we don't
+    # false-positive on "echo reboot" or "grep 'shutdown' logs".
+    # _CMDPOS matches start-of-command positions.
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
+    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
+    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+]
+
+# Pre-compiled variant used by the hot-path matcher. Building these at module
+# load eliminates the ~2.6 ms cold-cache re.compile fan-out on the first
+# terminal() call per process (12 HARDLINE + 47 DANGEROUS patterns, each
+# potentially evicted from Python's 512-entry ``re._cache`` by unrelated
+# regex work elsewhere in the agent). DANGEROUS_PATTERNS_COMPILED is built
+# at the end of this module after DANGEROUS_PATTERNS is defined.
+_RE_FLAGS = re.IGNORECASE | re.DOTALL
+HARDLINE_PATTERNS_COMPILED = [
+    (re.compile(pattern, _RE_FLAGS), description)
+    for pattern, description in HARDLINE_PATTERNS
+]
+
+
+def detect_hardline_command(command: str) -> tuple:
+    """Check if a command matches the unconditional hardline blocklist.
+
+    Returns:
+        (is_hardline, description) or (False, None)
+    """
+    normalized = _normalize_command_for_detection(command).lower()
+    for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+        if pattern_re.search(normalized):
+            return (True, description)
+    return (False, None)
+
+
+def _hardline_block_result(description: str) -> dict:
+    """Build the standard block result for a hardline match."""
+    return {
+        "approved": False,
+        "hardline": True,
+        "message": (
+            f"BLOCKED (hardline): {description}. "
+            "This command is on the unconditional blocklist and cannot "
+            "be executed via the agent — not even with --yolo, /yolo, "
+            "approvals.mode=off, or cron approve mode. If you genuinely "
+            "need to run it, run it yourself in a terminal outside the "
+            "agent."
+        ),
+    }
+
 
 # =========================================================================
 # Dangerous command patterns
@@ -25,8 +217,8 @@ DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
     (r'\brm\s+--recursive\b', "recursive delete (long flag)"),
-    (r'\bchmod\s+(-[^\s]*\s+)*777\b', "world-writable permissions"),
-    (r'\bchmod\s+--recursive\b.*777', "recursive world-writable (long flag)"),
+    (r'\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b', "world/other-writable permissions"),
+    (r'\bchmod\s+--recursive\b.*(777|666|o\+[rwx]*w|a\+[rwx]*w)', "recursive world/other-writable (long flag)"),
     (r'\bchown\s+(-[^\s]*)?R\s+root', "recursive chown to root"),
     (r'\bchown\s+--recursive\b.*root', "recursive chown to root (long flag)"),
     (r'\bmkfs\b', "format filesystem"),
@@ -36,7 +228,7 @@ DANGEROUS_PATTERNS = [
     (r'\bDELETE\s+FROM\b(?!.*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (r'>\s*/etc/', "overwrite system config"),
-    (r'\bsystemctl\s+(stop|disable|mask)\b', "stop/disable system service"),
+    (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
@@ -45,10 +237,55 @@ DANGEROUS_PATTERNS = [
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
-    (r'\btee\b.*(/etc/|/dev/sd|\.ssh/|\.hermes/\.env)', "overwrite system file via tee"),
+    (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
+    (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
+    (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config via tee"),
+    (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
+    # Gateway lifecycle protection: prevent the agent from killing its own
+    # gateway process.  These commands trigger a gateway restart/stop that
+    # terminates all running agents mid-work.
+    (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
+    (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    # Gateway protection: never start gateway outside systemd management
+    (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
+    (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
+    # Self-termination protection: prevent agent from killing its own process
+    (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    # Self-termination via kill + command substitution (pgrep/pidof).
+    # The name-based pattern above catches `pkill hermes` but not
+    # `kill -9 $(pgrep -f hermes)` because the substitution is opaque
+    # to regex at detection time. Catch the structural pattern instead.
+    (r'\bkill\b.*\$\(\s*pgrep\b', "kill process via pgrep expansion (self-termination)"),
+    (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
+    # File copy/move/edit into sensitive system paths
+    (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
+    (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
+    (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
+    (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
+    # Script execution via heredoc — bypasses the -e/-c flag patterns above.
+    # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
+    (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
+    # Git destructive operations that can lose uncommitted work or rewrite
+    # shared history. Not captured by rm/chmod/etc patterns.
+    (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
+    (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
+    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
+    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    # Script execution after chmod +x — catches the two-step pattern where
+    # a script is first made executable then immediately run. The script
+    # content may contain dangerous commands that individual patterns miss.
+    (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
+]
+
+
+# Pre-compiled variant (same rationale as HARDLINE_PATTERNS_COMPILED above).
+DANGEROUS_PATTERNS_COMPILED = [
+    (re.compile(pattern, _RE_FLAGS), description)
+    for pattern, description in DANGEROUS_PATTERNS
 ]
 
 
@@ -79,15 +316,33 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
+def _normalize_command_for_detection(command: str) -> str:
+    """Normalize a command string before dangerous-pattern matching.
+
+    Strips ANSI escape sequences (full ECMA-48 via tools.ansi_strip),
+    null bytes, and normalizes Unicode fullwidth characters so that
+    obfuscation techniques cannot bypass the pattern-based detection.
+    """
+    from tools.ansi_strip import strip_ansi
+
+    # Strip all ANSI escape sequences (CSI, OSC, DCS, 8-bit C1, etc.)
+    command = strip_ansi(command)
+    # Strip null bytes
+    command = command.replace('\x00', '')
+    # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
+    command = unicodedata.normalize('NFKC', command)
+    return command
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = command.lower()
-    for pattern, description in DANGEROUS_PATTERNS:
-        if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
+    command_lower = _normalize_command_for_detection(command).lower()
+    for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+        if pattern_re.search(command_lower):
             pattern_key = description
             return (True, pattern_key, description)
     return (False, None, None)
@@ -100,7 +355,90 @@ def detect_dangerous_command(command: str) -> tuple:
 _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
+_session_yolo: set[str] = set()
 _permanent_approved: set = set()
+
+# =========================================================================
+# Blocking gateway approval (mirrors CLI's synchronous input() flow)
+# =========================================================================
+# Per-session QUEUE of pending approvals.  Multiple threads (parallel
+# subagents, execute_code RPC handlers) can block concurrently — each gets
+# its own threading.Event.  /approve resolves the oldest, /approve all
+# resolves every pending approval in the session.
+
+
+class _ApprovalEntry:
+    """One pending dangerous-command approval inside a gateway session."""
+    __slots__ = ("event", "data", "result")
+
+    def __init__(self, data: dict):
+        self.event = threading.Event()
+        self.data = data          # command, description, pattern_keys, …
+        self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
+
+
+_gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
+_gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+
+
+def register_gateway_notify(session_key: str, cb) -> None:
+    """Register a per-session callback for sending approval requests to the user.
+
+    The callback signature is ``cb(approval_data: dict) -> None`` where
+    *approval_data* contains ``command``, ``description``, and
+    ``pattern_keys``.  The callback bridges sync→async (runs in the agent
+    thread, must schedule the actual send on the event loop).
+    """
+    with _lock:
+        _gateway_notify_cbs[session_key] = cb
+
+
+def unregister_gateway_notify(session_key: str) -> None:
+    """Unregister the per-session gateway approval callback.
+
+    Signals ALL blocked threads for this session so they don't hang forever
+    (e.g. when the agent run finishes or is interrupted).
+    """
+    with _lock:
+        _gateway_notify_cbs.pop(session_key, None)
+        entries = _gateway_queues.pop(session_key, [])
+    for entry in entries:
+        entry.event.set()
+
+
+def resolve_gateway_approval(session_key: str, choice: str,
+                             resolve_all: bool = False) -> int:
+    """Called by the gateway's /approve or /deny handler to unblock
+    waiting agent thread(s).
+
+    When *resolve_all* is True every pending approval in the session is
+    resolved at once (``/approve all``).  Otherwise only the oldest one
+    is resolved (FIFO).
+
+    Returns the number of approvals resolved (0 means nothing was pending).
+    """
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if not queue:
+            return 0
+        if resolve_all:
+            targets = list(queue)
+            queue.clear()
+        else:
+            targets = [queue.pop(0)]
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+
+    for entry in targets:
+        entry.result = choice
+        entry.event.set()
+    return len(targets)
+
+
+def has_blocking_approval(session_key: str) -> bool:
+    """Check if a session has one or more blocking gateway approvals waiting."""
+    with _lock:
+        return bool(_gateway_queues.get(session_key))
 
 
 def submit_pending(session_key: str, approval: dict):
@@ -109,22 +447,55 @@ def submit_pending(session_key: str, approval: dict):
         _pending[session_key] = approval
 
 
-def pop_pending(session_key: str) -> Optional[dict]:
-    """Retrieve and remove a pending approval for a session."""
-    with _lock:
-        return _pending.pop(session_key, None)
-
-
-def has_pending(session_key: str) -> bool:
-    """Check if a session has a pending approval request."""
-    with _lock:
-        return session_key in _pending
-
-
 def approve_session(session_key: str, pattern_key: str):
     """Approve a pattern for this session only."""
     with _lock:
         _session_approved.setdefault(session_key, set()).add(pattern_key)
+
+
+def enable_session_yolo(session_key: str) -> None:
+    """Enable YOLO bypass for a single session key."""
+    if not session_key:
+        return
+    with _lock:
+        _session_yolo.add(session_key)
+
+
+def disable_session_yolo(session_key: str) -> None:
+    """Disable YOLO bypass for a single session key."""
+    if not session_key:
+        return
+    with _lock:
+        _session_yolo.discard(session_key)
+
+
+def clear_session(session_key: str) -> None:
+    """Remove all approval and yolo state for a given session."""
+    if not session_key:
+        return
+    with _lock:
+        _session_approved.pop(session_key, None)
+        _session_yolo.discard(session_key)
+        _pending.pop(session_key, None)
+        entries = _gateway_queues.pop(session_key, [])
+    for entry in entries:
+        # Session-boundary cleanup should cancel any blocked approval waits
+        # immediately so the old run can unwind instead of idling until timeout.
+        entry.result = "deny"
+        entry.event.set()
+
+
+def is_session_yolo_enabled(session_key: str) -> bool:
+    """Return True when YOLO bypass is enabled for a specific session."""
+    if not session_key:
+        return False
+    with _lock:
+        return session_key in _session_yolo
+
+
+def is_current_session_yolo_enabled() -> bool:
+    """Return True when the active approval session has YOLO bypass enabled."""
+    return is_session_yolo_enabled(get_current_session_key(default=""))
 
 
 def is_approved(session_key: str, pattern_key: str) -> bool:
@@ -153,12 +524,6 @@ def load_permanent(patterns: set):
         _permanent_approved.update(patterns)
 
 
-def clear_session(session_key: str):
-    """Clear all approvals and pending requests for a session."""
-    with _lock:
-        _session_approved.pop(session_key, None)
-        _pending.pop(session_key, None)
-
 
 # =========================================================================
 # Config persistence for permanent allowlist
@@ -177,7 +542,8 @@ def load_permanent_allowlist() -> set:
         if patterns:
             load_permanent(patterns)
         return patterns
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to load permanent allowlist: %s", e)
         return set()
 
 
@@ -197,7 +563,7 @@ def save_permanent_allowlist(patterns: set):
 # =========================================================================
 
 def prompt_dangerous_approval(command: str, description: str,
-                              timeout_seconds: int = 60,
+                              timeout_seconds: int | None = None,
                               allow_permanent: bool = True,
                               approval_callback=None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
@@ -212,12 +578,43 @@ def prompt_dangerous_approval(command: str, description: str,
 
     Returns: 'once', 'session', 'always', or 'deny'
     """
+    if timeout_seconds is None:
+        timeout_seconds = _get_approval_timeout()
+
     if approval_callback is not None:
         try:
             return approval_callback(command, description,
                                      allow_permanent=allow_permanent)
-        except Exception:
+        except Exception as e:
+            logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
+
+    # Fail-closed guard: if prompt_toolkit owns the terminal (interactive
+    # CLI session) and no approval callback is registered on this thread,
+    # the input() fallback below would spawn a daemon thread whose read
+    # can never see Enter -- the user's keystrokes go to prompt_toolkit,
+    # not input(), producing an invisible 60s deadlock (issue #15216).
+    # Deny fast and log loudly instead so the caller can surface a real
+    # error to the agent. Any thread that needs interactive approval must
+    # install a callback via tools.terminal_tool.set_approval_callback()
+    # before reaching this point (see delegate_tool.py, run_agent.py
+    # _execute_tool_calls_concurrent / _spawn_background_review for the
+    # established pattern).
+    try:
+        from prompt_toolkit.application.current import get_app_or_none
+        if get_app_or_none() is not None:
+            logger.warning(
+                "Dangerous-command approval requested on a thread with no "
+                "approval callback while prompt_toolkit is active; denying "
+                "to avoid stdin deadlock. command=%r description=%r",
+                command, description,
+            )
+            return "deny"
+    except Exception:
+        # prompt_toolkit not installed, or detection failed -- fall through
+        # to the legacy input() path (safe in non-TUI contexts: scripts,
+        # tests, sshd, etc.).
+        pass
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
@@ -277,14 +674,57 @@ def prompt_dangerous_approval(command: str, description: str,
         sys.stdout.flush()
 
 
-def _get_approval_mode() -> str:
-    """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+def _normalize_approval_mode(mode) -> str:
+    """Normalize approval mode values loaded from YAML/config.
+
+    YAML 1.1 treats bare words like `off` as booleans, so a config entry like
+    `approvals:\n  mode: off` is parsed as False unless quoted. Treat that as the
+    intended string mode instead of falling back to manual approvals.
+    """
+    if isinstance(mode, bool):
+        return "off" if mode is False else "manual"
+    if isinstance(mode, str):
+        normalized = mode.strip().lower()
+        return normalized or "manual"
+    return "manual"
+
+
+def _get_approval_config() -> dict:
+    """Read the approvals config block. Returns a dict with 'mode', 'timeout', etc."""
     try:
         from hermes_cli.config import load_config
         config = load_config()
-        return config.get("approvals", {}).get("mode", "manual")
+        return config.get("approvals", {}) or {}
+    except Exception as e:
+        logger.warning("Failed to load approval config: %s", e)
+        return {}
+
+
+def _get_approval_mode() -> str:
+    """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+    mode = _get_approval_config().get("mode", "manual")
+    return _normalize_approval_mode(mode)
+
+
+def _get_approval_timeout() -> int:
+    """Read the approval timeout from config. Defaults to 60 seconds."""
+    try:
+        return int(_get_approval_config().get("timeout", 60))
+    except (ValueError, TypeError):
+        return 60
+
+
+def _get_cron_approval_mode() -> str:
+    """Read the cron approval mode from config. Returns 'deny' or 'approve'."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        mode = str(cfg_get(config, "approvals", "cron_mode", default="deny")).lower().strip()
+        if mode in ("approve", "off", "allow", "yes"):
+            return "approve"
+        return "deny"
     except Exception:
-        return "manual"
+        return "deny"
 
 
 def _smart_approve(command: str, description: str) -> str:
@@ -297,12 +737,7 @@ def _smart_approve(command: str, description: str) -> str:
     (openai/codex#13860).
     """
     try:
-        from agent.auxiliary_client import get_text_auxiliary_client, auxiliary_max_tokens_param
-
-        client, model = get_text_auxiliary_client(task="approval")
-        if not client or not model:
-            logger.debug("Smart approvals: no aux client available, escalating")
-            return "escalate"
+        from agent.auxiliary_client import call_llm
 
         prompt = f"""You are a security reviewer for an AI coding agent. A terminal command was flagged by pattern matching as potentially dangerous.
 
@@ -318,11 +753,11 @@ Rules:
 
 Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 
-        response = client.chat.completions.create(
-            model=model,
+        response = call_llm(
+            task="approval",
             messages=[{"role": "user", "content": prompt}],
-            **auxiliary_max_tokens_param(16),
             temperature=0,
+            max_tokens=16,
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()
@@ -354,18 +789,29 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         return {"approved": True, "message": None}
 
-    # --yolo: bypass all approval prompts
-    if os.getenv("HERMES_YOLO_MODE"):
+    # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
+    # to raw device, shutdown/reboot, fork bomb, kill -1) are blocked
+    # unconditionally, BEFORE the yolo bypass.  Opting into yolo is
+    # trusting the agent with your files and services, not trusting it
+    # to wipe the disk or power the box off.
+    is_hardline, hardline_desc = detect_hardline_command(command)
+    if is_hardline:
+        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        return _hardline_block_result(hardline_desc)
+
+    # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
+    # CLI --yolo remains process-scoped via the env var for local use.
+    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return {"approved": True, "message": None}
 
-    session_key = os.getenv("HERMES_SESSION_KEY", "default")
+    session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
@@ -373,6 +819,19 @@ def check_dangerous_command(command: str, env_type: str,
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
 
     if not is_cli and not is_gateway:
+        # Cron sessions: respect cron_mode config
+        if os.getenv("HERMES_CRON_SESSION"):
+            if _get_cron_approval_mode() == "deny":
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Command flagged as dangerous ({description}) "
+                        "but cron jobs run without a user present to approve it. "
+                        "Find an alternative approach that avoids this command. "
+                        "To allow dangerous commands in cron jobs, set "
+                        "approvals.cron_mode: approve in config.yaml."
+                    ),
+                }
         return {"approved": True, "message": None}
 
     if is_gateway or os.getenv("HERMES_EXEC_ASK"):
@@ -418,6 +877,33 @@ def check_dangerous_command(command: str, env_type: str,
 # Combined pre-exec guard (tirith + dangerous command detection)
 # =========================================================================
 
+def _format_tirith_description(tirith_result: dict) -> str:
+    """Build a human-readable description from tirith findings.
+
+    Includes severity, title, and description for each finding so users
+    can make an informed approval decision.
+    """
+    findings = tirith_result.get("findings") or []
+    if not findings:
+        summary = tirith_result.get("summary") or "security issue detected"
+        return f"Security scan: {summary}"
+
+    parts = []
+    for f in findings:
+        severity = f.get("severity", "")
+        title = f.get("title", "")
+        desc = f.get("description", "")
+        if title and desc:
+            parts.append(f"[{severity}] {title}: {desc}" if severity else f"{title}: {desc}")
+        elif title:
+            parts.append(f"[{severity}] {title}" if severity else title)
+    if not parts:
+        summary = tirith_result.get("summary") or "security issue detected"
+        return f"Security scan: {summary}"
+
+    return "Security scan — " + "; ".join(parts)
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
@@ -428,12 +914,22 @@ def check_all_command_guards(command: str, env_type: str,
     other was shown to the user.
     """
     # Skip containers for both checks
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         return {"approved": True, "message": None}
 
-    # --yolo or approvals.mode=off: bypass all approval prompts
+    # Hardline floor: unconditional block for catastrophic commands
+    # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
+    # kill -1). Applies BEFORE yolo / mode=off / cron approve-mode so
+    # no session-level setting can bypass it.
+    is_hardline, hardline_desc = detect_hardline_command(command)
+    if is_hardline:
+        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        return _hardline_block_result(hardline_desc)
+
+    # --yolo or approvals.mode=off: bypass all approval prompts.
+    # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
-    if os.getenv("HERMES_YOLO_MODE") or approval_mode == "off":
+    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
     is_cli = os.getenv("HERMES_INTERACTIVE")
@@ -443,6 +939,22 @@ def check_all_command_guards(command: str, env_type: str,
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
+        # Cron sessions: respect cron_mode config
+        if os.getenv("HERMES_CRON_SESSION"):
+            if _get_cron_approval_mode() == "deny":
+                # Run detection to get a description for the block message
+                is_dangerous, _pk, description = detect_dangerous_command(command)
+                if is_dangerous:
+                    return {
+                        "approved": False,
+                        "message": (
+                            f"BLOCKED: Command flagged as dangerous ({description}) "
+                            "but cron jobs run without a user present to approve it. "
+                            "Find an alternative approach that avoids this command. "
+                            "To allow dangerous commands in cron jobs, set "
+                            "approvals.cron_mode: approve in config.yaml."
+                        ),
+                    }
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---
@@ -461,24 +973,20 @@ def check_all_command_guards(command: str, env_type: str,
 
     # --- Phase 2: Decide ---
 
-    # If tirith blocks, block immediately (no approval possible)
-    if tirith_result["action"] == "block":
-        summary = tirith_result.get("summary") or "security issue detected"
-        return {
-            "approved": False,
-            "message": f"BLOCKED: Command blocked by security scan ({summary}). Do NOT retry.",
-        }
-
     # Collect warnings that need approval
     warnings = []  # list of (pattern_key, description, is_tirith)
 
-    session_key = os.getenv("HERMES_SESSION_KEY", "default")
+    session_key = get_current_session_key()
 
-    if tirith_result["action"] == "warn":
+    # Tirith block/warn → approvable warning with rich findings.
+    # Previously, tirith "block" was a hard block with no approval prompt.
+    # Now both block and warn go through the approval flow so users can
+    # inspect the explanation and approve if they understand the risk.
+    if tirith_result["action"] in ("block", "warn"):
         findings = tirith_result.get("findings") or []
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
         tirith_key = f"tirith:{rule_id}"
-        tirith_desc = f"Security scan: {tirith_result.get('summary') or 'security warning detected'}"
+        tirith_desc = _format_tirith_description(tirith_result)
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, tirith_desc, True))
 
@@ -504,7 +1012,8 @@ def check_all_command_guards(command: str, env_type: str,
             logger.debug("Smart approval: auto-approved '%s' (%s)",
                          command[:60], combined_desc_for_llm)
             return {"approved": True, "message": None,
-                    "smart_approved": True}
+                    "smart_approved": True,
+                    "description": combined_desc_for_llm}
         elif verdict == "deny":
             combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
             return {
@@ -523,13 +1032,154 @@ def check_all_command_guards(command: str, env_type: str,
     all_keys = [key for key, _, _ in warnings]
     has_tirith = any(is_t for _, _, is_t in warnings)
 
-    # Gateway/async: single approval_required with combined description
-    # Store all pattern keys so gateway replay approves all of them
+    # Gateway/async approval — block the agent thread until the user
+    # responds with /approve or /deny, mirroring the CLI's synchronous
+    # input() flow.  The agent never sees "approval_required"; it either
+    # gets the command output (approved) or a definitive "BLOCKED" message.
     if is_gateway or is_ask:
+        notify_cb = None
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key)
+
+        if notify_cb is not None:
+            # --- Blocking gateway approval (queue-based) ---
+            # Each call gets its own _ApprovalEntry so parallel subagents
+            # and execute_code threads can block concurrently.
+            approval_data = {
+                "command": command,
+                "pattern_key": primary_key,
+                "pattern_keys": all_keys,
+                "description": combined_desc,
+            }
+            entry = _ApprovalEntry(approval_data)
+            with _lock:
+                _gateway_queues.setdefault(session_key, []).append(entry)
+
+            # Notify plugins that an approval is being requested. Fires before
+            # the gateway notify callback so observers (e.g. macOS notifier
+            # plugins, audit logs, Slack alerts) get the event in real time.
+            _fire_approval_hook(
+                "pre_approval_request",
+                command=command,
+                description=combined_desc,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                session_key=session_key,
+                surface="gateway",
+            )
+
+            # Notify the user (bridges sync agent thread → async gateway)
+            try:
+                notify_cb(approval_data)
+            except Exception as exc:
+                logger.warning("Gateway approval notify failed: %s", exc)
+                with _lock:
+                    queue = _gateway_queues.get(session_key, [])
+                    if entry in queue:
+                        queue.remove(entry)
+                    if not queue:
+                        _gateway_queues.pop(session_key, None)
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                }
+
+            # Block until the user responds or timeout (default 5 min).
+            # Poll in short slices so we can fire activity heartbeats every
+            # ~10s to the agent's inactivity tracker.  Without this, the
+            # blocking event.wait() never touches activity, and the
+            # gateway's inactivity watchdog (agent.gateway_timeout, default
+            # 1800s) kills the agent while the user is still responding to
+            # the approval prompt.  Mirrors the _wait_for_process() cadence
+            # in tools/environments/base.py.
+            timeout = _get_approval_config().get("gateway_timeout", 300)
+            try:
+                timeout = int(timeout)
+            except (ValueError, TypeError):
+                timeout = 300
+
+            try:
+                from tools.environments.base import touch_activity_if_due
+            except Exception:  # pragma: no cover
+                touch_activity_if_due = None
+
+            _now = time.monotonic()
+            _deadline = _now + max(timeout, 0)
+            _activity_state = {"last_touch": _now, "start": _now}
+            resolved = False
+            while True:
+                _remaining = _deadline - time.monotonic()
+                if _remaining <= 0:
+                    break
+                # 1s poll slice — the event is set immediately when the
+                # user responds, so slice length only controls heartbeat
+                # cadence, not user-visible responsiveness.
+                if entry.event.wait(timeout=min(1.0, _remaining)):
+                    resolved = True
+                    break
+                if touch_activity_if_due is not None:
+                    touch_activity_if_due(
+                        _activity_state, "waiting for user approval"
+                    )
+
+            # Clean up this entry from the queue
+            with _lock:
+                queue = _gateway_queues.get(session_key, [])
+                if entry in queue:
+                    queue.remove(entry)
+                if not queue:
+                    _gateway_queues.pop(session_key, None)
+
+            choice = entry.result
+            # Normalize outcome for the post hook. Unresolved (timeout) and
+            # None both mean the user never responded; report that explicitly
+            # so plugins can distinguish timeout from explicit deny.
+            _outcome = (
+                "timeout" if not resolved
+                else (choice if choice else "timeout")
+            )
+            _fire_approval_hook(
+                "post_approval_response",
+                command=command,
+                description=combined_desc,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                session_key=session_key,
+                surface="gateway",
+                choice=_outcome,
+            )
+
+            if not resolved or choice is None or choice == "deny":
+                reason = "timed out" if not resolved else "denied by user"
+                return {
+                    "approved": False,
+                    "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
+                    "pattern_key": primary_key,
+                    "description": combined_desc,
+                }
+
+            # User approved — persist based on scope (same logic as CLI)
+            for key, _, is_tirith in warnings:
+                if choice == "session" or (choice == "always" and is_tirith):
+                    approve_session(session_key, key)
+                elif choice == "always":
+                    approve_session(session_key, key)
+                    approve_permanent(key)
+                    save_permanent_allowlist(_permanent_approved)
+                # choice == "once": no persistence — command allowed this
+                # single time only, matching the CLI's behavior.
+
+            return {"approved": True, "message": None,
+                    "user_approved": True, "description": combined_desc}
+
+        # Fallback: no gateway callback registered (e.g. cron, batch).
+        # Return approval_required for backward compat.
         submit_pending(session_key, {
             "command": command,
-            "pattern_key": primary_key,        # backward compat
-            "pattern_keys": all_keys,           # all keys for replay
+            "pattern_key": primary_key,
+            "pattern_keys": all_keys,
             "description": combined_desc,
         })
         return {
@@ -545,9 +1195,28 @@ def check_all_command_guards(command: str, env_type: str,
 
     # CLI interactive: single combined prompt
     # Hide [a]lways when any tirith warning is present
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=command,
+        description=combined_desc,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        session_key=session_key,
+        surface="cli",
+    )
     choice = prompt_dangerous_approval(command, combined_desc,
                                        allow_permanent=not has_tirith,
                                        approval_callback=approval_callback)
+    _fire_approval_hook(
+        "post_approval_response",
+        command=command,
+        description=combined_desc,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        session_key=session_key,
+        surface="cli",
+        choice=choice,
+    )
 
     if choice == "deny":
         return {
@@ -568,4 +1237,9 @@ def check_all_command_guards(command: str, env_type: str,
             approve_permanent(key)
             save_permanent_allowlist(_permanent_approved)
 
-    return {"approved": True, "message": None}
+    return {"approved": True, "message": None,
+            "user_approved": True, "description": combined_desc}
+
+
+# Load permanent allowlist from config on module import
+load_permanent_allowlist()

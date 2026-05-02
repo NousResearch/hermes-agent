@@ -1,5 +1,6 @@
 ---
-sidebar_position: 9
+sidebar_position: 3
+sidebar_label: "Git Worktrees"
 title: "Git Worktrees"
 description: "Run multiple Hermes agents safely on the same repository using git worktrees and isolated checkouts"
 ---
@@ -169,5 +170,5 @@ This combination gives you:
 
 - Strong guarantees that different agents and experiments do not step on each other.
 - Fast iteration cycles with easy recovery from bad edits.
-- Clean, reviewable pull requests targeted at v0.2.0’s new capabilities.
+- Clean, reviewable pull requests.
 

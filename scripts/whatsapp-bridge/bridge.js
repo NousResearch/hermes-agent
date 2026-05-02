@@ -18,13 +18,15 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, existsSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
+import { randomBytes } from 'crypto';
 import qrcode from 'qrcode-terminal';
+import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -41,19 +43,69 @@ const WHATSAPP_DEBUG =
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
+const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
+const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
+const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
-const ALLOWED_USERS = (process.env.WHATSAPP_ALLOWED_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
+const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
 
 function formatOutgoingMessage(message) {
+  // In bot mode, messages come from a different number so the prefix is
+  // redundant — the sender identity is already clear.  Only prepend in
+  // self-chat mode where bot and user share the same number.
+  if (WHATSAPP_MODE !== 'self-chat') return message;
   return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
 }
 
+function normalizeWhatsAppId(value) {
+  if (!value) return '';
+  return String(value).replace(':', '@');
+}
+
+function getMessageContent(msg) {
+  const content = msg?.message || {};
+  if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;
+  if (content.viewOnceMessage?.message) return content.viewOnceMessage.message;
+  if (content.viewOnceMessageV2?.message) return content.viewOnceMessageV2.message;
+  if (content.documentWithCaptionMessage?.message) return content.documentWithCaptionMessage.message;
+  if (content.templateMessage?.hydratedTemplate) return content.templateMessage.hydratedTemplate;
+  if (content.buttonsMessage) return content.buttonsMessage;
+  if (content.listMessage) return content.listMessage;
+  return content;
+}
+
+function getContextInfo(messageContent) {
+  if (!messageContent || typeof messageContent !== 'object') return {};
+  for (const value of Object.values(messageContent)) {
+    if (value && typeof value === 'object' && value.contextInfo) {
+      return value.contextInfo;
+    }
+  }
+  return {};
+}
+
 mkdirSync(SESSION_DIR, { recursive: true });
+
+// Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
+function buildLidMap() {
+  const map = {};
+  try {
+    for (const f of readdirSync(SESSION_DIR)) {
+      const m = f.match(/^lid-mapping-(\d+)\.json$/);
+      if (!m) continue;
+      const phone = m[1];
+      const lid = JSON.parse(readFileSync(path.join(SESSION_DIR, f), 'utf8'));
+      if (lid) map[String(lid)] = phone;
+    }
+  } catch {}
+  return map;
+}
+let lidToPhone = buildLidMap();
 
 const logger = pino({ level: 'warn' });
 
@@ -80,9 +132,16 @@ async function startSocket() {
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
     markOnlineOnConnect: false,
+    // Required for Baileys 7.x: without this, incoming messages that need
+    // E2EE session re-establishment are silently dropped (msg.message === null)
+    getMessage: async (key) => {
+      // We don't maintain a message store, so return a placeholder.
+      // This is enough for Baileys to complete the retry handshake.
+      return { conversation: '' };
+    },
   });
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -120,10 +179,15 @@ async function startSocket() {
     }
   });
 
-  sock.ev.on('messages.upsert', ({ messages, type }) => {
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
     // In self-chat mode, your own messages commonly arrive as 'append' rather
     // than 'notify'. Accept both and filter agent echo-backs below.
     if (type !== 'notify' && type !== 'append') return;
+
+    const botIds = Array.from(new Set([
+      normalizeWhatsAppId(sock.user?.id),
+      normalizeWhatsAppId(sock.user?.lid),
+    ].filter(Boolean)));
 
     for (const msg of messages) {
       if (!msg.message) continue;
@@ -163,10 +227,23 @@ async function startSocket() {
         if (!isSelfChat) continue;
       }
 
-      // Check allowlist for messages from others
-      if (!msg.key.fromMe && ALLOWED_USERS.length > 0 && !ALLOWED_USERS.includes(senderNumber)) {
+      // Check allowlist for messages from others (resolve LID ↔ phone aliases)
+      if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        try {
+          console.log(JSON.stringify({
+            event: 'ignored',
+            reason: 'allowlist_mismatch',
+            chatId,
+            senderId,
+          }));
+        } catch {}
         continue;
       }
+
+      const messageContent = getMessageContent(msg);
+      const contextInfo = getContextInfo(messageContent);
+      const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
+      const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || contextInfo?.remoteJid || '');
 
       // Extract message body
       let body = '';
@@ -174,25 +251,76 @@ async function startSocket() {
       let mediaType = '';
       const mediaUrls = [];
 
-      if (msg.message.conversation) {
-        body = msg.message.conversation;
-      } else if (msg.message.extendedTextMessage?.text) {
-        body = msg.message.extendedTextMessage.text;
-      } else if (msg.message.imageMessage) {
-        body = msg.message.imageMessage.caption || '';
+      if (messageContent.conversation) {
+        body = messageContent.conversation;
+      } else if (messageContent.extendedTextMessage?.text) {
+        body = messageContent.extendedTextMessage.text;
+      } else if (messageContent.imageMessage) {
+        body = messageContent.imageMessage.caption || '';
         hasMedia = true;
         mediaType = 'image';
-      } else if (msg.message.videoMessage) {
-        body = msg.message.videoMessage.caption || '';
+        try {
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const mime = messageContent.imageMessage.mimetype || 'image/jpeg';
+          const extMap = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' };
+          const ext = extMap[mime] || '.jpg';
+          mkdirSync(IMAGE_CACHE_DIR, { recursive: true });
+          const filePath = path.join(IMAGE_CACHE_DIR, `img_${randomBytes(6).toString('hex')}${ext}`);
+          writeFileSync(filePath, buf);
+          mediaUrls.push(filePath);
+        } catch (err) {
+          console.error('[bridge] Failed to download image:', err.message);
+        }
+      } else if (messageContent.videoMessage) {
+        body = messageContent.videoMessage.caption || '';
         hasMedia = true;
         mediaType = 'video';
-      } else if (msg.message.audioMessage || msg.message.pttMessage) {
+        try {
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const mime = messageContent.videoMessage.mimetype || 'video/mp4';
+          const ext = mime.includes('mp4') ? '.mp4' : '.mkv';
+          mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
+          const filePath = path.join(DOCUMENT_CACHE_DIR, `vid_${randomBytes(6).toString('hex')}${ext}`);
+          writeFileSync(filePath, buf);
+          mediaUrls.push(filePath);
+        } catch (err) {
+          console.error('[bridge] Failed to download video:', err.message);
+        }
+      } else if (messageContent.audioMessage || messageContent.pttMessage) {
         hasMedia = true;
-        mediaType = msg.message.pttMessage ? 'ptt' : 'audio';
-      } else if (msg.message.documentMessage) {
-        body = msg.message.documentMessage.caption || msg.message.documentMessage.fileName || '';
+        mediaType = messageContent.pttMessage ? 'ptt' : 'audio';
+        try {
+          const audioMsg = messageContent.pttMessage || messageContent.audioMessage;
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          const mime = audioMsg.mimetype || 'audio/ogg';
+          const ext = mime.includes('ogg') ? '.ogg' : mime.includes('mp4') ? '.m4a' : '.ogg';
+          mkdirSync(AUDIO_CACHE_DIR, { recursive: true });
+          const filePath = path.join(AUDIO_CACHE_DIR, `aud_${randomBytes(6).toString('hex')}${ext}`);
+          writeFileSync(filePath, buf);
+          mediaUrls.push(filePath);
+        } catch (err) {
+          console.error('[bridge] Failed to download audio:', err.message);
+        }
+      } else if (messageContent.documentMessage) {
+        body = messageContent.documentMessage.caption || '';
         hasMedia = true;
         mediaType = 'document';
+        const fileName = messageContent.documentMessage.fileName || 'document';
+        try {
+          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+          mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
+          const safeFileName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+          const filePath = path.join(DOCUMENT_CACHE_DIR, `doc_${randomBytes(6).toString('hex')}_${safeFileName}`);
+          writeFileSync(filePath, buf);
+          mediaUrls.push(filePath);
+        } catch (err) {
+          console.error('[bridge] Failed to download document:', err.message);
+        }
+      }
+
+      // For media without caption, use a placeholder so the API message is never empty
+      if (hasMedia && !body) {
+        body = `[${mediaType} received]`;
       }
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
@@ -226,6 +354,9 @@ async function startSocket() {
         hasMedia,
         mediaType,
         mediaUrls,
+        mentionedIds,
+        quotedParticipant,
+        botIds,
         timestamp: msg.messageTimestamp,
       };
 
@@ -240,6 +371,37 @@ async function startSocket() {
 // HTTP server
 const app = express();
 app.use(express.json());
+
+// Host-header validation — defends against DNS rebinding.
+// The bridge binds loopback-only (127.0.0.1) but a victim browser on
+// the same machine could be tricked into fetching from an attacker
+// hostname that TTL-flips to 127.0.0.1. Reject any request whose Host
+// header doesn't resolve to a loopback alias.
+// See GHSA-ppp5-vxwm-4cf7.
+const _ACCEPTED_HOST_VALUES = new Set([
+  'localhost',
+  '127.0.0.1',
+  '[::1]',
+  '::1',
+]);
+
+app.use((req, res, next) => {
+  const raw = (req.headers.host || '').trim();
+  if (!raw) {
+    return res.status(400).json({ error: 'Missing Host header' });
+  }
+  // Strip port suffix: "localhost:3000" → "localhost"
+  const hostOnly = (raw.includes(':')
+    ? raw.substring(0, raw.lastIndexOf(':'))
+    : raw
+  ).replace(/^\[|\]$/g, '').toLowerCase();
+  if (!_ACCEPTED_HOST_VALUES.has(hostOnly)) {
+    return res.status(400).json({
+      error: 'Invalid Host header. Bridge accepts loopback hosts only.',
+    });
+  }
+  next();
+});
 
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
@@ -433,11 +595,11 @@ if (PAIR_ONLY) {
   console.log();
   startSocket();
 } else {
-  app.listen(PORT, () => {
+  app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
-    if (ALLOWED_USERS.length > 0) {
-      console.log(`🔒 Allowed users: ${ALLOWED_USERS.join(', ')}`);
+    if (ALLOWED_USERS.size > 0) {
+      console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
     } else {
       console.log(`⚠️  No WHATSAPP_ALLOWED_USERS set — all messages will be processed`);
     }

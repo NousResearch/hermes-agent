@@ -26,8 +26,9 @@ import json
 import logging
 import os
 import uuid
-from pathlib import Path
 from typing import Any, Dict
+
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +44,12 @@ class DebugSession:
         self.tool_name = tool_name
         self.enabled = os.getenv(env_var, "false").lower() == "true"
         self.session_id = str(uuid.uuid4()) if self.enabled else ""
-        self.log_dir = Path("./logs")
+        self.log_dir = get_hermes_home() / "logs"
         self._calls: list[Dict[str, Any]] = []
         self._start_time = datetime.datetime.now().isoformat() if self.enabled else ""
 
         if self.enabled:
-            self.log_dir.mkdir(exist_ok=True)
+            self.log_dir.mkdir(parents=True, exist_ok=True)
             logger.debug("%s debug mode enabled - Session ID: %s",
                          tool_name, self.session_id)
 

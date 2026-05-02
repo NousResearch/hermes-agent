@@ -16,9 +16,10 @@ Hermes has a shared provider runtime resolver used across:
 
 Primary implementation:
 
-- `hermes_cli/runtime_provider.py`
-- `hermes_cli/auth.py`
-- `agent/auxiliary_client.py`
+- `hermes_cli/runtime_provider.py` — credential resolution, `_resolve_custom_runtime()`
+- `hermes_cli/auth.py` — provider registry, `resolve_provider()`
+- `hermes_cli/model_switch.py` — shared `/model` switch pipeline (CLI + gateway)
+- `agent/auxiliary_client.py` — auxiliary model routing
 
 If you are trying to add a new first-class inference provider, read [Adding Providers](./adding-providers.md) alongside this page.
 
@@ -41,12 +42,20 @@ Current provider families include:
 - OpenRouter
 - Nous Portal
 - OpenAI Codex
+- Copilot / Copilot ACP
 - Anthropic (native)
+- Google / Gemini
+- Alibaba / DashScope
+- DeepSeek
 - Z.AI
 - Kimi / Moonshot
 - MiniMax
 - MiniMax China
-- custom OpenAI-compatible endpoints
+- Kilo Code
+- Hugging Face
+- OpenCode Zen / OpenCode Go
+- Custom (`provider: custom`) — first-class provider for any OpenAI-compatible endpoint
+- Named custom providers (`custom_providers` list in config.yaml)
 
 ## Output of runtime resolution
 
@@ -170,8 +179,9 @@ Hermes supports a configured fallback model/provider pair, allowing runtime fail
 ### What does NOT support fallback
 
 - **Subagent delegation** (`tools/delegate_tool.py`): subagents inherit the parent's provider but not the fallback config
-- **Cron jobs** (`cron/`): run with a fixed provider, no fallback mechanism
 - **Auxiliary tasks**: use their own independent provider auto-detection chain (see Auxiliary model routing above)
+
+Cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or legacy `fallback_model`) from `config.yaml` and passes it to `AIAgent(fallback_model=...)`, matching the gateway's `_load_fallback_model()` pattern. See [Cron Internals](./cron-internals.md).
 
 ### Test coverage
 

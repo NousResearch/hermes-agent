@@ -5,14 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from concurrent.futures import TimeoutError as FutureTimeout
-from typing import Any, Callable, Optional
+from typing import Callable
 
 from acp.schema import (
     AllowedOutcome,
-    DeniedOutcome,
     PermissionOption,
-    RequestPermissionRequest,
-    SelectedPermissionOutcome,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,6 +61,9 @@ def make_approval_callback(
             response = future.result(timeout=timeout)
         except (FutureTimeout, Exception) as exc:
             logger.warning("Permission request timed out or failed: %s", exc)
+            return "deny"
+
+        if response is None:
             return "deny"
 
         outcome = response.outcome

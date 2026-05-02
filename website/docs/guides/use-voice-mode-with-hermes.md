@@ -1,5 +1,5 @@
 ---
-sidebar_position: 7
+sidebar_position: 8
 title: "Use Voice Mode with Hermes"
 description: "A practical guide to setting up and using Hermes voice mode across CLI, Telegram, Discord, and Discord voice channels"
 ---
@@ -57,19 +57,19 @@ If that is not solid yet, fix text mode first.
 ### CLI microphone + playback
 
 ```bash
-pip install hermes-agent[voice]
+pip install "hermes-agent[voice]"
 ```
 
 ### Messaging platforms
 
 ```bash
-pip install hermes-agent[messaging]
+pip install "hermes-agent[messaging]"
 ```
 
 ### Premium ElevenLabs TTS
 
 ```bash
-pip install hermes-agent[tts-premium]
+pip install "hermes-agent[tts-premium]"
 ```
 
 ### Local NeuTTS (optional)
@@ -81,7 +81,7 @@ python -m pip install -U neutts[all]
 ### Everything
 
 ```bash
-pip install hermes-agent[all]
+pip install "hermes-agent[all]"
 ```
 
 ## Step 3: install system dependencies
@@ -145,6 +145,7 @@ ELEVENLABS_API_KEY=***
 - `neutts` → free local/on-device TTS
 - `elevenlabs` → best quality
 - `openai` → good middle ground
+- `mistral` → multilingual, native Opus
 
 ### If you use `hermes setup`
 
@@ -163,6 +164,7 @@ voice:
   record_key: "ctrl+b"
   max_recording_seconds: 120
   auto_tts: false
+  beep_enabled: true
   silence_threshold: 200
   silence_duration: 3.0
 

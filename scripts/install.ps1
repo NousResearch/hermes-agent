@@ -38,7 +38,7 @@ $NodeVersion = "22"
 function Write-Banner {
     Write-Host ""
     Write-Host "┌─────────────────────────────────────────────────────────┐" -ForegroundColor Magenta
-    Write-Host "│             ⚕ Hermes Agent Installer                   │" -ForegroundColor Magenta
+    Write-Host "│             ⚕ Hermes Agent Installer                    │" -ForegroundColor Magenta
     Write-Host "├─────────────────────────────────────────────────────────┤" -ForegroundColor Magenta
     Write-Host "│  An open source AI agent by Nous Research.              │" -ForegroundColor Magenta
     Write-Host "└─────────────────────────────────────────────────────────┘" -ForegroundColor Magenta
@@ -505,7 +505,7 @@ function Install-Repository {
     git -c windows.appendAtomically=false config windows.appendAtomically false 2>$null
 
     # Ensure submodules are initialized and updated
-    Write-Info "Initializing submodules (mini-swe-agent, tinker-atropos)..."
+    Write-Info "Initializing submodules..."
     git -c windows.appendAtomically=false submodule update --init --recursive 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Warn "Submodule init failed (terminal/RL tools may need manual setup)"
@@ -559,19 +559,7 @@ function Install-Dependencies {
     
     Write-Success "Main package installed"
     
-    # Install submodules
-    Write-Info "Installing mini-swe-agent (terminal tool backend)..."
-    if (Test-Path "mini-swe-agent\pyproject.toml") {
-        try {
-            & $UvCmd pip install -e ".\mini-swe-agent" 2>&1 | Out-Null
-            Write-Success "mini-swe-agent installed"
-        } catch {
-            Write-Warn "mini-swe-agent install failed (terminal tools may not work)"
-        }
-    } else {
-        Write-Warn "mini-swe-agent not found (run: git submodule update --init)"
-    }
-    
+    # Install optional submodules
     Write-Info "Installing tinker-atropos (RL training backend)..."
     if (Test-Path "tinker-atropos\pyproject.toml") {
         try {
@@ -642,7 +630,7 @@ function Copy-ConfigTemplates {
     New-Item -ItemType Directory -Force -Path "$HermesHome\audio_cache" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\memories" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\skills" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$HermesHome\whatsapp\session" | Out-Null
+
     
     # Create .env
     $envPath = "$HermesHome\.env"
@@ -733,19 +721,21 @@ function Install-NodeDeps {
         }
     }
     
-    # Install WhatsApp bridge dependencies
-    $bridgeDir = "$InstallDir\scripts\whatsapp-bridge"
-    if (Test-Path "$bridgeDir\package.json") {
-        Write-Info "Installing WhatsApp bridge dependencies..."
-        Push-Location $bridgeDir
+    # Install TUI dependencies
+    $tuiDir = "$InstallDir\ui-tui"
+    if (Test-Path "$tuiDir\package.json") {
+        Write-Info "Installing TUI dependencies..."
+        Push-Location $tuiDir
         try {
             npm install --silent 2>&1 | Out-Null
-            Write-Success "WhatsApp bridge dependencies installed"
+            Write-Success "TUI dependencies installed"
         } catch {
-            Write-Warn "WhatsApp bridge npm install failed (WhatsApp may not work)"
+            Write-Warn "TUI npm install failed (hermes --tui may not work)"
         }
         Pop-Location
     }
+
+
     
     Pop-Location
 }

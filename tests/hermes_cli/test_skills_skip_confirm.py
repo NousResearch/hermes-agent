@@ -1,10 +1,13 @@
 """
-Tests for skip_confirm behavior in /skills install and /skills uninstall.
+Tests for skip_confirm and invalidate_cache behavior in /skills install
+and /skills uninstall slash commands.
 
-Verifies that --yes / -y bypasses the interactive confirmation prompt
-that hangs inside prompt_toolkit's TUI.
+Slash commands always skip confirmation (input() hangs in TUI).
+Cache invalidation is deferred by default; --now opts into immediate
+invalidation (at the cost of breaking prompt cache mid-session).
 
 Based on PR #1595 by 333Alden333 (salvaged).
+Updated for PR #3586 (cache-aware install/uninstall).
 """
 
 from unittest.mock import patch, MagicMock
@@ -32,23 +35,43 @@ class TestHandleSkillsSlashInstallFlags:
             _, kwargs = mock_install.call_args
             assert kwargs.get("skip_confirm") is True
 
-    def test_force_flag_sets_force_not_skip(self):
+    def test_force_flag_sets_force(self):
         from hermes_cli.skills_hub import handle_skills_slash
         with patch("hermes_cli.skills_hub.do_install") as mock_install:
             handle_skills_slash("/skills install test/skill --force")
             mock_install.assert_called_once()
             _, kwargs = mock_install.call_args
             assert kwargs.get("force") is True
-            assert kwargs.get("skip_confirm") is False
+            # Slash commands always skip confirmation (input() hangs in TUI)
+            assert kwargs.get("skip_confirm") is True
 
-    def test_no_flags(self):
+    def test_no_flags_still_skips_confirm(self):
+        """Slash commands always skip confirmation — input() hangs in TUI."""
         from hermes_cli.skills_hub import handle_skills_slash
         with patch("hermes_cli.skills_hub.do_install") as mock_install:
             handle_skills_slash("/skills install test/skill")
             mock_install.assert_called_once()
             _, kwargs = mock_install.call_args
             assert kwargs.get("force") is False
-            assert kwargs.get("skip_confirm") is False
+            assert kwargs.get("skip_confirm") is True
+
+    def test_default_defers_cache_invalidation(self):
+        """Without --now, cache invalidation is deferred to next session."""
+        from hermes_cli.skills_hub import handle_skills_slash
+        with patch("hermes_cli.skills_hub.do_install") as mock_install:
+            handle_skills_slash("/skills install test/skill")
+            mock_install.assert_called_once()
+            _, kwargs = mock_install.call_args
+            assert kwargs.get("invalidate_cache") is False
+
+    def test_now_flag_invalidates_cache(self):
+        """--now opts into immediate cache invalidation."""
+        from hermes_cli.skills_hub import handle_skills_slash
+        with patch("hermes_cli.skills_hub.do_install") as mock_install:
+            handle_skills_slash("/skills install test/skill --now")
+            mock_install.assert_called_once()
+            _, kwargs = mock_install.call_args
+            assert kwargs.get("invalidate_cache") is True
 
 
 class TestHandleSkillsSlashUninstallFlags:
@@ -70,13 +93,32 @@ class TestHandleSkillsSlashUninstallFlags:
             _, kwargs = mock_uninstall.call_args
             assert kwargs.get("skip_confirm") is True
 
-    def test_no_flags(self):
+    def test_no_flags_still_skips_confirm(self):
+        """Slash commands always skip confirmation — input() hangs in TUI."""
         from hermes_cli.skills_hub import handle_skills_slash
         with patch("hermes_cli.skills_hub.do_uninstall") as mock_uninstall:
             handle_skills_slash("/skills uninstall test-skill")
             mock_uninstall.assert_called_once()
             _, kwargs = mock_uninstall.call_args
-            assert kwargs.get("skip_confirm", False) is False
+            assert kwargs.get("skip_confirm") is True
+
+    def test_default_defers_cache_invalidation(self):
+        """Without --now, cache invalidation is deferred to next session."""
+        from hermes_cli.skills_hub import handle_skills_slash
+        with patch("hermes_cli.skills_hub.do_uninstall") as mock_uninstall:
+            handle_skills_slash("/skills uninstall test-skill")
+            mock_uninstall.assert_called_once()
+            _, kwargs = mock_uninstall.call_args
+            assert kwargs.get("invalidate_cache") is False
+
+    def test_now_flag_invalidates_cache(self):
+        """--now opts into immediate cache invalidation."""
+        from hermes_cli.skills_hub import handle_skills_slash
+        with patch("hermes_cli.skills_hub.do_uninstall") as mock_uninstall:
+            handle_skills_slash("/skills uninstall test-skill --now")
+            mock_uninstall.assert_called_once()
+            _, kwargs = mock_uninstall.call_args
+            assert kwargs.get("invalidate_cache") is True
 
 
 class TestDoInstallSkipConfirm:

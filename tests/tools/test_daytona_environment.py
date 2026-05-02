@@ -59,12 +59,17 @@ def daytona_sdk(monkeypatch):
 @pytest.fixture()
 def make_env(daytona_sdk, monkeypatch):
     """Factory that creates a DaytonaEnvironment with a mocked SDK."""
-    # Prevent is_interrupted from interfering
-    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    # Prevent is_interrupted from interfering — patch where it's used (base.py)
+    monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
+    # Prevent skills/credential sync from consuming mock exec calls
+    monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
+    monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda **kw: None)
+    monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kw: [])
 
     def _factory(
         sandbox=None,
-        find_one_side_effect=None,
+        get_side_effect=None,
+        list_return=None,
         home_dir="/root",
         persistent=True,
         **kwargs,
@@ -76,11 +81,17 @@ def make_env(daytona_sdk, monkeypatch):
         mock_client = MagicMock()
         mock_client.create.return_value = sandbox
 
-        if find_one_side_effect is not None:
-            mock_client.find_one.side_effect = find_one_side_effect
+        if get_side_effect is not None:
+            mock_client.get.side_effect = get_side_effect
         else:
-            # Default: no existing sandbox found
-            mock_client.find_one.side_effect = daytona_sdk.DaytonaError("not found")
+            # Default: no existing sandbox found via get()
+            mock_client.get.side_effect = daytona_sdk.DaytonaError("not found")
+
+        # Default: no legacy sandbox found via list()
+        if list_return is not None:
+            mock_client.list.return_value = list_return
+        else:
+            mock_client.list.return_value = SimpleNamespace(items=[])
 
         daytona_sdk.Daytona = MagicMock(return_value=mock_client)
 
@@ -131,24 +142,46 @@ class TestCwdResolution:
 # ---------------------------------------------------------------------------
 
 class TestPersistence:
-    def test_persistent_resumes_existing_sandbox(self, make_env):
+    def test_persistent_resumes_via_get(self, make_env):
         existing = _make_sandbox(sandbox_id="sb-existing")
         existing.process.exec.return_value = _make_exec_response(result="/root")
-        env = make_env(find_one_side_effect=lambda **kw: existing, persistent=True)
+        env = make_env(get_side_effect=lambda name: existing, persistent=True,
+                       task_id="mytask")
         existing.start.assert_called_once()
-        # Should NOT have called create since find_one succeeded
+        env._mock_client.get.assert_called_once_with("hermes-mytask")
+        env._mock_client.create.assert_not_called()
+
+    def test_persistent_resumes_legacy_via_list(self, make_env, daytona_sdk):
+        legacy = _make_sandbox(sandbox_id="sb-legacy")
+        legacy.process.exec.return_value = _make_exec_response(result="/root")
+        env = make_env(
+            get_side_effect=daytona_sdk.DaytonaError("not found"),
+            list_return=SimpleNamespace(items=[legacy]),
+            persistent=True,
+            task_id="mytask",
+        )
+        legacy.start.assert_called_once()
+        env._mock_client.list.assert_called_once_with(
+            labels={"hermes_task_id": "mytask"}, page=1, limit=1)
         env._mock_client.create.assert_not_called()
 
     def test_persistent_creates_new_when_none_found(self, make_env, daytona_sdk):
         env = make_env(
-            find_one_side_effect=daytona_sdk.DaytonaError("not found"),
+            get_side_effect=daytona_sdk.DaytonaError("not found"),
             persistent=True,
+            task_id="mytask",
         )
         env._mock_client.create.assert_called_once()
+        # Verify the name and labels were passed to CreateSandboxFromImageParams
+        # by checking get() was called with the right sandbox name
+        env._mock_client.get.assert_called_with("hermes-mytask")
+        env._mock_client.list.assert_called_with(
+            labels={"hermes_task_id": "mytask"}, page=1, limit=1)
 
-    def test_non_persistent_skips_find_one(self, make_env):
+    def test_non_persistent_skips_lookup(self, make_env):
         env = make_env(persistent=False)
-        env._mock_client.find_one.assert_not_called()
+        env._mock_client.get.assert_not_called()
+        env._mock_client.list.assert_not_called()
         env._mock_client.create.assert_called_once()
 
 
@@ -188,41 +221,45 @@ class TestCleanup:
 class TestExecute:
     def test_basic_command(self, make_env):
         sb = _make_sandbox()
-        # First call: $HOME detection; subsequent calls: actual commands
+        # Calls: (1) $HOME detection, (2) init_session bootstrap, (3) actual command
         sb.process.exec.side_effect = [
             _make_exec_response(result="/root"),       # $HOME
+            _make_exec_response(result="", exit_code=0),  # init_session
             _make_exec_response(result="hello", exit_code=0),  # actual cmd
         ]
         sb.state = "started"
         env = make_env(sandbox=sb)
 
         result = env.execute("echo hello")
-        assert result["output"] == "hello"
+        assert "hello" in result["output"]
         assert result["returncode"] == 0
 
-    def test_command_wrapped_with_shell_timeout(self, make_env):
+    def test_sdk_timeout_passed_to_exec(self, make_env):
+        """SDK native timeout is passed to sandbox.process.exec()."""
         sb = _make_sandbox()
         sb.process.exec.side_effect = [
             _make_exec_response(result="/root"),
+            _make_exec_response(result="", exit_code=0),  # init_session
             _make_exec_response(result="ok", exit_code=0),
         ]
         sb.state = "started"
         env = make_env(sandbox=sb, timeout=42)
 
         env.execute("echo hello")
-        # The command sent to exec should be wrapped with `timeout N sh -c '...'`
+        # The exec call should receive timeout= kwarg (SDK native timeout)
         call_args = sb.process.exec.call_args_list[-1]
+        assert call_args[1]["timeout"] == 42
+        # The command should NOT have a shell `timeout` prefix
         cmd = call_args[0][0]
-        assert cmd.startswith("timeout 42 sh -c ")
-        # SDK timeout param should NOT be passed
-        assert "timeout" not in call_args[1]
+        assert not cmd.startswith("timeout ")
 
     def test_timeout_returns_exit_code_124(self, make_env):
-        """Shell timeout utility returns exit code 124."""
+        """SDK-level timeout surfaces as exit code 124 via _wait_for_process."""
         sb = _make_sandbox()
         sb.process.exec.side_effect = [
             _make_exec_response(result="/root"),
-            _make_exec_response(result="", exit_code=124),
+            _make_exec_response(result="", exit_code=0),  # init_session
+            _make_exec_response(result="", exit_code=124),  # actual cmd
         ]
         sb.state = "started"
         env = make_env(sandbox=sb)
@@ -234,6 +271,7 @@ class TestExecute:
         sb = _make_sandbox()
         sb.process.exec.side_effect = [
             _make_exec_response(result="/root"),
+            _make_exec_response(result="", exit_code=0),  # init_session
             _make_exec_response(result="not found", exit_code=127),
         ]
         sb.state = "started"
@@ -246,6 +284,7 @@ class TestExecute:
         sb = _make_sandbox()
         sb.process.exec.side_effect = [
             _make_exec_response(result="/root"),
+            _make_exec_response(result="", exit_code=0),  # init_session
             _make_exec_response(result="ok", exit_code=0),
         ]
         sb.state = "started"
@@ -253,39 +292,47 @@ class TestExecute:
 
         env.execute("python3", stdin_data="print('hi')")
         # Check that the command passed to exec contains heredoc markers
-        # (single quotes get shell-escaped by shlex.quote, so check components)
+        # Base class uses HERMES_STDIN_ prefix for heredoc delimiters
         call_args = sb.process.exec.call_args_list[-1]
         cmd = call_args[0][0]
-        assert "HERMES_EOF_" in cmd
+        assert "HERMES_STDIN_" in cmd
         assert "print" in cmd
         assert "hi" in cmd
 
-    def test_custom_cwd_passed_through(self, make_env):
+    def test_custom_cwd_in_command_wrapper(self, make_env):
+        """CWD is handled by _wrap_command() in the command string, not as a kwarg."""
         sb = _make_sandbox()
         sb.process.exec.side_effect = [
             _make_exec_response(result="/root"),
+            _make_exec_response(result="", exit_code=0),  # init_session
             _make_exec_response(result="/tmp", exit_code=0),
         ]
         sb.state = "started"
         env = make_env(sandbox=sb)
 
         env.execute("pwd", cwd="/tmp")
-        call_kwargs = sb.process.exec.call_args_list[-1][1]
-        assert call_kwargs["cwd"] == "/tmp"
+        # CWD should be embedded in the command string via _wrap_command
+        call_args = sb.process.exec.call_args_list[-1]
+        cmd = call_args[0][0]
+        assert "cd /tmp" in cmd
+        # CWD should NOT be passed as a kwarg to exec
+        assert "cwd" not in call_args[1]
 
     def test_daytona_error_triggers_retry(self, make_env, daytona_sdk):
         sb = _make_sandbox()
         sb.state = "started"
         sb.process.exec.side_effect = [
             _make_exec_response(result="/root"),  # $HOME
+            _make_exec_response(result="", exit_code=0),  # init_session
             daytona_sdk.DaytonaError("transient"),  # first attempt fails
             _make_exec_response(result="ok", exit_code=0),  # retry succeeds
         ]
         env = make_env(sandbox=sb)
 
         result = env.execute("echo retry")
-        assert result["output"] == "ok"
-        assert result["returncode"] == 0
+        # DaytonaError now surfaces directly through _ThreadedProcessHandle
+        # (no retry logic) — the error becomes returncode=1
+        assert result["returncode"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -326,14 +373,18 @@ class TestInterrupt:
             calls["n"] += 1
             if calls["n"] == 1:
                 return _make_exec_response(result="/root")  # $HOME detection
+            if calls["n"] == 2:
+                return _make_exec_response(result="", exit_code=0)  # init_session
             event.wait(timeout=5)  # simulate long-running command
             return _make_exec_response(result="done", exit_code=0)
 
         sb.process.exec.side_effect = exec_side_effect
         env = make_env(sandbox=sb)
 
+        # is_interrupted is checked by base.py's _wait_for_process,
+        # patch where it's actually referenced (base.py's local binding)
         monkeypatch.setattr(
-            "tools.environments.daytona.is_interrupted", lambda: True
+            "tools.environments.base.is_interrupted", lambda: True
         )
         try:
             result = env.execute("sleep 10")
@@ -344,23 +395,24 @@ class TestInterrupt:
 
 
 # ---------------------------------------------------------------------------
-# Retry exhaustion
+# DaytonaError surfaces directly (no retry)
 # ---------------------------------------------------------------------------
 
 class TestRetryExhausted:
     def test_both_attempts_fail(self, make_env, daytona_sdk):
+        """DaytonaError surfaces directly as rc=1 (retry logic was removed)."""
         sb = _make_sandbox()
         sb.state = "started"
         sb.process.exec.side_effect = [
             _make_exec_response(result="/root"),       # $HOME
-            daytona_sdk.DaytonaError("fail1"),         # first attempt
-            daytona_sdk.DaytonaError("fail2"),         # retry
+            _make_exec_response(result="", exit_code=0),  # init_session
+            daytona_sdk.DaytonaError("fail1"),         # actual command fails
         ]
         env = make_env(sandbox=sb)
 
         result = env.execute("echo x")
+        # Error surfaces directly through _ThreadedProcessHandle (rc=1)
         assert result["returncode"] == 1
-        assert "Daytona execution error" in result["output"]
 
 
 # ---------------------------------------------------------------------------

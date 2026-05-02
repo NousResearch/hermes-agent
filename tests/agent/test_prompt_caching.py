@@ -13,10 +13,17 @@ MARKER = {"type": "ephemeral"}
 
 
 class TestApplyCacheMarker:
-    def test_tool_message_gets_top_level_marker(self):
+    def test_tool_message_gets_top_level_marker_on_native_anthropic(self):
+        """Native Anthropic path: cache_control injected top-level (adapter moves it inside tool_result)."""
         msg = {"role": "tool", "content": "result"}
-        _apply_cache_marker(msg, MARKER)
+        _apply_cache_marker(msg, MARKER, native_anthropic=True)
         assert msg["cache_control"] == MARKER
+
+    def test_tool_message_skips_marker_on_openrouter(self):
+        """OpenRouter path: top-level cache_control on role:tool is invalid and causes silent hang."""
+        msg = {"role": "tool", "content": "result"}
+        _apply_cache_marker(msg, MARKER, native_anthropic=False)
+        assert "cache_control" not in msg
 
     def test_none_content_gets_top_level_marker(self):
         msg = {"role": "assistant", "content": None}

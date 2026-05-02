@@ -31,6 +31,8 @@ from multiprocessing import Pool, Lock
 import traceback
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn, MofNCompleteColumn
 from rich.console import Console
+
+logger = logging.getLogger(__name__)
 import fire
 
 from run_agent import AIAgent
@@ -128,6 +130,7 @@ def _extract_tool_stats(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, i
         # Track tool calls from assistant messages
         if msg["role"] == "assistant" and "tool_calls" in msg and msg["tool_calls"]:
             for tool_call in msg["tool_calls"]:
+                if not tool_call or not isinstance(tool_call, dict): continue
                 tool_name = tool_call["function"]["name"]
                 tool_call_id = tool_call["id"]
                 
@@ -441,6 +444,7 @@ def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
             if not reasoning.get("has_any_reasoning", True):
                 print(f"   🚫 Prompt {prompt_index} discarded (no reasoning in any turn)")
                 discarded_no_reasoning += 1
+                completed_in_batch.append(prompt_index)
                 continue
             
             # Get and normalize tool stats for consistent schema across all entries
@@ -558,7 +562,10 @@ class BatchRunner:
             provider_sort (str): Sort providers by price/throughput/latency (optional)
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning config override (e.g. {"effort": "none"} to disable thinking)
-            prefill_messages (List[Dict]): Messages to prepend as prefilled conversation context (few-shot priming)
+            prefill_messages (List[Dict]): Messages to prepend as prefilled conversation context (few-shot priming).
+                NOTE: Anthropic Sonnet 4.6+ and Opus 4.6+ reject a trailing assistant-role prefill
+                (400 error).  For those models use output_config.format or structured-output
+                schemas instead.  Safe here for user-role priming and for older Claude / non-Claude models.
             max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
         """
         self.dataset_file = Path(dataset_file)
@@ -944,13 +951,9 @@ class BatchRunner:
                     root_logger.setLevel(original_level)
         
         # Aggregate all batch statistics and update checkpoint
-        all_completed_prompts = list(completed_prompts_set)
         total_reasoning_stats = {"total_assistant_turns": 0, "turns_with_reasoning": 0, "turns_without_reasoning": 0}
-        
+
         for batch_result in results:
-            # Add newly completed prompts
-            all_completed_prompts.extend(batch_result.get("completed_prompts", []))
-            
             # Aggregate tool stats
             for tool_name, stats in batch_result.get("tool_stats", {}).items():
                 if tool_name not in total_tool_stats:
@@ -970,7 +973,7 @@ class BatchRunner:
         
         # Save final checkpoint (best-effort; incremental writes already happened)
         try:
-            checkpoint_data["completed_prompts"] = all_completed_prompts
+            checkpoint_data["completed_prompts"] = sorted(completed_prompts_set)
             self._save_checkpoint(checkpoint_data, lock=checkpoint_lock)
         except Exception as ckpt_err:
             print(f"âš ï¸  Warning: Failed to save final checkpoint: {ckpt_err}")
@@ -1015,7 +1018,7 @@ class BatchRunner:
                             tool_stats = data.get('tool_stats', {})
                             
                             # Check for invalid tool names (model hallucinations)
-                            invalid_tools = [k for k in tool_stats.keys() if k not in VALID_TOOLS]
+                            invalid_tools = [k for k in tool_stats if k not in VALID_TOOLS]
                             
                             if invalid_tools:
                                 filtered_entries += 1
@@ -1155,7 +1158,7 @@ def main(
         providers_order (str): Comma-separated list of OpenRouter providers to try in order (e.g. "anthropic,openai,google")
         provider_sort (str): Sort providers by "price", "throughput", or "latency" (OpenRouter only)
         max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
-        reasoning_effort (str): OpenRouter reasoning effort level: "xhigh", "high", "medium", "low", "minimal", "none" (default: "medium")
+        reasoning_effort (str): OpenRouter reasoning effort level: "none", "minimal", "low", "medium", "high", "xhigh" (default: "medium")
         reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
         prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
         max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
@@ -1183,12 +1186,12 @@ def main(
     """
     # Handle list distributions
     if list_distributions:
-        from toolset_distributions import list_distributions as get_all_dists, print_distribution_info
-        
+        from toolset_distributions import print_distribution_info
+
         print("📊 Available Toolset Distributions")
         print("=" * 70)
-        
-        all_dists = get_all_dists()
+
+        all_dists = list_distributions()
         for dist_name in sorted(all_dists.keys()):
             print_distribution_info(dist_name)
         
@@ -1224,7 +1227,7 @@ def main(
         print("🧠 Reasoning: DISABLED (effort=none)")
     elif reasoning_effort:
         # Use specified effort level
-        valid_efforts = ["xhigh", "high", "medium", "low", "minimal", "none"]
+        valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh"]
         if reasoning_effort not in valid_efforts:
             print(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
             return

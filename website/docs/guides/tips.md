@@ -95,9 +95,9 @@ Use `SOUL.md` for durable personality. Use `AGENTS.md` for project-specific inst
 
 Already have a `.cursorrules` or `.cursor/rules/*.mdc` file? Hermes reads those too. No need to duplicate your coding conventions — they're loaded automatically from the working directory.
 
-### Hierarchical Discovery
+### Discovery
 
-Hermes walks the directory tree and discovers **all** `AGENTS.md` files at every level. In a monorepo, put project-wide conventions at the root and team-specific ones in subdirectories — they're all concatenated together with path headers.
+Hermes loads the top-level `AGENTS.md` from the current working directory at session start. Subdirectory `AGENTS.md` files are discovered lazily during tool calls (via `subdirectory_hints.py`) and injected into tool results — they are not loaded upfront into the system prompt.
 
 :::tip
 Keep context files focused and concise. Every character counts against your token budget since they're injected into every single message.
@@ -170,7 +170,7 @@ Instead of manually collecting user IDs for allowlists, enable DM pairing. When 
 Use `/verbose` to control how much tool activity you see. In messaging platforms, less is usually more — keep it on "new" to see just new tool calls. In the CLI, "all" gives you a satisfying live view of everything the agent does.
 
 :::tip
-On messaging platforms, sessions auto-reset after idle time (default: 120 min) or daily at 4 AM. Adjust per-platform in `~/.hermes/gateway.json` if you need longer sessions.
+On messaging platforms, sessions auto-reset after idle time (default: 24 hours) or daily at 4 AM. Adjust per-platform in `~/.hermes/config.yaml` if you need longer sessions.
 :::
 
 ## Security

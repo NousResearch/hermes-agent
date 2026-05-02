@@ -37,11 +37,16 @@ import subprocess
 import sys
 import time
 import uuid
+import logging
 from datetime import datetime
 import yaml
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from hermes_constants import get_hermes_home
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Path Configuration
@@ -52,7 +57,7 @@ HERMES_ROOT = Path(__file__).parent.parent
 TINKER_ATROPOS_ROOT = HERMES_ROOT / "tinker-atropos"
 ENVIRONMENTS_DIR = TINKER_ATROPOS_ROOT / "tinker_atropos" / "environments"
 CONFIGS_DIR = TINKER_ATROPOS_ROOT / "configs"
-LOGS_DIR = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "logs" / "rl_training"
+LOGS_DIR = get_hermes_home() / "logs" / "rl_training"
 
 def _ensure_logs_dir():
     """Lazily create logs directory on first use (avoid side effects at import time)."""
@@ -206,7 +211,7 @@ def _scan_environments() -> List[EnvironmentInfo]:
                             ))
                             break
         except Exception as e:
-            print(f"Warning: Could not parse {py_file}: {e}")
+            logger.warning("Could not parse %s: %s", py_file, e)
     
     return environments
 
@@ -243,7 +248,7 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
             config_class = type(env_config)
         except Exception as config_error:
             # Fallback: try to import BaseEnvConfig directly from atroposlib
-            print(f"Note: config_init failed ({config_error}), using BaseEnvConfig defaults")
+            logger.info("config_init failed (%s), using BaseEnvConfig defaults", config_error)
             try:
                 from atroposlib.envs.base import BaseEnvConfig
                 config_class = BaseEnvConfig
@@ -291,7 +296,7 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
         return fields
         
     except Exception as e:
-        print(f"Warning: Could not introspect environment config: {e}")
+        logger.warning("Could not introspect environment config: %s", e)
         return {}
 
 
@@ -324,7 +329,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
     
     try:
         # Step 1: Start the Atropos API server (run-api)
-        print(f"[{run_id}] Starting Atropos API server (run-api)...")
+        logger.info("[%s] Starting Atropos API server (run-api)...", run_id)
         
         # File must stay open while the subprocess runs; we store the handle
         # on run_state so _stop_training_run() can close it when done.
@@ -346,10 +351,10 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
             _stop_training_run(run_state)
             return
         
-        print(f"[{run_id}] Atropos API server started")
+        logger.info("[%s] Atropos API server started", run_id)
         
         # Step 2: Start the Tinker trainer
-        print(f"[{run_id}] Starting Tinker trainer: launch_training.py --config {config_path}")
+        logger.info("[%s] Starting Tinker trainer: launch_training.py --config %s", run_id, config_path)
         
         trainer_log_file = open(trainer_log, "w")  # closed by _stop_training_run
         run_state.trainer_log_file = trainer_log_file
@@ -362,7 +367,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         )
         
         # Wait for trainer to initialize (it starts FastAPI inference server on 8001)
-        print(f"[{run_id}] Waiting 30 seconds for trainer to initialize...")
+        logger.info("[%s] Waiting 30 seconds for trainer to initialize...", run_id)
         await asyncio.sleep(30)
         
         if run_state.trainer_process.poll() is not None:
@@ -371,10 +376,10 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
             _stop_training_run(run_state)
             return
         
-        print(f"[{run_id}] Trainer started, inference server on port 8001")
+        logger.info("[%s] Trainer started, inference server on port 8001", run_id)
         
         # Step 3: Start the environment
-        print(f"[{run_id}] Waiting 90 more seconds before starting environment...")
+        logger.info("[%s] Waiting 90 more seconds before starting environment...", run_id)
         await asyncio.sleep(90)
         
         # Find the environment file
@@ -390,7 +395,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
             _stop_training_run(run_state)
             return
         
-        print(f"[{run_id}] Starting environment: {env_info.file_path} serve")
+        logger.info("[%s] Starting environment: %s serve", run_id, env_info.file_path)
         
         env_log_file = open(env_log, "w")  # closed by _stop_training_run
         run_state.env_log_file = env_log_file
@@ -412,7 +417,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         
         run_state.status = "running"
         run_state.start_time = time.time()
-        print(f"[{run_id}] Training run started successfully!")
+        logger.info("[%s] Training run started successfully!", run_id)
         
         # Start background monitoring
         asyncio.create_task(_monitor_training_run(run_state))
@@ -451,7 +456,7 @@ async def _monitor_training_run(run_state: RunState):
         
         if run_state.api_process and run_state.api_process.poll() is not None:
             run_state.status = "failed"
-            run_state.error_message = f"API server exited unexpectedly"
+            run_state.error_message = "API server exited unexpectedly"
             _stop_training_run(run_state)
             break
 
@@ -460,7 +465,7 @@ def _stop_training_run(run_state: RunState):
     """Stop all processes for a training run."""
     # Stop in reverse order: env -> trainer -> api
     if run_state.env_process and run_state.env_process.poll() is None:
-        print(f"[{run_state.run_id}] Stopping environment process...")
+        logger.info("[%s] Stopping environment process...", run_state.run_id)
         run_state.env_process.terminate()
         try:
             run_state.env_process.wait(timeout=10)
@@ -468,7 +473,7 @@ def _stop_training_run(run_state: RunState):
             run_state.env_process.kill()
     
     if run_state.trainer_process and run_state.trainer_process.poll() is None:
-        print(f"[{run_state.run_id}] Stopping trainer process...")
+        logger.info("[%s] Stopping trainer process...", run_state.run_id)
         run_state.trainer_process.terminate()
         try:
             run_state.trainer_process.wait(timeout=10)
@@ -476,7 +481,7 @@ def _stop_training_run(run_state: RunState):
             run_state.trainer_process.kill()
     
     if run_state.api_process and run_state.api_process.poll() is None:
-        print(f"[{run_state.run_id}] Stopping API server...")
+        logger.info("[%s] Stopping API server...", run_state.run_id)
         run_state.api_process.terminate()
         try:
             run_state.api_process.wait(timeout=10)
@@ -562,7 +567,7 @@ async def rl_select_environment(name: str) -> str:
     
     TIP: Read the returned file_path to understand how the environment works.
     """
-    global _current_env, _current_config, _env_config_cache
+    global _current_env, _current_config
     
     _initialize_environments()
     
@@ -668,8 +673,6 @@ async def rl_edit_config(field: str, value: Any) -> str:
     Returns:
         JSON string with updated config or error message
     """
-    global _current_config
-    
     if not _current_env:
         return json.dumps({
             "error": "No environment selected. Use rl_select_environment(name) first.",
@@ -722,8 +725,6 @@ async def rl_start_training() -> str:
     Returns:
         JSON string with run_id and initial status
     """
-    global _active_runs
-    
     if not _current_env:
         return json.dumps({
             "error": "No environment selected. Use rl_select_environment(name) first.",
@@ -824,8 +825,6 @@ async def rl_check_status(run_id: str) -> str:
     Returns:
         JSON string with run status and metrics
     """
-    global _last_status_check
-    
     # Check rate limiting
     now = time.time()
     if run_id in _last_status_check:
@@ -1228,11 +1227,11 @@ async def rl_test_inference(
                 print(f"\n  ❌ Error: {model_results['error']}")
                 # Print last few lines of stderr for debugging
                 if stderr_lines:
-                    print(f"  Last errors:")
+                    print("  Last errors:")
                     for line in stderr_lines[-5:]:
                         print(f"    {line}")
             else:
-                print(f"\n  ✅ Process completed successfully")
+                print("\n  ✅ Process completed successfully")
                 print(f"  Output file: {output_file}")
                 print(f"  File exists: {output_file.exists()}")
                 
@@ -1267,7 +1266,7 @@ async def rl_test_inference(
                     
         except asyncio.TimeoutError:
             model_results["error"] = "Process timed out after 10 minutes"
-            print(f"  Timeout!")
+            print("  Timeout!")
         except Exception as e:
             model_results["error"] = str(e)
             print(f"  Error: {e}")
@@ -1306,7 +1305,7 @@ async def rl_test_inference(
         "avg_accuracy": round(
             sum(m.get("accuracy", 0) for m in working_models) / len(working_models), 3
         ) if working_models else 0,
-        "environment_working": len(working_models) > 0,
+        "environment_working": bool(working_models),
         "output_directory": str(test_output_dir),
     }
     

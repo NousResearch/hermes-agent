@@ -10,7 +10,7 @@ thread while the event loop lives on the main thread).
 import asyncio
 import json
 import logging
-from collections import defaultdict, deque
+from collections import deque
 from typing import Any, Callable, Deque, Dict
 
 import acp
@@ -49,19 +49,24 @@ def make_tool_progress_cb(
     session_id: str,
     loop: asyncio.AbstractEventLoop,
     tool_call_ids: Dict[str, Deque[str]],
+    tool_call_meta: Dict[str, Dict[str, Any]],
 ) -> Callable:
     """Create a ``tool_progress_callback`` for AIAgent.
 
     Signature expected by AIAgent::
 
-        tool_progress_callback(name: str, preview: str, args: dict)
+        tool_progress_callback(event_type: str, name: str, preview: str, args: dict, **kwargs)
 
-    Emits ``ToolCallStart`` for each tool invocation and tracks IDs in a FIFO
+    Emits ``ToolCallStart`` for ``tool.started`` events and tracks IDs in a FIFO
     queue per tool name so duplicate/parallel same-name calls still complete
-    against the correct ACP tool call.
+    against the correct ACP tool call.  Other event types (``tool.completed``,
+    ``reasoning.available``) are silently ignored.
     """
 
-    def _tool_progress(name: str, preview: str, args: Any = None) -> None:
+    def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
+        # Only emit ACP ToolCallStart for tool.started; ignore other event types
+        if event_type != "tool.started":
+            return
         if isinstance(args, str):
             try:
                 args = json.loads(args)
@@ -79,6 +84,16 @@ def make_tool_progress_cb(
             queue = deque([queue])
             tool_call_ids[name] = queue
         queue.append(tc_id)
+
+        snapshot = None
+        if name in {"write_file", "patch", "skill_manage"}:
+            try:
+                from agent.display import capture_local_edit_snapshot
+
+                snapshot = capture_local_edit_snapshot(name, args)
+            except Exception:
+                logger.debug("Failed to capture ACP edit snapshot for %s", name, exc_info=True)
+        tool_call_meta[tc_id] = {"args": args, "snapshot": snapshot}
 
         update = build_tool_start(tc_id, name, args)
         _send_update(conn, session_id, loop, update)
@@ -115,6 +130,7 @@ def make_step_cb(
     session_id: str,
     loop: asyncio.AbstractEventLoop,
     tool_call_ids: Dict[str, Deque[str]],
+    tool_call_meta: Dict[str, Dict[str, Any]],
 ) -> Callable:
     """Create a ``step_callback`` for AIAgent.
 
@@ -128,10 +144,12 @@ def make_step_cb(
             for tool_info in prev_tools:
                 tool_name = None
                 result = None
+                function_args = None
 
                 if isinstance(tool_info, dict):
                     tool_name = tool_info.get("name") or tool_info.get("function_name")
                     result = tool_info.get("result") or tool_info.get("output")
+                    function_args = tool_info.get("arguments") or tool_info.get("args")
                 elif isinstance(tool_info, str):
                     tool_name = tool_info
 
@@ -141,8 +159,13 @@ def make_step_cb(
                     tool_call_ids[tool_name] = queue
                 if tool_name and queue:
                     tc_id = queue.popleft()
+                    meta = tool_call_meta.pop(tc_id, {})
                     update = build_tool_complete(
-                        tc_id, tool_name, result=str(result) if result is not None else None
+                        tc_id,
+                        tool_name,
+                        result=str(result) if result is not None else None,
+                        function_args=function_args or meta.get("args"),
+                        snapshot=meta.get("snapshot"),
                     )
                     _send_update(conn, session_id, loop, update)
                     if not queue:

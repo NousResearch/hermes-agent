@@ -10,17 +10,96 @@ Hermes Agent is designed with a defense-in-depth security model. This page cover
 
 ## Overview
 
-The security model has five layers:
+The security model has seven layers:
 
 1. **User authorization** — who can talk to the agent (allowlists, DM pairing)
 2. **Dangerous command approval** — human-in-the-loop for destructive operations
 3. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
 4. **MCP credential filtering** — environment variable isolation for MCP subprocesses
 5. **Context file scanning** — prompt injection detection in project files
+6. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
+7. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
 ## Dangerous Command Approval
 
 Before executing any command, Hermes checks it against a curated list of dangerous patterns. If a match is found, the user must explicitly approve it.
+
+### Approval Modes
+
+The approval system supports three modes, configured via `approvals.mode` in `~/.hermes/config.yaml`:
+
+```yaml
+approvals:
+  mode: manual    # manual | smart | off
+  timeout: 60     # seconds to wait for user response (default: 60)
+```
+
+| Mode | Behavior |
+|------|----------|
+| **manual** (default) | Always prompt the user for approval on dangerous commands |
+| **smart** | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
+| **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
+
+:::warning
+Setting `approvals.mode: off` disables all safety prompts. Use only in trusted environments (CI/CD, containers, etc.).
+:::
+
+### YOLO Mode
+
+YOLO mode bypasses **all** dangerous command approval prompts for the current session. It can be activated three ways:
+
+1. **CLI flag**: Start a session with `hermes --yolo` or `hermes chat --yolo`
+2. **Slash command**: Type `/yolo` during a session to toggle it on/off
+3. **Environment variable**: Set `HERMES_YOLO_MODE=1`
+
+The `/yolo` command is a **toggle** — each use flips the mode on or off:
+
+```
+> /yolo
+  ⚡ YOLO mode ON — all commands auto-approved. Use with caution.
+
+> /yolo
+  ⚠ YOLO mode OFF — dangerous commands will require approval.
+```
+
+YOLO mode is available in both CLI and gateway sessions. Internally, it sets the `HERMES_YOLO_MODE` environment variable which is checked before every command execution.
+
+:::danger
+YOLO mode disables **all** dangerous command safety checks for the session — **except** the hardline blocklist (see below). Use only when you fully trust the commands being generated (e.g., well-tested automation scripts in disposable environments).
+:::
+
+### Hardline Blocklist (Always-On Floor)
+
+Some commands are so catastrophic — irreversible filesystem wipes, fork bombs, direct block-device writes — that Hermes refuses to run them **regardless** of:
+
+- `--yolo` / `/yolo` toggled on
+- `approvals.mode: off`
+- Cron jobs running in headless `approve` mode
+- User explicitly clicking "allow always"
+
+The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
+
+| Pattern | Why it's hardline |
+|---|---|
+| `rm -rf /` and obvious variants | Wipes the filesystem root |
+| `rm -rf --no-preserve-root /` | The explicit "yes I mean root" variant |
+| `:(){ :\|:& };:` (bash fork bomb) | Pegs the host until reboot |
+| `mkfs.*` on a mounted root device | Formats the live system |
+| `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
+| Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |
+
+If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
+
+### Approval Timeout
+
+When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
+
+Configure the timeout in `~/.hermes/config.yaml`:
+
+```yaml
+approvals:
+  timeout: 60  # seconds (default: 60)
+```
 
 ### What Triggers Approval
 
@@ -30,22 +109,35 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 |---------|-------------|
 | `rm -r` / `rm --recursive` | Recursive delete |
 | `rm ... /` | Delete in root path |
-| `chmod 777` | World-writable permissions |
+| `chmod 777/666` / `o+w` / `a+w` | World/other-writable permissions |
+| `chmod --recursive` with unsafe perms | Recursive world/other-writable (long flag) |
+| `chown -R root` / `chown --recursive root` | Recursive chown to root |
 | `mkfs` | Format filesystem |
 | `dd if=` | Disk copy |
+| `> /dev/sd` | Write to block device |
 | `DROP TABLE/DATABASE` | SQL DROP |
 | `DELETE FROM` (without WHERE) | SQL DELETE without WHERE |
 | `TRUNCATE TABLE` | SQL TRUNCATE |
 | `> /etc/` | Overwrite system config |
-| `systemctl stop/disable/mask` | Stop/disable system services |
+| `systemctl stop/restart/disable/mask` | Stop/restart/disable system services |
 | `kill -9 -1` | Kill all processes |
-| `curl ... \| sh` | Pipe remote content to shell |
-| `bash -c`, `python -e` | Shell/script execution via flags |
-| `find -exec rm`, `find -delete` | Find with destructive actions |
+| `pkill -9` | Force kill processes |
 | Fork bomb patterns | Fork bombs |
+| `bash -c` / `sh -c` / `zsh -c` / `ksh -c` | Shell command execution via `-c` flag (including combined flags like `-lc`) |
+| `python -e` / `perl -e` / `ruby -e` / `node -c` | Script execution via `-e`/`-c` flag |
+| `curl ... \| sh` / `wget ... \| sh` | Pipe remote content to shell |
+| `bash <(curl ...)` / `sh <(wget ...)` | Execute remote script via process substitution |
+| `tee` to `/etc/`, `~/.ssh/`, `~/.hermes/.env` | Overwrite sensitive file via tee |
+| `>` / `>>` to `/etc/`, `~/.ssh/`, `~/.hermes/.env` | Overwrite sensitive file via redirection |
+| `xargs rm` | xargs with rm |
+| `find -exec rm` / `find -delete` | Find with destructive actions |
+| `cp`/`mv`/`install` to `/etc/` | Copy/move file into system config |
+| `sed -i` / `sed --in-place` on `/etc/` | In-place edit of system config |
+| `pkill`/`killall` hermes/gateway | Self-termination prevention |
+| `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 
 :::info
-**Container bypass**: When running in `docker`, `singularity`, `modal`, or `daytona` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
 :::
 
 ### Approval Flow (CLI)
@@ -209,6 +301,9 @@ Every container runs with these flags (defined in `tools/environments/docker.py`
 ```python
 _SECURITY_ARGS = [
     "--cap-drop", "ALL",                          # Drop ALL Linux capabilities
+    "--cap-add", "DAC_OVERRIDE",                  # Root can write to bind-mounted dirs
+    "--cap-add", "CHOWN",                         # Package managers need file ownership
+    "--cap-add", "FOWNER",                        # Package managers need file ownership
     "--security-opt", "no-new-privileges",         # Block privilege escalation
     "--pids-limit", "256",                         # Limit process count
     "--tmpfs", "/tmp:rw,nosuid,size=512m",         # Size-limited /tmp
@@ -238,7 +333,7 @@ terminal:
 - **Ephemeral mode** (`container_persistent: false`): Uses tmpfs for workspace — everything is lost on cleanup
 
 :::tip
-For production gateway deployments, use `docker`, `modal`, or `daytona` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+For production gateway deployments, use `docker`, `modal`, `daytona`, or `vercel_sandbox` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
 :::
 
 :::warning
@@ -255,6 +350,91 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **singularity** | Container | ❌ Skipped | HPC environments |
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
+| **vercel_sandbox** | Cloud microVM | ❌ Skipped | Cloud execution with snapshot persistence |
+
+## Environment Variable Passthrough {#environment-variable-passthrough}
+
+Both `execute_code` and `terminal` strip sensitive environment variables from child processes to prevent credential exfiltration by LLM-generated code. However, skills that declare `required_environment_variables` legitimately need access to those vars.
+
+### How It Works
+
+Two mechanisms allow specific variables through the sandbox filters:
+
+**1. Skill-scoped passthrough (automatic)**
+
+When a skill is loaded (via `skill_view` or the `/skill` command) and declares `required_environment_variables`, any of those vars that are actually set in the environment are automatically registered as passthrough. Missing vars (still in setup-needed state) are **not** registered.
+
+```yaml
+# In a skill's SKILL.md frontmatter
+required_environment_variables:
+  - name: TENOR_API_KEY
+    prompt: Tenor API key
+    help: Get a key from https://developers.google.com/tenor
+```
+
+After loading this skill, `TENOR_API_KEY` passes through to `execute_code`, `terminal` (local), **and remote backends (Docker, Modal)** — no manual configuration needed.
+
+:::info Docker & Modal
+Prior to v0.5.1, Docker's `forward_env` was a separate system from the skill passthrough. They are now merged — skill-declared env vars are automatically forwarded into Docker containers and Modal sandboxes without needing to add them to `docker_forward_env` manually.
+:::
+
+**2. Config-based passthrough (manual)**
+
+For env vars not declared by any skill, add them to `terminal.env_passthrough` in `config.yaml`:
+
+```yaml
+terminal:
+  env_passthrough:
+    - MY_CUSTOM_KEY
+    - ANOTHER_TOKEN
+```
+
+### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
+
+Some skills need **files** (not just env vars) in the sandbox — for example, Google Workspace stores OAuth tokens as `google_token.json` under the active profile's `HERMES_HOME`. Skills declare these in frontmatter:
+
+```yaml
+required_credential_files:
+  - path: google_token.json
+    description: Google OAuth2 token (created by setup script)
+  - path: google_client_secret.json
+    description: Google OAuth2 client credentials
+```
+
+When loaded, Hermes checks if these files exist in the active profile's `HERMES_HOME` and registers them for mounting:
+
+- **Docker**: Read-only bind mounts (`-v host:container:ro`)
+- **Modal**: Mounted at sandbox creation + synced before each command (handles mid-session OAuth setup)
+- **Local**: No action needed (files already accessible)
+
+You can also list credential files manually in `config.yaml`:
+
+```yaml
+terminal:
+  credential_files:
+    - google_token.json
+    - my_custom_oauth_token.json
+```
+
+Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container.
+
+### What Each Sandbox Filters
+
+| Sandbox | Default Filter | Passthrough Override |
+|---------|---------------|---------------------|
+| **execute_code** | Blocks vars containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `PASSWD`, `AUTH` in name; only allows safe-prefix vars through | ✅ Passthrough vars bypass both checks |
+| **terminal** (local) | Blocks explicit Hermes infrastructure vars (provider keys, gateway tokens, tool API keys) | ✅ Passthrough vars bypass the blocklist |
+| **terminal** (Docker) | No host env vars by default | ✅ Passthrough vars + `docker_forward_env` forwarded via `-e` |
+| **terminal** (Modal) | No host env/files by default | ✅ Credential files mounted; env passthrough via sync |
+| **MCP** | Blocks everything except safe system vars + explicitly configured `env` | ❌ Not affected by passthrough (use MCP `env` config instead) |
+
+### Security Considerations
+
+- The passthrough only affects vars you or your skills explicitly declare — the default security posture is unchanged for arbitrary LLM-generated code
+- Credential files are mounted **read-only** into Docker containers
+- Skills Guard scans skill content for suspicious env access patterns before installation
+- Missing/unset vars are never registered (you can't leak what doesn't exist)
+- Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms
 
 ## MCP Credential Handling
 
@@ -296,18 +476,68 @@ You can restrict which websites the agent can access through its web and browser
 
 ```yaml
 # In ~/.hermes/config.yaml
-website_blocklist:
-  enabled: true
-  domains:
-    - "*.internal.company.com"
-    - "admin.example.com"
-  shared_files:
-    - "/etc/hermes/blocked-sites.txt"
+security:
+  website_blocklist:
+    enabled: true
+    domains:
+      - "*.internal.company.com"
+      - "admin.example.com"
+    shared_files:
+      - "/etc/hermes/blocked-sites.txt"
 ```
 
 When a blocked URL is requested, the tool returns an error explaining the domain is blocked by policy. The blocklist is enforced across `web_search`, `web_extract`, `browser_navigate`, and all URL-capable tools.
 
 See [Website Blocklist](/docs/user-guide/configuration#website-blocklist) in the configuration guide for full details.
+
+### SSRF Protection
+
+All URL-capable tools (web search, web extract, vision, browser) validate URLs before fetching them to prevent Server-Side Request Forgery (SSRF) attacks. Blocked addresses include:
+
+- **Private networks** (RFC 1918): `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`
+- **Loopback**: `127.0.0.0/8`, `::1`
+- **Link-local**: `169.254.0.0/16` (includes cloud metadata at `169.254.169.254`)
+- **CGNAT / shared address space** (RFC 6598): `100.64.0.0/10` (Tailscale, WireGuard VPNs)
+- **Cloud metadata hostnames**: `metadata.google.internal`, `metadata.goog`
+- **Reserved, multicast, and unspecified addresses**
+
+SSRF protection is always active for internet-facing use and DNS failures are treated as blocked (fail-closed). Redirect chains are re-validated at each hop to prevent redirect-based bypasses.
+
+#### Intentionally allowing private URLs
+
+Some setups legitimately need private/internal URL access — home networks that resolve `home.arpa` to RFC 1918 space, LAN-only Ollama/llama.cpp endpoints, internal wikis, cloud metadata debugging, and the like. For those cases there's a global opt-out:
+
+```yaml
+security:
+  allow_private_urls: true   # default: false
+```
+
+When on, web tools, the browser, vision URL fetches, and gateway media downloads no longer reject RFC 1918 / loopback / link-local / CGNAT / cloud-metadata destinations. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
+
+The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
+
+### Tirith Pre-Exec Security Scanning
+
+Hermes integrates [tirith](https://github.com/sheeki03/tirith) for content-level command scanning before execution. Tirith detects threats that pattern matching alone misses:
+
+- Homograph URL spoofing (internationalized domain attacks)
+- Pipe-to-interpreter patterns (`curl | bash`, `wget | sh`)
+- Terminal injection attacks
+
+Tirith auto-installs from GitHub releases on first use with SHA-256 checksum verification (and cosign provenance verification if cosign is available).
+
+```yaml
+# In ~/.hermes/config.yaml
+security:
+  tirith_enabled: true       # Enable/disable tirith scanning (default: true)
+  tirith_path: "tirith"      # Path to tirith binary (default: PATH lookup)
+  tirith_timeout: 5          # Subprocess timeout in seconds
+  tirith_fail_open: true     # Allow execution when tirith is unavailable (default: true)
+```
+
+When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
+
+Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
 
 ### Context File Injection Protection
 

@@ -1,11 +1,22 @@
 import asyncio
 import os
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command
+from tools.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command, _MCP_AVAILABLE
+
+# Ensure the mcp module symbols exist for patching even when the SDK isn't installed
+if not _MCP_AVAILABLE:
+    import tools.mcp_tool as _mcp_mod
+    if not hasattr(_mcp_mod, "StdioServerParameters"):
+        _mcp_mod.StdioServerParameters = MagicMock
+    if not hasattr(_mcp_mod, "stdio_client"):
+        _mcp_mod.stdio_client = MagicMock
+    if not hasattr(_mcp_mod, "ClientSession"):
+        _mcp_mod.ClientSession = MagicMock
 
 
 def test_resolve_stdio_command_falls_back_to_hermes_node_bin(tmp_path):

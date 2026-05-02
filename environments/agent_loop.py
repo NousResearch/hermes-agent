@@ -21,9 +21,11 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from model_tools import handle_function_call
+from tools.terminal_tool import get_active_env
+from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 
 # Thread pool for running sync tool calls that internally use asyncio.run()
-# (e.g., mini-swe-agent's modal/docker/daytona backends). Running them in a separate
+# (e.g., the Modal/Docker/Daytona terminal backends). Running them in a separate
 # thread gives them a clean event loop so they don't deadlock inside Atropos's loop.
 # Size must be large enough for concurrent eval tasks (e.g., 89 TB2 tasks all
 # making tool calls). Too small = thread pool starvation, tasks queue for minutes.
@@ -138,6 +140,7 @@ class HermesAgentLoop:
         temperature: float = 1.0,
         max_tokens: Optional[int] = None,
         extra_body: Optional[Dict[str, Any]] = None,
+        budget_config: Optional["BudgetConfig"] = None,
     ):
         """
         Initialize the agent loop.
@@ -154,7 +157,11 @@ class HermesAgentLoop:
             extra_body: Extra parameters passed to the OpenAI client's create() call.
                         Used for OpenRouter provider preferences, transforms, etc.
                         e.g. {"provider": {"ignore": ["DeepInfra"]}}
+            budget_config: Tool result persistence budget. Controls per-tool
+                        thresholds, per-turn aggregate budget, and preview size.
+                        If None, uses DEFAULT_BUDGET (current hardcoded values).
         """
+        from tools.budget_config import DEFAULT_BUDGET
         self.server = server
         self.tool_schemas = tool_schemas
         self.valid_tool_names = valid_tool_names
@@ -163,6 +170,7 @@ class HermesAgentLoop:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.extra_body = extra_body
+        self.budget_config = budget_config or DEFAULT_BUDGET
 
     async def run(self, messages: List[Dict[str, Any]]) -> AgentResult:
         """
@@ -346,78 +354,89 @@ class HermesAgentLoop:
                             tool_name, turn + 1,
                         )
                     else:
-                        # Parse arguments and dispatch
+                        # Parse arguments
                         try:
                             args = json.loads(tool_args_raw)
-                        except json.JSONDecodeError:
-                            args = {}
+                        except json.JSONDecodeError as e:
+                            args = None
+                            tool_result = json.dumps(
+                                {"error": f"Invalid JSON in tool arguments: {e}. Please retry with valid JSON."}
+                            )
+                            tool_errors.append(ToolError(
+                                turn=turn + 1, tool_name=tool_name,
+                                arguments=tool_args_raw[:200],
+                                error=f"Invalid JSON: {e}",
+                                tool_result=tool_result,
+                            ))
                             logger.warning(
                                 "Invalid JSON in tool call arguments for '%s': %s",
                                 tool_name, tool_args_raw[:200],
                             )
 
-                        try:
-                            if tool_name == "terminal":
-                                backend = os.getenv("TERMINAL_ENV", "local")
-                                cmd_preview = args.get("command", "")[:80]
-                                logger.info(
-                                    "[%s] $ %s", self.task_id[:8], cmd_preview,
-                                )
+                        # Dispatch tool only if arguments parsed successfully
+                        if args is not None:
+                            try:
+                                if tool_name == "terminal":
+                                    backend = os.getenv("TERMINAL_ENV", "local")
+                                    cmd_preview = args.get("command", "")[:80]
+                                    logger.info(
+                                        "[%s] $ %s", self.task_id[:8], cmd_preview,
+                                    )
 
-                            tool_submit_time = _time.monotonic()
+                                tool_submit_time = _time.monotonic()
 
-                            # Todo tool -- handle locally (needs per-loop TodoStore)
-                            if tool_name == "todo":
-                                tool_result = _todo_tool(
-                                    todos=args.get("todos"),
-                                    merge=args.get("merge", False),
-                                    store=_todo_store,
-                                )
-                                tool_elapsed = _time.monotonic() - tool_submit_time
-                            elif tool_name == "memory":
-                                tool_result = json.dumps({"error": "Memory is not available in RL environments."})
-                                tool_elapsed = _time.monotonic() - tool_submit_time
-                            elif tool_name == "session_search":
-                                tool_result = json.dumps({"error": "Session search is not available in RL environments."})
-                                tool_elapsed = _time.monotonic() - tool_submit_time
-                            else:
-                                # Run tool calls in a thread pool so backends that
-                                # use asyncio.run() internally (modal, docker, daytona) get
-                                # a clean event loop instead of deadlocking.
-                                loop = asyncio.get_event_loop()
-                                # Capture current tool_name/args for the lambda
-                                _tn, _ta, _tid = tool_name, args, self.task_id
-                                tool_result = await loop.run_in_executor(
-                                    _tool_executor,
-                                    lambda: handle_function_call(
-                                        _tn, _ta, task_id=_tid,
-                                        user_task=_user_task,
-                                    ),
-                                )
-                                tool_elapsed = _time.monotonic() - tool_submit_time
+                                # Todo tool -- handle locally (needs per-loop TodoStore)
+                                if tool_name == "todo":
+                                    tool_result = _todo_tool(
+                                        todos=args.get("todos"),
+                                        merge=args.get("merge", False),
+                                        store=_todo_store,
+                                    )
+                                    tool_elapsed = _time.monotonic() - tool_submit_time
+                                elif tool_name == "memory":
+                                    tool_result = json.dumps({"error": "Memory is not available in RL environments."})
+                                    tool_elapsed = _time.monotonic() - tool_submit_time
+                                elif tool_name == "session_search":
+                                    tool_result = json.dumps({"error": "Session search is not available in RL environments."})
+                                    tool_elapsed = _time.monotonic() - tool_submit_time
+                                else:
+                                    # Run tool calls in a thread pool so backends that
+                                    # use asyncio.run() internally (modal, docker, daytona) get
+                                    # a clean event loop instead of deadlocking.
+                                    loop = asyncio.get_event_loop()
+                                    # Capture current tool_name/args for the lambda
+                                    _tn, _ta, _tid = tool_name, args, self.task_id
+                                    tool_result = await loop.run_in_executor(
+                                        _tool_executor,
+                                        lambda: handle_function_call(
+                                            _tn, _ta, task_id=_tid,
+                                            user_task=_user_task,
+                                        ),
+                                    )
+                                    tool_elapsed = _time.monotonic() - tool_submit_time
 
-                            # Log slow tools and thread pool stats for debugging
-                            pool_active = _tool_executor._work_queue.qsize()
-                            if tool_elapsed > 30:
-                                logger.warning(
-                                    "[%s] turn %d: %s took %.1fs (pool queue=%d)",
-                                    self.task_id[:8], turn + 1, tool_name,
-                                    tool_elapsed, pool_active,
+                                # Log slow tools and thread pool stats for debugging
+                                pool_active = _tool_executor._work_queue.qsize()
+                                if tool_elapsed > 30:
+                                    logger.warning(
+                                        "[%s] turn %d: %s took %.1fs (pool queue=%d)",
+                                        self.task_id[:8], turn + 1, tool_name,
+                                        tool_elapsed, pool_active,
+                                    )
+                            except Exception as e:
+                                tool_result = json.dumps(
+                                    {"error": f"Tool execution failed: {type(e).__name__}: {str(e)}"}
                                 )
-                        except Exception as e:
-                            tool_result = json.dumps(
-                                {"error": f"Tool execution failed: {type(e).__name__}: {str(e)}"}
-                            )
-                            tool_errors.append(ToolError(
-                                turn=turn + 1, tool_name=tool_name,
-                                arguments=tool_args_raw[:200],
-                                error=f"{type(e).__name__}: {str(e)}",
-                                tool_result=tool_result,
-                            ))
-                            logger.error(
-                                "Tool '%s' execution failed on turn %d: %s",
-                                tool_name, turn + 1, e,
-                            )
+                                tool_errors.append(ToolError(
+                                    turn=turn + 1, tool_name=tool_name,
+                                    arguments=tool_args_raw[:200],
+                                    error=f"{type(e).__name__}: {str(e)}",
+                                    tool_result=tool_result,
+                                ))
+                                logger.error(
+                                    "Tool '%s' execution failed on turn %d: %s",
+                                    tool_name, turn + 1, e,
+                                )
 
                         # Also check if the tool returned an error in its JSON result
                         try:
@@ -435,14 +454,29 @@ class HermesAgentLoop:
                         except (json.JSONDecodeError, TypeError):
                             pass
 
-                    # Add tool response to conversation
                     tc_id = tc.get("id", "") if isinstance(tc, dict) else tc.id
+                    tool_result = maybe_persist_tool_result(
+                        content=tool_result,
+                        tool_name=tool_name,
+                        tool_use_id=tc_id,
+                        env=get_active_env(self.task_id),
+                        config=self.budget_config,
+                    )
+
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tc_id,
                             "content": tool_result,
                         }
+                    )
+
+                num_tcs = len(assistant_msg.tool_calls)
+                if num_tcs > 0:
+                    enforce_turn_budget(
+                        messages[-num_tcs:],
+                        env=get_active_env(self.task_id),
+                        config=self.budget_config,
                     )
 
                 turn_elapsed = _time.monotonic() - turn_start

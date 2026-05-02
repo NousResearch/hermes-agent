@@ -1,271 +1,198 @@
-# Hermes Agent + CaMeL
+<p align="center">
+  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
+</p>
 
-A publishable Hermes fork with CaMeL trust boundaries integrated into the runtime.
+# Hermes Agent ☤
 
-This fork is designed for operators who want the Hermes agent loop to distinguish between:
+<p align="center">
+  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
+  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
+</p>
 
-- trusted control: system prompt, approved skills, real user turns
-- untrusted data: tool outputs, retrieved web content, browser content, files, session recall, MCP data
+**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
 
-Sensitive tools are authorized against a trusted operator plan instead of instructions embedded in untrusted content.
+Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
 
-## Research Provenance
+<table>
+<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
+<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
+<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
+<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
+<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
+<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Six terminal backends — local, Docker, SSH, Daytona, Singularity, and Modal. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
+<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, Atropos RL environments, trajectory compression for training the next generation of tool-calling models.</td></tr>
+</table>
 
-This fork is inspired by Google Research's CaMeL paper and reference repository:
+---
 
-- Paper: https://arxiv.org/abs/2503.18813
-- Research repo: https://github.com/google-research/camel-prompt-injection
-
-This repository does **not** aim to reproduce the Google research stack exactly, and it does **not** present itself as a benchmark-equivalent implementation of that repo.
-
-This repository was implemented directly within Hermes and does not vendor Google source code unless explicitly noted in future changes.
-
-Instead, it adapts the core boundary-setting ideas from the paper to Hermes' existing runtime model:
-
-- Google's repo is a research artifact aimed at reproducing the paper's results and evaluation setup
-- this fork is a Hermes-native runtime integration aimed at hardening a production-style agent loop
-- Google's work includes its own pipeline, interpreter, evaluation assumptions, and benchmark framing
-- this fork focuses on Hermes-specific trust separation, tool gating, traceability, and operator-intent enforcement
-
-In other words, the design is research-inspired, but the implementation and problem framing are specific to Hermes.
-
-## What This Fork Changes
-
-This fork adds a runtime security layer centered on `agent/camel_guard.py` and the Hermes tool loop.
-
-Main additions:
-
-- trusted operator plan extraction from real user turns via a single isolated auxiliary-model classification pass only when a guarded sensitive decision under untrusted context needs it
-- runtime detection of untrusted tool-context from the conversation history
-- capability gating for sensitive tools
-- opt-in runtime modes: `monitor`, `enforce`, and `off`
-- per-turn CaMeL Trace artifacts for policy and decision review
-- gating for automatic memory flush and synthetic continuation turns
-- stripping of internal CaMeL metadata before provider API calls
-
-Sensitive capabilities gated by this integration include:
-
-- terminal and command execution
-- file mutation
-- persistent memory writes
-- external messaging
-- scheduled actions
-- skill mutation
-- delegation and subagents
-- browser interaction and selected external side effects
-
-Read-only actions such as `send_message(action="list")` and `cronjob(action="list")` remain allowed.
-
-## Threat Model
-
-This fork is built to reduce indirect prompt injection risk in the normal Hermes workflow.
-
-The target attack pattern is:
-
-1. Hermes retrieves untrusted content from the web, a browser session, a file, session recall, or an MCP server.
-2. That content contains hidden or explicit instructions such as "ignore previous instructions", "send a message", or "run this terminal command".
-3. The model attempts to treat that content as control rather than evidence.
-4. Hermes blocks the side effect unless the trusted operator plan explicitly authorizes that capability.
-
-## Architecture
-
-### 1. Trusted operator plan
-
-Hermes derives trusted control from real user turns only. Synthetic system-control turns do not pollute the trusted plan.
-
-The authorization plan is produced by an isolated auxiliary-model call with:
-
-- trusted user text only
-- no tools
-- no memory
-- no untrusted tool outputs in context
-- lazy invocation only when a sensitive decision under untrusted context requires authorization
-- cached by recent trusted context
-
-### 2. Untrusted data channel
-
-Tool outputs are treated as untrusted data by the runtime policy layer. The guard infers untrusted context from tool history and tool-call lineage instead of rewriting tool results before they go back to the model.
-
-### 3. Capability gating
-
-Side-effecting tools are checked against the trusted operator plan before execution.
-
-### 4. Provider hygiene
-
-Internal CaMeL metadata is removed before messages are sent to the configured model provider.
-
-## Validation
-
-### Hermes runtime compatibility
-
-Validated against the extended Hermes CaMeL suite:
+## Quick Install
 
 ```bash
-pytest -q -o addopts='' tests/agent/test_camel_guard.py tests/agent/test_camel_benchmark.py tests/hermes_cli/test_camel_cli.py tests/hermes_cli/test_chat_skills_flag.py tests/test_run_agent.py
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
-Result:
+Works on Linux, macOS, WSL2, and Android via Termux. The installer handles the platform-specific setup for you.
 
-- `223 passed`
+> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
+>
+> **Windows:** Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above.
 
-### Paper-aligned indirect injection benchmark
-
-A Hermes-specific micro-benchmark aligned to the CaMeL paper/repo `important_instructions` attack shape was also run.
-
-Observed outcomes:
-
-- indirect terminal exfiltration attempt: blocked
-- indirect external messaging attempt: blocked
-- indirect persistent-memory write attempt: blocked
-- indirect browser side-effect attempt: blocked
-- explicitly authorized terminal use: allowed
-- safe read-only list action: allowed
-
-Detailed notes:
-
-- [`docs/camel-benchmark.md`](docs/camel-benchmark.md)
-- [`docs/camel-runtime-comparison.md`](docs/camel-runtime-comparison.md)
-- [`docs/camel-live-runtime-comparison.md`](docs/camel-live-runtime-comparison.md)
-- [`docs/camel-architecture.md`](docs/camel-architecture.md)
-- [`docs/camel-trace.md`](docs/camel-trace.md)
-
-## Install
-
-### Fresh install from this fork
+After installation:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nativ3ai/hermes-agent-camel/main/scripts/install.sh | bash
+source ~/.bashrc    # reload shell (or: source ~/.zshrc)
+hermes              # start chatting!
 ```
 
-Then reload your shell and start Hermes:
+---
+
+## Getting Started
 
 ```bash
-source ~/.zshrc
-hermes
+hermes              # Interactive CLI — start a conversation
+hermes model        # Choose your LLM provider and model
+hermes tools        # Configure which tools are enabled
+hermes config set   # Set individual config values
+hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
+hermes setup        # Run the full setup wizard (configures everything at once)
+hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
+hermes update       # Update to the latest version
+hermes doctor       # Diagnose any issues
 ```
 
-### Existing upstream Hermes checkout
+📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
 
-Use the `camelup` installer repo to apply this fork or switch an existing checkout to the CaMeL build.
+## Optional CaMeL Guard
 
-## Runtime Modes
-
-This fork now supports three explicit runtime behaviors from the same checkout:
-
-- monitor runtime: CaMeL records policy decisions but does not block tools
-- guarded runtime: CaMeL trust boundaries are enforced
-- legacy runtime: CaMeL disabled for compatibility or comparison
-
-Examples:
+Hermes includes an opt-in CaMeL-style runtime guard for indirect prompt-injection experiments. It keeps the default runtime unchanged, avoids dynamic system-prompt mutation, and gates sensitive tool side effects against trusted user intent when enabled.
 
 ```bash
 hermes --camel-guard monitor
 hermes --camel-guard enforce
-hermes --camel-guard off
-hermes chat --camel-guard monitor -q "Summarize the report"
+hermes chat --camel-guard monitor -q "Summarize this file"
 ```
 
-Mode behavior:
+Modes:
 
-- `on` or `monitor`: enable CaMeL in non-blocking monitor mode
-- `enforce`: full CaMeL enforcement
-- `off` or `legacy`: disable CaMeL and run the legacy runtime behavior
+- `off` / `legacy`: default Hermes behavior
+- `monitor`: record CaMeL policy decisions without blocking tools
+- `enforce`: block sensitive side effects that are not authorized by trusted user intent
 
-This keeps one codebase and one install path while making it easy to compare guarded and legacy behavior side by side.
+See [`docs/camel-architecture.md`](docs/camel-architecture.md), [`docs/camel-trace.md`](docs/camel-trace.md), and [`docs/camel-live-runtime-comparison.md`](docs/camel-live-runtime-comparison.md) for design notes, trace format, and benchmark results.
 
-The runtime integration stays intentionally narrow:
+## CLI vs Messaging Quick Reference
 
-- no per-turn system-prompt mutation
-- no wrapped tool-result protocol
-- a small `run_agent.py` diff around tool decisions, tracing, and final-response sanitation
-- policy logic isolated in `agent/camel_guard.py`
+Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
 
-If you want a dedicated cheap model for the classifier, configure:
+| Action | CLI | Messaging platforms |
+|---------|-----|---------------------|
+| Start chatting | `hermes` | Run `hermes gateway setup` + `hermes gateway start`, then send the bot a message |
+| Start fresh conversation | `/new` or `/reset` | `/new` or `/reset` |
+| Change model | `/model [provider:model]` | `/model [provider:model]` |
+| Set a personality | `/personality [name]` | `/personality [name]` |
+| Retry or undo the last turn | `/retry`, `/undo` | `/retry`, `/undo` |
+| Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]` |
+| Browse skills | `/skills` or `/<skill-name>` | `/<skill-name>` |
+| Interrupt current work | `Ctrl+C` or send a new message | `/stop` or send a new message |
+| Platform-specific status | `/platforms` | `/status`, `/sethome` |
 
-```yaml
-auxiliary:
-  camel_guard:
-    provider: auto
-    model: ""
-```
+For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
 
-## Trace And Replay Workflow
+---
 
-CaMeL now includes a trace layer that records the operator request, untrusted sources, and tool decisions per turn.
+## Documentation
 
-Examples:
+All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
+
+| Section | What's Covered |
+|---------|---------------|
+| [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) | Install → setup → first conversation in 2 minutes |
+| [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli) | Commands, keybindings, personalities, sessions |
+| [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration) | Config file, providers, models, all options |
+| [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging) | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |
+| [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security) | Command approval, DM pairing, container isolation |
+| [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools) | 40+ tools, toolset system, terminal backends |
+| [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills) | Procedural memory, Skills Hub, creating skills |
+| [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory) | Persistent memory, user profiles, best practices |
+| [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Connect any MCP server for extended capabilities |
+| [Cron Scheduling](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron) | Scheduled tasks with platform delivery |
+| [Context Files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files) | Project context that shapes every conversation |
+| [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture) | Project structure, agent loop, key classes |
+| [Contributing](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) | Development setup, PR process, code style |
+| [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) | All commands and flags |
+| [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference |
+
+---
+
+## Migrating from OpenClaw
+
+If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
+
+**During first-time setup:** The setup wizard (`hermes setup`) automatically detects `~/.openclaw` and offers to migrate before configuration begins.
+
+**Anytime after install:**
 
 ```bash
-hermes camel trace
-hermes camel trace --session <session_id> --format markdown
-hermes camel benchmark --write-doc
+hermes claw migrate              # Interactive migration (full preset)
+hermes claw migrate --dry-run    # Preview what would be migrated
+hermes claw migrate --preset user-data   # Migrate without secrets
+hermes claw migrate --overwrite  # Overwrite existing conflicts
 ```
 
-Trace files are written under:
+What gets imported:
+- **SOUL.md** — persona file
+- **Memories** — MEMORY.md and USER.md entries
+- **Skills** — user-created skills → `~/.hermes/skills/openclaw-imports/`
+- **Command allowlist** — approval patterns
+- **Messaging settings** — platform configs, allowed users, working directory
+- **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
+- **TTS assets** — workspace audio files
+- **Workspace instructions** — AGENTS.md (with `--workspace-target`)
 
-```text
-~/.hermes/camel_traces/
-```
+See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
 
-Start with `--camel-guard monitor` if you want visibility before enforcement, then switch to `--camel-guard enforce` once the workflow is dialed in.
+---
 
-## Developer setup
+## Contributing
+
+We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
+
+Quick start for contributors — clone and go with `setup-hermes.sh`:
 
 ```bash
-git clone https://github.com/nativ3ai/hermes-agent-camel.git
-cd hermes-agent-camel
-git submodule update --init mini-swe-agent
+git clone https://github.com/NousResearch/hermes-agent.git
+cd hermes-agent
+./setup-hermes.sh     # installs uv, creates venv, installs .[all], symlinks ~/.local/bin/hermes
+./hermes              # auto-detects the venv, no need to `source` first
+```
+
+Manual path (equivalent to the above):
+
+```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv .venv --python 3.11
-source .venv/bin/activate
+uv venv venv --python 3.11
+source venv/bin/activate
 uv pip install -e ".[all,dev]"
-uv pip install -e "./mini-swe-agent"
-pytest -q tests/agent/test_camel_guard.py tests/test_run_agent.py
+scripts/run_tests.sh
 ```
 
-## Files Of Interest
+> **RL Training (optional):** The RL/Atropos integration (`environments/`) ships via the `atroposlib` and `tinker` dependencies pulled in by `.[all,dev]` — no submodule setup required.
 
-- `agent/camel_guard.py`
-- `run_agent.py`
-- `hermes_cli/config.py`
-- `hermes_cli/main.py`
-- `tests/agent/test_camel_guard.py`
-- `tests/agent/test_camel_benchmark.py`
-- `tests/test_run_agent.py`
-- `docs/camel-benchmark.md`
-- `docs/camel-runtime-comparison.md`
-- `docs/camel-architecture.md`
-- `docs/camel-trace.md`
+---
 
-## Scope
+## Community
 
-This fork follows the trust-boundary principles described in the CaMeL paper, but applies them to Hermes' agent runtime rather than to the paper's original evaluation stack.
+- 💬 [Discord](https://discord.gg/NousResearch)
+- 📚 [Skills Hub](https://agentskills.io)
+- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
+- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
 
-It is not presented as a full reproduction of the paper's AgentDojo benchmark matrix or as a claim of matching the paper's performance characteristics. The validation here is Hermes-specific and focused on runtime trust boundaries plus paper-aligned indirect injection scenarios.
+---
 
-## Upstream Relation
+## License
 
-This repository tracks Hermes Agent from Nous Research and carries the CaMeL integration as a focused runtime security extension.
+MIT — see [LICENSE](LICENSE).
 
-- Upstream Hermes: https://github.com/NousResearch/hermes-agent
-- CaMeL paper: https://arxiv.org/abs/2503.18813
-- CaMeL repo: https://github.com/google-research/camel-prompt-injection
-- Upstream PR: https://github.com/NousResearch/hermes-agent/pull/1992
-- Third-party notices: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
-
-For the original general-purpose Hermes README, see [`docs/upstream-readme.md`](docs/upstream-readme.md).
-
-## Related Add-On
-
-For payment flows that keep the same operator-intent boundary outside the model loop, see:
-
-- Hermes PayGuard: https://github.com/nativ3ai/hermes-payguard
-
-Hermes PayGuard is a separate optional plugin, not a core runtime patch. It adds:
-
-- safe-by-design USDC transfer intents
-- Circle user-controlled and developer-controlled flows
-- Circle CCTP route quoting and attestation tracking
-- x402 paid fetch flows
-
-That separation is intentional: the payment approval ledger and execution rails belong outside the core CaMeL runtime layer.
+Built by [Nous Research](https://nousresearch.com).

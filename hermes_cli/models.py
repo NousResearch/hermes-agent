@@ -315,9 +315,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-chat",
         "deepseek-reasoner",
     ],
-    # CometAPI is an OpenAI-compatible aggregator with a dynamic catalog.
-    # This is only the static fallback / picker seed; live /v1/models remains
-    # the source of truth for onboarding.
     "comet": [
         "deepseek-v4-pro",
         "deepseek-v4-flash",
@@ -786,7 +783,7 @@ class ProviderEntry(NamedTuple):
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
-    ProviderEntry("comet",          "CometAPI",                 "CometAPI (OpenAI-compatible aggregator, dynamic model catalog)"),
+    ProviderEntry("comet",          "CometAPI",                 "CometAPI (OpenAI-compatible aggregator)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (local desktop app with built-in model server)"),
     ProviderEntry("ai-gateway",     "Vercel AI Gateway",        "Vercel AI Gateway (200+ models, $5 free credit, no markup)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),

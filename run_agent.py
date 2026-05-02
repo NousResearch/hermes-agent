@@ -2185,26 +2185,28 @@ class AIAgent:
             })
 
     def _ensure_db_session(self) -> None:
-        """Create session DB row on first use. Disables _session_db on failure."""
+        """Create session DB row on first use. Raises on failure (no silent catch).
+
+        Previously, exceptions were silently caught and _session_db_created stayed
+        False, causing the conversation loop to continue with an uninitialized session.
+        This led to response=0 chars regressions where the agent would complete API
+        calls but discard the final response (issue #18765).
+
+        Now, callers must handle the exception — ensuring failures are visible and
+        don't silently produce empty responses.
+        """
         if self._session_db_created or not self._session_db:
             return
-        try:
-            self._session_db.create_session(
-                session_id=self.session_id,
-                source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                model=self.model,
-                model_config=self._session_init_model_config,
-                system_prompt=self._cached_system_prompt,
-                user_id=None,
-                parent_session_id=self._parent_session_id,
-            )
-            self._session_db_created = True
-        except Exception as e:
-            # Transient failure (e.g. SQLite lock). Keep _session_db alive —
-            # _session_db_created stays False so next run_conversation() retries.
-            logger.warning(
-                "Session DB creation failed (will retry next turn): %s", e
-            )
+        self._session_db.create_session(
+            session_id=self.session_id,
+            source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+            model=self.model,
+            model_config=self._session_init_model_config,
+            system_prompt=self._cached_system_prompt,
+            user_id=None,
+            parent_session_id=self._parent_session_id,
+        )
+        self._session_db_created = True
 
     def reset_session_state(self):
         """Reset all session-scoped token counters to 0 for a fresh session.
@@ -10385,7 +10387,20 @@ class AIAgent:
         # Installed once, transparent when streams are healthy, prevents crash on write.
         _install_safe_stdio()
 
-        self._ensure_db_session()
+        try:
+            self._ensure_db_session()
+        except Exception as e:
+            # Session DB creation failed (e.g. SQLite lock, connection issue).
+            # Disable session DB persistence for this run so we don't silently
+            # discard the response. The conversation can still proceed — it just
+            # won't persist to the session DB. This prevents the response=0 chars
+            # regression (issue #18765) where a failed session creation caused
+            # the entire conversation output to be lost.
+            logger.error(
+                "Session DB creation failed in run_conversation(), "
+                "disabling session DB for this run: %s", e
+            )
+            self._session_db = None
 
         # Tag all log records on this thread with the session ID so
         # ``hermes logs --session <id>`` can filter a single conversation.

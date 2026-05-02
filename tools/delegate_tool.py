@@ -35,6 +35,12 @@ from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
 
+# For custom provider API key resolution
+try:
+    from hermes_cli.runtime_provider import has_usable_secret
+except ImportError:
+    has_usable_secret = None
+
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset(
@@ -2342,14 +2348,22 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent, task_override: Opti
     # If we found provider data, use it directly
     if found_provider_data:
         base_url = found_provider_data.get("api") or found_provider_data.get("url") or found_provider_data.get("base_url")
-        key_env = found_provider_data.get("key_env", "")
-        api_key = None
-        if key_env:
-            api_key = os.getenv(key_env, "").strip()
-        if not api_key:
-            api_key = str(found_provider_data.get("api_key", "") or "").strip()
-        if not api_key:
-            api_key = configured_api_key or os.getenv("OPENAI_API_KEY", "").strip()
+        
+        # Follow the same priority as runtime_provider.py!
+        api_key_candidates = [
+            str(found_provider_data.get("api_key", "") or "").strip(),
+            os.getenv(str(found_provider_data.get("key_env", "") or "").strip(), "").strip(),
+            configured_api_key or "",
+            os.getenv("OPENAI_API_KEY", "").strip(),
+            os.getenv("OPENROUTER_API_KEY", "").strip(),
+        ]
+        
+        # Get the first usable secret
+        if has_usable_secret:
+            api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
+        else:
+            # Fallback to just checking for non-empty
+            api_key = next((candidate for candidate in api_key_candidates if candidate), "")
 
         if not api_key:
             raise ValueError(

@@ -1771,6 +1771,69 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertIn("GIF downgraded to file", caption)
         self.assertIn("look", caption)
 
+    def test_download_remote_document_reads_response_before_httpx_client_closes(self):
+        """#18451 — snapshot Content-Type + body while the httpx.AsyncClient
+        context is still active so pooled connections fully release on
+        exit.  Otherwise the response is only readable because httpx
+        eagerly buffers it; a future refactor to .stream() would silently
+        read-after-close."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        events: list[str] = []
+
+        class _FakeResponse:
+            headers = {"Content-Type": "application/octet-stream"}
+
+            def raise_for_status(self) -> None:
+                events.append("raise_for_status")
+
+            @property
+            def content(self) -> bytes:
+                events.append("content_read")
+                return b"doc-bytes"
+
+        class _FakeAsyncClient:
+            def __init__(self, *_a: object, **_k: object) -> None:
+                pass
+
+            async def __aenter__(self) -> "_FakeAsyncClient":
+                events.append("client_enter")
+                return self
+
+            async def __aexit__(self, *exc: object) -> None:
+                events.append("client_exit")
+
+            async def get(self, *_a: object, **_k: object) -> _FakeResponse:
+                events.append("get")
+                return _FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"HERMES_HOME": tmp}, clear=False):
+                adapter = FeishuAdapter(PlatformConfig())
+
+                async def _run() -> tuple[str, str]:
+                    with patch("tools.url_safety.is_safe_url", return_value=True):
+                        with patch("httpx.AsyncClient", _FakeAsyncClient):
+                            with patch(
+                                "gateway.platforms.feishu.cache_document_from_bytes",
+                                return_value="/tmp/cached-doc.bin",
+                            ):
+                                return await adapter._download_remote_document(
+                                    "https://example.com/doc.bin",
+                                    default_ext=".bin",
+                                    preferred_name="doc",
+                                )
+
+                path, filename = asyncio.run(_run())
+
+        self.assertEqual(path, "/tmp/cached-doc.bin")
+        self.assertTrue(filename)
+        # content_read MUST happen before client_exit — otherwise we're
+        # reading response body after the connection pool has been torn
+        # down, which only works by accident (httpx's eager buffering).
+        self.assertLess(events.index("content_read"), events.index("client_exit"))
+
     def test_dedup_state_persists_across_adapter_restart(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

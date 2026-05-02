@@ -13504,7 +13504,6 @@ def _trigger_nudge_wake(runner, nudge: dict, adapters, loop):
             wake_message = f"[Scheduled reminder '{nudge_name}']: Continuing with scheduled task."
 
         # Create a message event
-        from gateway.platforms.base import MessageEvent
         event = MessageEvent(
             source=source,
             text=wake_message,
@@ -13512,8 +13511,22 @@ def _trigger_nudge_wake(runner, nudge: dict, adapters, loop):
             sender_name="Reminder",
         )
 
-        # Schedule the message handling on the event loop
-        # _handle_message respects busy_input_mode (queue/interrupt/steer)
+        # NUDGES ALWAYS QUEUE - never interrupt the running agent
+        # Get the adapter for this session and queue the message
+        adapter = None
+        if adapters:
+            adapter = adapters.get(source.platform)
+
+        if adapter and hasattr(adapter, '_pending_messages'):
+            # Queue the nudge in the adapter's pending messages
+            merge_pending_message_event(adapter._pending_messages, session_key, event)
+            logger.info("Queued nudge for session %s (waiting for next turn)", session_key)
+        else:
+            # No adapter or no queue mechanism - fall back to direct handle
+            # This will still work but may interrupt if busy_input_mode=interrupt
+            logger.debug("No adapter queue available for session %s, using direct handle", session_key)
+
+        # If no agent is running for this session, trigger a new turn to process the queue
         if loop and loop.is_running():
             asyncio.run_coroutine_threadsafe(
                 runner._handle_message(event),

@@ -79,6 +79,7 @@ object HermesRuntimeManager {
 
         return try {
             HermesLinuxSubsystemBridge.ensureInstalled(context.applicationContext)
+            refreshPythonRuntimeEnvironment(context.applicationContext)
             val settings = AppSettingsStore(context.applicationContext).load()
             val localBackendStatus = OnDeviceBackendManager.ensureConfigured(
                 context.applicationContext,
@@ -129,6 +130,17 @@ object HermesRuntimeManager {
             )
             DeviceStateWriter.write(context.applicationContext)
             currentState
+        }
+    }
+
+    private fun refreshPythonRuntimeEnvironment(context: Context) {
+        if (!Python.isStarted()) {
+            return
+        }
+        runCatching {
+            Python.getInstance()
+                .getModule("hermes_android.runtime_env")
+                .callAttr("prepare_runtime_env", context.filesDir.absolutePath)
         }
     }
 

@@ -37,9 +37,17 @@ class NativeAgentRuntimeSmokeTest {
         val binPath = state.getString("bin_path")
         val homePath = state.getString("home_path")
         val tmpPath = state.getString("tmp_path")
+        val executionMode = state.getString("execution_mode")
 
-        assertEquals("embedded_termux", state.getString("execution_mode"))
-        assertTrue("shell must be embedded bash", shellPath.endsWith("/bin/bash"))
+        assertTrue(
+            "execution_mode=$executionMode",
+            executionMode == "embedded_termux" || executionMode == "android_system_shell",
+        )
+        if (executionMode == "embedded_termux") {
+            assertTrue("shell must be embedded bash", shellPath.endsWith("/bin/bash"))
+        } else {
+            assertEquals("/system/bin/sh", shellPath)
+        }
         assertTrue("shell must exist", File(shellPath).isFile)
         assertTrue("shell must be executable", File(shellPath).canExecute())
         assertTrue("prefix must exist", File(prefixPath).isDirectory)
@@ -53,18 +61,7 @@ class NativeAgentRuntimeSmokeTest {
             .directory(File(homePath))
             .redirectErrorStream(true)
             .apply {
-                environment().putAll(
-                    mapOf(
-                        "PREFIX" to prefixPath,
-                        "PATH" to listOf(binPath, "/system/bin", "/system/xbin", System.getenv("PATH").orEmpty())
-                            .filter { it.isNotBlank() }
-                            .joinToString(":"),
-                        "HOME" to homePath,
-                        "TMPDIR" to tmpPath,
-                        "TERM" to "xterm-256color",
-                        "LANG" to "C.UTF-8",
-                    )
-                )
+                environment().putAll(HermesLinuxSubsystemBridge.buildRunEnvironment(state))
             }
             .start()
 

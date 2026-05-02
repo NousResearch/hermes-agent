@@ -902,15 +902,30 @@ def test_list_profiles_on_disk(tmp_path, monkeypatch):
     """list_profiles_on_disk returns directories under ~/.hermes/profiles/
     that contain a config.yaml."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
     profiles = tmp_path / ".hermes" / "profiles"
     profiles.mkdir(parents=True)
-    (profiles / "researcher").mkdir()
-    (profiles / "researcher" / "config.yaml").write_text("model: {}\n")
-    (profiles / "writer").mkdir()
-    (profiles / "writer" / "config.yaml").write_text("model: {}\n")
+    for name in ("researcher", "writer"):
+        d = profiles / name
+        d.mkdir()
+        (d / "config.yaml").write_text("model: {}\n")
     (profiles / "empty_dir").mkdir()
     # A stray file; should be ignored.
     (profiles / "stray.txt").write_text("noise")
+
+    names = kb.list_profiles_on_disk()
+    assert names == ["researcher", "writer"]
+
+
+def test_list_profiles_on_disk_custom_root(tmp_path, monkeypatch):
+    """list_profiles_on_disk respects a custom HERMES_HOME root."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    profiles = tmp_path / "profiles"
+    profiles.mkdir(parents=True)
+    for name in ("researcher", "writer"):
+        d = profiles / name
+        d.mkdir()
+        (d / "config.yaml").write_text("model: {}\n")
 
     names = kb.list_profiles_on_disk()
     assert names == ["researcher", "writer"]

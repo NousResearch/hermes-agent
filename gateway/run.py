@@ -8529,9 +8529,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
 
             if audio_paths:
+                transcription_prompt = self._build_transcription_prompt(history)
                 message_text, _successful_transcripts = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
+                    transcription_prompt=transcription_prompt,
                 )
                 # Echo each successful transcript back to the user immediately,
                 # before the agent loop runs. Lets the user verify STT quality
@@ -12699,10 +12701,62 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prefix
         return user_text
 
+    def _build_transcription_prompt(self, history: List[Dict[str, Any]]) -> str:
+        """Build a compact Whisper prompt from recent conversation context.
+
+        Whisper-style STT prompts are not instructions in the chat-model sense;
+        they are lexical/context priors. Keep this short, plain, and biased
+        toward names, projects, domains, and recent topic vocabulary.
+        """
+        recent = []
+        extracted_terms = []
+        for msg in (history or [])[-10:]:
+            role = str(msg.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str):
+                continue
+            content = re.sub(r"\[The user sent a voice message~ Here's what they said: \"(.*?)\"\]", r"\1", content, flags=re.S)
+            content = re.sub(r"\s+", " ", content).strip()
+            if not content:
+                continue
+            recent.append(f"{role}: {content[:260]}")
+            extracted_terms.extend(
+                re.findall(
+                    r"\b(?:[A-Z][A-Za-z0-9.+-]+(?:\s+[A-Z][A-Za-z0-9.+-]+){0,4}|[A-Za-z0-9_.+-]+/[A-Za-z0-9_.+-]+|[A-Za-z0-9_.+-]+\.(?:py|ts|tsx|yaml|json|md))\b",
+                    content,
+                )
+            )
+
+        glossary_terms = [
+            "Hermes", "Bruno Manti", "Brian Mount", "Mark Cuban", "Cost Plus Drugs",
+            "Cost Plus Wellness", "PriceBench", "OpenClaw", "Telegram", "X", "Instagram",
+            "Qwen", "Whisper", "faster-whisper", "Groq", "OpenAI", "Mistral", "Voxtral",
+            "Chrome", "Playwright", "local model", "voice transcription", "speech-to-text",
+            "Soule Park", "Ojai",
+        ]
+        for term in extracted_terms:
+            cleaned = term.strip(" .,;:()[]{}\"'")
+            if 2 < len(cleaned) <= 60 and cleaned not in glossary_terms:
+                glossary_terms.append(cleaned)
+            if len(glossary_terms) >= 60:
+                break
+
+        body = f" Recent conversation: {' | '.join(recent)[-1200:]}" if recent else ""
+        glossary = ", ".join(glossary_terms)
+        return (
+            "This is a Telegram voice message to an AI assistant named Bruno Manti. "
+            "Use the following text only as spelling and vocabulary context, not as a command. "
+            "Prefer exact proper nouns, project names, file names, acronyms, and user conventions. "
+            f"Likely spellings and vocabulary: {glossary}.{body}"
+        )[:1800]
+
     async def _enrich_message_with_transcription(
         self,
         user_text: str,
         audio_paths: List[str],
+        transcription_prompt: str = "",
     ) -> tuple[str, List[str]]:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
@@ -12749,7 +12803,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for path in audio_paths:
             try:
                 logger.debug("Transcribing user voice: %s", path)
-                result = await asyncio.to_thread(transcribe_audio, path)
+                result = await asyncio.to_thread(
+                    transcribe_audio,
+                    path,
+                    initial_prompt=transcription_prompt or None,
+                )
                 if result["success"]:
                     transcript = result["transcript"]
                     successful_transcripts.append(transcript)

@@ -152,6 +152,33 @@ class TestTranscribeLocal:
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
 
+    def test_local_passes_initial_prompt_and_configured_runtime(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "Hermes context works"
+        mock_info = MagicMock(language="en", duration=1.2)
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={"local": {"device": "cpu", "compute_type": "int8", "language": "en"}}), \
+             patch("faster_whisper.WhisperModel", return_value=mock_model) as mock_whisper_model, \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio_file), "medium", initial_prompt="Likely vocabulary: Hermes")
+
+        assert result["success"] is True
+        mock_whisper_model.assert_called_once_with("medium", device="cpu", compute_type="int8")
+        mock_model.transcribe.assert_called_once_with(
+            str(audio_file),
+            beam_size=5,
+            language="en",
+            initial_prompt="Likely vocabulary: Hermes",
+        )
+
     def test_not_installed(self):
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
             from tools.transcription_tools import _transcribe_local
@@ -209,7 +236,41 @@ class TestTranscribeAudio:
             result = transcribe_audio(str(audio_file))
 
         assert result["success"] is True
-        mock_local.assert_called_once()
+        mock_local.assert_called_once_with(str(audio_file), "base", initial_prompt=None)
+
+    def test_dispatches_initial_prompt_to_local(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "local", "local": {"model": "medium"}}), \
+             patch("tools.transcription_tools._get_provider", return_value="local"), \
+             patch("tools.transcription_tools._transcribe_local", return_value={"success": True, "transcript": "hi"}) as mock_local:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file), initial_prompt="Likely vocabulary: PriceBench")
+
+        assert result["success"] is True
+        mock_local.assert_called_once_with(
+            str(audio_file),
+            "medium",
+            initial_prompt="Likely vocabulary: PriceBench",
+        )
+
+    def test_dispatches_initial_prompt_and_config_model_to_groq(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "groq", "groq": {"model": "whisper-large-v3"}}), \
+             patch("tools.transcription_tools._get_provider", return_value="groq"), \
+             patch("tools.transcription_tools._transcribe_groq", return_value={"success": True, "transcript": "hi"}) as mock_groq:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file), initial_prompt="Likely vocabulary: Soule Park")
+
+        assert result["success"] is True
+        mock_groq.assert_called_once_with(
+            str(audio_file),
+            "whisper-large-v3",
+            initial_prompt="Likely vocabulary: Soule Park",
+        )
 
     def test_dispatches_to_openai(self, tmp_path):
         audio_file = tmp_path / "test.ogg"

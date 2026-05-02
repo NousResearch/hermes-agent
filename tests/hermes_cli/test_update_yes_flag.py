@@ -113,11 +113,18 @@ class TestUpdateYesConfigMigration:
 
         args = SimpleNamespace(yes=False)
 
-        with patch("builtins.input", return_value="n") as mock_input, patch(
-            "hermes_cli.main.sys"
-        ) as mock_sys:
-            mock_sys.stdin.isatty.return_value = True
-            mock_sys.stdout.isatty.return_value = True
+        # Patch ``sys.stdin.isatty`` and ``sys.stdout.isatty`` directly on the
+        # real ``sys`` module instead of replacing ``hermes_cli.main.sys`` with
+        # a MagicMock. The MagicMock approach was flaky under ``pytest-xdist``
+        # — a sibling test that imported ``hermes_cli.main`` first could leave
+        # a different ``sys`` reference resolved inside the function and the
+        # mock would never be consulted, with CI then taking the
+        # "Non-interactive session" branch instead of prompting.
+        import sys as _sys
+
+        with patch("builtins.input", return_value="n") as mock_input, patch.object(
+            _sys.stdin, "isatty", return_value=True
+        ), patch.object(_sys.stdout, "isatty", return_value=True):
             cmd_update(args)
             # The user was actually prompted.
             assert mock_input.called
@@ -156,7 +163,16 @@ class TestUpdateYesStashRestore:
 
         args = SimpleNamespace(yes=True)
 
-        cmd_update(args)
+        # Force a TTY-shaped session so the autostash-restore branch is
+        # reachable in CI workers regardless of inherited stdio (matches the
+        # isatty patching strategy in ``test_no_yes_flag_still_prompts_in_tty``
+        # — ``patch.object`` on the real streams is robust under xdist).
+        import sys as _sys
+
+        with patch.object(_sys.stdin, "isatty", return_value=True), patch.object(
+            _sys.stdout, "isatty", return_value=True
+        ):
+            cmd_update(args)
 
         # _restore_stashed_changes was called, and called with prompt_user=False
         # every time (so the user never sees "Restore local changes now?").

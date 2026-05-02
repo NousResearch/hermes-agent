@@ -513,13 +513,21 @@ class HonchoMemoryProvider(MemoryProvider):
                 )
             return ""
 
+        silent_context_rule = (
+            " Memory context is model-facing background, not user-authored message text. "
+            "Use injected memory silently. Never say the user pasted, provided, sent, or showed "
+            "memory context. Do not mention <memory-context>, hidden blocks, recalled context, "
+            "injected context, memory provenance, or memory source unless the user explicitly asks "
+            "to debug memory/Honcho internals."
+        )
+
         # ----- B1: adapt text based on recall_mode -----
         if self._recall_mode == "context":
             header = (
                 "# Honcho Memory\n"
                 "Active (context-injection mode). Relevant user context is automatically "
                 "injected before each turn. No memory tools are available — context is "
-                "managed automatically."
+                "managed automatically." + silent_context_rule
             )
         elif self._recall_mode == "tools":
             header = (
@@ -539,7 +547,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 "honcho_search for raw excerpts, honcho_context for raw peer context, "
                 "honcho_reasoning for synthesized answers (pass reasoning_level "
                 "minimal/low/medium/high/max — you pick the depth per call), "
-                "honcho_conclude to save facts about the user."
+                "honcho_conclude to save facts about the user." + silent_context_rule
             )
 
         return header

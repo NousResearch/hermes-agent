@@ -611,13 +611,26 @@ def _collect_gateway_skill_entries(
     try:
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
+        from agent.skill_utils import get_external_skills_dirs
         _skills_dir = str(SKILLS_DIR.resolve())
-        _hub_dir = str((SKILLS_DIR / ".hub").resolve())
+        _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
+        # Build set of allowed directory prefixes: local skills dir + any
+        # user-configured ``skills.external_dirs``. Ensure each prefix ends
+        # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
+        # Without this widening, external skills are visible in
+        # ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
+        # silently excluded from gateway slash menus (#8110).
+        _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
+        _allowed_prefixes.extend(
+            str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
+        )
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
             info = skill_cmds[cmd_key]
             skill_path = info.get("skill_md_path", "")
-            if not skill_path.startswith(_skills_dir):
+            if not skill_path:
+                continue
+            if not any(skill_path.startswith(prefix) for prefix in _allowed_prefixes):
                 continue
             if skill_path.startswith(_hub_dir):
                 continue
@@ -721,24 +734,40 @@ def discord_skill_commands(
 def discord_skill_commands_by_category(
     reserved_names: set[str],
 ) -> tuple[dict[str, list[tuple[str, str, str]]], list[tuple[str, str, str]], int]:
-    """Return skill entries organized by category for Discord ``/skill`` subcommand groups.
+    """Return skill entries organized by category for Discord ``/skill`` autocomplete.
 
-    Skills whose directory is nested at least 2 levels under ``SKILLS_DIR``
+    Skills whose directory is nested at least 2 levels under a scan root
     (e.g. ``creative/ascii-art/SKILL.md``) are grouped by their top-level
     category.  Root-level skills (e.g. ``dogfood/SKILL.md``) are returned as
-    *uncategorized* — the caller should register them as direct subcommands
-    of the ``/skill`` group.
+    *uncategorized*.
 
-    The same filtering as :func:`discord_skill_commands` is applied: hub
-    skills excluded, per-platform disabled excluded, names clamped.
+    Scan roots include the local ``SKILLS_DIR`` **and** any configured
+    ``skills.external_dirs`` — matching the widened filter applied to the
+    flat ``discord_skill_commands()`` collector in #18741. Without this
+    parity, external-dir skills are visible via ``hermes skills list`` and
+    the agent's ``/skill-name`` dispatch but silently absent from Discord's
+    ``/skill`` autocomplete.
+
+    Filtering mirrors :func:`discord_skill_commands`: hub skills excluded,
+    per-platform disabled excluded, names clamped to 32 chars, descriptions
+    clamped to 100 chars.
+
+    The legacy 25-group × 25-subcommand caps (from the old nested
+    ``/skill <cat> <name>`` layout) are **not** applied — the live caller
+    (``_register_skill_group`` in ``gateway/platforms/discord.py``, refactored
+    in PR #11580) flattens these results and feeds them into a single
+    autocomplete callback, which scales to thousands of entries without any
+    per-command payload concerns. ``hidden_count`` is retained in the return
+    tuple for backward compatibility and still reports skills dropped for
+    other reasons (32-char clamp collision vs a reserved name).
 
     Returns:
         ``(categories, uncategorized, hidden_count)``
 
         - *categories*: ``{category_name: [(name, description, cmd_key), ...]}``
         - *uncategorized*: ``[(name, description, cmd_key), ...]``
-        - *hidden_count*: skills dropped due to Discord group limits
-          (25 subcommand groups, 25 subcommands per group)
+        - *hidden_count*: skills dropped due to name clamp collisions
+          against already-registered command names.
     """
     from pathlib import Path as _P
 
@@ -757,9 +786,23 @@ def discord_skill_commands_by_category(
 
     try:
         from agent.skill_commands import get_skill_commands
+        from agent.skill_utils import get_external_skills_dirs
         from tools.skills_tool import SKILLS_DIR
+
         _skills_dir = SKILLS_DIR.resolve()
         _hub_dir = (SKILLS_DIR / ".hub").resolve()
+        # Build list of (resolved_root, is_local) tuples. Each external dir
+        # becomes its own scan root for category derivation — a skill at
+        # ``<external>/mlops/foo/SKILL.md`` is still categorized as "mlops".
+        _scan_roots: list[_P] = [_skills_dir]
+        try:
+            for ext in get_external_skills_dirs():
+                try:
+                    _scan_roots.append(_P(ext).resolve())
+                except Exception:
+                    continue
+        except Exception:
+            pass
         skill_cmds = get_skill_commands()
 
         for cmd_key in sorted(skill_cmds):
@@ -768,10 +811,21 @@ def discord_skill_commands_by_category(
             if not skill_path:
                 continue
             sp = _P(skill_path).resolve()
-            # Skip skills outside SKILLS_DIR or from the hub
-            if not str(sp).startswith(str(_skills_dir)):
-                continue
+            # Hub skills are loaded via the skill hub, not surfaced as
+            # slash commands.
             if str(sp).startswith(str(_hub_dir)):
+                continue
+            # Accept skill if it lives under any scan root; record the
+            # matching root so we can derive the category correctly.
+            matched_root: _P | None = None
+            for root in _scan_roots:
+                try:
+                    sp.relative_to(root)
+                except ValueError:
+                    continue
+                matched_root = root
+                break
+            if matched_root is None:
                 continue
 
             skill_name = info.get("name", "")
@@ -779,9 +833,13 @@ def discord_skill_commands_by_category(
                 continue
 
             raw_name = cmd_key.lstrip("/")
-            # Clamp to 32 chars (Discord limit)
+            # Clamp to 32 chars (Discord per-command name limit)
             discord_name = raw_name[:32]
             if discord_name in _names_used:
+                # Collision with a previously-registered name — drop and
+                # count. Almost always caused by a reserved built-in name,
+                # not by another skill (frontmatter names are unique).
+                hidden += 1
                 continue
             _names_used.add(discord_name)
 
@@ -789,12 +847,9 @@ def discord_skill_commands_by_category(
             if len(desc) > 100:
                 desc = desc[:97] + "..."
 
-            # Determine category from the relative path within SKILLS_DIR.
-            # e.g. creative/ascii-art/SKILL.md → parts = ("creative", "ascii-art")
-            try:
-                rel = sp.parent.relative_to(_skills_dir)
-            except ValueError:
-                continue
+            # Determine category from the relative path within the matched
+            # scan root. e.g. creative/ascii-art/SKILL.md → ("creative", ...)
+            rel = sp.parent.relative_to(matched_root)
             parts = rel.parts
             if len(parts) >= 2:
                 cat = parts[0]
@@ -804,28 +859,7 @@ def discord_skill_commands_by_category(
     except Exception:
         pass
 
-    # Enforce Discord limits: 25 subcommand groups, 25 subcommands each ------
-    _MAX_GROUPS = 25
-    _MAX_PER_GROUP = 25
-
-    trimmed_categories: dict[str, list[tuple[str, str, str]]] = {}
-    group_count = 0
-    for cat in sorted(categories):
-        if group_count >= _MAX_GROUPS:
-            hidden += len(categories[cat])
-            continue
-        entries = categories[cat][:_MAX_PER_GROUP]
-        hidden += max(0, len(categories[cat]) - _MAX_PER_GROUP)
-        trimmed_categories[cat] = entries
-        group_count += 1
-
-    # Uncategorized skills also count against the 25 top-level limit
-    remaining_slots = _MAX_GROUPS - group_count
-    if len(uncategorized) > remaining_slots:
-        hidden += len(uncategorized) - remaining_slots
-        uncategorized = uncategorized[:remaining_slots]
-
-    return trimmed_categories, uncategorized, hidden
+    return categories, uncategorized, hidden
 
 
 # ---------------------------------------------------------------------------
@@ -838,6 +872,13 @@ def discord_skill_commands_by_category(
 _SLACK_MAX_SLASH_COMMANDS = 50
 _SLACK_NAME_LIMIT = 32
 _SLACK_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
+_SLACK_RESERVED_COMMANDS = frozenset({
+    # Built-in Slack slash commands that cannot be registered by apps.
+    # https://slack.com/help/articles/201259356-Use-built-in-slash-commands
+    "me", "status", "away", "dnd", "shrug", "remind", "msg", "feed",
+    "who", "collapse", "expand", "leave", "join", "open", "search",
+    "topic", "mute", "pro", "shortcuts",
+})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -864,6 +905,10 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     documented form (e.g. ``/background``, ``/bg``, and ``/btw`` all work).
     Plugin-registered slash commands are included too.
 
+    Commands whose sanitized name collides with a Slack built-in
+    (e.g. ``/status``, ``/me``, ``/join``) are silently skipped.  Users
+    can still reach them via ``/hermes <command>``.
+
     Results are clamped to Slack's 50-command limit with duplicate-name
     avoidance. ``/hermes`` is always reserved as the first entry so the
     legacy ``/hermes <subcommand>`` form keeps working for anything that
@@ -880,6 +925,8 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     def _add(name: str, desc: str, hint: str) -> None:
         slack_name = _sanitize_slack_name(name)
         if not slack_name or slack_name in seen:
+            return
+        if slack_name in _SLACK_RESERVED_COMMANDS:
             return
         if len(entries) >= _SLACK_MAX_SLASH_COMMANDS:
             return

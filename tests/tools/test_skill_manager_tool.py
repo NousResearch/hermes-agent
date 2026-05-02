@@ -371,6 +371,57 @@ class TestDeleteSkill:
             _delete_skill("my-skill")
         assert not (tmp_path / "devops").exists()
 
+    def test_delete_with_absorbed_into_valid_target(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("umbrella", VALID_SKILL_CONTENT)
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            result = _delete_skill("narrow", absorbed_into="umbrella")
+        assert result["success"] is True
+        assert "absorbed into 'umbrella'" in result["message"]
+        assert not (tmp_path / "narrow").exists()
+        assert (tmp_path / "umbrella").exists()
+
+    def test_delete_with_absorbed_into_empty_string_means_pruned(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("stale-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("stale-skill", absorbed_into="")
+        assert result["success"] is True
+        # Empty absorbed_into is explicit prune — no "absorbed into" suffix in message
+        assert "absorbed into" not in result["message"]
+
+    def test_delete_with_absorbed_into_nonexistent_target_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            result = _delete_skill("narrow", absorbed_into="ghost-umbrella")
+        assert result["success"] is False
+        assert "does not exist" in result["error"]
+        # Skill must NOT have been deleted on validation failure
+        assert (tmp_path / "narrow").exists()
+
+    def test_delete_with_absorbed_into_equals_self_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            result = _delete_skill("narrow", absorbed_into="narrow")
+        assert result["success"] is False
+        assert "cannot equal" in result["error"]
+        assert (tmp_path / "narrow").exists()
+
+    def test_delete_with_absorbed_into_whitespace_only_treated_as_prune(self, tmp_path):
+        # Leading/trailing whitespace only: .strip() → "" → pruned path
+        with _skill_dir(tmp_path):
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            result = _delete_skill("narrow", absorbed_into="   ")
+        assert result["success"] is True
+        assert "absorbed into" not in result["message"]
+
+    def test_delete_without_absorbed_into_backward_compat(self, tmp_path):
+        # Legacy callers that don't pass the arg still work — the curator
+        # reconciler falls back to its heuristic+YAML logic for such deletes.
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("my-skill")
+        assert result["success"] is True
+
 
 # ---------------------------------------------------------------------------
 # write_file / remove_file
@@ -484,6 +535,25 @@ class TestSkillManageDispatcher:
             raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
         result = json.loads(raw)
         assert result["success"] is True
+
+    def test_delete_via_dispatcher_threads_absorbed_into(self, tmp_path):
+        # Dispatcher must plumb absorbed_into through to _delete_skill so the
+        # validation + message suffix paths are exercised end-to-end.
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="umbrella", content=VALID_SKILL_CONTENT)
+            skill_manage(action="create", name="narrow", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(action="delete", name="narrow", absorbed_into="umbrella")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "absorbed into 'umbrella'" in result["message"]
+
+    def test_delete_via_dispatcher_rejects_missing_absorbed_target(self, tmp_path):
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="narrow", content=VALID_SKILL_CONTENT)
+            raw = skill_manage(action="delete", name="narrow", absorbed_into="ghost")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "does not exist" in result["error"]
 
 
 class TestSecurityScanGate:

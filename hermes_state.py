@@ -514,7 +514,7 @@ class SessionDB:
     # Session lifecycle
     # =========================================================================
 
-    def create_session(
+    def _insert_session_row(
         self,
         session_id: str,
         source: str,
@@ -523,8 +523,8 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
-    ) -> str:
-        """Create a new session record. Returns the session_id."""
+    ) -> None:
+        """Shared INSERT OR IGNORE for session rows."""
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
@@ -542,8 +542,11 @@ class SessionDB:
                 ),
             )
         self._execute_write(_do)
-        return session_id
 
+    def create_session(self, session_id: str, source: str, **kwargs) -> str:
+        """Create a new session record. Returns the session_id."""
+        self._insert_session_row(session_id, source, **kwargs)
+        return session_id
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended.
 
@@ -679,21 +682,41 @@ class SessionDB:
         session_id: str,
         source: str = "unknown",
         model: str = None,
-    ) -> None:
-        """Ensure a session row exists, creating it with minimal metadata if absent.
+        **kwargs,
+    ) -> str:
+        """Ensure a session row exists (INSERT OR IGNORE). Accepts optional kwargs."""
+        self._insert_session_row(session_id, source, model=model, **kwargs)
+        return session_id
 
-        Used by _flush_messages_to_session_db to recover from a failed
-        create_session() call (e.g. transient SQLite lock at agent startup).
-        INSERT OR IGNORE is safe to call even when the row already exists.
-        """
+    def prune_empty_ghost_sessions(self, sessions_dir: "Optional[Path]" = None) -> int:
+        """Remove empty TUI ghost sessions (no messages, no title, >24hr old)."""
+        cutoff = time.time() - 86400  # Only sessions older than 24 hours
+
         def _do(conn):
-            conn.execute(
-                """INSERT OR IGNORE INTO sessions
-                   (id, source, model, started_at)
-                   VALUES (?, ?, ?, ?)""",
-                (session_id, source, model, time.time()),
-            )
-        self._execute_write(_do)
+            rows = conn.execute("""
+                SELECT id FROM sessions
+                WHERE source = 'tui'
+                  AND title IS NULL
+                  AND ended_at IS NOT NULL
+                  AND started_at < ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id
+                  )
+            """, (cutoff,)).fetchall()
+            ids = [r[0] if isinstance(r, (tuple, list)) else r["id"] for r in rows]
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                conn.execute(
+                    f"DELETE FROM sessions WHERE id IN ({placeholders})", ids
+                )
+            return ids
+
+        removed_ids = self._execute_write(_do) or []
+        # Clean up any on-disk session files (belt-and-suspenders)
+        if sessions_dir and removed_ids:
+            for sid in removed_ids:
+                self._remove_session_files(sessions_dir, sid)
+        return len(removed_ids)
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""

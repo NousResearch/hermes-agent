@@ -13,6 +13,7 @@ from hermes_cli.commands import (
     SlashCommandAutoSuggest,
     SlashCommandCompleter,
     _CMD_NAME_LIMIT,
+    _SLACK_RESERVED_COMMANDS,
     _TG_NAME_LIMIT,
     _clamp_command_names,
     _clamp_telegram_names,
@@ -299,8 +300,18 @@ class TestSlackNativeSlashes:
     def test_includes_canonical_commands(self):
         names = {n for n, _d, _h in slack_native_slashes()}
         # Sample of gateway-available canonical commands
-        for expected in ("new", "stop", "background", "model", "help", "status"):
+        for expected in ("new", "stop", "background", "model", "help"):
             assert expected in names, f"missing canonical /{expected}"
+
+    def test_excludes_slack_reserved_commands(self):
+        """Slack built-in commands (e.g. /status, /me, /join) cannot be
+        registered by apps and must be excluded from the manifest.
+        Users can still reach them via /hermes <command>."""
+        names = {n for n, _d, _h in slack_native_slashes()}
+        for reserved in _SLACK_RESERVED_COMMANDS:
+            assert reserved not in names, (
+                f"/{reserved} is a Slack built-in and must not appear in the manifest"
+            )
 
     def test_includes_aliases_as_first_class_slashes(self):
         """Aliases (/btw, /bg, /reset, /q) must be registered as standalone
@@ -319,6 +330,9 @@ class TestSlackNativeSlashes:
         Telegram but not Slack (because of Slack's 50-slash cap), this
         test fails loudly so we can curate the list rather than silently
         dropping parity.
+
+        Slack-reserved built-in commands (e.g. /status) are excluded
+        from parity checks since they cannot be registered on Slack.
         """
         slack_names = {n for n, _d, _h in slack_native_slashes()}
         tg_names = {n for n, _d in telegram_bot_commands()}
@@ -329,7 +343,8 @@ class TestSlackNativeSlashes:
 
         slack_norm = {_norm(n) for n in slack_names}
         tg_norm = {_norm(n) for n in tg_names}
-        missing = tg_norm - slack_norm
+        reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
+        missing = (tg_norm - slack_norm) - reserved_norm
         assert not missing, (
             f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
         )
@@ -884,6 +899,73 @@ class TestTelegramMenuCommands:
         assert "my_enabled_skill" in menu_names
         assert "my_disabled_skill" not in menu_names
 
+    def test_external_dir_skills_included_in_telegram_menu(self, tmp_path, monkeypatch):
+        """External skills (``skills.external_dirs``) must appear in the Telegram menu.
+
+        Regression test for #8110 — external skills were visible to the
+        agent and CLI but silently excluded from gateway slash menus
+        because ``_collect_gateway_skill_entries`` only accepted skills
+        whose path started with ``SKILLS_DIR``.
+
+        Also verifies the trailing-slash boundary: a directory that
+        simply shares a prefix with a configured ``external_dirs`` entry
+        (``/tmp/my-skills-extra`` vs ``/tmp/my-skills``) must NOT be
+        admitted.
+        """
+        from unittest.mock import patch
+
+        local_dir = tmp_path / "skills"
+        local_dir.mkdir()
+        external_dir = tmp_path / "my-skills"
+        external_dir.mkdir()
+        lookalike_dir = tmp_path / "my-skills-extra"
+        lookalike_dir.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_dir}\n"
+        )
+
+        fake_cmds = {
+            "/local-one": {
+                "name": "local-one",
+                "description": "Local",
+                "skill_md_path": f"{local_dir}/local-one/SKILL.md",
+                "skill_dir": f"{local_dir}/local-one",
+            },
+            "/morning-briefing": {
+                "name": "morning-briefing",
+                "description": "External skill",
+                "skill_md_path": f"{external_dir}/morning-briefing/SKILL.md",
+                "skill_dir": f"{external_dir}/morning-briefing",
+            },
+            "/lookalike-skill": {
+                "name": "lookalike-skill",
+                "description": "Lives in a sibling dir that shares a prefix",
+                "skill_md_path": f"{lookalike_dir}/lookalike-skill/SKILL.md",
+                "skill_dir": f"{lookalike_dir}/lookalike-skill",
+            },
+        }
+
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=[external_dir],
+            ),
+        ):
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        menu_names = {n for n, _ in menu}
+        assert "local_one" in menu_names, "local skill must appear"
+        assert "morning_briefing" in menu_names, (
+            "external skill from skills.external_dirs must appear (fixes #8110)"
+        )
+        assert "lookalike_skill" not in menu_names, (
+            "prefix-match sibling directories must not be admitted"
+        )
+
     def test_special_chars_in_skill_names_sanitized(self, tmp_path, monkeypatch):
         """Skills with +, /, or other special chars produce valid Telegram names."""
         from unittest.mock import patch
@@ -1337,6 +1419,119 @@ class TestDiscordSkillCommandsByCategory:
         assert "axolotl" in names
         assert "vllm" in names
         assert len(uncategorized) == 0
+
+    def test_no_legacy_25x25_cap(self, tmp_path, monkeypatch):
+        """The old nested-layout caps (25 groups × 25 skills/group) are gone.
+
+        The live caller flattens categories into a single autocomplete list,
+        which Discord fetches dynamically — the per-command 8KB payload
+        concern from the old nested layout (#11321, #10259) no longer applies.
+        Guards against accidentally re-introducing the caps, which would
+        silently drop skills in the 26th+ alphabetical category (the exact
+        failure mode users were hitting with 29 category dirs on real
+        installs).
+        """
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+
+        # Build 30 categories (> old _MAX_GROUPS=25) each with 30 skills
+        # (> old _MAX_PER_GROUP=25).
+        fake_cmds = {}
+        for c in range(30):
+            cat = f"cat{c:02d}"  # cat00, cat01, ..., cat29 — 30 categories
+            for s in range(30):
+                name = f"skill-{c:02d}-{s:02d}"
+                skill_subdir = tmp_path / "skills" / cat / name
+                skill_subdir.mkdir(parents=True, exist_ok=True)
+                (skill_subdir / "SKILL.md").write_text("---\nname: x\n---\n")
+                fake_cmds[f"/{name}"] = {
+                    "name": name,
+                    "description": f"Category {cat} skill {s}",
+                    "skill_md_path": f"{fake_skills_dir}/{cat}/{name}/SKILL.md",
+                }
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        # Every category should be present — no 25-group cap
+        assert len(categories) == 30, (
+            f"expected all 30 categories, got {len(categories)} "
+            f"(cap from old nested layout must be removed)"
+        )
+        # Every skill in every category must be present — no 25-per-group cap
+        for cat_name, entries in categories.items():
+            assert len(entries) == 30, (
+                f"category {cat_name}: expected 30 skills, got {len(entries)} "
+                f"(cap from old nested layout must be removed)"
+            )
+        # Nothing should be reported hidden for the cap reason (the only
+        # legitimate hidden reason now is name clamp collisions, which
+        # don't happen here since all names are unique).
+        assert hidden == 0
+
+    def test_external_dirs_skills_included(self, tmp_path, monkeypatch):
+        """Skills in ``skills.external_dirs`` must appear in /skill autocomplete.
+
+        #18741 fixed this for the flat ``discord_skill_commands`` collector
+        but left ``discord_skill_commands_by_category`` (the live caller for
+        Discord's ``/skill`` command) still filtering by
+        ``SKILLS_DIR`` prefix only. Regression guard that both collectors
+        now accept external-dir skills.
+        """
+        from unittest.mock import patch
+
+        local_skills_dir = tmp_path / "local-skills"
+        external_dir = tmp_path / "external-skills"
+
+        (local_skills_dir / "creative" / "local-skill").mkdir(parents=True)
+        (local_skills_dir / "creative" / "local-skill" / "SKILL.md").write_text("")
+
+        (external_dir / "mlops" / "external-skill").mkdir(parents=True)
+        (external_dir / "mlops" / "external-skill" / "SKILL.md").write_text("")
+
+        fake_cmds = {
+            "/local-skill": {
+                "name": "local-skill",
+                "description": "Local",
+                "skill_md_path": str(local_skills_dir / "creative" / "local-skill" / "SKILL.md"),
+            },
+            "/external-skill": {
+                "name": "external-skill",
+                "description": "External",
+                "skill_md_path": str(external_dir / "mlops" / "external-skill" / "SKILL.md"),
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills_dir),
+            patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=[external_dir],
+            ),
+        ):
+            categories, uncategorized, hidden = discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+
+        # Local skill → grouped under "creative"
+        assert "creative" in categories
+        assert any(n == "local-skill" for n, _d, _k in categories["creative"])
+        # External skill → grouped under its own top-level dir "mlops"
+        assert "mlops" in categories, (
+            "external-dir skills must be included — the old SKILLS_DIR-only "
+            "prefix check was broken for by_category (completes #18741)"
+        )
+        assert any(n == "external-skill" for n, _d, _k in categories["mlops"])
+        assert uncategorized == []
+        assert hidden == 0
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 """Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
 
+import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +19,7 @@ from hermes_cli.auth import (
     KIMI_CODE_BASE_URL,
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL,
+    _load_auth_store as _REAL_LOAD_AUTH_STORE,
     _resolve_kimi_base_url,
 )
 from hermes_cli.copilot_auth import _try_gh_cli_token
@@ -995,6 +998,45 @@ class TestZaiEndpointAutoDetect:
         )
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+
+    def test_probe_success_persists_detected_endpoint(self, monkeypatch):
+        monkeypatch.setenv("GLM_API_KEY", "glm-coding-key")
+        monkeypatch.setattr("hermes_cli.auth._load_auth_store", _REAL_LOAD_AUTH_STORE)
+        hermes_home = Path(os.environ["HERMES_HOME"])
+        previous_active_provider = "previous-provider"
+        previous_provider_state = {
+            "tokens": {
+                "access_token": "previous-at",
+                "refresh_token": "previous-rt",
+            }
+        }
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "active_provider": previous_active_provider,
+            "providers": {
+                previous_active_provider: previous_provider_state,
+            },
+        }))
+        monkeypatch.setattr(
+            "hermes_cli.auth.detect_zai_endpoint",
+            lambda *a, **kw: {
+                "id": "coding-global",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "model": "glm-5.1",
+                "label": "Global (Coding Plan)",
+            },
+        )
+
+        creds = resolve_api_key_provider_credentials("zai")
+
+        assert creds["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+        payload = json.loads((hermes_home / "auth.json").read_text())
+        detected = payload["providers"]["zai"]["detected_endpoint"]
+        assert detected["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+        assert detected["endpoint_id"] == "coding-global"
+        assert detected["model"] == "glm-5.1"
+        assert payload.get("active_provider") == previous_active_provider
+        assert payload["providers"][previous_active_provider] == previous_provider_state
 
     def test_probe_failure_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "glm-key")

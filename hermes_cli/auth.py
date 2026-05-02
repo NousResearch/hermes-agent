@@ -667,14 +667,18 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     if detected and detected.get("base_url"):
         # Persist the detection result keyed on the API key hash.
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
-        state["detected_endpoint"] = {
-            "base_url": detected["base_url"],
-            "endpoint_id": detected.get("id", ""),
-            "model": detected.get("model", ""),
-            "label": detected.get("label", ""),
-            "key_hash": key_hash,
-        }
-        _save_provider_state(auth_store, "zai", state)
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            state = _load_provider_state(auth_store, "zai") or {}
+            state["detected_endpoint"] = {
+                "base_url": detected["base_url"],
+                "endpoint_id": detected.get("id", ""),
+                "model": detected.get("model", ""),
+                "label": detected.get("label", ""),
+                "key_hash": key_hash,
+            }
+            _store_provider_state(auth_store, "zai", state, set_active=False)
+            _save_auth_store(auth_store)
         logger.info("Z.AI: auto-detected endpoint %s (%s)", detected["label"], detected["base_url"])
         return detected["base_url"]
 

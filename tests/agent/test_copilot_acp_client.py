@@ -203,6 +203,84 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertNotIn("abc123def456", content)
         self.assertIn("OPENAI_API_KEY=", content)
 
+    def test_fs_read_text_file_decodes_as_utf8_under_non_utf8_locale(self) -> None:
+        """Regression for #18637 (bug 2): fs/read_text_file used
+        ``path.read_text()`` with no explicit encoding, so on Windows
+        GBK/CP932/CP949 locales the Copilot read_file tool crashed on any
+        source file with non-ASCII content (e.g. a CJK comment, an em dash,
+        or UTF-8 BOM)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "note.md"
+            target.write_text("# 中文标题\nem dash — here\n", encoding="utf-8")
+
+            original_read_text = Path.read_text
+
+            def strict_read_text(self, encoding=None, errors=None, **kwargs):
+                if self == target and encoding != "utf-8":
+                    raise UnicodeDecodeError(
+                        "gbk", b"\x94", 0, 1, "illegal multibyte sequence"
+                    )
+                return original_read_text(
+                    self, encoding=encoding, errors=errors, **kwargs
+                )
+
+            with patch.object(Path, "read_text", strict_read_text):
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 10,
+                        "method": "fs/read_text_file",
+                        "params": {"path": str(target)},
+                    },
+                    cwd=str(root),
+                )
+
+        self.assertNotIn("error", response)
+        content = ((response.get("result") or {}).get("content") or "")
+        self.assertIn("中文标题", content)
+        self.assertIn("em dash —", content)
+
+    def test_fs_write_text_file_encodes_as_utf8(self) -> None:
+        """Regression for #18637 (bug 2): fs/write_text_file used
+        ``path.write_text()`` with no explicit encoding, so on non-UTF-8
+        locales the Copilot write tool could not emit code/config files
+        containing any char outside the platform codec."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "out.md"
+            payload = "# 中文标题\nem dash — here\n"
+
+            original_write_text = Path.write_text
+
+            def strict_write_text(
+                self, data, encoding=None, errors=None, **kwargs
+            ):
+                if self == target and encoding != "utf-8":
+                    raise UnicodeEncodeError(
+                        "gbk", data, 0, 1, "illegal multibyte sequence"
+                    )
+                return original_write_text(
+                    self, data, encoding=encoding, errors=errors, **kwargs
+                )
+
+            with patch.object(Path, "write_text", strict_write_text):
+                response = self._dispatch(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 11,
+                        "method": "fs/write_text_file",
+                        "params": {
+                            "path": str(target),
+                            "content": payload,
+                        },
+                    },
+                    cwd=str(root),
+                )
+
+            self.assertNotIn("error", response)
+            self.assertEqual(target.read_text(encoding="utf-8"), payload)
+
     def test_write_text_file_reuses_write_denylist(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir) / "home"

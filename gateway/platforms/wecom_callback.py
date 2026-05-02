@@ -185,16 +185,25 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         app = self._resolve_app_for_chat(chat_id)
-        touser = chat_id.split(":", 1)[1] if ":" in chat_id else chat_id
+        metadata = metadata or {}
+        is_group = metadata.get("chat_type") == "group"
+
         try:
             token = await self._get_access_token(app)
             payload = {
-                "touser": touser,
                 "msgtype": "text",
                 "agentid": int(str(app.get("agent_id") or 0)),
                 "text": {"content": content[:2048]},
                 "safe": 0,
             }
+            if is_group:
+                # Group message: use chatid (WeCom group chat ID)
+                payload["chatid"] = chat_id
+            else:
+                # DM: use touser
+                touser = chat_id.split(":", 1)[1] if ":" in chat_id else chat_id
+                payload["touser"] = touser
+
             resp = await self._http_client.post(
                 f"https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token={token}",
                 json=payload,
@@ -222,7 +231,9 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         return app or self._apps[0]
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        return {"name": chat_id, "type": "dm"}
+        app = self._resolve_app_for_chat(chat_id)
+        is_group = ":" not in chat_id and len(chat_id) > 20  # WeCom group IDs are long
+        return {"name": chat_id, "type": "group" if is_group else "dm"}
 
     # ------------------------------------------------------------------
     # Inbound: HTTP callback handlers
@@ -318,11 +329,23 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     def _build_event(self, app: Dict[str, Any], xml_text: str) -> Optional[MessageEvent]:
         root = ET.fromstring(xml_text)
         msg_type = (root.findtext("MsgType") or "").lower()
+
         # Silently acknowledge lifecycle events.
         if msg_type == "event":
             event_name = (root.findtext("Event") or "").lower()
             if event_name in {"enter_agent", "subscribe"}:
                 return None
+
+        # ------------------------------------------------------------------
+        # Group chat message (群聊消息)
+        # WeCom delivers group messages with MsgType="event" and
+        # Event="click"/"view" or with a <GroupChat> wrapper element.
+        # The inner XML has <GroupChat><MsgList>...
+        # ------------------------------------------------------------------
+        group_chat = root.find("GroupChat")
+        if group_chat is not None:
+            return self._build_group_event(app, xml_text, group_chat)
+
         if msg_type not in {"text", "event"}:
             return None
 
@@ -330,8 +353,6 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         corp_id = root.findtext("ToUserName", default=app.get("corp_id", ""))
         scoped_chat_id = self._user_app_key(corp_id, user_id)
         content = root.findtext("Content", default="").strip()
-        if not content and msg_type == "event":
-            content = "/start"
         msg_id = (
             root.findtext("MsgId")
             or f"{user_id}:{root.findtext('CreateTime', default='0')}"
@@ -350,6 +371,94 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             raw_message=xml_text,
             message_id=msg_id,
         )
+
+    def _build_group_event(
+        self, app: Dict[str, Any], xml_text: str, group_chat: ET.Element,
+    ) -> Optional[MessageEvent]:
+        """Parse a group-chat callback from WeCom.
+        
+        WeCom delivers group messages inside:
+        <GroupChat>
+          <ChatId>GROUP_CHAT_ID</ChatId>
+          <MsgList>
+            <Msg>
+              <MsgId>...</MsgId>
+              <FromUserName>USER_ID</FromUserName>
+              <MsgType>text</MsgType>
+              <Content>...</Content>
+              <CreateTime>1234567890</CreateTime>
+            </Msg>
+            ...
+          </MsgList>
+        </GroupChat>
+        
+        We iterate through MsgList and emit one MessageEvent per message.
+        If the group is added to Hermes (via add_bot_to_chat), WeCom starts
+        sending these callbacks automatically.
+        """
+        chat_id = group_chat.findtext("ChatId", default="")
+        if not chat_id:
+            return None
+
+        # Namespace for group message elements
+        msg_list = group_chat.find("MsgList")
+        if msg_list is None:
+            return None
+
+        events = []
+        for msg_elem in list(msg_list)[:10]:  # process up to 10 msgs per callback
+            msg_id = msg_elem.findtext("MsgId") or ""
+            user_id = msg_elem.findtext("FromUserName", default="")
+            inner_msg_type = (msg_elem.findtext("MsgType") or "").lower()
+            create_time = msg_elem.findtext("CreateTime", default="0")
+
+            # Deduplicate
+            if msg_id:
+                now = time.time()
+                if msg_id in self._seen_messages:
+                    if now - self._seen_messages[msg_id] < MESSAGE_DEDUP_TTL_SECONDS:
+                        continue
+                self._seen_messages[msg_id] = now
+                if len(self._seen_messages) > 2000:
+                    cutoff = now - MESSAGE_DEDUP_TTL_SECONDS
+                    self._seen_messages = {k: v for k, v in self._seen_messages.items() if v > cutoff}
+
+            # Only handle text messages for now
+            if inner_msg_type != "text":
+                continue
+
+            content = msg_elem.findtext("Content", default="").strip()
+            if not content:
+                continue
+
+            source = self.build_source(
+                chat_id=chat_id,
+                chat_name=chat_id,
+                chat_type="group",
+                user_id=user_id,
+                user_name=user_id,
+            )
+            events.append(
+                MessageEvent(
+                    text=content,
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    raw_message=xml_text,
+                    message_id=msg_id or f"{user_id}:{create_time}",
+                )
+            )
+
+        # Queue all events; return the first for synchronous dispatch
+        for event in events[1:]:
+            asyncio.create_task(self._queue_group_event(event))
+        return events[0] if events else None
+
+    async def _queue_group_event(self, event: MessageEvent) -> None:
+        """Queue a group event from the batch loop."""
+        try:
+            await self._message_queue.put(event)
+        except Exception:
+            logger.exception("[WecomCallback] Failed to queue group event")
 
     def _crypt_for_app(self, app: Dict[str, Any]) -> WXBizMsgCrypt:
         return WXBizMsgCrypt(

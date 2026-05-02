@@ -1,6 +1,6 @@
 ---
 sidebar_position: 16
-title: "Persistent Goals (`/goal`)"
+title: "Persistent Goals"
 description: "Set a standing goal and let Hermes keep working across turns until it's done. Our take on the Ralph loop."
 ---
 

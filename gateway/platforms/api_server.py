@@ -829,17 +829,6 @@ class APIServerAdapter(BasePlatformAdapter):
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         model = model_override or _resolve_gateway_model()
 
-        # If model is overridden via API, dynamically detect the correct provider
-        # so the system prompt and API routing reflect the requested model.
-        if model_override:
-            from hermes_cli.models import detect_provider_for_model
-            current_provider = runtime_kwargs.get("provider", "")
-            detected = detect_provider_for_model(model_override, current_provider)
-            if detected:
-                provider_id, mapped_model = detected
-                runtime_kwargs["provider"] = provider_id
-                model = mapped_model
-
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 

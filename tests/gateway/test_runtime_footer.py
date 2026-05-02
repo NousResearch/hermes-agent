@@ -95,6 +95,39 @@ def test_format_footer_context_pct_clamped_to_100():
     assert out == "100%"
 
 
+def test_format_footer_context_full_shows_used_max_and_percent():
+    out = format_runtime_footer(
+        model="m",
+        context_tokens=87_000,
+        context_length=400_000,
+        cwd="",
+        fields=("context_full",),
+    )
+    assert out == "ctx 87k/400k (22%)"
+
+
+def test_format_footer_context_full_skips_missing_context_length():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=87_000,
+        context_length=None,
+        cwd="/tmp/wd",
+        fields=("model", "context_full", "cwd"),
+    )
+    assert out == "gpt-5.4 · /tmp/wd"
+
+
+def test_format_footer_context_full_skips_zero_context_length():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=87_000,
+        context_length=0,
+        cwd="/tmp/wd",
+        fields=("model", "context_full", "cwd"),
+    )
+    assert out == "gpt-5.4 · /tmp/wd"
+
+
 def test_format_footer_context_pct_never_negative():
     out = format_runtime_footer(
         model="m",
@@ -135,6 +168,17 @@ def test_format_footer_custom_field_order():
         fields=("context_pct", "model"),  # swapped + no cwd
     )
     assert out == "50% · gpt-5.4"
+
+
+def test_format_footer_custom_field_order_with_context_full():
+    out = format_runtime_footer(
+        model="openai/gpt-5.5",
+        context_tokens=87_000,
+        context_length=400_000,
+        cwd="/opt/project",
+        fields=("model", "context_full", "cwd"),
+    )
+    assert out == "gpt-5.5 · ctx 87k/400k (22%) · /opt/project"
 
 
 def test_format_footer_unknown_field_silently_ignored():
@@ -229,6 +273,25 @@ def test_build_footer_returns_rendered_when_enabled(monkeypatch, tmp_path):
     (tmp_path / "proj").mkdir(exist_ok=True)
     assert "gpt-5.4" in out
     assert "25%" in out
+
+
+def test_build_footer_context_full_when_configured():
+    out = build_footer_line(
+        user_config={
+            "display": {
+                "runtime_footer": {
+                    "enabled": True,
+                    "fields": ["model", "context_full", "cwd"],
+                },
+            },
+        },
+        platform_key="telegram",
+        model="openai/gpt-5.5",
+        context_tokens=87_000,
+        context_length=400_000,
+        cwd="/tmp/projects",
+    )
+    assert out == "gpt-5.5 · ctx 87k/400k (22%) · /tmp/projects"
 
 
 def test_build_footer_per_platform_off_suppresses():

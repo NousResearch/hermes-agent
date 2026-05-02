@@ -1,7 +1,7 @@
 """Gateway runtime-metadata footer.
 
-Renders a compact footer showing runtime state (model, context %, cwd) and
-appends it to the FINAL message of an agent turn when enabled.  Off by default
+Renders a compact footer showing runtime state (model, context %, context tokens,
+cwd) and appends it to the FINAL message of an agent turn when enabled.  Off by default
 to keep replies minimal.
 
 Config (``~/.hermes/config.yaml``)::
@@ -9,7 +9,7 @@ Config (``~/.hermes/config.yaml``)::
     display:
       runtime_footer:
         enabled: true                       # off by default
-        fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        fields: [model, context_pct, cwd]   # context_full also supported
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -52,6 +52,24 @@ def _model_short(model: Optional[str]) -> str:
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+def _context_pct(context_tokens: int, context_length: int) -> int:
+    """Return a clamped integer context percentage."""
+    return max(0, min(100, round((context_tokens / context_length) * 100)))
+
+
+def _format_k_tokens(tokens: int) -> str:
+    """Render token counts in compact thousands for footer display."""
+    return f"{round(tokens / 1000)}k"
+
+
+def _context_full(context_tokens: int, context_length: Optional[int]) -> str:
+    """Render compact used/max context, or empty string when unavailable."""
+    if not context_length or context_length <= 0 or context_tokens < 0:
+        return ""
+    pct = _context_pct(context_tokens, context_length)
+    return f"ctx {_format_k_tokens(context_tokens)}/{_format_k_tokens(context_length)} ({pct}%)"
 
 
 def resolve_footer_config(
@@ -110,8 +128,11 @@ def format_runtime_footer(
                 parts.append(m)
         elif field == "context_pct":
             if context_length and context_length > 0 and context_tokens >= 0:
-                pct = max(0, min(100, round((context_tokens / context_length) * 100)))
-                parts.append(f"{pct}%")
+                parts.append(f"{_context_pct(context_tokens, context_length)}%")
+        elif field == "context_full":
+            full = _context_full(context_tokens, context_length)
+            if full:
+                parts.append(full)
         elif field == "cwd":
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:

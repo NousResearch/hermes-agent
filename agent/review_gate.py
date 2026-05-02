@@ -83,6 +83,10 @@ class ReviewGate:
     Sprint 3 scope:
       - Memory integration: matches_user_preferences and matches_project_context
         can be populated from structured memory entries.
+
+    Sprint 4 scope:
+      - Agent result validation: agent_result_accepted / agent_result_rejected
+        checks ensure sub-agent outputs are reviewed before delivery.
     """
 
     def __init__(self):
@@ -269,6 +273,19 @@ class ReviewGate:
                 ]
                 passed = len(missed) == 0
                 detail = "" if passed else f"未覆盖的 success_criteria: {missed}"
+
+        elif check_id == "agent_result_accepted":
+            agents = getattr(task_card.execution_plan, "agents", []) if task_card else []
+            if not agents:
+                passed = True  # no sub-agents → nothing to check
+                detail = "无子 Agent 参与，跳过"
+            else:
+                # Check if result mentions agent review or integration
+                summary_lower = (result_summary or "").lower()
+                review_keywords = ["整合", "审查", "复核", "确认", "审核", "review", "子agent", "子 agent"]
+                has_review = any(kw in summary_lower for kw in review_keywords)
+                passed = has_review
+                detail = "" if passed else f"使用了子 Agent {agents} 但 result 未体现审查/整合步骤"
         else:
             passed = True
             detail = ""
@@ -318,6 +335,8 @@ class ReviewGate:
         revision_count: int,
     ) -> tuple:
         """Returns (needs_revision: bool, instruction: str)."""
+        reasons: List[str] = []
+
         # Collect failed blocking-rule IDs
         failed_blocking = [
             cid for cid in BLOCKING_RULE_IDS

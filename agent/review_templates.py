@@ -123,6 +123,11 @@ REVIEW_TEMPLATES = {
                 "question": "是否回应了所有 success_criteria？",
                 "type": "rule",
             },
+            {
+                "id": "agent_result_accepted",
+                "question": "子 Agent 的结果是否被主 Agent 审查并采纳/修改？",
+                "type": "rule",
+            },
         ],
     },
 }

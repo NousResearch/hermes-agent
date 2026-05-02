@@ -61,6 +61,7 @@ from hermes_constants import get_hermes_home
 from agent.task_card import TaskCard, save_task_card
 from agent.session_event_log import EventLog
 from agent.review_gate import ReviewGate
+from agent.agent_router import AgentRouter
 
 
 _OPENAI_CLS_CACHE: Optional[type] = None
@@ -1718,6 +1719,9 @@ class AIAgent:
 
         # Hermes 2.8: Review Gate for quality assurance before delivery
         self._review_gate = ReviewGate()
+
+        # Hermes 2.8: Agent Router for task-to-agent dispatch
+        self._agent_router = AgentRouter()
         
         # Load config once for memory, skills, and compression sections
         try:
@@ -10907,6 +10911,26 @@ class AIAgent:
         except Exception:
             logger.warning("Failed to create TaskCard / EventLog entry", exc_info=True)
             self._current_task_card = None
+
+        # ── Hermes 2.8: Route task to agents ──
+        if self._current_task_card is not None:
+            try:
+                tc = self._current_task_card
+                routing = self._agent_router.route(
+                    task_category=tc.compiled_intent.task_category,
+                )
+                tc.execution_plan.mode = routing.mode
+                tc.execution_plan.agents = routing.agents
+                tc.execution_plan.delegation_reason = routing.reason
+                tc.routing_basis = routing.routing_basis
+                save_task_card(tc)
+                self._event_log.log_task_updated(
+                    task_id=tc.task_id,
+                    session_id=self.session_id,
+                    updated_fields=["execution_plan", "routing_basis"],
+                )
+            except Exception:
+                logger.warning("Agent routing failed", exc_info=True)
 
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.

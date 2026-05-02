@@ -344,7 +344,7 @@ class TestBuildToolComplete:
         )
         text = result.content[0].content.text
         assert "Read README.md" in text
-        assert "1|hello" in text
+        assert "```\n1|hello\n2|world\n```" in text
         assert result.raw_output is None
 
     def test_build_tool_complete_for_search_files_formats_matches(self):

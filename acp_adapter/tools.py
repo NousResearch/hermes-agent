@@ -208,6 +208,13 @@ def _truncate_text(text: str, limit: int = 5000) -> str:
     return text[: max(0, limit - 100)] + f"\n... ({len(text)} chars total, truncated)"
 
 
+def _fenced_text(text: str, language: str = "") -> str:
+    """Return a Markdown fence that cannot be broken by backticks in text."""
+    longest = max((len(run) for run in text.split("`")[1::2]), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}{language}\n{text}\n{fence}"
+
+
 def _format_todo_result(result: Optional[str]) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict) or not isinstance(data.get("todos"), list):
@@ -261,7 +268,10 @@ def _format_read_file_result(result: Optional[str], args: Optional[Dict[str, Any
     header = f"Read {path}{suffix}"
     if data.get("total_lines") is not None:
         header += f" — {data.get('total_lines')} total lines"
-    return _truncate_text(f"{header}\n\n{content}")
+    # Hermes read_file output is line-numbered with `|`. If we send it as raw
+    # Markdown, Zed can interpret pipes as tables and collapse the layout.
+    # Fence the payload so file lines stay readable and literal.
+    return _truncate_text(f"{header}\n\n{_fenced_text(content)}")
 
 
 def _format_search_files_result(result: Optional[str]) -> Optional[str]:

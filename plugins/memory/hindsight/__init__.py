@@ -1134,13 +1134,35 @@ class HindsightMemoryProvider(MemoryProvider):
         elif raw_tagging is False:
             raw_tagging = "off"
         self._retain_context_tagging = raw_tagging if raw_tagging in ("off", "on", "smart") else "off"
-        if self._retain_prefilter and not self._bank_retain_mission:
-            logger.warning(
-                "Hindsight retain_prefilter enabled but no retain_mission found — "
-                "checked local config.json and bank API. Pre-filtering disabled "
-                "(will retain all content). Set retain_mission on the bank via the Hindsight API."
-            )
-            self._retain_prefilter = False
+
+        # Check bank config completeness when smart pipeline is enabled
+        _smart_pipeline_active = (
+            self._retain_prefilter or self._retain_extract
+            or self._retain_context_tagging == "smart"
+        )
+        if _smart_pipeline_active:
+            if not self._bank_retain_mission:
+                logger.warning(
+                    "Hindsight smart pipeline enabled but no retain_mission found — "
+                    "checked local config.json and bank API. Pre-filtering disabled "
+                    "(will retain all content). Set retain_mission on the bank via "
+                    "the Hindsight API and restart the session."
+                )
+                self._retain_prefilter = False
+            else:
+                missing = []
+                if not self._bank_reflect_mission:
+                    missing.append("reflect_mission (persona framing)")
+                if not self._bank_observations_mission:
+                    missing.append("observations_mission (pattern guidance)")
+                if missing:
+                    logger.warning(
+                        "Hindsight bank '%s' is missing: %s. "
+                        "The smart pipeline will still work but pre-filtering accuracy "
+                        "is reduced without full bank configuration. Set these fields "
+                        "on the bank via the Hindsight API for better noise filtering.",
+                        self._bank_id, ", ".join(missing),
+                    )
 
         # Tags
         self._retain_tags = _normalize_retain_tags(

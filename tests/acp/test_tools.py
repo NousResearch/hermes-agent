@@ -52,6 +52,12 @@ class TestToolKindMap:
     def test_tool_kind_execute_code(self):
         assert get_tool_kind("execute_code") == "execute"
 
+    def test_tool_kind_todo(self):
+        assert get_tool_kind("todo") == "other"
+
+    def test_tool_kind_skill_view(self):
+        assert get_tool_kind("skill_view") == "read"
+
     def test_tool_kind_browser_navigate(self):
         assert get_tool_kind("browser_navigate") == "fetch"
 
@@ -109,6 +115,25 @@ class TestBuildToolTitle:
     def test_web_search_title(self):
         title = build_tool_title("web_search", {"query": "python asyncio"})
         assert "python asyncio" in title
+
+    def test_skill_view_title_includes_skill_name(self):
+        title = build_tool_title("skill_view", {"name": "github-pitfalls"})
+        assert title == "skill view (github-pitfalls)"
+
+    def test_skill_view_title_includes_linked_file(self):
+        title = build_tool_title("skill_view", {"name": "github-pitfalls", "file_path": "references/api.md"})
+        assert title == "skill view (github-pitfalls/references/api.md)"
+
+    def test_execute_code_title_includes_first_code_line(self):
+        title = build_tool_title("execute_code", {"code": "\nfrom hermes_tools import terminal\nprint('done')"})
+        assert title == "python: from hermes_tools import terminal"
+
+    def test_skill_manage_title_includes_action_and_target(self):
+        title = build_tool_title(
+            "skill_manage",
+            {"action": "patch", "name": "hermes-agent-operations", "file_path": "references/acp.md"},
+        )
+        assert title == "skill patch: hermes-agent-operations/references/acp.md"
 
     def test_unknown_tool_uses_name(self):
         title = build_tool_title("some_new_tool", {"foo": "bar"})
@@ -181,6 +206,48 @@ class TestBuildToolStart:
         assert isinstance(result, ToolCallStart)
         assert result.kind == "search"
         assert "TODO" in result.content[0].content.text
+        assert result.raw_input is None
+
+    def test_build_tool_start_for_todo_is_human_readable(self):
+        args = {"todos": [{"id": "one", "content": "Fix ACP rendering", "status": "in_progress"}]}
+        result = build_tool_start("tc-todo", "todo", args)
+        assert result.title == "todo (1 item)"
+        assert "Fix ACP rendering" in result.content[0].content.text
+        assert result.raw_input is None
+
+    def test_build_tool_start_for_skill_view_is_human_readable(self):
+        result = build_tool_start("tc-skill", "skill_view", {"name": "github-pitfalls"})
+        assert result.title == "skill view (github-pitfalls)"
+        assert "github-pitfalls" in result.content[0].content.text
+        assert result.raw_input is None
+
+    def test_build_tool_start_for_execute_code_shows_code_preview(self):
+        result = build_tool_start("tc-code", "execute_code", {"code": "print('hello')"})
+        assert result.kind == "execute"
+        assert result.title == "python: print('hello')"
+        assert "```python" in result.content[0].content.text
+        assert "print('hello')" in result.content[0].content.text
+        assert result.raw_input is None
+
+    def test_build_tool_start_for_skill_manage_patch_shows_diff(self):
+        result = build_tool_start(
+            "tc-skill-manage",
+            "skill_manage",
+            {
+                "action": "patch",
+                "name": "hermes-agent-operations",
+                "file_path": "references/acp.md",
+                "old_string": "old advice",
+                "new_string": "new advice",
+            },
+        )
+        assert result.kind == "edit"
+        assert result.title == "skill patch: hermes-agent-operations/references/acp.md"
+        assert isinstance(result.content[0], FileEditToolCallContent)
+        assert result.content[0].path == "skills/hermes-agent-operations/references/acp.md"
+        assert result.content[0].old_text == "old advice"
+        assert result.content[0].new_text == "new advice"
+        assert result.raw_input is None
 
     def test_build_tool_start_generic_fallback(self):
         """Unknown tools should get a generic text representation."""
@@ -205,6 +272,86 @@ class TestBuildToolComplete:
         content_item = result.content[0]
         assert isinstance(content_item, ContentToolCallContent)
         assert "total 42" in content_item.content.text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_todo_is_checklist(self):
+        result = build_tool_complete(
+            "tc-todo",
+            "todo",
+            '{"todos":[{"id":"a","content":"Inspect ACP","status":"completed"},{"id":"b","content":"Patch renderers","status":"in_progress"}],"summary":{"total":2,"pending":0,"in_progress":1,"completed":1,"cancelled":0}}',
+        )
+        text = result.content[0].content.text
+        assert "✅ Inspect ACP" in text
+        assert "- 🔄 Patch renderers" in text
+        assert "**Progress:** 1 completed, 1 in progress, 0 pending" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_skill_view_summarizes_content_without_raw_json(self):
+        result = build_tool_complete(
+            "tc-skill",
+            "skill_view",
+            '{"success":true,"name":"github-pitfalls","description":"GitHub gotchas","content":"# GitHub Pitfalls\\nUse gh carefully.","path":"github/github-pitfalls/SKILL.md"}',
+        )
+        text = result.content[0].content.text
+        assert "**Skill loaded**" in text
+        assert "`github-pitfalls`" in text
+        assert "GitHub gotchas" in text
+        assert "GitHub Pitfalls" in text
+        assert "Use gh carefully" not in text
+        assert "Full skill content is available to the agent" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_execute_code_formats_output(self):
+        result = build_tool_complete("tc-code", "execute_code", '{"output":"hello\\n","exit_code":0}')
+        text = result.content[0].content.text
+        assert "Exit code: 0" in text
+        assert "hello" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_skill_manage_summarizes_without_raw_json(self):
+        result = build_tool_complete(
+            "tc-skill-manage",
+            "skill_manage",
+            '{"success":true,"message":"Patched references/hermes-acp-zed-rendering.md in skill \'hermes-agent-operations\' (1 replacement)."}',
+            function_args={
+                "action": "patch",
+                "name": "hermes-agent-operations",
+                "file_path": "references/hermes-acp-zed-rendering.md",
+            },
+        )
+        text = result.content[0].content.text
+        assert "**✅ Skill updated**" in text
+        assert "`patch`" in text
+        assert "`hermes-agent-operations`" in text
+        assert "references/hermes-acp-zed-rendering.md" in text
+        assert "{\"success\"" not in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_read_file_formats_content(self):
+        result = build_tool_complete(
+            "tc-read",
+            "read_file",
+            '{"content":"1|hello\\n2|world","total_lines":2}',
+            function_args={"path":"README.md","offset":1,"limit":20},
+        )
+        text = result.content[0].content.text
+        assert "Read README.md" in text
+        assert "1|hello" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_search_files_formats_matches(self):
+        result = build_tool_complete(
+            "tc-search",
+            "search_files",
+            '{"total_count":2,"matches":[{"path":"README.md","line":3,"content":"TODO: fix this"},{"path":"src/app.py","line":9,"content":"needle"}],"truncated":true}\n\n[Hint: Results truncated. Use offset=12 to see more.]',
+        )
+        text = result.content[0].content.text
+        assert "Search results" in text
+        assert "Found 2 matches" in text
+        assert "README.md:3" in text
+        assert "TODO: fix this" in text
+        assert "Results truncated" in text
+        assert result.raw_output is None
 
     def test_build_tool_complete_truncates_large_output(self):
         """Very large outputs should be truncated."""

@@ -1982,7 +1982,16 @@ async def send_weixin_direct(
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if live_adapter is not None and send_session is not None and not send_session.closed:
+    current_loop = asyncio.get_running_loop()
+    live_loop = getattr(live_adapter, '_loop', None)
+    can_reuse_live_adapter = (
+        live_adapter is not None
+        and send_session is not None
+        and not send_session.closed
+        and (live_loop is None or live_loop is current_loop)
+    )
+
+    if can_reuse_live_adapter:
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:

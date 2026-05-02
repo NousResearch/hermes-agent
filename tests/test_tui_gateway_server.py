@@ -802,7 +802,10 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
     unblock_agent.set()
     session["agent_ready"].wait(timeout=2.0)
 
-    assert session["pending_title"] is None
+    # After lazy session creation (defer DB row to first message),
+    # pending_title is no longer cleared during agent build — it is
+    # applied when the first prompt.submit runs.
+    assert session["pending_title"] == "duplicate title"
     server._sessions.pop(sid, None)
 
 

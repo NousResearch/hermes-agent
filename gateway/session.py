@@ -873,12 +873,24 @@ class SessionStore:
                 entry = self._entries[session_key]
 
                 # Auto-reset sessions marked as suspended (e.g. after /stop
-                # broke a stuck loop — #7536).  ``suspended`` is the hard
-                # forced-wipe signal and always wins over ``resume_pending``,
-                # so repeated interrupted restarts that escalate via the
-                # existing ``.restart_failure_counts`` stuck-loop counter
-                # still converge to a clean slate.
+                # broke a stuck loop — #7536) unless the reset policy opts into
+                # preserving stopped/interrupted sessions.  The preserve path
+                # clears ``suspended`` and marks the session as resume_pending
+                # so the next turn gets the same recovery note as a restart
+                # interruption.
                 if entry.suspended:
+                    policy = self.config.get_reset_policy(
+                        platform=source.platform,
+                        session_type=source.chat_type,
+                    )
+                    if not getattr(policy, "reset_suspended", True):
+                        entry.suspended = False
+                        entry.resume_pending = True
+                        entry.resume_reason = entry.resume_reason or "suspended"
+                        entry.last_resume_marked_at = now
+                        entry.updated_at = now
+                        self._save()
+                        return entry
                     reset_reason = "suspended"
                 elif entry.resume_pending:
                     # Restart-interrupted session: preserve the session_id

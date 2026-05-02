@@ -136,18 +136,24 @@ class TestSessionResetPolicy:
         assert policy.mode == "both"
         assert policy.at_hour == 4
         assert policy.idle_minutes == 1440
+        assert policy.reset_suspended is True
 
     def test_from_dict_treats_null_values_as_defaults(self):
         restored = SessionResetPolicy.from_dict(
-            {"mode": None, "at_hour": None, "idle_minutes": None}
+            {"mode": None, "at_hour": None, "idle_minutes": None, "reset_suspended": None}
         )
         assert restored.mode == "both"
         assert restored.at_hour == 4
         assert restored.idle_minutes == 1440
+        assert restored.reset_suspended is True
 
     def test_from_dict_coerces_quoted_false_notify(self):
         restored = SessionResetPolicy.from_dict({"notify": "false"})
         assert restored.notify is False
+
+    def test_from_dict_coerces_quoted_false_reset_suspended(self):
+        restored = SessionResetPolicy.from_dict({"reset_suspended": "false"})
+        assert restored.reset_suspended is False
 
 
 class TestStreamingConfig:

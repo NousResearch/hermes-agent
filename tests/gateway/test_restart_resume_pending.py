@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig, SessionResetPolicy
 from gateway.run import (
     _auto_continue_freshness_window,
     _coerce_gateway_timestamp,
@@ -333,6 +333,27 @@ class TestGetOrCreateResumePending:
         assert second.session_id != original_sid
         assert second.was_auto_reset is True
         assert second.auto_reset_reason == "suspended"
+
+    def test_suspended_can_resume_when_policy_disables_reset(self, tmp_path):
+        """Configured deployments can preserve stopped/interrupted sessions."""
+        store = SessionStore(
+            sessions_dir=tmp_path,
+            config=GatewayConfig(
+                default_reset_policy=SessionResetPolicy(reset_suspended=False)
+            ),
+        )
+        source = _make_source()
+        first = store.get_or_create_session(source)
+        original_sid = first.session_id
+        store.suspend_session(first.session_key)
+
+        second = store.get_or_create_session(source)
+        assert second.session_id == original_sid
+        assert second.was_auto_reset is False
+        assert second.auto_reset_reason is None
+        assert second.suspended is False
+        assert second.resume_pending is True
+        assert second.resume_reason == "suspended"
 
     def test_suspended_overrides_resume_pending(self, tmp_path):
         """Terminal escalation: a session that somehow has BOTH flags must

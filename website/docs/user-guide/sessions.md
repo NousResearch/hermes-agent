@@ -362,6 +362,13 @@ Before a session is auto-reset, the agent is given a turn to save any important 
 
 Sessions with **active background processes** are never auto-reset, regardless of policy.
 
+Sessions interrupted by `/stop`, a gateway crash, or repeated restart failures are normally treated as suspended and reset on the next message so a stuck loop does not immediately resume. To keep those sessions resumable instead, set:
+
+```yaml
+session_reset:
+  reset_suspended: false
+```
+
 ## Storage Locations
 
 | What | Path | Description |

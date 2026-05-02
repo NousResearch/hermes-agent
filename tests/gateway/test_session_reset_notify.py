@@ -205,3 +205,4 @@ class TestResetPolicyNotify:
         assert restored.notify == original.notify
         assert restored.notify_exclude_platforms == original.notify_exclude_platforms
         assert restored.mode == original.mode
+        assert restored.reset_suspended == original.reset_suspended

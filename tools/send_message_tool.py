@@ -37,6 +37,12 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # resolve a raw phone number. Keeping the '+' preserves the E.164 form that
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
+
+# WhatsApp JID suffixes used by Baileys bridge for group and direct chats.
+# Groups use @g.us, personal chats use @s.whatsapp.net, linked devices use @lid.
+_WHATSAPP_JID_RE = re.compile(
+    r"^\s*(\d+(?::\d+)?)@((?:g\.us)|(?:s\.whatsapp\.net)|(?:lid)|(?:broadcast))\s*$"
+)
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
@@ -341,6 +347,12 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         if match:
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
+            return target_ref.strip(), None, True
+    # WhatsApp JID formats: groups (123@g.us), direct chats (123@s.whatsapp.net),
+    # linked devices (123@lid), and broadcasts (123@broadcast).
+    if platform_name == "whatsapp":
+        jid_match = _WHATSAPP_JID_RE.fullmatch(target_ref)
+        if jid_match:
             return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True

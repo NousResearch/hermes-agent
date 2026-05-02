@@ -894,6 +894,64 @@ class TestParseTargetRefSlack:
         assert _parse_target_ref("telegram", "C0B0QV5434G")[2] is False
 
 
+class TestParseTargetRefWhatsAppJID:
+    """_parse_target_ref recognizes WhatsApp JID formats (groups, direct, lid)."""
+
+    def test_group_jid_gus_is_explicit(self):
+        """WhatsApp group JIDs (numeric@g.us) are explicit targets."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "120363428509584443@g.us")
+        assert chat_id == "120363428509584443@g.us"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_direct_chat_jid_is_explicit(self):
+        """WhatsApp direct chat JIDs (numeric@s.whatsapp.net) are explicit."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "6285177551373@s.whatsapp.net")
+        assert chat_id == "6285177551373@s.whatsapp.net"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_lid_jid_is_explicit(self):
+        """WhatsApp linked device JIDs (numeric@lid) are explicit."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "106356325519366@lid")
+        assert chat_id == "106356325519366@lid"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_companion_device_jid_is_explicit(self):
+        """WhatsApp companion device JIDs (numeric:device@s.whatsapp.net) are explicit."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "6285177551373:4@s.whatsapp.net")
+        assert chat_id == "6285177551373:4@s.whatsapp.net"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_broadcast_jid_is_explicit(self):
+        """WhatsApp broadcast JIDs (numeric@broadcast) are explicit."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("whatsapp", "123456@broadcast")
+        assert chat_id == "123456@broadcast"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_whitespace_stripped(self):
+        """Whitespace around JIDs is stripped."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "  120363428509584443@g.us  ")
+        assert chat_id == "120363428509584443@g.us"
+        assert is_explicit is True
+
+    def test_invalid_jid_not_explicit(self):
+        """Malformed or non-WhatsApp JIDs are not explicit."""
+        assert _parse_target_ref("whatsapp", "something@g.us")[2] is False
+        assert _parse_target_ref("whatsapp", "@g.us")[2] is False
+        assert _parse_target_ref("whatsapp", "123@invalid")[2] is False
+        assert _parse_target_ref("whatsapp", "123@")[2] is False
+
+    def test_gus_only_matches_whatsapp(self):
+        """@g.us JID format must NOT be explicit for non-WhatsApp platforms."""
+        assert _parse_target_ref("signal", "120363428509584443@g.us")[2] is False
+        assert _parse_target_ref("sms", "120363428509584443@g.us")[2] is False
+        assert _parse_target_ref("telegram", "120363428509584443@g.us")[2] is False
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 

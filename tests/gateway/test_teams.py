@@ -38,6 +38,9 @@ def _ensure_teams_mock():
     microsoft_teams_cards = types.ModuleType("microsoft_teams.cards")
     microsoft_teams_apps_http = types.ModuleType("microsoft_teams.apps.http")
     microsoft_teams_apps_http_adapter = types.ModuleType("microsoft_teams.apps.http.adapter")
+    microsoft_teams_common = types.ModuleType("microsoft_teams.common")
+    microsoft_teams_common_http = types.ModuleType("microsoft_teams.common.http")
+    microsoft_teams_common_http_client = types.ModuleType("microsoft_teams.common.http.client")
 
     # App class mock
     class MockApp:
@@ -74,6 +77,7 @@ def _ensure_teams_mock():
         async def stop(self):
             pass
 
+    microsoft_teams_common_http_client.ClientOptions = MagicMock
     microsoft_teams_apps.App = MockApp
     microsoft_teams_apps.ActivityContext = MagicMock
 
@@ -149,6 +153,9 @@ def _ensure_teams_mock():
         "microsoft_teams.cards": microsoft_teams_cards,
         "microsoft_teams.apps.http": microsoft_teams_apps_http,
         "microsoft_teams.apps.http.adapter": microsoft_teams_apps_http_adapter,
+        "microsoft_teams.common": microsoft_teams_common,
+        "microsoft_teams.common.http": microsoft_teams_common_http,
+        "microsoft_teams.common.http.client": microsoft_teams_common_http_client,
     }.items():
         sys.modules.setdefault(name, mod)
 

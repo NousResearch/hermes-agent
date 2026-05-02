@@ -6,6 +6,7 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import signal
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -415,7 +416,14 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+        _find_call_count = [0]
+        def _find_pids_side_effect(*args, **kwargs):
+            _find_call_count[0] += 1
+            if _find_call_count[0] <= 2:
+                return [12345]
+            return []  # Survivor sweep finds nothing
+
+        with patch.object(gateway_cli, "find_gateway_pids", side_effect=_find_pids_side_effect), \
              patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
              patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
              patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=True) as graceful, \
@@ -425,7 +433,7 @@ class TestCmdUpdateLaunchdRestart:
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
-        # Graceful drain succeeded — no SIGTERM fallback needed.
+        # Graceful drain succeeded — no SIGTERM fallback, no survivor SIGKILL.
         kill.assert_not_called()
         assert "Restarting manual gateway profile(s): coder" in captured
         assert "Restart manually: hermes gateway run" not in captured
@@ -453,7 +461,14 @@ class TestCmdUpdateLaunchdRestart:
             pid=12345,
         )
 
-        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+        _find_call_count = [0]
+        def _find_pids_side_effect(*args, **kwargs):
+            _find_call_count[0] += 1
+            if _find_call_count[0] <= 2:
+                return [12345]
+            return []  # Survivor sweep finds nothing
+
+        with patch.object(gateway_cli, "find_gateway_pids", side_effect=_find_pids_side_effect), \
              patch.object(gateway_cli, "find_profile_gateway_processes", return_value=[process]), \
              patch.object(gateway_cli, "launch_detached_profile_gateway_restart", return_value=True) as restart, \
              patch.object(gateway_cli, "_graceful_restart_via_sigusr1", return_value=False) as graceful, \
@@ -463,8 +478,9 @@ class TestCmdUpdateLaunchdRestart:
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
-        # Graceful drain returned False → SIGTERM fallback.
-        kill.assert_called_once()
+        # Graceful drain returned False → SIGTERM fallback only (no survivor sweep SIGKILL).
+        assert kill.call_count == 1
+        kill.assert_called_with(12345, signal.SIGTERM)
         assert "Restarting manual gateway profile(s): coder" in captured
 
     @patch("shutil.which", return_value=None)
@@ -872,9 +888,13 @@ class TestServicePidExclusion:
             launchctl_loaded=True,
         )
 
+        _find_call_count = [0]
         def fake_find(exclude_pids=None, all_profiles=False):
             _exclude = exclude_pids or set()
-            return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
+            _find_call_count[0] += 1
+            if _find_call_count[0] <= 2:
+                return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
+            return []  # Survivor sweep finds nothing
 
         with patch.object(
             gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
@@ -885,7 +905,7 @@ class TestServicePidExclusion:
 
         captured = capsys.readouterr().out
         assert "Restarted" in captured
-        # Manual PID should be killed
+        # Manual PID should be killed (SIGTERM only, no survivor sweep SIGKILL)
         manual_kills = [c for c in mock_kill.call_args_list if c.args[0] == MANUAL_PID]
         assert len(manual_kills) == 1
         # Service PID should NOT be killed

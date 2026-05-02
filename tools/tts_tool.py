@@ -747,6 +747,7 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     edge_config = tts_config.get("edge", {})
     voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
+    speed = max(0.1, min(3.0, speed))  # Edge TTS practical range
 
     kwargs = {"voice": voice}
     if speed != 1.0:
@@ -947,7 +948,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     mm_config = tts_config.get("minimax", {})
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
     voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
-    speed = mm_config.get("speed", tts_config.get("speed", 1))
+    speed = float(mm_config.get("speed", tts_config.get("speed", 1.0)))
     vol = mm_config.get("vol", 1)
     pitch = mm_config.get("pitch", 0)
     base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)

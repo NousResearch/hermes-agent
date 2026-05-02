@@ -143,3 +143,45 @@ class TestMinimaxTtsSpeed:
         )
         payload = mock_post.call_args[1]["json"]
         assert payload["voice_setting"]["speed"] == 2.0
+
+    def test_default_speed_is_one(self, tmp_path, monkeypatch):
+        """No speed config => speed defaults to 1.0."""
+        mock_post = self._run({}, tmp_path, monkeypatch)
+        payload = mock_post.call_args[1]["json"]
+        assert payload["voice_setting"]["speed"] == 1.0
+
+    def test_string_speed_cast_to_float(self, tmp_path, monkeypatch):
+        """String speed from YAML is cast to float."""
+        mock_post = self._run({"speed": "1.5"}, tmp_path, monkeypatch)
+        payload = mock_post.call_args[1]["json"]
+        assert payload["voice_setting"]["speed"] == 1.5
+        assert isinstance(payload["voice_setting"]["speed"], float)
+
+
+# ---------------------------------------------------------------------------
+# Edge TTS speed clamping
+# ---------------------------------------------------------------------------
+
+class TestEdgeTtsSpeedClamping:
+    def _run(self, tts_config, tmp_path):
+        mock_comm = MagicMock()
+        mock_comm.save = AsyncMock()
+        mock_edge = MagicMock()
+        mock_edge.Communicate = MagicMock(return_value=mock_comm)
+
+        with patch("tools.tts_tool._import_edge_tts", return_value=mock_edge):
+            from tools.tts_tool import _generate_edge_tts
+            asyncio.run(_generate_edge_tts("Hello", str(tmp_path / "out.mp3"), tts_config))
+        return mock_edge.Communicate
+
+    def test_speed_clamped_low(self, tmp_path):
+        """Speed below 0.1 is clamped to 0.1."""
+        comm_cls = self._run({"speed": 0.0}, tmp_path)
+        kwargs = comm_cls.call_args[1]
+        assert kwargs["rate"] == "-90%"
+
+    def test_speed_clamped_high(self, tmp_path):
+        """Speed above 3.0 is clamped to 3.0."""
+        comm_cls = self._run({"speed": 5.0}, tmp_path)
+        kwargs = comm_cls.call_args[1]
+        assert kwargs["rate"] == "+200%"

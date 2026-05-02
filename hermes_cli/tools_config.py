@@ -516,7 +516,15 @@ def _get_platform_tools(
     toolset_names = platform_toolsets.get(platform)
 
     if toolset_names is None or not isinstance(toolset_names, list):
-        default_ts = PLATFORMS[platform]["default_toolset"]
+        # Plugin platforms (registered via PluginContext.register_platform_adapter)
+        # aren't in the static PLATFORMS registry — fall back to the cli
+        # toolset, which is the most permissive in-tree default. Operators
+        # can override per-platform via config.platform_toolsets.
+        platform_info = PLATFORMS.get(platform)
+        if platform_info is None:
+            default_ts = "hermes-cli"
+        else:
+            default_ts = platform_info["default_toolset"]
         toolset_names = [default_ts]
 
     # YAML may parse bare numeric names (e.g. ``12306:``) as int.

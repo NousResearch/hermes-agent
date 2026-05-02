@@ -25,6 +25,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm
+from agent.compaction_result import CompactionResult
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -420,7 +421,6 @@ class ContextCompressor(ContextEngine):
         self.turn_threshold = turn_threshold
 
         # Per-event metrics scratch + result handle
-        from agent.compaction_result import CompactionResult  # noqa: E402 — top-level import in Task 6
         self.last_compaction_result: "CompactionResult | None" = None
         self._last_trigger: str | None = None
         self._last_op_deduped: int = 0
@@ -1492,6 +1492,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 )
             return messages
 
+        # Reset per-event metric scratch
+        self._last_op_deduped = 0
+
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
@@ -1616,6 +1619,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         new_estimate = estimate_messages_tokens_rough(compressed)
         saved_estimate = display_tokens - new_estimate
+
+        # Store per-event metrics for gateway/status-line/usage callers.
+        # Note: operations_deduped is the op-keyed dedup count from Pass 1.5
+        # only — NOT total `pruned_count`, which mixes content-hash dedup,
+        # op dedup, summarize-pass, and arg-truncate.
+        self.last_compaction_result = CompactionResult(
+            original_messages=n_messages,
+            compacted_messages=len(compressed),
+            original_tokens=display_tokens,
+            compacted_tokens=new_estimate,
+            operations_deduped=getattr(self, "_last_op_deduped", 0),
+            triggered_by=getattr(self, "_last_trigger", None) or "manual",
+        )
 
         # Anti-thrashing: track compression effectiveness
         savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0

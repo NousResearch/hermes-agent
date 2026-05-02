@@ -72,6 +72,17 @@ class TestChatCompletionsBuildKwargs:
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, tools=tools)
         assert kw["tools"] == tools
 
+    def test_custom_provider_defaults_temperature(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(model="qwen", messages=msgs, is_custom_provider=True)
+        assert kw["temperature"] == 0.2
+
+    def test_tools_enable_parallel_tool_calls_by_default(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        tools = [{"type": "function", "function": {"name": "test", "parameters": {}}}]
+        kw = transport.build_kwargs(model="qwen", messages=msgs, tools=tools)
+        assert kw["parallel_tool_calls"] is True
+
     def test_openrouter_provider_prefs(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

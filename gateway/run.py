@@ -25,6 +25,7 @@ import signal
 import tempfile
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -4217,6 +4218,9 @@ class GatewayRunner:
         if canonical == "background":
             return await self._handle_background_command(event)
 
+        if canonical == "teamroom":
+            return await self._handle_teamroom_command(event)
+
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
             # Strip the prefix so downstream treats it as a normal user
@@ -7074,6 +7078,262 @@ class GatewayRunner:
                 f"A pre-rollback snapshot was saved automatically."
             )
         return f"❌ {result['error']}"
+
+    async def _handle_teamroom_command(self, event: MessageEvent) -> str:
+        task = event.get_command_args().strip()
+        if not task:
+            return "Usage: /teamroom <task>"
+        source = event.source
+        if not source or source.platform != Platform.FEISHU:
+            return "/teamroom is only available in Feishu group chats."
+        if source.chat_type not in {"group", "forum"}:
+            return "/teamroom must be run inside the Feishu team group chat."
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return "Feishu adapter is not connected."
+        if not hasattr(adapter, "add_inbound_observer") or not hasattr(adapter, "send_text_with_mentions"):
+            return "The connected Feishu adapter does not support teamroom orchestration yet."
+
+        roles = self._teamroom_roles()
+        timeout = self._teamroom_timeout_seconds()
+        room_id = f"tr-{uuid.uuid4().hex[:8]}"
+        chat_id = source.chat_id
+        metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        results: Dict[str, str] = {}
+
+        await adapter.send(
+            chat_id,
+            f"🧭 Teamroom {room_id} started. I will ask Researcher, Builder, and Reviewer in this group.",
+            metadata=metadata,
+        )
+
+        for role in roles:
+            prompt = self._teamroom_assignment_prompt(
+                room_id=room_id,
+                role=role["role"],
+                task=task,
+                previous=results,
+            )
+            response, error = await self._teamroom_send_and_wait(
+                adapter=adapter,
+                chat_id=chat_id,
+                role=role,
+                room_id=room_id,
+                prompt=prompt,
+                timeout=timeout,
+                metadata=metadata,
+            )
+            if error:
+                collected = self._format_teamroom_results(room_id, task, results)
+                return f"⚠️ Teamroom {room_id} stopped while waiting for {role['name']}.\n\n{error}\n\n{collected}"
+            results[role["role"]] = response or ""
+
+        return self._format_teamroom_results(room_id, task, results)
+
+    def _teamroom_roles(self) -> List[Dict[str, str]]:
+        config_roles: Any = None
+        try:
+            platform_cfg = self.config.platforms.get(Platform.FEISHU)
+            config_roles = (platform_cfg.extra or {}).get("teamroom_roles") if platform_cfg else None
+        except Exception:
+            config_roles = None
+        if isinstance(config_roles, dict):
+            iterable = [
+                {"role": str(role), **(meta if isinstance(meta, dict) else {})}
+                for role, meta in config_roles.items()
+            ]
+        elif isinstance(config_roles, list):
+            iterable = [item for item in config_roles if isinstance(item, dict)]
+        else:
+            iterable = []
+        by_role: Dict[str, Dict[str, str]] = {}
+        for item in iterable:
+            role = str(item.get("role") or "").strip().lower()
+            if role:
+                by_role[role] = {str(k): str(v) for k, v in item.items() if v is not None}
+
+        roles: List[Dict[str, str]] = []
+        for role in ("researcher", "builder", "reviewer"):
+            prefix = f"FEISHU_TEAMROOM_{role.upper()}_"
+            configured = by_role.get(role, {})
+            name = (
+                os.getenv(prefix + "NAME")
+                or configured.get("name")
+                or role.title()
+            )
+            user_id = (
+                os.getenv(prefix + "USER_ID")
+                or configured.get("user_id")
+                or ""
+            )
+            open_id = (
+                os.getenv(prefix + "OPEN_ID")
+                or configured.get("open_id")
+                or ""
+            )
+            roles.append({
+                "role": role,
+                "name": name,
+                "user_id": user_id,
+                "open_id": open_id,
+            })
+        return roles
+
+    @staticmethod
+    def _teamroom_timeout_seconds() -> float:
+        raw = (
+            os.getenv("FEISHU_TEAMROOM_REPLY_TIMEOUT_SECONDS")
+            or os.getenv("HERMES_TEAMROOM_REPLY_TIMEOUT_SECONDS")
+            or "300"
+        )
+        try:
+            return max(10.0, float(raw))
+        except (TypeError, ValueError):
+            return 300.0
+
+    def _teamroom_assignment_prompt(
+        self,
+        *,
+        room_id: str,
+        role: str,
+        task: str,
+        previous: Dict[str, str],
+    ) -> str:
+        marker = f"[TEAMROOM:{room_id}] [TEAMROOM_TO:{role}]"
+        reply_marker = f"[TEAMROOM_REPLY:{room_id}:{role}]"
+        lines = [
+            marker,
+            f"请作为 {role.title()} 处理这个团队任务：",
+            task,
+            "",
+        ]
+        if previous:
+            lines.append("已有队友回复：")
+            for prev_role, prev_text in previous.items():
+                lines.append(f"{prev_role.title()}: {prev_text[:1800]}")
+            lines.append("")
+        role_instruction = {
+            "researcher": "请给出事实、约束、可选方案和需要澄清的问题，不要改代码。",
+            "builder": "请基于 Researcher 的结果给出最小可行实现方案、涉及文件和验证步骤。",
+            "reviewer": "请审查 Researcher 和 Builder 的结果，指出阻塞风险、遗漏和改进建议。",
+        }.get(role, "请给出你的角色视角下的简洁结论。")
+        lines.extend([
+            role_instruction,
+            f"回复第一行必须原样保留：{reply_marker}",
+            "回复保持简洁结构化，直接发在本群。",
+        ])
+        return "\n".join(lines)
+
+    async def _teamroom_send_and_wait(
+        self,
+        *,
+        adapter: Any,
+        chat_id: str,
+        role: Dict[str, str],
+        room_id: str,
+        prompt: str,
+        timeout: float,
+        metadata: Optional[Dict[str, Any]],
+    ) -> tuple[Optional[str], Optional[str]]:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+
+        def observer(payload: Dict[str, Any]) -> bool:
+            if not self._teamroom_payload_matches(payload, chat_id=chat_id, room_id=room_id, role=role):
+                return False
+            if not future.done():
+                future.set_result(payload)
+            return True
+
+        remove_observer = adapter.add_inbound_observer(observer)
+        try:
+            mention = {
+                "name": role.get("name", ""),
+                "user_id": role.get("user_id", ""),
+                "open_id": role.get("open_id", ""),
+            }
+            send_result = await adapter.send_text_with_mentions(
+                chat_id,
+                prompt,
+                mentions=[mention],
+                metadata=metadata,
+            )
+            if not getattr(send_result, "success", False):
+                return None, f"Failed to send assignment to {role['name']}: {getattr(send_result, 'error', '')}"
+            payload = await asyncio.wait_for(future, timeout=timeout)
+            text = self._clean_teamroom_response(str(payload.get("text") or ""))
+            return text, None
+        except asyncio.TimeoutError:
+            return None, f"Timed out after {int(timeout)}s. Ensure {role['name']} is in the group, its gateway is running, and it can receive group messages."
+        finally:
+            remove_observer()
+
+    @staticmethod
+    def _teamroom_payload_matches(
+        payload: Dict[str, Any],
+        *,
+        chat_id: str,
+        room_id: str,
+        role: Dict[str, str],
+    ) -> bool:
+        if str(payload.get("chat_id") or "") != chat_id:
+            return False
+        text = str(payload.get("text") or "")
+        lowered = text.lower()
+        sender_type = str(payload.get("sender_type") or "").strip().lower()
+        if sender_type not in {"app", "bot"}:
+            return False
+
+        role_name = str(role.get("role") or "").strip().lower()
+        expected_open_id = str(role.get("open_id") or "").strip()
+        expected_user_id = str(role.get("user_id") or "").strip()
+        payload_open_id = str(payload.get("sender_open_id") or "").strip()
+        payload_user_id = str(payload.get("sender_user_id") or "").strip()
+        expected_sender_ids = [
+            (expected_open_id, payload_open_id),
+            (expected_user_id, payload_user_id),
+        ]
+        configured_sender_ids = [(expected, actual) for expected, actual in expected_sender_ids if expected]
+        if configured_sender_ids and not any(actual and actual == expected for expected, actual in configured_sender_ids):
+            return False
+
+        reply_marker = f"[teamroom_reply:{room_id.lower()}:{role_name}]"
+        reply_index = lowered.find(reply_marker)
+        target_index = lowered.find("[teamroom_to:")
+        if target_index >= 0 and (reply_index < 0 or target_index < reply_index):
+            return False
+        if reply_marker in lowered:
+            return True
+        room_marker = f"[teamroom:{room_id.lower()}]"
+        if room_marker in lowered and role_name in lowered:
+            return True
+        return False
+
+    @staticmethod
+    def _clean_teamroom_response(text: str) -> str:
+        cleaned = re.sub(r"\[TEAMROOM_REPLY:[^\]]+\]\s*", "", text, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\[TEAMROOM_TO:[^\]]+\]\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\[TEAMROOM:[^\]]+\]\s*", "", cleaned, flags=re.IGNORECASE)
+        return cleaned.strip()
+
+    @staticmethod
+    def _format_teamroom_results(room_id: str, task: str, results: Dict[str, str]) -> str:
+        if not results:
+            return f"Teamroom {room_id} did not collect any role replies yet."
+        lines = [
+            f"✅ Teamroom {room_id} result",
+            "",
+            f"Task: {task}",
+            "",
+        ]
+        for role in ("researcher", "builder", "reviewer"):
+            if role in results:
+                lines.extend([
+                    f"## {role.title()}",
+                    results[role] or "(empty reply)",
+                    "",
+                ])
+        return "\n".join(lines).strip()
 
     async def _handle_background_command(self, event: MessageEvent) -> str:
         """Handle /background <prompt> — run a prompt in a separate background session.

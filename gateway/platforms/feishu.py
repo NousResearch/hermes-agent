@@ -48,6 +48,7 @@ user is seen through different apps in the future.
 from __future__ import annotations
 
 import asyncio
+import html
 import hashlib
 import hmac
 import itertools
@@ -158,6 +159,7 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_TEAMROOM_TO_RE = re.compile(r"\[TEAMROOM_TO:([^\]]+)\]", re.IGNORECASE)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -1347,6 +1349,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_inbound_lock = threading.Lock()
         self._pending_drain_scheduled = False
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
+        self._inbound_observers: List[Any] = []
         self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
@@ -1595,6 +1598,21 @@ class FeishuAdapter(BasePlatformAdapter):
         self._mark_disconnected()
         logger.info("[Feishu] Disconnected")
 
+    def add_inbound_observer(self, callback: Any) -> Any:
+        if callback not in self._inbound_observers:
+            self._inbound_observers.append(callback)
+
+        def _remove() -> None:
+            self.remove_inbound_observer(callback)
+
+        return _remove
+
+    def remove_inbound_observer(self, callback: Any) -> None:
+        try:
+            self._inbound_observers.remove(callback)
+        except ValueError:
+            pass
+
     async def _cancel_pending_tasks(self, tasks: Dict[str, asyncio.Task]) -> None:
         pending = [task for task in tasks.values() if task and not task.done()]
         for task in pending:
@@ -1686,6 +1704,40 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._finalize_send_result(last_response, "send failed")
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def send_text_with_mentions(
+        self,
+        chat_id: str,
+        content: str,
+        mentions: Optional[List[Dict[str, str]]] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        prefix_parts: List[str] = []
+        for mention in mentions or []:
+            name = str(mention.get("name") or "").strip()
+            user_id = str(mention.get("user_id") or mention.get("open_id") or "").strip()
+            if user_id:
+                safe_id = html.escape(user_id, quote=True)
+                safe_name = html.escape(name or user_id)
+                prefix_parts.append(f'<at user_id="{safe_id}">{safe_name}</at>')
+            elif name:
+                prefix_parts.append(f"@{name}")
+        text = " ".join([*prefix_parts, content]).strip()
+        try:
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="text",
+                payload=json.dumps({"text": text}, ensure_ascii=False),
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            return self._finalize_send_result(response, "send_text_with_mentions failed")
+        except Exception as exc:
+            logger.error("[Feishu] Send text with mentions error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
     async def edit_message(
@@ -2204,6 +2256,16 @@ class FeishuAdapter(BasePlatformAdapter):
 
         chat_type = getattr(message, "chat_type", "p2p")
         chat_id = getattr(message, "chat_id", "") or ""
+        if await self._notify_inbound_observers(
+            data=data,
+            message=message,
+            sender=sender,
+            sender_id=sender_id,
+            chat_type=chat_type,
+            chat_id=chat_id,
+            message_id=message_id,
+        ):
+            return
         if chat_type != "p2p" and not self._should_accept_group_message(message, sender_id, chat_id):
             logger.debug("[Feishu] Dropping group message that failed mention/policy gate: %s", message_id)
             return
@@ -2214,6 +2276,50 @@ class FeishuAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             message_id=message_id,
         )
+
+    async def _notify_inbound_observers(
+        self,
+        *,
+        data: Any,
+        message: Any,
+        sender: Any,
+        sender_id: Any,
+        chat_type: str,
+        chat_id: str,
+        message_id: str,
+    ) -> bool:
+        observers = list(self._inbound_observers)
+        if not observers:
+            return False
+        normalized = normalize_feishu_message(
+            message_type=getattr(message, "message_type", "") or "",
+            raw_content=getattr(message, "content", "") or "",
+            mentions=getattr(message, "mentions", None),
+            bot=self._bot_identity(),
+        )
+        text = _strip_edge_self_mentions(normalized.text_content, normalized.mentions)
+        payload = {
+            "platform": "feishu",
+            "chat_id": chat_id,
+            "chat_type": chat_type,
+            "message_id": message_id,
+            "text": text,
+            "sender_type": str(getattr(sender, "sender_type", "") or ""),
+            "sender_open_id": str(getattr(sender_id, "open_id", "") or ""),
+            "sender_user_id": str(getattr(sender_id, "user_id", "") or ""),
+            "sender_union_id": str(getattr(sender_id, "union_id", "") or ""),
+            "raw": data,
+        }
+        consumed = False
+        for observer in observers:
+            try:
+                result = observer(payload)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                consumed = consumed or bool(result)
+            except Exception:
+                logger.warning("[Feishu] Inbound observer failed", exc_info=True)
+        return consumed
 
     def _on_message_read_event(self, data: P2ImMessageMessageReadV1) -> None:
         """Ignore read-receipt events that Hermes does not act on."""
@@ -3633,6 +3739,8 @@ class FeishuAdapter(BasePlatformAdapter):
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:
             return True
+        if self._teamroom_targets_bot(message):
+            return True
         mentions = getattr(message, "mentions", None) or []
         if mentions:
             return self._message_mentions_bot(mentions)
@@ -3643,6 +3751,35 @@ class FeishuAdapter(BasePlatformAdapter):
             bot=self._bot_identity(),
         )
         return self._post_mentions_bot(normalized.mentions)
+
+    def _teamroom_targets_bot(self, message: Any) -> bool:
+        normalized = normalize_feishu_message(
+            message_type=getattr(message, "message_type", "") or "",
+            raw_content=getattr(message, "content", "") or "",
+            mentions=getattr(message, "mentions", None),
+            bot=self._bot_identity(),
+        )
+        match = _TEAMROOM_TO_RE.search(normalized.text_content or "")
+        if not match:
+            return False
+        target = self._normalize_teamroom_target(match.group(1))
+        if not target:
+            return False
+        bot_name = self._normalize_teamroom_target(self._bot_name)
+        candidates = {
+            bot_name,
+            self._normalize_teamroom_target(self._bot_open_id),
+            self._normalize_teamroom_target(self._bot_user_id),
+            self._normalize_teamroom_target(os.getenv("FEISHU_TEAMROOM_ROLE", "")),
+        }
+        for role in ("coordinator", "researcher", "builder", "reviewer"):
+            if role and bot_name and role in bot_name:
+                candidates.add(role)
+        return target in (item for item in candidates if item)
+
+    @staticmethod
+    def _normalize_teamroom_target(value: Any) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
 
     def _is_self_sent_bot_message(self, event: Any) -> bool:
         """Return True only for Feishu events emitted by this Hermes bot."""

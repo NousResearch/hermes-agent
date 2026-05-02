@@ -8,6 +8,14 @@ SOURCE_PROFILE="${SOURCE_PROFILE:-default}"
 PROFILES_ROOT="${HERMES_PROFILES_ROOT:-$HOME/.hermes/profiles}"
 LOG_DIR="${FEISHU_TEAM_LOG_DIR:-$PROJECT_ROOT/.feishu-team-logs}"
 PYTHON_BIN="${HERMES_PYTHON:-}"
+FEISHU_TEAM_MEMORY_PROVIDER="${FEISHU_TEAM_MEMORY_PROVIDER-memtensor}"
+FEISHU_TEAM_MEMORY_ENABLED="${FEISHU_TEAM_MEMORY_ENABLED-true}"
+FEISHU_TEAM_USER_PROFILE_ENABLED="${FEISHU_TEAM_USER_PROFILE_ENABLED-true}"
+FEISHU_TEAM_MEMORY_REQUIRED="${FEISHU_TEAM_MEMORY_REQUIRED-false}"
+MEMOS_STATE_DIR_DEFAULT="${MEMOS_STATE_DIR:-$HOME/.hermes/memos-state}"
+MEMOS_DAEMON_PORT_DEFAULT="${MEMOS_DAEMON_PORT:-18992}"
+MEMOS_VIEWER_PORT_DEFAULT="${MEMOS_VIEWER_PORT:-18901}"
+MEMOS_EMBEDDING_PROVIDER_DEFAULT="${MEMOS_EMBEDDING_PROVIDER:-local}"
 
 if [[ -z "$PYTHON_BIN" ]]; then
   if [[ -x "$PROJECT_ROOT/.venv/bin/python" ]]; then
@@ -52,6 +60,7 @@ Usage:
   scripts/start_feishu_team.sh stop
   scripts/start_feishu_team.sh status
   scripts/start_feishu_team.sh logs [role]
+  scripts/start_feishu_team.sh memory-install
 
 Environment overrides:
   TEAM_PREFIX=feishu
@@ -59,6 +68,14 @@ Environment overrides:
   HERMES_PYTHON=/path/to/python
   HERMES_PROFILES_ROOT=$HOME/.hermes/profiles
   FEISHU_TEAM_LOG_DIR=./.feishu-team-logs
+  FEISHU_TEAM_MEMORY_PROVIDER=memtensor
+  FEISHU_TEAM_MEMORY_ENABLED=true
+  FEISHU_TEAM_USER_PROFILE_ENABLED=true
+  FEISHU_TEAM_MEMORY_REQUIRED=false
+  MEMOS_STATE_DIR=$HOME/.hermes/memos-state
+  MEMOS_DAEMON_PORT=18992
+  MEMOS_VIEWER_PORT=18901
+  MEMOS_EMBEDDING_PROVIDER=local
 
 After init, fill each profile .env:
   ~/.hermes/profiles/feishu-coordinator/.env
@@ -136,12 +153,15 @@ write_config() {
   local role="$1"
   local dir
   dir="$(profile_dir "$role")"
-  "$PYTHON_BIN" - "$dir" <<'PY'
+  "$PYTHON_BIN" - "$dir" "$FEISHU_TEAM_MEMORY_PROVIDER" "$FEISHU_TEAM_MEMORY_ENABLED" "$FEISHU_TEAM_USER_PROFILE_ENABLED" <<'PY'
 from pathlib import Path
 import sys
 import yaml
 
 profile_dir = Path(sys.argv[1])
+memory_provider = sys.argv[2].strip()
+memory_enabled = sys.argv[3].strip().lower() not in {"", "0", "false", "no", "off"}
+user_profile_enabled = sys.argv[4].strip().lower() not in {"", "0", "false", "no", "off"}
 config_path = profile_dir / "config.yaml"
 if config_path.exists():
     data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -159,6 +179,14 @@ extra.setdefault("default_group_policy", "open")
 data["group_sessions_per_user"] = False
 data["thread_sessions_per_user"] = False
 data["unauthorized_dm_behavior"] = "ignore"
+
+memory = data.setdefault("memory", {})
+memory["memory_enabled"] = memory_enabled
+memory["user_profile_enabled"] = user_profile_enabled
+if memory_provider:
+    memory["provider"] = memory_provider
+else:
+    memory.pop("provider", None)
 
 config_path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 PY
@@ -226,7 +254,32 @@ FEISHU_GROUP_POLICY=open
 FEISHU_ALLOWED_USERS=
 FEISHU_HOME_CHANNEL=
 FEISHU_HOME_CHANNEL_NAME=Feishu Team Room
+FEISHU_TEAMROOM_ROLE=$role
+FEISHU_TEAMROOM_REPLY_TIMEOUT_SECONDS=300
 EOF
+  if [[ "$FEISHU_TEAM_MEMORY_PROVIDER" == "memtensor" ]]; then
+    cat >> "$dir/.env.feishu-team.example" <<EOF
+MEMOS_STATE_DIR=$MEMOS_STATE_DIR_DEFAULT
+MEMOS_DAEMON_PORT=$MEMOS_DAEMON_PORT_DEFAULT
+MEMOS_VIEWER_PORT=$MEMOS_VIEWER_PORT_DEFAULT
+MEMOS_EMBEDDING_PROVIDER=$MEMOS_EMBEDDING_PROVIDER_DEFAULT
+MEMOS_EMBEDDING_API_KEY=
+MEMOS_EMBEDDING_ENDPOINT=
+MEMOS_BRIDGE_CONFIG=
+MEMOS_BRIDGE_SCRIPT=
+EOF
+  fi
+  if [[ "$role" == "coordinator" ]]; then
+    for teammate in researcher builder reviewer; do
+      local upper
+      upper="$(printf '%s' "$teammate" | tr '[:lower:]' '[:upper:]')"
+      cat >> "$dir/.env.feishu-team.example" <<EOF
+FEISHU_TEAMROOM_${upper}_NAME=$(bot_display_name "$teammate")
+FEISHU_TEAMROOM_${upper}_OPEN_ID=
+FEISHU_TEAMROOM_${upper}_USER_ID=
+EOF
+    done
+  fi
   local env_file="$dir/.env"
   set_env_key "$env_file" "FEISHU_APP_ID"
   set_env_key "$env_file" "FEISHU_APP_SECRET"
@@ -239,6 +292,27 @@ EOF
   set_env_key "$env_file" "FEISHU_ALLOWED_USERS"
   set_env_key "$env_file" "FEISHU_HOME_CHANNEL"
   set_env_key "$env_file" "FEISHU_HOME_CHANNEL_NAME" "Feishu Team Room"
+  set_env_key "$env_file" "FEISHU_TEAMROOM_ROLE" "$role"
+  set_env_key "$env_file" "FEISHU_TEAMROOM_REPLY_TIMEOUT_SECONDS" "300"
+  if [[ "$FEISHU_TEAM_MEMORY_PROVIDER" == "memtensor" ]]; then
+    ensure_env_key "$env_file" "MEMOS_STATE_DIR" "$MEMOS_STATE_DIR_DEFAULT"
+    ensure_env_key "$env_file" "MEMOS_DAEMON_PORT" "$MEMOS_DAEMON_PORT_DEFAULT"
+    ensure_env_key "$env_file" "MEMOS_VIEWER_PORT" "$MEMOS_VIEWER_PORT_DEFAULT"
+    ensure_env_key "$env_file" "MEMOS_EMBEDDING_PROVIDER" "$MEMOS_EMBEDDING_PROVIDER_DEFAULT"
+    ensure_env_key "$env_file" "MEMOS_EMBEDDING_API_KEY"
+    ensure_env_key "$env_file" "MEMOS_EMBEDDING_ENDPOINT"
+    ensure_env_key "$env_file" "MEMOS_BRIDGE_CONFIG"
+    ensure_env_key "$env_file" "MEMOS_BRIDGE_SCRIPT"
+  fi
+  if [[ "$role" == "coordinator" ]]; then
+    for teammate in researcher builder reviewer; do
+      local upper
+      upper="$(printf '%s' "$teammate" | tr '[:lower:]' '[:upper:]')"
+      set_env_key "$env_file" "FEISHU_TEAMROOM_${upper}_NAME" "$(bot_display_name "$teammate")"
+      set_env_key "$env_file" "FEISHU_TEAMROOM_${upper}_OPEN_ID"
+      set_env_key "$env_file" "FEISHU_TEAMROOM_${upper}_USER_ID"
+    done
+  fi
   chmod 600 "$env_file" 2>/dev/null || true
   printf '%s\n' "Prepared $env_file and $dir/.env.feishu-team.example"
 }
@@ -269,6 +343,34 @@ value_from_env_file() {
   awk -F= -v key="$key" '$1 == key {print substr($0, length(key) + 2); exit}' "$file"
 }
 
+check_memory_provider() {
+  local role="$1"
+  local provider="$2"
+  local dir
+  dir="$(profile_dir "$role")"
+  (cd "$PROJECT_ROOT" && HERMES_HOME="$dir" "$PYTHON_BIN" - "$provider" <<'PY'
+import sys
+
+provider_name = sys.argv[1]
+try:
+    from plugins.memory import load_memory_provider
+    provider = load_memory_provider(provider_name)
+    if not provider:
+        print("missing")
+        raise SystemExit(2)
+    if not provider.is_available():
+        print("unavailable")
+        raise SystemExit(3)
+    print("ok")
+except SystemExit:
+    raise
+except Exception:
+    print("error")
+    raise SystemExit(4)
+PY
+  )
+}
+
 check_profile() {
   local role="$1"
   local dir
@@ -290,6 +392,21 @@ check_profile() {
       ok=1
     fi
   done
+  if [[ -n "$FEISHU_TEAM_MEMORY_PROVIDER" ]]; then
+    local provider_status
+    provider_status="$(check_memory_provider "$role" "$FEISHU_TEAM_MEMORY_PROVIDER" 2>/dev/null || true)"
+    if [[ "$provider_status" == "ok" ]]; then
+      printf '  memory.provider=%s ok\n' "$FEISHU_TEAM_MEMORY_PROVIDER"
+    else
+      printf '  memory.provider=%s %s\n' "$FEISHU_TEAM_MEMORY_PROVIDER" "${provider_status:-missing}"
+      printf '  install MemOS: curl -fsSL https://raw.githubusercontent.com/MemTensor/MemOS/openclaw-local-plugin-20260408/apps/memos-local-plugin/install.sh | bash\n'
+      if [[ "${FEISHU_TEAM_MEMORY_REQUIRED,,}" =~ ^(1|true|yes|on)$ ]]; then
+        ok=1
+      else
+        printf '  memory.provider warning only; set FEISHU_TEAM_MEMORY_REQUIRED=true to enforce\n'
+      fi
+    fi
+  fi
   return "$ok"
 }
 
@@ -304,7 +421,7 @@ check_all() {
 start_one() {
   local role="$1"
   check_profile "$role" >/dev/null || {
-    printf '%s\n' "Cannot start $(profile_name "$role"): missing required Feishu values in $(profile_dir "$role")/.env"
+    printf '%s\n' "Cannot start $(profile_name "$role"): missing required values. Run: scripts/start_feishu_team.sh check"
     return 1
   }
   mkdir -p "$LOG_DIR"
@@ -377,6 +494,26 @@ logs_cmd() {
   fi
 }
 
+memory_install_cmd() {
+  cat <<'EOF'
+MemOS / MemTensor memory provider is configured as:
+  memory.provider: memtensor
+
+This command only prints instructions; it does not install MemOS.
+
+Install the official local plugin with:
+  curl -fsSL https://raw.githubusercontent.com/MemTensor/MemOS/openclaw-local-plugin-20260408/apps/memos-local-plugin/install.sh | bash
+
+Then run:
+  scripts/start_feishu_team.sh init
+  scripts/start_feishu_team.sh check
+  scripts/start_feishu_team.sh start
+
+Memory Viewer:
+  http://127.0.0.1:18901
+EOF
+}
+
 cmd="${1:-}"
 case "$cmd" in
   init)
@@ -397,6 +534,9 @@ case "$cmd" in
   logs)
     shift || true
     logs_cmd "${1:-}"
+    ;;
+  memory-install)
+    memory_install_cmd
     ;;
   help|-h|--help|"")
     usage

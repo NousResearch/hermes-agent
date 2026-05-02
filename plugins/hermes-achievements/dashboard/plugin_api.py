@@ -146,6 +146,97 @@ def state_path() -> Path:
     return get_hermes_home() / "plugins" / "hermes-achievements" / "state.json"
 
 
+# ---------------------------------------------------------------------------
+# Chinese (zh) translations for achievement names, descriptions, and categories.
+# The frontend reads *_zh fields when the dashboard locale is set to "zh".
+# ---------------------------------------------------------------------------
+
+CATEGORY_ZH: Dict[str, str] = {
+    "Agent Autonomy": "智能体自主",
+    "Debugging Chaos": "调试混沌",
+    "Vibe Coding": "氛围编程",
+    "Hermes Native": "Hermes 原生",
+    "Research/Web": "研究/网络",
+    "Tool Mastery": "工具精通",
+    "Model Lore": "模型传说",
+    "Lifestyle": "生活方式",
+}
+
+ACHIEVEMENT_ZH: Dict[str, Dict[str, str]] = {
+    # Agent Autonomy
+    "let_him_cook": {"name": "放手去做", "description": "让 Hermes 在单次会话中运行一整套严肃的自主工具链。"},
+    "autonomous_avalanche": {"name": "自主雪崩", "description": "跨会话累积海量 Hermes 工具调用。"},
+    "toolchain_maxxer": {"name": "工具链达人", "description": "在单次会话中使用大量不同的 Hermes 工具。"},
+    "full_send": {"name": "全力输出", "description": "终端、文件和网页/浏览器在同一轮任务中全部上阵。"},
+    "subagent_commander": {"name": "子任务指挥官", "description": "协调委派给子智能体的工作。"},
+    "background_process_enjoyer": {"name": "后台进程爱好者", "description": "启动或控制足够多的长时间运行进程。"},
+    "cron_necromancer": {"name": "定时任务亡灵法师", "description": "唤醒足够多的定时自动任务。"},
+    # Debugging Chaos
+    "red_text_connoisseur": {"name": "红色文本鉴赏家", "description": "遇到足够多的错误，培养出对红色文本的品味。"},
+    "stack_trace_sommelier": {"name": "堆栈追踪侍酒师", "description": "不是小口品尝异常，而是一杯杯地品味堆栈追踪。"},
+    "actually_read_the_logs": {"name": "居然去读日志了", "description": "反复检查日志而不是靠猜测。"},
+    "port_3000_taken": {"name": "3000 端口被占了", "description": "发现开发服务器端口冲突的次数多到麻木。"},
+    "permission_denied_any_percent": {"name": "权限拒绝速通", "description": "速通撞上权限墙。"},
+    "dependency_hell_tourist": {"name": "依赖地狱游客", "description": "包安装失败了，然后生活还得继续。"},
+    "the_fix_was_restarting": {"name": "修好了，靠重启", "description": "在足够多的错误聚集后重启，把它变成一种技巧。"},
+    "forgot_the_env_var": {"name": "忘了设环境变量", "description": "因为缺少环境变量导致认证或配置失败。"},
+    "yaml_colon_incident": {"name": "YAML 冒号事件", "description": "配置语法反咬一口。"},
+    "docker_name_collision": {"name": "Docker 命名冲突", "description": "容器名已存在。当然了。"},
+    # Vibe Coding
+    "supposed_to_be_quick": {"name": "说好的很快搞定", "description": "一个小需求变成了一整场远征。"},
+    "one_more_small_change": {"name": "再改一个小地方", "description": "在单次会话中做了足够多的文件编辑，让'小改动'这个词失去意义。"},
+    "vibe_architect": {"name": "氛围架构师", "description": "在一次项目会话中触及足够广的代码范围。"},
+    "pixel_goblin": {"name": "像素小妖精", "description": "持续进行前端、CSS、SVG 或视觉微调。"},
+    "ship_first_ask_later": {"name": "先发布，后提问", "description": "在一轮严肃的工具链操作后有 Git 活动。"},
+    "css_exorcist": {"name": "CSS 驱魔师", "description": "反复从界面中驱除样式恶魔。"},
+    "one_character_fix": {"name": "一个字符的修复", "description": "在一堆错误之后做了一个微小的编辑。痛苦。优美。"},
+    # Hermes Native
+    "skillsmith": {"name": "技能铁匠", "description": "与 Hermes 技能打交道多到留下指纹。"},
+    "skill_issue_skill_created": {"name": "技能不足？技能创建。", "description": "创建或修补持久化流程，而不是重复自己。"},
+    "memory_keeper": {"name": "记忆守护者", "description": "用 memory 或 Mnemosyne 持久化知识。"},
+    "memory_palace": {"name": "记忆宫殿", "description": "建立一条严肃的持久记忆链。"},
+    "context_dragon": {"name": "上下文巨龙", "description": "反复接触上下文压缩、巨大上下文或 token 压力。"},
+    "gateway_dweller": {"name": "网关居民", "description": "经历足够多的网关连接的 Hermes 工作流。"},
+    "plugin_goblin": {"name": "插件小精灵", "description": "使用或开发插件多到被仪表盘注意到。"},
+    "rollback_wizard": {"name": "回滚巫师", "description": "施展回滚/检查点恢复魔法。"},
+    "toolset_cartographer": {"name": "工具集制图师", "description": "有目的地导航 Hermes 工具集，而不是把工具当一团模糊的东西。"},
+    "config_surgeon": {"name": "配置外科医生", "description": "对真实的配置文件、清单、环境文件和仪表盘设置动手术，毫不退缩。"},
+    # Research/Web
+    "rabbit_hole_certified": {"name": "兔子洞认证", "description": "搜索或提取足够多的网页内容，有资格称为一次研究漩涡。"},
+    "citation_goblin": {"name": "引用小精灵", "description": "提取足够多的网页，成为一个小图书管理员。"},
+    "docs_archaeologist": {"name": "文档考古学家", "description": "反复挖掘文档源。"},
+    "browser_possession": {"name": "浏览器附身", "description": "通过自动化反复操控浏览器。"},
+    # Tool Mastery
+    "terminal_goblin": {"name": "终端小妖精", "description": "在 Shell 世界中投入大量时间。"},
+    "patch_wizard": {"name": "补丁巫师", "description": "用精准的补丁让文件服从你的意志。"},
+    "file_archaeologist": {"name": "文件考古学家", "description": "通过读取和搜索反复挖掘文件系统。"},
+    "image_whisperer": {"name": "图像低语者", "description": "使用图像生成或视觉工具进行足够多的视觉工作。"},
+    "voice_of_the_machine": {"name": "机器之声", "description": "反复使用文字转语音或语音工具。"},
+    "test_suite_tamer": {"name": "测试套件驯服者", "description": "运行足够多的验证命令，让绿色文本成为仪式的一部分。"},
+    "screenshot_hunter": {"name": "截图猎人", "description": "捕获、检查和打磨视觉证据，而不是只说'能用'。"},
+    # Model Lore
+    "model_hopper": {"name": "模型跳跃者", "description": "切换或检查 provider/模型的次数多到成为习惯。"},
+    "openrouter_enjoyer": {"name": "OpenRouter 爱好者", "description": "反复通过 OpenRouter 路由模型工作。"},
+    "codex_conjurer": {"name": "Codex 召唤师", "description": "召唤 Codex 风格的辅助多到像在做仪式。"},
+    "multi_model_mage": {"name": "多模型法师", "description": "在 Hermes 历史中使用过大量不同的模型名称。"},
+    "five_model_flight": {"name": "五模型飞行", "description": "尝试至少五个不同的 LLM，而不是跟第一个回复的模型结婚。"},
+    "provider_polyglot": {"name": "Provider 多语者", "description": "在 Hermes 历史中使用过多个 provider 的模型。"},
+    "model_sommelier": {"name": "模型侍酒师", "description": "品尝足够多的模型/provider 对话，培养出偏好。"},
+    "claude_confidant": {"name": "Claude 知己", "description": "反复将 Claude 风格的推理引入工作流。"},
+    "gemini_cartographer": {"name": "Gemini 制图师", "description": "绘制足够多的 Gemini 相关工作流，了解这片地形。"},
+    "open_weights_pilgrim": {"name": "开放权重朝圣者", "description": "通过 Hermes 会话元数据与本地/开放权重模型交谈。"},
+    "rebase_acrobat": {"name": "变基杂技演员", "description": "处理真实的 Git 历史手术：变基、冲突、合并、拉取、推送。"},
+    # Lifestyle
+    "marathon_operator": {"name": "马拉松操作员", "description": "累积大量 Hermes 会话。"},
+    "weekend_warrior": {"name": "周末战士", "description": "在周末运行 Hermes 的次数多到成为一种生活方式。"},
+    "night_shift_operator": {"name": "夜班操作员", "description": "在深夜时段反复运行会话。"},
+    "cache_hit_appreciator": {"name": "缓存命中鉴赏家", "description": "注意到或受益于 prompt/缓存行为。"},
+}
+
+# Secret achievement reveal text (zh)
+SECRET_REVEAL_ZH = "隐藏成就：在 Hermes 检测到你会话历史中的第一个相关行为之前保持隐藏。"
+
+
 def snapshot_path() -> Path:
     return get_hermes_home() / "plugins" / "hermes-achievements" / "scan_snapshot.json"
 
@@ -527,8 +618,104 @@ METRIC_LABELS = {
 }
 
 
+METRIC_LABELS_ZH = {
+    "agent_full_loop_events": "\u81ea\u4e3b\u5faa\u73af\u4e8b\u4ef6",
+    "agent_full_loop_sessions": "\u81ea\u4e3b\u5faa\u73af\u4f1a\u8bdd",
+    "tool_call_events": "\u5de5\u5177\u8c03\u7528\u4e8b\u4ef6",
+    "terminal_events": "\u7ec8\u7aef\u4e8b\u4ef6",
+    "debugging_events": "\u8c03\u8bd5\u4e8b\u4ef6",
+    "planning_events": "\u89c4\u5212\u4e8b\u4ef6",
+    "bug_hunt_events": "\u6355\u86ce\u4e8b\u4ef6",
+    "tiny_patch_after_errors_events": "\u9519\u8bef\u540e\u7684\u5c0f\u4fee\u590d",
+    "skill_events": "\u6280\u80fd/\u5de5\u5177\u4f7f\u7528",
+    "skill_manage_events": "\u6280\u80fd\u7ba1\u7406\u64cd\u4f5c",
+    "memory_events": "\u8bb0\u5fc6/\u5de5\u5177\u4e8b\u4ef6",
+    "memory_write_events": "\u6301\u4e45\u8bb0\u5fc6\u5199\u5165",
+    "context_events": "\u4e0a\u4e0b\u6587/\u7f13\u5b58\u4e8b\u4ef6",
+    "gateway_events": "\u7f51\u5173/API \u6d3b\u52a8",
+    "plugin_events": "\u63d2\u4ef6\u5f00\u53d1/\u4f7f\u7528",
+    "rollback_events": "\u56de\u6eda/\u68c0\u67e5\u70b9\u6062\u590d",
+    "docs_activity_events": "\u6587\u6863\u6d3b\u52a8",
+    "model_events": "\u6a21\u578b/\u63d0\u4f9b\u5546\u6d3b\u52a8",
+    "openrouter_events": "OpenRouter \u6d3b\u52a8",
+    "codex_events": "Codex \u6d3b\u52a8",
+    "cache_events": "\u7f13\u5b58\u547d\u4e2d",
+    "total_web_calls": "\u7f51\u7edc\u8c03\u7528\u603b\u6570",
+    "total_web_extract_calls": "web_extract \u8c03\u7528\u603b\u6570",
+    "browser_calls": "\u6d4f\u89c8\u5668\u81ea\u52a8\u5316\u8c03\u7528",
+    "total_tool_calls": "\u5de5\u5177\u8c03\u7528\u603b\u6570",
+    "total_terminal_calls": "\u7ec8\u7aef\u8c03\u7528\u603b\u6570",
+    "total_patch_calls": "\u8865\u4e01\u7f16\u8f91\u603b\u6570",
+    "total_file_reads_searches": "\u6587\u4ef6\u8bfb\u53d6/\u641c\u7d22\u603b\u6570",
+    "image_vision_calls": "\u56fe\u50cf/\u89c6\u89c9\u5de5\u5177\u8c03\u7528",
+    "tts_calls": "\u8bed\u97f3\u5408\u6210\u8c03\u7528",
+    "distinct_model_count": "\u4f7f\u7528\u8fc7\u7684\u4e0d\u540c\u6a21\u578b\u6570",
+    "distinct_provider_count": "\u4f7f\u7528\u8fc7\u7684\u4e0d\u540c\u63d0\u4f9b\u5546\u6570",
+    "claude_events": "Claude/Anthropic \u6d3b\u52a8",
+    "gemini_events": "Gemini/Google \u6d3b\u52a8",
+    "local_model_events": "\u672c\u5730/\u5f00\u6e90\u6a21\u578b\u6d3b\u52a8",
+    "local_model_chat_sessions": "\u672c\u5730\u6a21\u578b\u4f1a\u8bdd\u6570",
+    "toolset_events": "\u5de5\u5177\u96c6\u6d3b\u52a8",
+    "config_events": "\u914d\u7f6e\u6d3b\u52a8",
+    "git_history_events": "git \u5386\u53f2\u64cd\u4f5c",
+    "test_events": "\u6d4b\u8bd5/\u9a8c\u8bc1\u6d3b\u52a8",
+    "screenshot_events": "\u622a\u56fe/\u89c6\u89c9\u68c0\u67e5",
+    "release_events": "\u53d1\u5e03/\u7248\u672c\u6d3b\u52a8",
+    "session_count": "Hermes \u4f1a\u8bdd\u6570",
+    "weekend_sessions": "\u5468\u672b\u4f1a\u8bdd",
+    "night_sessions": "\u6df1\u591c\u4f1a\u8bdd",
+    "css_activity_events": "CSS/\u6837\u5f0f/Tailwind \u6d3b\u52a8",
+    "docker_conflict_events": "Docker/\u5bb9\u5668\u540d\u51b2\u7a81",
+    "env_var_error_events": "\u73af\u5883\u53d8\u91cf/\u8ba4\u8bc1\u914d\u7f6e\u7f3a\u5931",
+    "frontend_activity_events": "\u524d\u7aef/CSS/SVG/React \u6d3b\u52a8",
+    "git_events": "git \u5de5\u4f5c\u6d41\u547d\u4ee4",
+    "install_error_events": "\u5305\u5b89\u88c5\u5931\u8d25",
+    "install_success_events": "\u5305\u5b89\u88c5\u6210\u529f",
+    "log_read_events": "\u65e5\u5fd7\u67e5\u770b",
+    "max_distinct_tools_in_session": "\u5355\u6b21\u4f1a\u8bdd\u4f7f\u7528\u7684\u4e0d\u540c\u5de5\u5177\u6570",
+    "max_file_tool_calls_in_session": "\u5355\u6b21\u4f1a\u8bdd\u6587\u4ef6/\u641c\u7d22/\u8865\u4e01\u8c03\u7528\u6570",
+    "max_files_touched_in_session": "\u5355\u6b21\u4f1a\u8bdd\u64cd\u4f5c\u7684\u6587\u4ef6\u6570",
+    "max_messages_in_session": "\u5355\u6b21\u4f1a\u8bdd\u6d88\u606f\u6570",
+    "max_terminal_calls_in_session": "\u5355\u6b21\u4f1a\u8bdd\u7ec8\u7aef\u8c03\u7528\u6570",
+    "max_tool_calls_in_session": "\u5355\u6b21\u4f1a\u8bdd\u5de5\u5177\u8c03\u7528\u6570",
+    "max_web_browser_calls_in_session": "\u5355\u6b21\u4f1a\u8bdd\u7f51\u7edc/\u6d4f\u89c8\u5668\u8c03\u7528\u6570",
+    "permission_denied_events": "\u6743\u9650\u62d2\u7edd\u9519\u8bef",
+    "port_conflict_events": "\u7aef\u53e3\u51b2\u7a81",
+    "restart_after_error_events": "\u9519\u8bef\u540e\u91cd\u542f/\u91cd\u8f7d",
+    "total_cron_calls": "\u5b9a\u65f6\u4efb\u52a1\u64cd\u4f5c\u603b\u6570",
+    "total_delegate_calls": "delegate_task \u8c03\u7528\u603b\u6570",
+    "total_errors": "\u9519\u8bef/\u5931\u8d25\u6d88\u606f\u603b\u6570",
+    "total_process_calls": "\u540e\u53f0\u8fdb\u7a0b\u64cd\u4f5c\u603b\u6570",
+    "traceback_events": "\u5f02\u5e38/\u5806\u6808\u8ddf\u8e2a",
+    "yaml_error_events": "YAML/\u914d\u7f6e\u89e3\u6790\u9519\u8bef",
+}
+
+TIER_NAME_ZH = {"Copper": "\u94dc", "Silver": "\u94f6", "Gold": "\u91d1", "Diamond": "\u94bb\u77f3", "Olympian": "\u5965\u6797\u5339\u65af"}
+
+
 def metric_label(metric: str) -> str:
     return METRIC_LABELS.get(metric, metric.replace("_", " "))
+
+
+def metric_label_zh(metric: str) -> str:
+    return METRIC_LABELS_ZH.get(metric, METRIC_LABELS.get(metric, metric.replace("_", " ")))
+
+
+def criteria_zh_for(definition: Dict[str, Any]) -> str:
+    if definition.get("secret") and definition.get("state") == "secret":
+        return "\u9690\u85cf\uff1a\u5177\u4f53\u89e6\u53d1\u6761\u4ef6\u5c06\u5728 Hermes \u68c0\u6d4b\u5230\u7b2c\u4e00\u4e2a\u5339\u914d\u4fe1\u53f7\u540e\u663e\u793a\u3002\u7ee7\u7eed\u4f7f\u7528 Hermes \u8fdb\u884c\u8c03\u8bd5\u3001\u5de5\u5177\u8c03\u7528\u3001\u8bb0\u5fc6\u3001\u6280\u80fd\u3001\u63d2\u4ef6\u548c\u6a21\u578b\u5de5\u4f5c\u6d41\u4ee5\u89e3\u9501\u3002"
+    if "threshold_metric" in definition:
+        tiers_list = sorted(definition.get("tiers", []), key=lambda t: t["threshold"])
+        if not tiers_list:
+            return "\u8981\u6c42\uff1a\u5728\u5339\u914d\u7684\u5de5\u4f5c\u6d41\u4e2d\u4f7f\u7528 Hermes\u3002"
+        metric = metric_label_zh(definition["threshold_metric"])
+        ladder = ", ".join(f"{TIER_NAME_ZH.get(t['name'], t['name'])} {t['threshold']}" for t in tiers_list)
+        return f"\u8981\u6c42\uff1a{metric}\u3002\u7b49\u7ea7\u9636\u68af\uff1a{ladder}\u3002"
+    requirements = definition.get("requirements") or []
+    if requirements:
+        parts = [f"{metric_label_zh(r['metric'])} \u2265 {int(r.get('gte', 1))}" for r in requirements]
+        return "\u8981\u6c42\uff1a" + "\uff1b".join(parts) + "\u3002"
+    return "\u8981\u6c42\uff1a\u5b8c\u6210\u5339\u914d\u7684 Hermes \u884c\u4e3a\u3002"
 
 
 def criteria_for(definition: Dict[str, Any]) -> str:
@@ -551,9 +738,16 @@ def criteria_for(definition: Dict[str, Any]) -> str:
 
 def display_achievement(item: Dict[str, Any]) -> Dict[str, Any]:
     clean = dict(item)
+    aid = clean.get("id", "")
+    zh = ACHIEVEMENT_ZH.get(aid, {})
+    cat_zh = CATEGORY_ZH.get(clean.get("category", ""), clean.get("category", ""))
     if clean.get("state") == "secret":
-        return {**clean, "name": "???", "description": "Secret achievement: hidden until Hermes detects the first relevant behavior in your session history.", "criteria": criteria_for(clean), "icon": "secret"}
+        return {**clean, "name": "???", "description": "Secret achievement: hidden until Hermes detects the first relevant behavior in your session history.", "criteria": criteria_for(clean), "criteria_zh": criteria_zh_for(clean), "icon": "secret", "name_zh": "???", "description_zh": SECRET_REVEAL_ZH, "category_zh": cat_zh}
     clean["criteria"] = criteria_for(clean)
+    clean["criteria_zh"] = criteria_zh_for(clean)
+    clean["name_zh"] = zh.get("name", clean.get("name", ""))
+    clean["description_zh"] = zh.get("description", clean.get("description", ""))
+    clean["category_zh"] = cat_zh
     return clean
 
 

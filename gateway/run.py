@@ -1002,6 +1002,7 @@ class GatewayRunner:
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._checkpoints_enabled, self._checkpoint_max_snapshots = self._load_checkpoint_config()
 
         # Wire process registry into session store for reset protection
         from tools.process_registry import process_registry
@@ -2019,6 +2020,29 @@ class GatewayRunner:
         except Exception:
             pass
         return None
+
+    @staticmethod
+    def _load_checkpoint_config() -> tuple[bool, int]:
+        """Load checkpoint config from config.yaml.
+
+        Returns (checkpoints_enabled, checkpoint_max_snapshots).
+        Mirrors how CLI reads the same config in cli.py.
+        """
+        cp_cfg: dict = {}
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                cp_cfg = cfg.get("checkpoints", {})
+                if isinstance(cp_cfg, bool):
+                    cp_cfg = {"enabled": cp_cfg}
+        except Exception:
+            pass
+        enabled = cp_cfg.get("enabled", False)
+        max_snapshots = cp_cfg.get("max_snapshots", 50)
+        return bool(enabled), int(max_snapshots)
 
     def _snapshot_running_agents(self) -> Dict[str, Any]:
         return {
@@ -8582,6 +8606,8 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    checkpoints_enabled=self._checkpoints_enabled,
+                    checkpoint_max_snapshots=self._checkpoint_max_snapshots,
                 )
                 try:
                     return agent.run_conversation(
@@ -12430,6 +12456,8 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    checkpoints_enabled=self._checkpoints_enabled,
+                    checkpoint_max_snapshots=self._checkpoint_max_snapshots,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

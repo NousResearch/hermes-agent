@@ -12016,12 +12016,22 @@ class GatewayRunner:
         # Accumulates tool lines into a single message that gets edited.
         #
         # Threading metadata is platform-specific:
-        # - Slack DM threading needs event_message_id fallback (reply thread)
+        # - Slack may use event_message_id fallback for reply threads, but DM
+        #   root replies must stay in the root when reply_in_thread is disabled.
         # - Telegram uses message_thread_id only for forum topics; passing a
         #   normal DM/group message id as thread_id causes send failures
         # - Other platforms should use explicit source.thread_id only
         if source.platform == Platform.SLACK:
-            _progress_thread_id = source.thread_id or event_message_id
+            slack_extra = (
+                (user_config.get("platforms") or {})
+                .get("slack", {})
+                .get("extra", {})
+            )
+            reply_in_thread = slack_extra.get("reply_in_thread", True)
+            if source.chat_type == "dm" and not source.thread_id and reply_in_thread is False:
+                _progress_thread_id = None
+            else:
+                _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None

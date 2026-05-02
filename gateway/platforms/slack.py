@@ -876,15 +876,15 @@ class SlackAdapter(BasePlatformAdapter):
     def _dm_top_level_threads_as_sessions(self) -> bool:
         """Whether top-level Slack DMs get per-message session threads.
 
-        Defaults to ``True`` so each visible DM reply thread is isolated as its
-        own Hermes session — matching the per-thread behavior channels already
-        have.  Set ``platforms.slack.extra.dm_top_level_threads_as_sessions``
-        to ``false`` in config.yaml to revert to the legacy behavior where all
-        top-level DMs share one continuous session.
+        Defaults to ``False`` to preserve the legacy Slack DM behaviour where
+        top-level DMs share one continuous Hermes session.  Set
+        ``platforms.slack.extra.dm_top_level_threads_as_sessions`` to ``true``
+        in config.yaml only if each visible DM reply thread should become its
+        own isolated session.
         """
         raw = self.config.extra.get("dm_top_level_threads_as_sessions")
         if raw is None:
-            return True  # default: each DM thread is its own session
+            return False
         return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
     def _resolve_thread_ts(
@@ -1253,18 +1253,24 @@ class SlackAdapter(BasePlatformAdapter):
         return os.getenv("SLACK_REACTIONS", "true").lower() not in ("false", "0", "no")
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """Add a temporary hourglass reaction when message processing begins."""
         if not self._reactions_enabled():
             return
         ts = getattr(event, "message_id", None)
         if not ts or ts not in self._reacting_message_ids:
             return
         channel_id = getattr(event.source, "chat_id", None)
-        if channel_id:
-            await self._add_reaction(channel_id, ts, "eyes")
+        if not channel_id:
+            return
+        # Clean up any old lifecycle reactions first. Upgrades have a nasty
+        # habit of bringing back eyes/checkmarks; do the washing-up before
+        # adding the one visible status marker we actually want.
+        for emoji in ("hourglass_flowing_sand", "eyes", "white_check_mark", "x"):
+            await self._remove_reaction(channel_id, ts, emoji)
+        await self._add_reaction(channel_id, ts, "hourglass_flowing_sand")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction."""
+        """Remove Slack lifecycle reactions when processing completes."""
         if not self._reactions_enabled():
             return
         ts = getattr(event, "message_id", None)
@@ -1274,11 +1280,8 @@ class SlackAdapter(BasePlatformAdapter):
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
             return
-        await self._remove_reaction(channel_id, ts, "eyes")
-        if outcome == ProcessingOutcome.SUCCESS:
-            await self._add_reaction(channel_id, ts, "white_check_mark")
-        elif outcome == ProcessingOutcome.FAILURE:
-            await self._add_reaction(channel_id, ts, "x")
+        for emoji in ("hourglass_flowing_sand", "eyes", "white_check_mark", "x"):
+            await self._remove_reaction(channel_id, ts, emoji)
 
     # ----- User identity resolution -----
 
@@ -2479,6 +2482,91 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Thread context fetching -----
 
+    async def _format_thread_file_context(
+        self, msg: Dict[str, Any], *, channel_id: str, team_id: str = ""
+    ) -> list[str]:
+        """Return prompt-safe context for files attached to a Slack thread message.
+
+        Slack's ``conversations.replies`` gives us prior thread messages, but
+        historically we only copied their text into the agent prompt. If the
+        useful data was attached to the thread parent (for example Ben replies
+        "here" under a CSV upload), the agent saw the word "here" and not the
+        file. Pull small text-like documents inline and expose cached paths for
+        supported larger documents so the agent has something real to inspect.
+        """
+        parts: list[str] = []
+        files = msg.get("files") or []
+        if not files:
+            return parts
+
+        for file_obj in files:
+            f = file_obj if isinstance(file_obj, dict) else {}
+            if f.get("file_access") == "check_file_info" and f.get("id"):
+                try:
+                    info_resp = await self._get_client(channel_id).files_info(file=f.get("id"))
+                    if info_resp.get("ok"):
+                        f = info_resp.get("file") or f
+                    else:
+                        detail = self._describe_slack_api_error(info_resp, file_obj=f)
+                        if detail:
+                            parts.append(f"[Slack thread attachment notice: {detail}]")
+                        continue
+                except Exception as exc:
+                    detail = self._describe_slack_download_failure(exc, file_obj=f)
+                    if detail:
+                        parts.append(f"[Slack thread attachment notice: {detail}]")
+                    else:
+                        logger.warning("[Slack] files.info error for thread file %s: %s", f.get("id"), exc)
+                    continue
+
+            mimetype = f.get("mimetype", "") or "application/octet-stream"
+            url = f.get("url_private_download") or f.get("url_private") or ""
+            display_name = f.get("name") or f.get("title") or f.get("id") or "attachment"
+            _, ext = os.path.splitext(display_name)
+            ext = ext.lower()
+            if not ext and mimetype:
+                ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}.get(mimetype, "")
+
+            if not url:
+                parts.append(f"[Slack thread attachment: {display_name} ({mimetype}), but Slack did not provide a downloadable URL]")
+                continue
+
+            if ext not in SUPPORTED_DOCUMENT_TYPES:
+                parts.append(f"[Slack thread attachment: {display_name} ({mimetype}), unsupported file type for automatic download]")
+                continue
+
+            file_size = int(f.get("size") or 0)
+            max_doc_bytes = 20 * 1024 * 1024
+            if not file_size or file_size > max_doc_bytes:
+                parts.append(f"[Slack thread attachment: {display_name} ({mimetype}), size unavailable or over 20 MB]")
+                continue
+
+            try:
+                raw_bytes = await self._download_slack_file_bytes(url, team_id=team_id)
+                cached_path = cache_document_from_bytes(raw_bytes, display_name)
+                parts.append(f"[Slack thread attachment cached: {display_name} -> {cached_path}]")
+
+                text_exts = {
+                    ".md", ".txt", ".csv", ".log", ".json", ".xml",
+                    ".yaml", ".yml", ".toml", ".ini", ".cfg",
+                }
+                if ext in text_exts and len(raw_bytes) <= 100 * 1024:
+                    try:
+                        text_content = raw_bytes.decode("utf-8")
+                    except UnicodeDecodeError:
+                        text_content = ""
+                    if text_content:
+                        safe_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                        parts.append(f"[Content of Slack thread attachment {safe_name}]:\n{text_content}")
+            except Exception as exc:
+                detail = self._describe_slack_download_failure(exc, file_obj=f)
+                if detail:
+                    parts.append(f"[Slack thread attachment notice: {detail}]")
+                else:
+                    logger.warning("[Slack] Failed to cache thread attachment %s: %s", display_name, exc, exc_info=True)
+
+        return parts
+
     async def _fetch_thread_context(
         self, channel_id: str, thread_ts: str, current_ts: str,
         team_id: str = "", limit: int = 30,
@@ -2579,12 +2667,19 @@ class SlackAdapter(BasePlatformAdapter):
                     continue
 
                 msg_text = msg.get("text", "").strip()
-                if not msg_text:
-                    continue
 
                 # Strip bot mentions from context messages
                 if bot_uid:
                     msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+
+                file_context = await self._format_thread_file_context(
+                    msg, channel_id=channel_id, team_id=team_id,
+                )
+                if file_context:
+                    msg_text = (msg_text + "\n" if msg_text else "") + "\n".join(file_context)
+
+                if not msg_text:
+                    continue
 
                 prefix = "[thread parent] " if is_parent else ""
                 display_user = msg_user or "unknown"

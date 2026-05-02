@@ -274,6 +274,12 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
     fake_run_agent.AIAgent = FakeAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
+    import yaml
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"display": {"platforms": {"slack": {"tool_progress": "all"}}}}),
+        encoding="utf-8",
+    )
+
     adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
@@ -301,6 +307,57 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
     assert adapter.sent
     assert adapter.sent[0]["metadata"] == {"thread_id": "1234567890.000001"}
     assert all(call["metadata"] == {"thread_id": "1234567890.000001"} for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_keeps_slack_dm_root_when_reply_in_thread_disabled(monkeypatch, tmp_path):
+    """Slack DM progress should stay in chat root when reply_in_thread is false."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    import yaml
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({
+            "display": {"platforms": {"slack": {"tool_progress": "all"}}},
+            "platforms": {"slack": {"extra": {"reply_in_thread": False}}},
+        }),
+        encoding="utf-8",
+    )
+
+    adapter = ProgressCaptureAdapter(platform=Platform.SLACK)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.SLACK,
+        chat_id="D123",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-3b",
+        session_key="agent:main:slack:dm:D123",
+        event_message_id="1234567890.000001",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert adapter.sent[0]["metadata"] is None
+    assert all(call["metadata"] is None for call in adapter.typing)
 
 
 # ---------------------------------------------------------------------------

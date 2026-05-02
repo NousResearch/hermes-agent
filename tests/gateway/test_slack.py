@@ -1715,7 +1715,15 @@ class TestReactions:
 
         add_calls = adapter._app.client.reactions_add.call_args_list
         assert len(add_calls) == 1
-        assert add_calls[0].kwargs["name"] == "eyes"
+        assert add_calls[0].kwargs["name"] == "hourglass_flowing_sand"
+
+        start_remove_calls = adapter._app.client.reactions_remove.call_args_list
+        assert [c.kwargs["name"] for c in start_remove_calls] == [
+            "hourglass_flowing_sand",
+            "eyes",
+            "white_check_mark",
+            "x",
+        ]
 
         # Simulate the base class calling on_processing_complete
         from gateway.platforms.base import ProcessingOutcome
@@ -1723,17 +1731,24 @@ class TestReactions:
 
         add_calls = adapter._app.client.reactions_add.call_args_list
         remove_calls = adapter._app.client.reactions_remove.call_args_list
-        assert len(add_calls) == 2
-        assert add_calls[1].kwargs["name"] == "white_check_mark"
-        assert len(remove_calls) == 1
-        assert remove_calls[0].kwargs["name"] == "eyes"
+        assert len(add_calls) == 1
+        assert [c.kwargs["name"] for c in remove_calls] == [
+            "hourglass_flowing_sand",
+            "eyes",
+            "white_check_mark",
+            "x",
+            "hourglass_flowing_sand",
+            "eyes",
+            "white_check_mark",
+            "x",
+        ]
 
         # Message ID should be cleaned up
         assert "1234567890.000001" not in adapter._reacting_message_ids
 
     @pytest.mark.asyncio
     async def test_reactions_failure_outcome(self, adapter):
-        """Failed processing should add :x: instead of :white_check_mark:."""
+        """Failed processing should clean up Slack lifecycle reactions without adding a terminal badge."""
         adapter._app.client.reactions_add = AsyncMock()
         adapter._app.client.reactions_remove = AsyncMock()
 
@@ -1754,12 +1769,14 @@ class TestReactions:
         )
         await adapter.on_processing_complete(msg_event, ProcessingOutcome.FAILURE)
 
-        add_calls = adapter._app.client.reactions_add.call_args_list
+        adapter._app.client.reactions_add.assert_not_called()
         remove_calls = adapter._app.client.reactions_remove.call_args_list
-        assert len(add_calls) == 1
-        assert add_calls[0].kwargs["name"] == "x"
-        assert len(remove_calls) == 1
-        assert remove_calls[0].kwargs["name"] == "eyes"
+        assert [c.kwargs["name"] for c in remove_calls] == [
+            "hourglass_flowing_sand",
+            "eyes",
+            "white_check_mark",
+            "x",
+        ]
 
     @pytest.mark.asyncio
     async def test_reactions_skipped_for_non_dm_non_mention(self, adapter):
@@ -2577,8 +2594,8 @@ class TestProgressMessageThread:
     """
 
     @pytest.mark.asyncio
-    async def test_dm_toplevel_progress_uses_message_ts_as_thread(self, adapter):
-        """Progress messages for a top-level DM should go into the reply thread."""
+    async def test_dm_toplevel_shares_root_session_by_default(self, adapter):
+        """Top-level DMs should share the root DM session by default."""
         # Simulate a top-level DM: no thread_ts in the event
         event = {
             "channel": "D_DM",
@@ -2600,22 +2617,20 @@ class TestProgressMessageThread:
         msg_event = captured_events[0]
         source = msg_event.source
 
-        # With default dm_top_level_threads_as_sessions=True, source.thread_id
-        # should equal the message ts so each DM thread gets its own session.
-        assert source.thread_id == "1234567890.000001", (
-            "source.thread_id must equal the message ts for top-level DMs "
-            "so each reply thread gets its own session"
+        # By default, Slack DMs preserve the old root-session behaviour.
+        assert source.thread_id is None, (
+            "source.thread_id must stay None for top-level DMs so ordinary "
+            "DMs keep one continuous Hermes session"
         )
 
-        # The message_id should be the event's ts — this is what the gateway
-        # passes as event_message_id so progress messages can thread correctly
+        # The message_id should remain the event's ts, even when the session
+        # itself is rooted at the DM channel.
         assert msg_event.message_id == "1234567890.000001", (
             "message_id must equal the event ts so _run_agent can use it as "
             "the fallback thread anchor for progress messages"
         )
 
-        # Verify that the Slack send() method correctly threads a message
-        # when metadata contains thread_id equal to the original ts
+        # If a caller explicitly passes thread metadata, send() still honours it.
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
         result = await adapter.send(
             chat_id="D_DM",
@@ -2630,9 +2645,9 @@ class TestProgressMessageThread:
         )
 
     @pytest.mark.asyncio
-    async def test_dm_toplevel_shares_session_when_disabled(self, adapter):
-        """Opting out restores legacy single-session-per-DM-channel behavior."""
-        adapter.config.extra["dm_top_level_threads_as_sessions"] = False
+    async def test_dm_toplevel_uses_message_session_when_enabled(self, adapter):
+        """Opting in isolates each visible top-level DM thread as its own session."""
+        adapter.config.extra["dm_top_level_threads_as_sessions"] = True
 
         event = {
             "channel": "D_DM",
@@ -2652,9 +2667,9 @@ class TestProgressMessageThread:
         msg_event = captured_events[0]
         source = msg_event.source
 
-        assert source.thread_id is None, (
-            "source.thread_id must stay None when "
-            "dm_top_level_threads_as_sessions is disabled"
+        assert source.thread_id == "1234567890.000001", (
+            "source.thread_id must equal the message ts when "
+            "dm_top_level_threads_as_sessions is enabled"
         )
 
     @pytest.mark.asyncio

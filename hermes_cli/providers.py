@@ -97,6 +97,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         base_url_env_var="GLM_BASE_URL",
     ),
+    "dinference": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("DINFERENCE_API_KEY",),
+        base_url_override="https://api.dinference.com/v1",
+        base_url_env_var="DINFERENCE_BASE_URL",
+    ),
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
@@ -361,6 +367,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "dinference": "DInference",
 }
 
 

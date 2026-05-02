@@ -46,7 +46,7 @@ def _resolve_requests_verify() -> bool | str:
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "ollama-cloud", "zai", "dinference", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
@@ -193,6 +193,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "minimax": 204800,
     # GLM
     "glm": 202752,
+    # DInference-specific model (not in models.dev)
+    "gpt-oss-120b": 131072,
     # xAI Grok — xAI /v1/models does not return context_length metadata,
     # so these hardcoded fallbacks prevent Hermes from probing-down to
     # the default 128k when the user points at https://api.x.ai/v1
@@ -311,6 +313,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "opencode.ai": "opencode-go",
     "api.x.ai": "xai",
     "integrate.api.nvidia.com": "nvidia",
+    "api.dinference.com": "dinference",
+    "dinference.com": "dinference",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
     "api.gmi-serving.com": "gmi",

@@ -34,6 +34,7 @@ class TestProviderRegistry:
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
+        ("dinference", "DInference", "api_key"),
         ("xai", "xAI", "api_key"),
         ("nvidia", "NVIDIA NIM", "api_key"),
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
@@ -112,6 +113,12 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("GMI_API_KEY",)
         assert pconfig.base_url_env_var == "GMI_BASE_URL"
 
+    def test_dinference_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["dinference"]
+        assert pconfig.api_key_env_vars == ("DINFERENCE_API_KEY",)
+        assert pconfig.base_url_env_var == "DINFERENCE_BASE_URL"
+        assert pconfig.inference_base_url == "https://api.dinference.com/v1"
+
     def test_huggingface_env_vars(self):
         pconfig = PROVIDER_REGISTRY["huggingface"]
         assert pconfig.api_key_env_vars == ("HF_TOKEN",)
@@ -121,6 +128,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
+        assert PROVIDER_REGISTRY["dinference"].inference_base_url == "https://api.dinference.com/v1"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
@@ -152,6 +160,7 @@ PROVIDER_ENV_VARS = (
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "GMI_API_KEY", "GMI_BASE_URL",
+    "DINFERENCE_API_KEY", "DINFERENCE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
     "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
@@ -189,6 +198,9 @@ class TestResolveProvider:
 
     def test_explicit_gmi(self):
         assert resolve_provider("gmi") == "gmi"
+
+    def test_explicit_dinference(self):
+        assert resolve_provider("dinference") == "dinference"
 
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
@@ -298,6 +310,10 @@ class TestResolveProvider:
     def test_auto_detects_gmi_key(self, monkeypatch):
         monkeypatch.setenv("GMI_API_KEY", "test-gmi-key")
         assert resolve_provider("auto") == "gmi"
+
+    def test_auto_detects_dinference_key(self, monkeypatch):
+        monkeypatch.setenv("DINFERENCE_API_KEY", "test-dinference-key")
+        assert resolve_provider("auto") == "dinference"
 
     def test_auto_detects_kilocode_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "test-kilo-key")
@@ -1157,3 +1173,70 @@ class TestMinimaxOAuthProvider:
         from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
         assert "minimax-oauth" in _API_KEY_PROVIDER_AUX_MODELS
         assert _API_KEY_PROVIDER_AUX_MODELS["minimax-oauth"]  # non-empty
+
+
+# =============================================================================
+# DInference provider tests
+# =============================================================================
+
+class TestDInferenceProvider:
+    """Tests for the DInference provider."""
+
+    def test_dinference_models_in_catalog(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "dinference" in _PROVIDER_MODELS
+        models = _PROVIDER_MODELS["dinference"]
+        assert "glm-4.7" in models
+        assert "glm-5" in models
+        assert "glm-5.1" in models
+        assert "gpt-oss-120b" in models
+        assert "minimax-m2.5" in models
+        assert len(models) == 5
+
+    def test_dinference_context_lengths(self):
+        """Test context length resolution for DInference models.
+        
+        Note: GLM and MiniMax models share IDs with Z.ai/MiniMax providers and
+        use models.dev values. Only gpt-oss-120b is DInference-specific.
+        """
+        from agent.model_metadata import get_model_context_length
+        # GLM models use models.dev Z.ai values (202752)
+        assert get_model_context_length("dinference:glm-4.7") == 202752
+        assert get_model_context_length("dinference:glm-5") == 202752
+        assert get_model_context_length("dinference:glm-5.1") == 202752
+        # minimax-m2.5 uses models.dev MiniMax value (196608)
+        assert get_model_context_length("dinference:minimax-m2.5") == 196608
+        # gpt-oss-120b is DInference-specific, uses hardcoded default
+        assert get_model_context_length("dinference:gpt-oss-120b") == 131072
+
+    def test_dinference_url_inference(self):
+        from agent.model_metadata import _infer_provider_from_url
+        assert _infer_provider_from_url("https://api.dinference.com/v1") == "dinference"
+        assert _infer_provider_from_url("https://api.dinference.com/v1/chat/completions") == "dinference"
+        assert _infer_provider_from_url("api.dinference.com") == "dinference"
+
+    def test_dinference_prefix_stripping(self):
+        from agent.model_metadata import _strip_provider_prefix
+        assert _strip_provider_prefix("dinference:glm-5") == "glm-5"
+        assert _strip_provider_prefix("glm-5") == "glm-5"  # no prefix, unchanged
+
+    def test_dinference_listed_in_canonical_providers(self):
+        from hermes_cli.models import CANONICAL_PROVIDERS
+        slugs = [p.slug for p in CANONICAL_PROVIDERS]
+        assert "dinference" in slugs
+
+    def test_dinference_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "dinference" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["dinference"] == "DInference"
+
+    def test_dinference_aux_model_registered(self):
+        """Verify DInference has an entry in the auxiliary models dict.
+        
+        This ensures auxiliary tasks (vision, compression, session search)
+        can fall back to DInference when it's configured as a provider.
+        """
+        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
+        assert "dinference" in _API_KEY_PROVIDER_AUX_MODELS
+        assert _API_KEY_PROVIDER_AUX_MODELS["dinference"]  # non-empty
+

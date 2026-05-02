@@ -1353,6 +1353,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "DINFERENCE_API_KEY": {
+        "description": "DInference API key",
+        "prompt": "DInference API key",
+        "url": "https://dinference.com/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "DINFERENCE_BASE_URL": {
+        "description": "DInference base URL override",
+        "prompt": "DInference base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "KIMI_API_KEY": {
         "description": "Kimi / Moonshot API key",
         "prompt": "Kimi API key",

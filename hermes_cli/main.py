@@ -1854,6 +1854,7 @@ def select_provider_and_model(args=None):
         "huggingface",
         "xiaomi",
         "arcee",
+        "dinference",
         "gmi",
         "nvidia",
         "ollama-cloud",

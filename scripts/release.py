@@ -100,6 +100,7 @@ AUTHOR_MAP = {
     "260878550+beenherebefore@users.noreply.github.com": "beenherebefore",
     "79389617+txbxxx@users.noreply.github.com": "txbxxx",
     "liuhao03@bilibili.com": "liuhao1024",
+    "sunsky.lau@gmail.com": "liuhao1024",
     "130918800+devorun@users.noreply.github.com": "devorun",
     "surat.s@itm.kmutnb.ac.th": "beesrsj2500",
     "beesr@bee.localdomain": "beesrsj2500",

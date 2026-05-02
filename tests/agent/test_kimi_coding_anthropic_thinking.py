@@ -1,22 +1,16 @@
-"""Regression guard: don't send Anthropic ``thinking`` to Kimi's /coding endpoint.
+"""Tests for Kimi /coding reasoning via anthropic_messages transport.
 
 Kimi's ``api.kimi.com/coding`` endpoint speaks the Anthropic Messages protocol
-but has its own thinking semantics.  When ``thinking.enabled`` is present in
-the request, Kimi validates the message history and requires every prior
-assistant tool-call message to carry OpenAI-style ``reasoning_content``.
+and supports Anthropic-style ``thinking`` with signed blocks.  When
+``thinking.enabled`` is present in the request, Kimi validates the message
+history and requires every prior assistant tool-call message to carry
+OpenAI-style ``reasoning_content``.
 
-The Anthropic path never populates that field, and
-``convert_messages_to_anthropic`` strips Anthropic thinking blocks on
-third-party endpoints — so after one turn with tool calls the next request
-fails with HTTP 400::
-
-    thinking is enabled but reasoning_content is missing in assistant
-    tool call message at index N
-
-Kimi on the chat_completions route handles ``thinking`` via ``extra_body`` in
-``ChatCompletionsTransport`` (#13503).  On the Anthropic route the right
-thing to do is drop the parameter entirely and let Kimi drive reasoning
-server-side.
+This was previously broken because the adapter stripped all signed thinking
+blocks on third-party endpoints, causing HTTP 400 after one turn with tool
+calls.  Upstream commit ``76edc40ab`` added ``_copy_reasoning_content_for_api()``
+to inject ``reasoning_content: " "`` on replay, and the adapter now preserves
+Kimi's own signed blocks for ``api.kimi.com/coding`` endpoints.
 """
 
 from __future__ import annotations
@@ -25,7 +19,9 @@ import pytest
 
 
 class TestKimiCodingSkipsAnthropicThinking:
-    """build_anthropic_kwargs must not inject ``thinking`` for Kimi /coding."""
+    """build_anthropic_kwargs must inject ``thinking`` for Kimi /coding
+    when reasoning is enabled, because Kimi validates its own signatures
+    server-side."""
 
     @pytest.mark.parametrize(
         "base_url",
@@ -36,7 +32,7 @@ class TestKimiCodingSkipsAnthropicThinking:
             "https://api.kimi.com/coding/",
         ],
     )
-    def test_kimi_coding_endpoint_omits_thinking(self, base_url: str) -> None:
+    def test_kimi_coding_endpoint_includes_thinking(self, base_url: str) -> None:
         from agent.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
@@ -47,10 +43,11 @@ class TestKimiCodingSkipsAnthropicThinking:
             reasoning_config={"enabled": True, "effort": "medium"},
             base_url=base_url,
         )
-        assert "thinking" not in kwargs, (
-            "Anthropic thinking must not be sent to Kimi /coding — "
-            "endpoint requires reasoning_content on history we don't preserve."
+        assert "thinking" in kwargs, (
+            "Kimi /coding supports Anthropic thinking parameter; "
+            "upstream run_agent.py now preserves reasoning_content on replay."
         )
+        assert kwargs["thinking"]["type"] == "enabled"
         assert "output_config" not in kwargs
 
     def test_kimi_coding_with_explicit_disabled_also_omits(self) -> None:
@@ -210,3 +207,75 @@ class TestKimiCodingSkipsAnthropicThinking:
         ]
         assert len(thinking_blocks) == 1
         assert thinking_blocks[0]["thinking"] == "planning the tool call"
+
+    def test_kimi_coding_preserves_signed_thinking_blocks(self) -> None:
+        """Signed thinking blocks from Kimi itself must survive round-trip."""
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "I will call a tool",
+                        "signature": "EpUCCkYICxgCKkABh4..." + "x" * 100,
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "skill_view",
+                        "input": {},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+        _, converted = convert_messages_to_anthropic(
+            messages,
+            base_url="https://api.kimi.com/coding",
+            model="kimi-k2.5",
+        )
+        assistant_msg = next(m for m in converted if m["role"] == "assistant")
+        assistant_blocks = assistant_msg["content"]
+        thinking_blocks = [
+            b for b in assistant_blocks
+            if isinstance(b, dict) and b.get("type") == "thinking"
+        ]
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0].get("signature") is not None
+
+    def test_kimi_coding_thinking_with_tool_call_replay(self) -> None:
+        """Full round-trip: reasoning + tool call preserves reasoning_content."""
+        from agent.anthropic_adapter import convert_messages_to_anthropic
+
+        messages = [
+            {"role": "user", "content": "find btc price"},
+            {
+                "role": "assistant",
+                "reasoning_content": "I need to search for current BTC price",
+                "tool_calls": [
+                    {
+                        "id": "call_btc",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"q": "BTC price"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_btc", "content": "$87,000"},
+        ]
+        _, converted = convert_messages_to_anthropic(
+            messages,
+            base_url="https://api.kimi.com/coding",
+            model="kimi-k2.5",
+        )
+        assistant_msg = next(m for m in converted if m["role"] == "assistant")
+        # reasoning_content should be synthesised into unsigned thinking block
+        # AND preserved because Kimi /coding is whitelisted
+        assert "content" in assistant_msg
+        has_thinking = any(
+            isinstance(b, dict) and b.get("type") == "thinking"
+            for b in assistant_msg["content"]
+        )
+        assert has_thinking, "reasoning_content must survive as thinking block for Kimi /coding"

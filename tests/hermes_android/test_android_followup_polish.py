@@ -102,7 +102,8 @@ def test_android_linux_subsystem_reapplies_executable_bits_before_reusing_cached
 
     assert 'markExecutableTree(File(prefixDir, "bin"))' in cached_state_block
     assert 'markExecutableTree(File(prefixDir, "libexec"))' in cached_state_block
-    assert 'if (bashFile.isFile && bashFile.canExecute())' in cached_state_block
+    assert 'canLaunchShell(shellPath, homeDir, buildRunEnvironment(state))' in cached_state_block
+    assert 'reset(context)' in cached_state_block
 
 
 def test_hugging_face_inspect_download_flow_runs_off_main_thread_and_supports_repo_page_resolution():

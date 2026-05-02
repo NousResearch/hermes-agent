@@ -1,16 +1,22 @@
-"""Tests for local provider stream read timeout auto-detection.
-
-When a local LLM provider is detected (Ollama, llama.cpp, vLLM, etc.),
-the httpx stream read timeout should be automatically increased from the
-default 60s to HERMES_API_TIMEOUT (1800s) to avoid premature connection
-kills during long prefill phases.
-"""
+"""Tests for local provider stream timeout handling."""
 
 import os
 import pytest
 from unittest.mock import patch
 
 from agent.model_metadata import is_local_endpoint
+from run_agent import AIAgent
+
+
+def _agent(**kwargs):
+    return AIAgent(
+        api_key="test-key",
+        model="test/model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        **kwargs,
+    )
 
 
 class TestLocalStreamReadTimeout:
@@ -26,25 +32,46 @@ class TestLocalStreamReadTimeout:
         "http://host.containers.internal:11434",
         "http://host.lima.internal:11434",
     ])
-    def test_local_endpoint_bumps_read_timeout(self, base_url):
-        """Local endpoint + default timeout -> bumps to base_timeout."""
+    def test_local_endpoint_keeps_finite_read_timeout(self, base_url):
+        """Local endpoint + default timeout -> stays finite, not HERMES_API_TIMEOUT."""
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_STREAM_READ_TIMEOUT", None)
-            _base_timeout = float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
-            _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
-            if _stream_read_timeout == 120.0 and base_url and is_local_endpoint(base_url):
-                _stream_read_timeout = _base_timeout
-            assert _stream_read_timeout == 1800.0
+            agent = _agent(base_url=base_url)
+            assert agent._resolved_stream_read_timeout({}) == 120.0
 
     def test_user_override_respected_for_local(self):
         """User sets HERMES_STREAM_READ_TIMEOUT -> keep their value even for local."""
         with patch.dict(os.environ, {"HERMES_STREAM_READ_TIMEOUT": "300"}, clear=False):
-            _base_timeout = float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
-            _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
-            base_url = "http://localhost:11434"
-            if _stream_read_timeout == 120.0 and base_url and is_local_endpoint(base_url):
-                _stream_read_timeout = _base_timeout
-            assert _stream_read_timeout == 300.0
+            agent = _agent(base_url="http://localhost:11434")
+            assert agent._resolved_stream_read_timeout({}) == 300.0
+
+    def test_large_output_budget_scales_read_timeout(self):
+        """Large generations get more time between chunks without disabling timeout."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_STREAM_READ_TIMEOUT", None)
+            agent = _agent(base_url="http://localhost:11434")
+            assert agent._resolved_stream_read_timeout({"max_tokens": 32769}) == 180.0
+
+    def test_local_endpoint_keeps_finite_stale_timeout(self):
+        """Local streams still reconnect when no chunks arrive."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_STREAM_STALE_TIMEOUT", None)
+            agent = _agent(base_url="http://localhost:11434")
+            assert agent._compute_stream_stale_timeout({"messages": []}) == 180.0
+
+    @pytest.mark.parametrize(
+        ("max_tokens", "expected"),
+        [
+            (32769, 300.0),
+            (65537, 420.0),
+        ],
+    )
+    def test_large_output_budget_scales_stale_timeout(self, max_tokens, expected):
+        """High output budgets get GLM-friendly finite stale thresholds."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_STREAM_STALE_TIMEOUT", None)
+            agent = _agent(base_url="http://localhost:11434")
+            assert agent._compute_stream_stale_timeout({"messages": [], "max_tokens": max_tokens}) == expected
 
     @pytest.mark.parametrize("base_url", [
         "https://api.openai.com",
@@ -55,22 +82,16 @@ class TestLocalStreamReadTimeout:
         """Remote endpoint -> keep 120s default."""
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_STREAM_READ_TIMEOUT", None)
-            _base_timeout = float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
-            _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
-            if _stream_read_timeout == 120.0 and base_url and is_local_endpoint(base_url):
-                _stream_read_timeout = _base_timeout
-            assert _stream_read_timeout == 120.0
+            agent = _agent(base_url=base_url)
+            assert agent._resolved_stream_read_timeout({}) == 120.0
 
     def test_empty_base_url_keeps_default(self):
         """No base_url set -> keep 120s default."""
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_STREAM_READ_TIMEOUT", None)
-            _base_timeout = float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
-            _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
-            base_url = ""
-            if _stream_read_timeout == 120.0 and base_url and is_local_endpoint(base_url):
-                _stream_read_timeout = _base_timeout
-            assert _stream_read_timeout == 120.0
+            agent = _agent(base_url="https://api.openai.com/v1")
+            agent.base_url = ""
+            assert agent._resolved_stream_read_timeout({}) == 120.0
 
 
 class TestIsLocalEndpoint:

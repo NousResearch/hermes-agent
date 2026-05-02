@@ -2833,6 +2833,58 @@ class AIAgent:
             return max(stale_base, 450.0)
         return stale_base
 
+    def _stream_output_budget(self, api_kwargs: Optional[dict] = None) -> int:
+        """Return the requested stream output budget when one is configured."""
+        candidates = []
+        if api_kwargs:
+            candidates.extend(
+                api_kwargs.get(name)
+                for name in ("max_tokens", "max_completion_tokens", "max_output_tokens")
+            )
+        candidates.append(getattr(self, "max_tokens", None))
+        for value in candidates:
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    def _resolved_stream_read_timeout(self, api_kwargs: Optional[dict] = None) -> float:
+        """Resolve the httpx streaming read timeout for chat completions."""
+        provider_timeout = get_provider_request_timeout(self.provider, self.model)
+        if provider_timeout is not None:
+            return provider_timeout
+
+        stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
+        output_budget = self._stream_output_budget(api_kwargs)
+        if output_budget > 32768:
+            # Large local/custom generations can legitimately pause longer
+            # between chunks, but the timeout must remain finite so a stalled
+            # provider can recover through the retry path.
+            return max(stream_read_timeout, 180.0)
+        return stream_read_timeout
+
+    def _compute_stream_stale_timeout(self, api_kwargs: dict) -> float:
+        """Compute the stale-stream reconnect threshold for streaming calls."""
+        stale_timeout = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
+
+        output_budget = self._stream_output_budget(api_kwargs)
+        if output_budget > 65536:
+            stale_timeout = max(stale_timeout, 420.0)
+        elif output_budget > 32768:
+            stale_timeout = max(stale_timeout, 300.0)
+
+        # Scale the stale timeout for large contexts: slow models can
+        # legitimately think for minutes before producing the first token.
+        est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+        if est_tokens > 100_000:
+            return max(stale_timeout, 300.0)
+        if est_tokens > 50_000:
+            return max(stale_timeout, 240.0)
+        return stale_timeout
+
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return base_url_host_matches(self._base_url_lower, "openrouter.ai")
@@ -6700,28 +6752,11 @@ class AIAgent:
             import httpx as _httpx
             # Per-provider / per-model request_timeout_seconds (from config.yaml)
             # wins over the HERMES_API_TIMEOUT env default if the user set it.
-            _provider_timeout_cfg = get_provider_request_timeout(self.provider, self.model)
-            _base_timeout = (
-                _provider_timeout_cfg
-                if _provider_timeout_cfg is not None
-                else float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
-            )
-            # Read timeout: config wins here too.  Otherwise use
-            # HERMES_STREAM_READ_TIMEOUT (default 120s) for cloud providers.
-            if _provider_timeout_cfg is not None:
-                _stream_read_timeout = _provider_timeout_cfg
-            else:
-                _stream_read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
-                # Local providers (Ollama, llama.cpp, vLLM) can take minutes for
-                # prefill on large contexts before producing the first token.
-                # Auto-increase the httpx read timeout unless the user explicitly
-                # overrode HERMES_STREAM_READ_TIMEOUT.
-                if _stream_read_timeout == 120.0 and self.base_url and is_local_endpoint(self.base_url):
-                    _stream_read_timeout = _base_timeout
-                    logger.debug(
-                        "Local provider detected (%s) — stream read timeout raised to %.0fs",
-                        self.base_url, _stream_read_timeout,
-                    )
+            _base_timeout = self._resolved_api_call_timeout()
+            # Keep stream reads finite for local/custom endpoints so stalled
+            # providers recover through retry logic instead of waiting on the
+            # long request timeout fallback.
+            _stream_read_timeout = self._resolved_stream_read_timeout(api_kwargs)
             stream_kwargs = {
                 **api_kwargs,
                 "stream": True,
@@ -7268,26 +7303,7 @@ class AIAgent:
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="stream_request_complete")
 
-        _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
-        # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
-        # for prefill on large contexts.  Disable the stale detector unless
-        # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
-        if _stream_stale_timeout_base == 180.0 and self.base_url and is_local_endpoint(self.base_url):
-            _stream_stale_timeout = float("inf")
-            logger.debug("Local provider detected (%s) — stale stream timeout disabled", self.base_url)
-        else:
-            # Scale the stale timeout for large contexts: slow models (like Opus)
-            # can legitimately think for minutes before producing the first token
-            # when the context is large.  Without this, the stale detector kills
-            # healthy connections during the model's thinking phase, producing
-            # spurious RemoteProtocolError ("peer closed connection").
-            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
-            if _est_tokens > 100_000:
-                _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
-            elif _est_tokens > 50_000:
-                _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
-            else:
-                _stream_stale_timeout = _stream_stale_timeout_base
+        _stream_stale_timeout = self._compute_stream_stale_timeout(api_kwargs)
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()

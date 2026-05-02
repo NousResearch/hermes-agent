@@ -289,7 +289,7 @@ def _has_any_provider_configured() -> bool:
     env_file = get_env_path()
     if env_file.exists():
         try:
-            for line in env_file.read_text().splitlines():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
                 line = line.strip()
                 if line.startswith("#") or "=" not in line:
                     continue
@@ -800,6 +800,8 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
 
         title = db.get_session_title(target)
         message_count = int(session.get("message_count") or 0)
+        if message_count == 0:
+            return  # No real conversation — don't show resume info
         input_tokens = int(session.get("input_tokens") or 0)
         output_tokens = int(session.get("output_tokens") or 0)
         cache_read_tokens = int(session.get("cache_read_tokens") or 0)
@@ -5431,6 +5433,45 @@ def _find_stale_dashboard_pids() -> list[int]:
     return dashboard_pids
 
 
+def _print_curator_first_run_notice() -> None:
+    """Print a short heads-up about the skill curator after `hermes update`.
+
+    Only fires when the curator is enabled AND has no recorded run yet, which
+    is exactly the window where the gateway ticker used to fire Curator
+    against a fresh skill library immediately after an update. We defer the
+    first real pass by one ``interval_hours``; this notice tells the user how
+    to preview or disable before then. Silent on steady state.
+    """
+    try:
+        from agent import curator
+    except Exception:
+        return
+    try:
+        if not curator.is_enabled():
+            return
+        state = curator.load_state()
+    except Exception:
+        return
+    if state.get("last_run_at"):
+        # Curator has run before (real or already seeded) — no notice needed.
+        return
+    try:
+        hours = curator.get_interval_hours()
+    except Exception:
+        hours = 24 * 7
+    days = max(1, hours // 24)
+    print()
+    print("ℹ Skill curator")
+    print(
+        f"  Background skill maintenance is enabled. First pass is deferred "
+        f"~{days}d after installation; only agent-created skills are in "
+        f"scope and nothing is ever auto-deleted (archive is recoverable)."
+    )
+    print("  Preview now:  hermes curator run --dry-run")
+    print("  Pause it:     hermes curator pause")
+    print("  Docs:         https://hermes-agent.nousresearch.com/docs/user-guide/features/curator")
+
+
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
 ) -> None:
@@ -5668,6 +5709,10 @@ def _update_via_zip(args):
 
     print()
     print("✓ Update complete!")
+    try:
+        _print_curator_first_run_notice()
+    except Exception as e:
+        logger.debug("Curator first-run notice failed: %s", e)
     _kill_stale_dashboard_processes()
 
 
@@ -7107,6 +7152,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print()
         print("✓ Update complete!")
 
+        # Curator first-run heads-up. Only prints when curator is enabled AND
+        # has never run — i.e. the window where the ticker would otherwise
+        # have fired against a fresh skill library. Kept silent on steady
+        # state so we don't nag.
+        try:
+            _print_curator_first_run_notice()
+        except Exception as e:
+            logger.debug("Curator first-run notice failed: %s", e)
+
         # Repair RHEL-family root installs where /usr/local/bin isn't on PATH
         # for non-login interactive shells.  No-op on every other platform.
         try:
@@ -7493,6 +7547,42 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if not restarted_services and not killed_pids:
                 # No gateways were running — nothing to do
                 pass
+
+            # --- Post-restart survivor sweep -----------------------------
+            # Issue #17648: some gateways ignore SIGTERM (stuck drain,
+            # blocked I/O, PID dead but zombie).  The detached profile
+            # watchers wait 120s for the old PID to exit — if it never
+            # does, no respawn happens and the user keeps hitting
+            # ImportError against a stale sys.modules.  Give the
+            # graceful paths a brief window to complete, then SIGKILL
+            # any remaining pre-update PIDs so the watcher / service
+            # manager can relaunch with fresh code.
+            try:
+                _time.sleep(3.0)
+                _service_pids_after = _get_service_pids()
+                _surviving = find_gateway_pids(
+                    exclude_pids=_service_pids_after, all_profiles=True,
+                )
+                # Scope to PIDs we already tried to kill during this
+                # update (killed_pids).  Anything new is a gateway that
+                # started AFTER our restart attempt — respecting user
+                # intent, we don't kill those.
+                _stuck = [pid for pid in _surviving if pid in killed_pids]
+                if _stuck:
+                    print()
+                    print(
+                        f"  ⚠ {len(_stuck)} gateway process(es) ignored SIGTERM — force-killing"
+                    )
+                    for pid in _stuck:
+                        try:
+                            os.kill(pid, _signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError):
+                            pass
+                    # Give the OS a beat to reap the processes so the
+                    # watchers see them exit and respawn.
+                    _time.sleep(1.5)
+            except Exception as _sweep_exc:
+                logger.debug("Post-restart survivor sweep failed: %s", _sweep_exc)
 
         except Exception as e:
             logger.debug("Gateway restart during update failed: %s", e)

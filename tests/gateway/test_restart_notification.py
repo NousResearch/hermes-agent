@@ -242,4 +242,89 @@ async def test_send_restart_notification_cleans_up_on_send_failure(
 
     await runner._send_restart_notification()
 
-    assert not notify_path.exists()  # cleaned up despite error
+    # File cleaned up even though send raised.
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_logs_warning_on_sendresult_failure(
+    tmp_path, monkeypatch, caplog
+):
+    """Adapter that returns SendResult(success=False) must log a WARNING, not INFO.
+
+    Regression guard: adapter.send() catches provider errors (e.g. Telegram
+    "Chat not found") and returns SendResult(success=False) rather than
+    raising. The caller previously ignored the return value and always
+    logged "Sent restart notification to ..." at INFO — masking real
+    delivery failures behind a fake success line.
+    """
+    from gateway.platforms.base import SendResult
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(
+        return_value=SendResult(success=False, error="Chat not found"),
+    )
+
+    with caplog.at_level("DEBUG", logger="gateway.run"):
+        await runner._send_restart_notification()
+
+    success_lines = [
+        r for r in caplog.records
+        if r.levelname == "INFO" and "Sent restart notification" in r.getMessage()
+    ]
+    warning_lines = [
+        r for r in caplog.records
+        if r.levelname == "WARNING"
+        and "was not delivered" in r.getMessage()
+        and "Chat not found" in r.getMessage()
+    ]
+    assert not success_lines, (
+        "Expected no INFO 'Sent restart notification' line when send failed, "
+        f"got: {[r.getMessage() for r in success_lines]}"
+    )
+    assert warning_lines, (
+        "Expected a WARNING line mentioning the failure; "
+        f"got records: {[(r.levelname, r.getMessage()) for r in caplog.records]}"
+    )
+    # Still cleans up.
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_logs_info_on_sendresult_success(
+    tmp_path, monkeypatch, caplog
+):
+    """Adapter returning SendResult(success=True) keeps the INFO log line."""
+    from gateway.platforms.base import SendResult
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))
+
+    with caplog.at_level("DEBUG", logger="gateway.run"):
+        await runner._send_restart_notification()
+
+    success_lines = [
+        r for r in caplog.records
+        if r.levelname == "INFO" and "Sent restart notification" in r.getMessage()
+    ]
+    assert success_lines, (
+        "Expected INFO 'Sent restart notification' when send succeeded; "
+        f"got records: {[(r.levelname, r.getMessage()) for r in caplog.records]}"
+    )
+    assert not notify_path.exists()

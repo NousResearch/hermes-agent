@@ -80,6 +80,13 @@ AUTHOR_MAP = {
     "thomasjhon6666@gmail.com": "ThomassJonax",
     "focusflow.app.help@gmail.com": "yes999zc",
     "rob@atlas.lan": "rmoen",
+    # Slack ephemeral slash-ack salvage (May 2026)
+    "probepark@users.noreply.github.com": "probepark",
+    # Slack batch salvage (May 2026)
+    "280484231+prive-fe-bot@users.noreply.github.com": "priveperfumes",
+    "amr@ghanem.sa": "amroessam",
+    "paperlantern.agent@gmail.com": "Hinotoi-agent",
+    "valda@underscore.jp": "valda",
     "162235745+0z1-ghb@users.noreply.github.com": "0z1-ghb",
     "yes999zc@163.com": "yes999zc",
     "343873859@qq.com": "DrStrangerUJN",
@@ -363,6 +370,10 @@ AUTHOR_MAP = {
     "xowiekk@gmail.com": "Xowiek",
     "1243352777@qq.com": "zons-zhaozhy",
     "e.silacandmr@gmail.com": "Es1la",
+    "h3057183414@gmail.com": "CoreyNoDream",
+    "franksong2702@gmail.com": "franksong2702",
+    "673088860@qq.com": "ambition0802",
+    "beibei1988@proton.me": "beibi9966",
     # ── bulk addition: 75 emails resolved via API, PR salvage bodies, noreply
     #    crossref, and GH contributor list matching (April 2026 audit) ──
     "1115117931@qq.com": "aaronagent",

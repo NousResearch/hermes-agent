@@ -613,6 +613,21 @@ class DiscordAdapter(BasePlatformAdapter):
             # so LLM output or echoed user content can't ping the whole
             # server; override per DISCORD_ALLOW_MENTION_* env vars or the
             # discord.allow_mentions.* block in config.yaml.
+
+            # Close any existing client to prevent zombie websocket connections
+            # on reconnect (see #18187). Without this, the old client remains
+            # connected to Discord gateway and both fire on_message, causing
+            # double responses.
+            if self._client is not None:
+                try:
+                    if not self._client.is_closed():
+                        await self._client.close()
+                except Exception:
+                    logger.debug("[%s] Failed to close previous Discord client", self.name)
+                finally:
+                    self._client = None
+                    self._ready_event.clear()
+
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
@@ -2584,39 +2599,31 @@ class DiscordAdapter(BasePlatformAdapter):
         hidden skills. The slash picker also becomes more discoverable —
         Discord live-filters by the user's typed prefix against both the
         skill name and its description.
+
+        The entries list and lookup dict are stored on ``self`` rather
+        than captured in closure variables so :meth:`refresh_skill_group`
+        can repopulate them when the user runs ``/reload-skills`` without
+        needing to touch the Discord slash-command tree or trigger a
+        ``tree.sync()`` call.
         """
         try:
-            from hermes_cli.commands import discord_skill_commands_by_category
-
             existing_names = set()
             try:
                 existing_names = {cmd.name for cmd in tree.get_commands()}
             except Exception:
                 pass
 
-            # Reuse the existing collector for consistent filtering
-            # (per-platform disabled, hub-excluded, name clamping), then
-            # flatten — the category grouping was only useful for the
-            # nested layout.
-            categories, uncategorized, hidden = discord_skill_commands_by_category(
-                reserved_names=existing_names,
-            )
-            entries: list[tuple[str, str, str]] = list(uncategorized)
-            for cat_skills in categories.values():
-                entries.extend(cat_skills)
+            # Populate the instance-level entries/lookup so the
+            # autocomplete + handler callbacks below always read the
+            # freshest state. refresh_skill_group() re-runs the same
+            # collector and mutates these two attributes in place.
+            self._skill_entries: list[tuple[str, str, str]] = []
+            self._skill_lookup: dict[str, tuple[str, str]] = {}
+            self._skill_group_reserved_names: set[str] = set(existing_names)
+            self._refresh_skill_catalog_state()
 
-            if not entries:
+            if not self._skill_entries:
                 return
-
-            # Stable alphabetical order so the autocomplete suggestion
-            # list is predictable across restarts.
-            entries.sort(key=lambda t: t[0])
-
-            # name -> (description, cmd_key) — used by both the autocomplete
-            # callback and the handler for O(1) dispatch.
-            skill_lookup: dict[str, tuple[str, str]] = {
-                n: (d, k) for n, d, k in entries
-            }
 
             async def _autocomplete_name(
                 interaction: "discord.Interaction", current: str,
@@ -2627,10 +2634,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 "/skill pdf" surfaces skills whose description mentions
                 PDFs even if the name doesn't. Discord caps this list at
                 25 entries per query.
+
+                Reads ``self._skill_entries`` so a ``/reload-skills`` run
+                since process start shows up on the very next keystroke.
                 """
                 q = (current or "").strip().lower()
                 choices: list = []
-                for name, desc, _key in entries:
+                for name, desc, _key in self._skill_entries:
                     if not q or q in name.lower() or (desc and q in desc.lower()):
                         if desc:
                             label = f"{name} — {desc}"
@@ -2654,7 +2664,7 @@ class DiscordAdapter(BasePlatformAdapter):
             async def _skill_handler(
                 interaction: "discord.Interaction", name: str, args: str = "",
             ):
-                entry = skill_lookup.get(name)
+                entry = self._skill_lookup.get(name)
                 if not entry:
                     await interaction.response.send_message(
                         f"Unknown skill: `{name}`. Start typing for "
@@ -2676,15 +2686,73 @@ class DiscordAdapter(BasePlatformAdapter):
 
             logger.info(
                 "[%s] Registered /skill command with %d skill(s) via autocomplete",
-                self.name, len(entries),
+                self.name, len(self._skill_entries),
             )
-            if hidden:
+            if self._skill_group_hidden_count:
                 logger.info(
                     "[%s] %d skill(s) filtered out of /skill (name clamp / reserved)",
-                    self.name, hidden,
+                    self.name, self._skill_group_hidden_count,
                 )
         except Exception as exc:
             logger.warning("[%s] Failed to register /skill command: %s", self.name, exc)
+
+    def _refresh_skill_catalog_state(self) -> None:
+        """Re-scan disk for skills and repopulate ``self._skill_entries``.
+
+        Called once from :meth:`_register_skill_group` at startup and
+        again from :meth:`refresh_skill_group` whenever the user runs
+        ``/reload-skills``. No Discord API calls are made — autocomplete
+        and the handler both read from these instance attributes
+        directly, so an in-place mutation is sufficient.
+        """
+        from hermes_cli.commands import discord_skill_commands_by_category
+
+        reserved = getattr(self, "_skill_group_reserved_names", set())
+        categories, uncategorized, hidden = discord_skill_commands_by_category(
+            reserved_names=set(reserved),
+        )
+        entries: list[tuple[str, str, str]] = list(uncategorized)
+        for cat_skills in categories.values():
+            entries.extend(cat_skills)
+        # Stable alphabetical order so the autocomplete suggestion
+        # list is predictable across restarts.
+        entries.sort(key=lambda t: t[0])
+
+        self._skill_entries = entries
+        self._skill_lookup = {n: (d, k) for n, d, k in entries}
+        self._skill_group_hidden_count = hidden
+
+    def refresh_skill_group(self) -> tuple[int, int]:
+        """Rescan skills and update the live ``/skill`` autocomplete state.
+
+        Invoked by :meth:`gateway.run.GatewayOrchestrator._handle_reload_skills_command`
+        after :func:`agent.skill_commands.reload_skills` has refreshed
+        the in-process skill-command registry. Without this call, the
+        ``/skill`` autocomplete dropdown keeps showing the list captured
+        at process start — new skills stay invisible and deleted skills
+        return an "Unknown skill" error when clicked.
+
+        Because autocomplete options are fetched dynamically by Discord,
+        we only need to mutate the entries/lookup attributes read by the
+        callbacks — no ``tree.sync()`` is required.
+
+        Returns ``(new_count, hidden_count)``.
+        """
+        try:
+            self._refresh_skill_catalog_state()
+        except Exception as exc:
+            logger.warning(
+                "[%s] Failed to refresh /skill autocomplete after reload: %s",
+                self.name, exc,
+            )
+            return (len(getattr(self, "_skill_entries", [])), 0)
+        logger.info(
+            "[%s] Refreshed /skill autocomplete: %d skill(s) available (%d filtered)",
+            self.name,
+            len(self._skill_entries),
+            self._skill_group_hidden_count,
+        )
+        return (len(self._skill_entries), self._skill_group_hidden_count)
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
@@ -2851,8 +2919,15 @@ class DiscordAdapter(BasePlatformAdapter):
             raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
-        if isinstance(raw, str) and raw.strip():
-            return {part.strip() for part in raw.split(",") if part.strip()}
+        # Coerce non-list scalars (str/int/float) to str before splitting.
+        # YAML parses a bare numeric value such as
+        # `free_response_channels: 1491973769726791812` as int, which was
+        # previously falling through the isinstance(str) branch and silently
+        # returning an empty set.  str() here accepts whatever scalar the YAML
+        # loader hands us without changing existing string/CSV semantics.
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
     def _thread_parent_channel(self, channel: Any) -> Any:

@@ -400,7 +400,12 @@ DEFAULT_CONFIG = {
         # The gateway stops accepting new work, waits for running agents
         # to finish, then interrupts any remaining runs after the timeout.
         # 0 = no drain, interrupt immediately.
-        "restart_drain_timeout": 60,
+        #
+        # 180s is calibrated for realistic in-flight agent turns: a typical
+        # coding conversation mid-reasoning runs 60–150s per call, so a 60s
+        # budget routinely interrupted legitimate work on /restart. Raise
+        # further in config.yaml if you run very-long-reasoning models.
+        "restart_drain_timeout": 180,
         # Max app-level retry attempts for API errors (connection drops,
         # provider timeouts, 5xx, etc.) before the agent surfaces the
         # failure.  The OpenAI SDK already does its own low-level retries
@@ -825,7 +830,7 @@ DEFAULT_CONFIG = {
             # Voices: alloy, echo, fable, onyx, nova, shimmer
         },
         "xai": {
-            "voice_id": "eve",
+            "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
             "language": "en",
             "sample_rate": 24000,
             "bit_rate": 128000,
@@ -1022,6 +1027,14 @@ DEFAULT_CONFIG = {
         # Archive a skill (move to skills/.archive/) after this many days
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
+        # Pre-run backup: before every real curator pass (dry-run is
+        # skipped), snapshot ~/.hermes/skills/ into
+        # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
+        # user can roll back with `hermes curator rollback`.
+        "backup": {
+            "enabled": True,
+            "keep": 5,  # retain last N regular snapshots
+        },
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.

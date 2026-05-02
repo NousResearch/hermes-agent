@@ -1169,10 +1169,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 
-def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
-        or_key = _pool_runtime_api_key(entry)
+        or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if not or_key:
             return None, None
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
@@ -1180,7 +1180,7 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
         return OpenAI(api_key=or_key, base_url=base_url,
                        default_headers=_headers_with_config(_OR_HEADERS)), _OPENROUTER_MODEL
 
-    or_key = os.getenv("OPENROUTER_API_KEY")
+    or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
@@ -2103,9 +2103,9 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
-    # ── OpenRouter ───────────────────────────────────────────────────
+    # ── OpenRouter ───────────────────────────────────────────
     if provider == "openrouter":
-        client, default = _try_openrouter()
+        client, default = _try_openrouter(explicit_api_key=explicit_api_key)
         if client is None:
             logger.warning(
                 "resolve_provider_client: openrouter requested but %s",
@@ -3308,7 +3308,26 @@ def _build_call_kwargs(
             kwargs["max_tokens"] = max_tokens
 
     if tools:
-        kwargs["tools"] = tools
+        # Defensive dedup: providers like Google Vertex, Azure, and Bedrock
+        # reject requests with duplicate tool names (HTTP 400).  The upstream
+        # injection paths (run_agent.py) already dedup, but this guard
+        # converts a hard API failure into a warning if an upstream regression
+        # reintroduces duplicates.  See: #18478
+        _seen: set = set()
+        _deduped: list = []
+        for _t in tools:
+            _tname = (_t.get("function") or {}).get("name", "")
+            if _tname and _tname in _seen:
+                logger.warning(
+                    "_build_call_kwargs: duplicate tool name '%s' removed "
+                    "(provider=%s model=%s)",
+                    _tname, provider, model,
+                )
+                continue
+            if _tname:
+                _seen.add(_tname)
+            _deduped.append(_t)
+        kwargs["tools"] = _deduped
 
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})

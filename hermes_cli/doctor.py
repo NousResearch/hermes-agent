@@ -1148,6 +1148,24 @@ def run_doctor(args):
                 if _resp.status_code == 200:
                     print(f"\r  {color('✓', Colors.GREEN)} {_label}                          ")
                 elif _resp.status_code == 401:
+                    # DashScope: if the intl endpoint fails, try the China endpoint
+                    # before declaring the key invalid.  China-region keys only work
+                    # with dashscope.aliyuncs.com, not the intl variant.
+                    _china_url = None
+                    if _base_env == "DASHSCOPE_BASE_URL" and not _base:
+                        _china_url = "https://dashscope.aliyuncs.com/compatible-mode/v1/models"
+                    if _china_url:
+                        try:
+                            _china_resp = httpx.get(
+                                _china_url,
+                                headers=_headers,
+                                timeout=10,
+                            )
+                            if _china_resp.status_code == 200:
+                                print(f"\r  {color('✓', Colors.GREEN)} {_label} {color('(China endpoint — set DASHSCOPE_BASE_URL)', Colors.DIM)}")
+                                continue
+                        except Exception:
+                            pass
                     print(f"\r  {color('✗', Colors.RED)} {_label} {color('(invalid API key)', Colors.DIM)}           ")
                     issues.append(f"Check {_env_vars[0]} in .env")
                 else:

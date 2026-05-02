@@ -545,6 +545,40 @@ def build_environment_hints() -> str:
     return "\n\n".join(hints)
 
 
+def build_bankr_wallet_prompt() -> str:
+    """Return Bankr wallet guidance when dashboard-provisioned wallet env exists."""
+    api_key_present = bool(
+        (os.getenv("BANKR_API_KEY") or os.getenv("BANKR_AGENT_API_KEY") or "").strip()
+    )
+    wallet_address = (
+        os.getenv("BANKR_WALLET_ADDRESS")
+        or os.getenv("BANKR_AGENT_WALLET_ADDRESS")
+        or ""
+    ).strip()
+
+    if not api_key_present and not wallet_address:
+        return ""
+
+    address_line = (
+        f" Wallet address: {wallet_address}." if wallet_address else ""
+    )
+    return (
+        "# Bankr wallet\n"
+        "You have a Bankr-managed wallet on Base available for crypto, x402, "
+        "and on-chain tasks."
+        f"{address_line}\n"
+        "Use the installed Bankr skills selectively when the user asks for "
+        "wallet, payment, x402, token, Base, or on-chain work. Do not load "
+        "every Bankr skill into context by default.\n"
+        "Relevant environment variables are BANKR_API_KEY and BANKR_WALLET_ADDRESS, "
+        "with BANKR_AGENT_API_KEY and BANKR_AGENT_WALLET_ADDRESS as aliases. "
+        "Do not reveal API keys or secret values.\n"
+        "V1 is Base-only. Do not initiate or recommend non-Base deposits or "
+        "transfers from this wallet unless the user explicitly changes the "
+        "configured network in a future version."
+    )
+
+
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2

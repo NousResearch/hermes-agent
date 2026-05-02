@@ -908,6 +908,16 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
+    def test_includes_bankr_wallet_prompt_when_wallet_env_is_present(self, agent, monkeypatch):
+        monkeypatch.setenv("BANKR_API_KEY", "bk_agent_secret")
+        monkeypatch.setenv("BANKR_WALLET_ADDRESS", "0x000000000000000000000000000000000000ba5e")
+
+        prompt = agent._build_system_prompt()
+
+        assert "Bankr-managed wallet on Base" in prompt
+        assert "Use the installed Bankr skills selectively" in prompt
+        assert "bk_agent_secret" not in prompt
+
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
         toolset_map = {

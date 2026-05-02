@@ -2851,7 +2851,9 @@ class AIAgent:
 
         return 300.0, True
 
-    def _compute_non_stream_stale_timeout(self, messages: list[dict[str, Any]]) -> float:
+    def _compute_non_stream_stale_timeout(
+        self, messages: list[dict[str, Any]], *, max_output_tokens: int = 0,
+    ) -> float:
         """Compute the effective non-stream stale timeout for this request."""
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
@@ -2860,10 +2862,17 @@ class AIAgent:
 
         est_tokens = sum(len(str(v)) for v in messages) // 4
         if est_tokens > 100_000:
-            return max(stale_base, 600.0)
-        if est_tokens > 50_000:
-            return max(stale_base, 450.0)
-        return stale_base
+            timeout = max(stale_base, 600.0)
+        elif est_tokens > 50_000:
+            timeout = max(stale_base, 450.0)
+        else:
+            timeout = stale_base
+        # Scale by output budget for thinking/reasoning models.
+        if max_output_tokens > 65536:
+            timeout = max(timeout, 600.0)
+        elif max_output_tokens > 32768:
+            timeout = max(timeout, 450.0)
+        return timeout
 
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
@@ -6400,7 +6409,12 @@ class AIAgent:
         # detector kills the connection early so the main retry loop can
         # apply richer recovery (credential rotation, provider fallback).
         _stale_timeout = self._compute_non_stream_stale_timeout(
-            api_kwargs.get("messages", [])
+            api_kwargs.get("messages", []),
+            max_output_tokens=(
+                api_kwargs.get("max_tokens")
+                or api_kwargs.get("max_completion_tokens")
+                or 0
+            ),
         )
 
         _call_start = time.time()
@@ -6754,6 +6768,17 @@ class AIAgent:
                         "Local provider detected (%s) — stream read timeout raised to %.0fs",
                         self.base_url, _stream_read_timeout,
                     )
+                # Thinking/reasoning models can spend minutes in the reasoning
+                # phase without emitting any visible chunk.  Scale the read
+                # timeout by the output budget so large max_tokens values
+                # don't trigger premature httpx ReadTimeout kills.
+                _output_budget = (
+                    api_kwargs.get("max_tokens")
+                    or api_kwargs.get("max_completion_tokens")
+                    or 0
+                )
+                if _output_budget > 32768:
+                    _stream_read_timeout = max(_stream_read_timeout, 180.0)
             stream_kwargs = {
                 **api_kwargs,
                 "stream": True,
@@ -7320,6 +7345,18 @@ class AIAgent:
                 _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
             else:
                 _stream_stale_timeout = _stream_stale_timeout_base
+            # Also scale by output budget: thinking/reasoning models (GLM-5.1,
+            # DeepSeek-R1, etc.) can spend minutes in the reasoning phase
+            # without emitting visible chunks, regardless of input size.
+            _output_budget = (
+                api_kwargs.get("max_tokens")
+                or api_kwargs.get("max_completion_tokens")
+                or 0
+            )
+            if _output_budget > 65536:
+                _stream_stale_timeout = max(_stream_stale_timeout, 420.0)  # 7 min
+            elif _output_budget > 32768:
+                _stream_stale_timeout = max(_stream_stale_timeout, 300.0)  # 5 min
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()

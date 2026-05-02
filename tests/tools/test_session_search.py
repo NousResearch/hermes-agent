@@ -13,6 +13,7 @@ from tools.session_search_tool import (
     _list_recent_sessions,
     _HIDDEN_SESSION_SOURCES,
     MAX_SESSION_CHARS,
+    MAX_RAW_FALLBACK_CHARS,
     SESSION_SEARCH_SCHEMA,
 )
 
@@ -498,3 +499,44 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+    def test_summarization_failure_returns_bounded_raw_content(self):
+        """When the summarizer is unavailable, return raw transcript content, not a 500-char preview."""
+        from unittest.mock import AsyncMock, MagicMock, patch as _patch
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        marker_after_preview = "MARKER_AFTER_500_CHARS"
+        raw_message = (
+            "needle "
+            + ("a" * 1000)
+            + marker_after_preview
+            + ("b" * (MAX_RAW_FALLBACK_CHARS + 1000))
+        )
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "raw_sid",
+                "content": "needle",
+                "source": "cli",
+                "session_started": 1709500000,
+                "model": "test",
+            },
+        ]
+        mock_db.get_session.return_value = {"parent_session_id": None}
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": raw_message},
+        ]
+
+        with _patch(
+            "tools.session_search_tool.async_call_llm",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("no provider"),
+        ):
+            result = json.loads(session_search(query="needle", db=mock_db, limit=1))
+
+        entry = result["results"][0]
+        assert result["success"] is True
+        assert entry["content_type"] == "raw"
+        assert marker_after_preview in entry["summary"]
+        assert "[raw conversation truncated]" in entry["summary"]
+        assert len(entry["summary"]) <= MAX_RAW_FALLBACK_CHARS + 100

@@ -24,6 +24,7 @@ from typing import Dict, Any, List, Optional, Union
 
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 MAX_SESSION_CHARS = 100_000
+MAX_RAW_FALLBACK_CHARS = 50_000
 MAX_SUMMARY_TOKENS = 10000
 
 
@@ -191,6 +192,15 @@ def _truncate_around_matches(
     prefix = "...[earlier conversation truncated]...\n\n" if start > 0 else ""
     suffix = "\n\n...[later conversation truncated]..." if end < len(full_text) else ""
     return prefix + truncated + suffix
+
+
+def _format_raw_fallback(conversation_text: str) -> str:
+    """Return bounded raw transcript content when summarization is unavailable."""
+    if not conversation_text:
+        return "No raw conversation content available."
+    if len(conversation_text) <= MAX_RAW_FALLBACK_CHARS:
+        return conversation_text
+    return conversation_text[:MAX_RAW_FALLBACK_CHARS] + "\n...[raw conversation truncated]..."
 
 
 async def _summarize_session(
@@ -499,12 +509,17 @@ def session_search(
             }
 
             if result:
+                entry["content_type"] = "summary"
                 entry["summary"] = result
             else:
-                # Fallback: raw preview so matched sessions aren't silently
-                # dropped when the summarizer is unavailable (fixes #3409).
-                preview = (conversation_text[:500] + "\n…[truncated]") if conversation_text else "No preview available."
-                entry["summary"] = f"[Raw preview — summarization unavailable]\n{preview}"
+                # Fallback: raw transcript content so matched sessions aren't
+                # silently reduced to a short preview when the summarizer is
+                # unavailable (fixes #3409 and #18593).
+                entry["content_type"] = "raw"
+                entry["summary"] = (
+                    "[Raw conversation - summarization unavailable]\n"
+                    f"{_format_raw_fallback(conversation_text)}"
+                )
 
             summaries.append(entry)
 

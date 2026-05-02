@@ -80,6 +80,25 @@ function RootRedirect() {
   return <Navigate to="/sessions" replace />;
 }
 
+function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
+  if (!pluginsLoading) {
+    return <Navigate to="/sessions" replace />;
+  }
+
+  return (
+    <div
+      className="flex min-h-[16rem] min-w-0 items-center justify-center"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Spinner />
+        <span>Loading dashboard plugins…</span>
+      </div>
+    </div>
+  );
+}
+
 const CHAT_NAV_ITEM: NavItem = {
   path: "/chat",
   labelKey: "chat",
@@ -582,7 +601,9 @@ export default function App() {
                   ))}
                   <Route
                     path="*"
-                    element={<Navigate to="/sessions" replace />}
+                    element={
+                      <UnknownRouteFallback pluginsLoading={pluginsLoading} />
+                    }
                   />
                 </Routes>
 

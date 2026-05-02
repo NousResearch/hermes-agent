@@ -424,31 +424,20 @@ def _format_web_extract_result(result: Optional[str]) -> Optional[str]:
     if not isinstance(results, list):
         return None
     lines = [f"Web extract: {len(results)} URL{'s' if len(results) != 1 else ''}"]
-    for item in results[:5]:
+    for item in results[:10]:
         if not isinstance(item, dict):
             continue
         url = str(item.get("url") or "").strip()
         title = str(item.get("title") or url or "Untitled").strip()
         error = str(item.get("error") or "").strip()
-        content = str(item.get("content") or "").strip()
-        lines.extend(["", f"### {title}"])
-        if url:
-            lines.append(url)
-        if error and error not in {"None", "null"}:
-            lines.append(f"Error: {error}")
-            continue
-        if content:
-            headings = _extract_markdown_headings(content, limit=5)
-            lines.append(f"Content: {len(content):,} chars")
-            if headings:
-                lines.append("Headings: " + "; ".join(headings))
-            excerpt = _truncate_text(content, limit=1200)
-            lines.extend(["", excerpt])
-        else:
-            lines.append("No content returned.")
-    if len(results) > 5:
-        lines.append(f"\n... {len(results) - 5} more result(s) omitted")
-    return _truncate_text("\n".join(lines), limit=7000)
+        status = "failed" if error and error not in {"None", "null"} else "extracted"
+        suffix = f" — {status}"
+        lines.append(f"- {title}" + (f" — {url}" if url and url != title else "") + suffix)
+        if status == "failed":
+            lines.append(f"  Error: {_truncate_text(error, limit=500)}")
+    if len(results) > 10:
+        lines.append(f"... {len(results) - 10} more result(s) omitted")
+    return "\n".join(lines)
 
 
 def _format_process_result(result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -1052,11 +1041,10 @@ def build_tool_start(
         )
 
     if tool_name == "web_extract":
-        urls = arguments.get("urls") if isinstance(arguments.get("urls"), list) else []
-        preview = "\n".join(f"- {url}" for url in urls[:5]) or "Extracting web content"
-        content = [_text("Extracting content from:\n" + preview if urls else preview)]
+        # The title identifies the URL(s). Avoid a duplicate content block so
+        # Zed renders this like read_file: compact start, concise completion.
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id, title, kind=kind, content=None, locations=locations,
         )
 
     if tool_name == "process":

@@ -328,7 +328,7 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 
 ---
 
-### 9. Hackathon Plans — `hackathon-docs/` ✅
+### 9. Hackathon Plans — `plugins/phonetic-captions/docs/` ✅
 
 - `PLAN_v1.md` — original Telegram-native plan (executed)
 - `PLAN_v2.md` — dashboard core-edit approach (archived)

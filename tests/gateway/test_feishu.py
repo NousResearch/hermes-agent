@@ -2504,13 +2504,32 @@ class TestAdapterBehavior(unittest.TestCase):
                         "text": "确认已入库 ✓\n文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n**解码后的内容：**",
                     }
                 ],
-                [{"tag": "md", "text": "```json\n{\"cron\": \"list\"}\n```"}],
+                [{"tag": "code_block", "language": "JSON", "text": "{\"cron\": \"list\"}"}],
                 [{"tag": "md", "text": "后续说明仍应保留。"}],
             ],
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
+    def test_build_post_payload_uses_native_code_block_for_long_fence(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        code = "\n".join(f"line{i}: print({i})" for i in range(1, 41))
+        payload = json.loads(adapter._build_post_payload(f"```python\n{code}\n```"))
+
+        rows = payload["zh_cn"]["content"]
+        self.assertEqual(len(rows), 1)
+        element = rows[0][0]
+        self.assertEqual(element["tag"], "code_block")
+        self.assertEqual(element["language"], "PYTHON")
+        self.assertEqual(element["text"].splitlines()[0], "line1: print(1)")
+        self.assertEqual(element["text"].splitlines()[-1], "line40: print(40)")
+        self.assertEqual(len(element["text"].splitlines()), 40)
+        self.assertNotIn("```", element["text"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_keeps_fence_like_code_lines_inside_native_code_block(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
@@ -2525,7 +2544,7 @@ class TestAdapterBehavior(unittest.TestCase):
             payload["zh_cn"]["content"],
             [
                 [{"tag": "md", "text": "before"}],
-                [{"tag": "md", "text": "```python\n```oops\n```"}],
+                [{"tag": "code_block", "language": "PYTHON", "text": "```oops"}],
                 [{"tag": "md", "text": "after"}],
             ],
         )
@@ -2546,7 +2565,7 @@ class TestAdapterBehavior(unittest.TestCase):
             payload["zh_cn"]["content"],
             [
                 [{"tag": "md", "text": "before"}],
-                [{"tag": "md", "text": "```python\nline with two spaces  \n```"}],
+                [{"tag": "code_block", "language": "PYTHON", "text": "line with two spaces  "}],
                 [{"tag": "md", "text": "after"}],
             ],
         )
@@ -2567,9 +2586,9 @@ class TestAdapterBehavior(unittest.TestCase):
             payload["zh_cn"]["content"],
             [
                 [{"tag": "md", "text": "before"}],
-                [{"tag": "md", "text": "```python\nprint(1)\n```"}],
+                [{"tag": "code_block", "language": "PYTHON", "text": "print(1)"}],
                 [{"tag": "md", "text": "middle"}],
-                [{"tag": "md", "text": "```json\n{}\n```"}],
+                [{"tag": "code_block", "language": "JSON", "text": "{}"}],
                 [{"tag": "md", "text": "after"}],
             ],
         )

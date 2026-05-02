@@ -159,6 +159,17 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_FEISHU_CODE_BLOCK_LANGUAGES = {
+    "PYTHON", "C", "CPP", "GO", "JAVA", "KOTLIN", "SWIFT", "PHP",
+    "RUBY", "RUST", "JAVASCRIPT", "TYPESCRIPT", "BASH", "SHELL",
+    "SQL", "JSON", "XML", "YAML", "HTML", "THRIFT",
+}
+_FEISHU_CODE_BLOCK_LANGUAGE_ALIASES = {
+    "PY": "PYTHON",
+    "JS": "JAVASCRIPT",
+    "TS": "TYPESCRIPT",
+    "SH": "SHELL",
+}
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -473,6 +484,16 @@ def _sanitize_fence_language(language: str) -> str:
     return language.strip().replace("\n", " ").replace("\r", " ")
 
 
+def _normalize_code_block_language(language: str) -> str:
+    """Return a Feishu-supported code_block language or an empty string."""
+    sanitized = _sanitize_fence_language(language)
+    if not sanitized:
+        return ""
+    token = sanitized.split()[0].strip().upper()
+    normalized = _FEISHU_CODE_BLOCK_LANGUAGE_ALIASES.get(token, token)
+    return normalized if normalized in _FEISHU_CODE_BLOCK_LANGUAGES else ""
+
+
 def _render_text_element(element: Dict[str, Any]) -> str:
     text = str(element.get("text", "") or "")
     style = element.get("style")
@@ -559,9 +580,10 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     """Build Feishu post rows while isolating fenced code blocks.
 
     Feishu's `md` renderer can swallow trailing content when a fenced code block
-    appears inside one large markdown element. Split the reply at real fence
-    lines so prose before/after the code block remains visible while code stays
-    in a dedicated row.
+    appears inside one large markdown element. Long fenced blocks in an `md` tag
+    can also render as a collapsed snippet that the Feishu client cannot expand.
+    Convert complete fenced blocks to Feishu's native `code_block` post tag and
+    keep prose before/after the block in dedicated markdown rows.
     """
     if not content:
         return [[{"tag": "md", "text": ""}]]
@@ -569,38 +591,68 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
         return [[{"tag": "md", "text": content}]]
 
     rows: List[List[Dict[str, str]]] = []
-    current: List[str] = []
+    prose_lines: List[str] = []
+    code_lines: List[str] = []
+    code_raw_lines: List[str] = []
+    code_language = ""
     in_code_block = False
 
-    def _flush_current() -> None:
-        nonlocal current
-        if not current:
+    def _flush_prose() -> None:
+        nonlocal prose_lines
+        if not prose_lines:
             return
-        segment = "\n".join(current)
+        segment = "\n".join(prose_lines)
         if segment.strip():
             rows.append([{"tag": "md", "text": segment}])
-        current = []
+        prose_lines = []
+
+    def _flush_code_block() -> None:
+        nonlocal code_lines, code_raw_lines, code_language
+        code_text = "\n".join(code_lines)
+        if code_text:
+            element: Dict[str, str] = {"tag": "code_block", "text": code_text}
+            language = _normalize_code_block_language(code_language)
+            if language:
+                element["language"] = language
+            rows.append([element])
+        else:
+            raw_segment = "\n".join(code_raw_lines)
+            if raw_segment.strip():
+                rows.append([{"tag": "md", "text": raw_segment}])
+        code_lines = []
+        code_raw_lines = []
+        code_language = ""
 
     for raw_line in content.splitlines():
         stripped_line = raw_line.strip()
-        is_fence = bool(
-            _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
-            if in_code_block
-            else _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
-        )
 
-        if is_fence:
-            if not in_code_block:
-                _flush_current()
-            current.append(raw_line)
-            in_code_block = not in_code_block
-            if not in_code_block:
-                _flush_current()
+        if in_code_block:
+            if _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line):
+                code_raw_lines.append(raw_line)
+                _flush_code_block()
+                in_code_block = False
+                continue
+            code_raw_lines.append(raw_line)
+            code_lines.append(raw_line)
             continue
 
-        current.append(raw_line)
+        fence_match = _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
+        if fence_match:
+            _flush_prose()
+            in_code_block = True
+            code_language = fence_match.group(1)
+            code_raw_lines = [raw_line]
+            code_lines = []
+            continue
 
-    _flush_current()
+        prose_lines.append(raw_line)
+
+    if in_code_block:
+        raw_segment = "\n".join(code_raw_lines)
+        if raw_segment.strip():
+            rows.append([{"tag": "md", "text": raw_segment}])
+    else:
+        _flush_prose()
     return rows or [[{"tag": "md", "text": content}]]
 
 

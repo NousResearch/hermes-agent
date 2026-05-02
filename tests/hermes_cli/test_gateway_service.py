@@ -140,6 +140,41 @@ class TestGeneratedSystemdUnits:
         assert "TimeoutStopSec=90" in unit
         assert "WantedBy=multi-user.target" in unit
 
+    def test_user_unit_loads_hermes_env_file(self):
+        # The gateway runs under systemd with a clean environment, so it must
+        # explicitly load ~/.hermes/.env to pick up API keys (HINDSIGHT_API_URL,
+        # OPENAI_API_KEY, TELEGRAM_BOT_TOKEN, ...). Without this, plugins that
+        # require env vars silently skip registration (see PR #2768 / #2765),
+        # tools fail auth at runtime, and the gateway falls back to a minimal
+        # toolset. The leading "-" makes the directive optional so a missing
+        # file does not fail unit start.
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "EnvironmentFile=-" in unit
+        assert "/.env" in unit
+        # Must reference the same HERMES_HOME used elsewhere in the unit so
+        # profile-aware paths (e.g. ~/.hermes-dev/.env) resolve correctly.
+        for line in unit.splitlines():
+            if line.startswith("EnvironmentFile=-"):
+                env_file_path = line.split("=-", 1)[1]
+                assert env_file_path.endswith("/.env")
+                break
+        else:
+            raise AssertionError("EnvironmentFile=- directive not found")
+
+    def test_system_unit_loads_hermes_env_file(self):
+        unit = gateway_cli.generate_systemd_unit(system=True)
+
+        assert "EnvironmentFile=-" in unit
+        assert "/.env" in unit
+        for line in unit.splitlines():
+            if line.startswith("EnvironmentFile=-"):
+                env_file_path = line.split("=-", 1)[1]
+                assert env_file_path.endswith("/.env")
+                break
+        else:
+            raise AssertionError("EnvironmentFile=- directive not found")
+
 
 class TestGatewayStopCleanup:
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):

@@ -15,6 +15,7 @@ from hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+_SLACK_CHANNEL_LIST_WARNED_TEAMS: set[str] = set()
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
 
@@ -183,10 +184,19 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
                 if not cursor:
                     break
         except Exception as e:
-            logger.warning(
-                "Channel directory: failed to list Slack channels for team %s: %s",
-                team_id, e,
-            )
+            # Avoid high-frequency warning spam on recurring Slack API failures.
+            # Keep the first warning visible, then downgrade repeats to debug.
+            if team_id not in _SLACK_CHANNEL_LIST_WARNED_TEAMS:
+                logger.warning(
+                    "Channel directory: failed to list Slack channels for team %s: %s",
+                    team_id, e,
+                )
+                _SLACK_CHANNEL_LIST_WARNED_TEAMS.add(team_id)
+            else:
+                logger.debug(
+                    "Channel directory: repeated Slack channel-list failure for team %s: %s",
+                    team_id, e,
+                )
             continue
 
     # Merge in DM/group entries discovered from session history.

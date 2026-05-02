@@ -45,6 +45,7 @@ import logging
 import os
 import re
 import asyncio
+import threading
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx
 # NOTE: `from firecrawl import Firecrawl` is deliberately NOT at module top —
@@ -135,7 +136,7 @@ def _get_backend() -> str:
     backend_candidates = (
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
-        ("tavily", _has_env("TAVILY_API_KEY")),
+        ("tavily", _has_env("TAVILY_API_KEY") or _has_env("TAVILY_API_KEYS")),
         ("exa", _has_env("EXA_API_KEY")),
     )
     for backend, available in backend_candidates:
@@ -154,7 +155,7 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "firecrawl":
         return check_firecrawl_api_key()
     if backend == "tavily":
-        return _has_env("TAVILY_API_KEY")
+        return _has_env("TAVILY_API_KEY") or _has_env("TAVILY_API_KEYS")
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -225,6 +226,7 @@ def _web_requires_env() -> list[str]:
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
+        "TAVILY_API_KEYS",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
     ]
@@ -322,21 +324,42 @@ def _get_async_parallel_client():
 # ─── Tavily Client ───────────────────────────────────────────────────────────
 
 _TAVILY_BASE_URL = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com")
+_tavily_key_lock = threading.Lock()
+_tavily_key_index = 0
+
+
+def _get_tavily_api_key() -> str:
+    """Return the next Tavily API key from single-key or multi-key config."""
+    global _tavily_key_index
+
+    raw_values = [
+        os.getenv("TAVILY_API_KEYS", ""),
+        os.getenv("TAVILY_API_KEY", ""),
+    ]
+    keys: List[str] = []
+    seen = set()
+    for raw in raw_values:
+        for key in re.split(r"[,;\s]+", raw or ""):
+            key = key.strip()
+            if key and key not in seen:
+                keys.append(key)
+                seen.add(key)
+
+    if not keys:
+        raise ValueError(
+            "TAVILY_API_KEY or TAVILY_API_KEYS environment variable not set. "
+            "Get your API key at https://app.tavily.com/home"
+        )
+
+    with _tavily_key_lock:
+        key = keys[_tavily_key_index % len(keys)]
+        _tavily_key_index += 1
+        return key
 
 
 def _tavily_request(endpoint: str, payload: dict) -> dict:
-    """Send a POST request to the Tavily API.
-
-    Auth is provided via ``api_key`` in the JSON body (no header-based auth).
-    Raises ``ValueError`` if ``TAVILY_API_KEY`` is not set.
-    """
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "TAVILY_API_KEY environment variable not set. "
-            "Get your API key at https://app.tavily.com/home"
-        )
-    payload["api_key"] = api_key
+    """Send a POST request to the Tavily API."""
+    payload["api_key"] = _get_tavily_api_key()
     url = f"{_TAVILY_BASE_URL}/{endpoint.lstrip('/')}"
     logger.info("Tavily %s request to %s", endpoint, url)
     response = httpx.post(url, json=payload, timeout=60)

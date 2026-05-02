@@ -20,9 +20,10 @@ class TestTavilyRequest:
     """Test suite for the _tavily_request helper."""
 
     def test_raises_without_api_key(self):
-        """No TAVILY_API_KEY → ValueError with guidance."""
+        """No TAVILY_API_KEY/TAVILY_API_KEYS → ValueError with guidance."""
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TAVILY_API_KEY", None)
+            os.environ.pop("TAVILY_API_KEYS", None)
             from tools.web_tools import _tavily_request
             with pytest.raises(ValueError, match="TAVILY_API_KEY"):
                 _tavily_request("search", {"query": "test"})
@@ -33,7 +34,7 @@ class TestTavilyRequest:
         mock_response.json.return_value = {"results": []}
         mock_response.raise_for_status = MagicMock()
 
-        with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test-key"}):
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test-key", "TAVILY_API_KEYS": ""}):
             with patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post:
                 from tools.web_tools import _tavily_request
                 result = _tavily_request("search", {"query": "hello"})
@@ -45,6 +46,21 @@ class TestTavilyRequest:
                 assert payload["query"] == "hello"
                 assert "api.tavily.com/search" in call_kwargs.args[0]
 
+    def test_round_robins_tavily_api_keys(self):
+        """TAVILY_API_KEYS supports round-robin key rotation."""
+        from tools import web_tools
+
+        web_tools._tavily_key_index = 0
+        with patch.dict(os.environ, {"TAVILY_API_KEYS": "k1,k2 k3", "TAVILY_API_KEY": "k2"}):
+            assert [web_tools._get_tavily_api_key() for _ in range(6)] == [
+                "k1",
+                "k2",
+                "k3",
+                "k1",
+                "k2",
+                "k3",
+            ]
+
     def test_raises_on_http_error(self):
         """Non-2xx responses propagate as httpx.HTTPStatusError."""
         import httpx as _httpx
@@ -53,7 +69,7 @@ class TestTavilyRequest:
             "401 Unauthorized", request=MagicMock(), response=mock_response
         )
 
-        with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-bad-key"}):
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-bad-key", "TAVILY_API_KEYS": ""}):
             with patch("tools.web_tools.httpx.post", return_value=mock_response):
                 from tools.web_tools import _tavily_request
                 with pytest.raises(_httpx.HTTPStatusError):

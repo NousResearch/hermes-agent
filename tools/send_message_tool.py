@@ -120,7 +120,16 @@ SEND_MESSAGE_SCHEMA = {
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
         "If the user just says a platform name like 'send to telegram', send directly "
-        "to the home channel without listing first."
+        "to the home channel without listing first.\n\n"
+        "GROUP-CHAT DISPATCH RULE (Telegram multi-bot setups): When you are triggered "
+        "by a GROUP chat (Telegram chat_id is negative, e.g. -1003732657330), any "
+        "send_message that dispatches work to a teammate bot (message contains "
+        "@teammate_bot) MUST target the SAME group chat_id — never a user's "
+        "private chat_id. A user's DM does NOT relay @mentions to other bots, so "
+        "a teammate will never see a dispatch sent to the user's DM. If you mistakenly "
+        "target a user DM for a group dispatch, the gateway auto-redirects the "
+        "message to the triggering group and adds a 'warning' to the tool result — "
+        "read the warning and use the correct group chat_id for subsequent dispatches."
     ),
     "parameters": {
         "type": "object",
@@ -262,6 +271,12 @@ def _handle_send(args):
                 f"or set a home channel via: hermes config set {platform_name.upper()}_HOME_CHANNEL <channel_id>"
             })
 
+    # PATCH (send_message dispatch guard v7): prevent group-triggered dispatches
+    # from being misrouted to a user's DM. See _validate_dispatch_target().
+    chat_id, redirect_warning = _validate_dispatch_target(
+        platform_name, chat_id, cleaned_message
+    )
+
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
         return json.dumps(duplicate_skip)
@@ -280,6 +295,10 @@ def _handle_send(args):
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+        if redirect_warning and isinstance(result, dict) and result.get("success"):
+            warnings_list = list(result.get("warnings", []))
+            warnings_list.append(redirect_warning)
+            result["warnings"] = warnings_list
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:
@@ -382,6 +401,73 @@ def _get_cron_auto_delivery_target():
         "chat_id": chat_id,
         "thread_id": thread_id,
     }
+
+
+# PATCH (send_message dispatch guard v7) ----------------------------------
+# In multi-bot Telegram group setups, the LLM sometimes misroutes a dispatch
+# (e.g. "@teammate_bot do X") by calling send_message(target="telegram:<user_id>")
+# instead of send_message(target="telegram:<group_id>"). DMs don't relay
+# @mentions to other bots, so the teammate never sees the task. Detect this
+# pattern (group trigger + DM target + message mentions another bot, or
+# target equals the triggering user's DM) and auto-redirect to the triggering
+# group. Surgical guard — does not restrict legitimate cross-chat send_message.
+_BOT_MENTION_RE = re.compile(r"@[A-Za-z0-9_]+_bot\b")
+
+
+def _validate_dispatch_target(platform_name: str, chat_id, message: str):
+    """Return (possibly rewritten chat_id, warning_message_or_None).
+
+    Only acts on Telegram. Leaves chat_id untouched for CLI/cron (no session
+    env), DM-triggered sessions, matching chat, group target, or no-teammate
+    message. See module docstring for rationale.
+    """
+    if platform_name != "telegram" or chat_id is None:
+        return chat_id, None
+
+    from gateway.session_context import get_session_env
+
+    trigger_platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+    trigger_chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+    if trigger_platform != "telegram" or not trigger_chat_id:
+        return chat_id, None
+
+    try:
+        trigger_chat_int = int(trigger_chat_id)
+        target_chat_int = int(chat_id)
+    except (TypeError, ValueError):
+        return chat_id, None
+
+    if trigger_chat_int >= 0:
+        return chat_id, None  # trigger itself is a DM — nothing to guard
+    if target_chat_int < 0:
+        return chat_id, None  # target is already a group/channel
+    if target_chat_int == trigger_chat_int:
+        return chat_id, None  # same chat (shouldn't be reachable, but safe)
+
+    # Signal 1: message @-mentions a bot → almost always a dispatch intent.
+    has_bot_mention = bool(_BOT_MENTION_RE.search(message or ""))
+
+    # Signal 2: target equals the triggering user's id → classic
+    # user_id-vs-chat_id mix-up even when no bot @-mention is present.
+    trigger_user_id = get_session_env("HERMES_SESSION_USER_ID", "")
+    hits_trigger_user_dm = (
+        bool(trigger_user_id) and str(chat_id) == str(trigger_user_id)
+    )
+
+    if not (has_bot_mention or hits_trigger_user_dm):
+        return chat_id, None  # could be legitimate cross-chat DM
+
+    logger.warning(
+        "send_message dispatch guard: redirecting DM target %s -> group %s "
+        "(bot_mention=%s, hits_trigger_user=%s)",
+        chat_id, trigger_chat_id, has_bot_mention, hits_trigger_user_dm,
+    )
+    return str(trigger_chat_id), (
+        f"Dispatch was auto-redirected from user DM (chat_id={chat_id}) to the "
+        f"triggering group (chat_id={trigger_chat_id}). For teammate dispatches, "
+        "always target the group chat_id — user DMs do not relay @mentions to "
+        "other bots."
+    )
 
 
 def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id: str | None):

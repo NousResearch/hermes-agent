@@ -997,10 +997,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=False,  # PATCH (multi-bot anti-loop v5): keep pending updates for multi-bot relay
                     error_callback=_polling_error_callback,
                 )
-            
+
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
             # gateway command there automatically adds it to the Telegram menu.
@@ -2729,6 +2729,16 @@ class TelegramAdapter(BasePlatformAdapter):
         # (bug #12545). Entities also correctly handle @handles inside URLs, code
         # blocks, and quoted text, where a regex scan would over-match.
         for source_text, entities in _iter_sources():
+            if not source_text:
+                continue
+            # PATCH (multi-bot anti-loop v5): Telegram MessageEntity offsets are
+            # UTF-16 code units, but python-telegram-bot exposes them as-is.
+            # Slicing a Python str by these offsets misaligns as soon as the
+            # message contains any non-BMP character (e.g. a "💭" prefix added
+            # by show_reasoning) — the captured range drops its leading "@" and
+            # the bot-username comparison fails, silently breaking bot-to-bot
+            # @mentions. Encode to UTF-16-LE, slice by bytes, then decode.
+            utf16_bytes = source_text.encode("utf-16-le")
             for entity in entities:
                 entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
                 if entity_type == "mention" and expected:
@@ -2736,7 +2746,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     length = int(getattr(entity, "length", 0))
                     if offset < 0 or length <= 0:
                         continue
-                    if source_text[offset:offset + length].strip().lower() == expected:
+                    slice_bytes = utf16_bytes[offset * 2 : (offset + length) * 2]
+                    captured = slice_bytes.decode("utf-16-le", errors="replace")
+                    if captured.strip().lower() == expected:
                         return True
                 elif entity_type == "text_mention":
                     user = getattr(entity, "user", None)
@@ -2762,6 +2774,45 @@ class TelegramAdapter(BasePlatformAdapter):
                         continue
                     if command_text[at_index:].strip().lower() == expected:
                         return True
+        return False
+
+    def _command_addresses_bot(self, message: Message) -> bool:
+        """True if any bot_command entity addresses this bot (e.g. `/new@my_bot`).
+
+        PATCH (multi-bot anti-loop v5): Telegram emits only a ``bot_command``
+        entity for ``/cmd@botname`` — no ``mention`` entity is generated for
+        the ``@botname`` suffix — so ``_message_mentions_bot`` never sees it
+        and ``require_mention=true`` groups silently drop ``/cmd@thisbot``
+        updates. We recognise them here instead, mirroring the behaviour the
+        entity-only refactor (upstream ``e330112``) accidentally removed.
+        """
+        if not self._bot:
+            return False
+        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+        if not bot_username:
+            return False
+        suffix = f"@{bot_username}"
+
+        def _iter_sources():
+            yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
+            yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
+
+        for source_text, entities in _iter_sources():
+            if not source_text:
+                continue
+            utf16_bytes = source_text.encode("utf-16-le")
+            for entity in entities:
+                entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+                if entity_type != "bot_command":
+                    continue
+                offset = int(getattr(entity, "offset", -1))
+                length = int(getattr(entity, "length", 0))
+                if offset < 0 or length <= 0:
+                    continue
+                slice_bytes = utf16_bytes[offset * 2 : (offset + length) * 2]
+                captured = slice_bytes.decode("utf-16-le", errors="replace").strip().lower()
+                if captured.endswith(suffix):
+                    return True
         return False
 
     def _message_matches_mention_patterns(self, message: Message) -> bool:
@@ -2813,8 +2864,17 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._telegram_require_mention():
             return True
         if self._is_reply_to_bot(message):
+            # PATCH (multi-bot anti-loop v5): bot-to-bot replies must explicitly
+            # @mention this bot, otherwise ignore. Prevents A→B→A→… reply chains.
+            sender_is_bot = bool(getattr(getattr(message, "from_user", None), "is_bot", False))
+            if sender_is_bot and not self._message_mentions_bot(message):
+                return False
             return True
         if self._message_mentions_bot(message):
+            return True
+        # PATCH (multi-bot anti-loop v5): /cmd@<this_bot> addresses us even when
+        # Telegram emits only a bot_command entity (no mention entity).
+        if is_command and self._command_addresses_bot(message):
             return True
         return self._message_matches_mention_patterns(message)
 

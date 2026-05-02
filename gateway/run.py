@@ -6430,6 +6430,11 @@ class GatewayRunner:
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
 
+            # PATCH (dispatch reply enforcement v6): auto-inject
+            # @<dispatcher> prefix when completing a bot-to-bot [派单]
+            # dispatch. Scoped to the final response only; tool-echo messages
+            # emitted during the agent run are intentionally NOT injected.
+            response = self._v6_maybe_inject_dispatcher(response, event, source)
             return response
             
         except Exception as e:
@@ -7838,6 +7843,57 @@ class GatewayRunner:
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
+
+    def _v6_maybe_inject_dispatcher(
+        self,
+        response: str,
+        event: Optional["MessageEvent"],
+        source: "SessionSource",
+    ) -> str:
+        """PATCH (dispatch reply enforcement v6): keep bot-to-bot dispatch closed-loop."""
+        if not response or event is None:
+            return response
+        if getattr(source, "platform", None) != Platform.TELEGRAM:
+            return response
+
+        raw = getattr(event, "raw_message", None)
+        if raw is None:
+            return response
+        from_user = getattr(raw, "from_user", None)
+        if from_user is None or not getattr(from_user, "is_bot", False):
+            return response
+
+        dispatcher = (getattr(from_user, "username", None) or "").lstrip("@")
+        if not dispatcher:
+            return response
+
+        trigger_text = (
+            getattr(raw, "text", None) or getattr(raw, "caption", None) or ""
+        ).lstrip()
+        if not trigger_text.startswith("[派单]"):
+            return response
+
+        adapter = self.adapters.get(source.platform)
+        bot_username = ""
+        if adapter is not None:
+            bot_obj = getattr(adapter, "_bot", None)
+            if bot_obj is not None:
+                bot_username = (
+                    getattr(bot_obj, "username", None) or ""
+                ).lstrip("@").lower()
+        if dispatcher.lower() == bot_username:
+            return response
+
+        mention_re = re.compile(rf"@{re.escape(dispatcher)}(?!\w)", re.IGNORECASE)
+        if mention_re.search(response):
+            return response
+
+        logger.info(
+            "v6 dispatch-reply: injecting @%s prefix into final response (bot=%s)",
+            dispatcher,
+            bot_username or "?",
+        )
+        return f"@{dispatcher} {response}"
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo command - remove the last user/assistant exchange."""

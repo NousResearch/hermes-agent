@@ -330,21 +330,21 @@ class TestBackendSelection:
         """Only PARALLEL_API_KEY set → 'parallel'."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key", "TAVILY_API_KEYS": ""}):
             assert _get_backend() == "parallel"
 
     def test_fallback_exa_only_key(self):
         """Only EXA_API_KEY set → 'exa'."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
+             patch.dict(os.environ, {"EXA_API_KEY": "exa-test", "TAVILY_API_KEYS": ""}):
             assert _get_backend() == "exa"
 
     def test_fallback_parallel_takes_priority_over_exa(self):
         """Exa should only win the fallback path when it is the only configured backend."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch.dict(os.environ, {"EXA_API_KEY": "exa-test", "PARALLEL_API_KEY": "par-test"}):
+             patch.dict(os.environ, {"EXA_API_KEY": "exa-test", "PARALLEL_API_KEY": "par-test", "TAVILY_API_KEYS": ""}):
             assert _get_backend() == "parallel"
 
     def test_fallback_tavily_only_key(self):
@@ -358,14 +358,14 @@ class TestBackendSelection:
         """Tavily + Firecrawl keys, no config → 'firecrawl' (backward compat)."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "FIRECRAWL_API_KEY": "fc-test"}):
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "TAVILY_API_KEYS": "", "FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
 
     def test_fallback_tavily_with_parallel_prefers_parallel(self):
         """Tavily + Parallel keys, no config → 'parallel' (Parallel takes priority over Tavily)."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "PARALLEL_API_KEY": "par-test"}):
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "TAVILY_API_KEYS": "", "PARALLEL_API_KEY": "par-test"}):
             # Parallel + no Firecrawl → parallel
             assert _get_backend() == "parallel"
 
@@ -373,27 +373,28 @@ class TestBackendSelection:
         """Both keys set, no config → 'firecrawl' (backward compat)."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key", "FIRECRAWL_API_KEY": "fc-test"}):
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key", "FIRECRAWL_API_KEY": "fc-test", "TAVILY_API_KEYS": ""}):
             assert _get_backend() == "firecrawl"
 
     def test_fallback_firecrawl_only_key(self):
         """Only FIRECRAWL_API_KEY set → 'firecrawl'."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
+             patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test", "TAVILY_API_KEYS": ""}):
             assert _get_backend() == "firecrawl"
 
     def test_fallback_no_keys_defaults_to_firecrawl(self):
         """No keys, no config → 'firecrawl' (will fail at client init)."""
         from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}):
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"TAVILY_API_KEYS": ""}):
             assert _get_backend() == "firecrawl"
 
     def test_invalid_config_falls_through_to_fallback(self):
         """web.backend=invalid → ignored, uses key-based fallback."""
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={"backend": "nonexistent"}), \
-             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key", "TAVILY_API_KEYS": ""}):
             assert _get_backend() == "parallel"
 
 
@@ -581,8 +582,9 @@ class TestCheckWebApiKey:
             assert check_web_api_key() is True
 
     def test_no_keys_returns_false(self):
-        from tools.web_tools import check_web_api_key
-        assert check_web_api_key() is False
+        with patch.dict(os.environ, {"TAVILY_API_KEYS": ""}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
 
     def test_both_keys_returns_true(self):
         with patch.dict(os.environ, {

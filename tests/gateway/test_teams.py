@@ -405,7 +405,21 @@ class TestTeamsSend:
         mock_app.send = AsyncMock()
         adapter._app = mock_app
 
-        await adapter.send_typing("conv-id")
+        # ``TypingActivityInput`` is conditionally imported from the
+        # ``microsoft_teams`` SDK — when the SDK isn't installed (e.g. CI
+        # without the Teams extra), it resolves to ``None`` and the
+        # underlying ``send_typing`` call raises ``TypeError`` and is
+        # silently swallowed by the adapter's broad ``except``. Patch in
+        # a stand-in so the test exercises the call path it intends to.
+        # The adapter is loaded under a mangled module name by
+        # ``load_plugin_adapter`` (see top of file), so patch by
+        # attribute on that module rather than dotted import path.
+        with patch.object(
+            _teams_mod, "TypingActivityInput",
+            new=MagicMock(return_value=MagicMock()),
+        ):
+            await adapter.send_typing("conv-id")
+
         mock_app.send.assert_awaited_once()
         call_args = mock_app.send.call_args
         assert call_args[0][0] == "conv-id"

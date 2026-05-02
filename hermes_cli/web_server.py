@@ -3131,6 +3131,7 @@ def _mount_plugin_api_routes():
             if spec is None or spec.loader is None:
                 continue
             mod = importlib.util.module_from_spec(spec)
+            sys.modules[mod.__name__] = mod
             spec.loader.exec_module(mod)
             router = getattr(mod, "router", None)
             if router is None:

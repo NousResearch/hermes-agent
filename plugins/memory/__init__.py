@@ -1,13 +1,15 @@
 """Memory provider plugin discovery.
 
-Scans two directories for memory provider plugins:
+Scans three sources for memory provider plugins:
 
 1. Bundled providers: ``plugins/memory/<name>/`` (shipped with hermes-agent)
 2. User-installed providers: ``$HERMES_HOME/plugins/<name>/``
+3. Pip-installed providers: ``hermes_agent.memory_providers`` entry points
 
-Each subdirectory must contain ``__init__.py`` with a class implementing
-the MemoryProvider ABC.  On name collisions, bundled providers take
-precedence.
+Directory providers must contain ``__init__.py`` with a class implementing
+the MemoryProvider ABC. Pip packages expose a provider or ``register(ctx)``
+callback through the entry-point group. On name collisions, bundled providers
+take precedence, followed by user-installed directories, then entry points.
 
 Only ONE provider can be active at a time, selected via
 ``memory.provider`` in config.yaml.
@@ -23,16 +25,22 @@ from __future__ import annotations
 
 import importlib
 import importlib.machinery
+import importlib.metadata
 import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, TYPE_CHECKING
 from hermes_cli.config import cfg_get
+
+if TYPE_CHECKING:
+    from agent.memory_provider import MemoryProvider
 
 logger = logging.getLogger(__name__)
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
+ENTRY_POINTS_GROUP = "hermes_agent.memory_providers"
+_REGISTERED_MEMORY_PROVIDER_SKILLS: dict[str, Path] = {}
 
 # Synthetic parent package for user-installed providers, so they don't
 # collide with bundled providers in sys.modules.
@@ -121,6 +129,20 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     return dirs
 
 
+def _iter_entry_points():
+    """Yield pip-installed memory provider entry points."""
+    try:
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            return list(eps.select(group=ENTRY_POINTS_GROUP))
+        if isinstance(eps, dict):
+            return list(eps.get(ENTRY_POINTS_GROUP, []))
+        return [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+    except Exception as exc:
+        logger.debug("Memory provider entry-point scan failed: %s", exc)
+        return []
+
+
 def find_provider_dir(name: str) -> Optional[Path]:
     """Resolve a provider name to its directory.
 
@@ -139,17 +161,27 @@ def find_provider_dir(name: str) -> Optional[Path]:
     return None
 
 
+def find_provider_entry_point(name: str):
+    """Resolve a provider name to a pip entry point, if installed."""
+    for entry_point in _iter_entry_points():
+        if entry_point.name == name:
+            return entry_point
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 def discover_memory_providers() -> List[Tuple[str, str, bool]]:
-    """Scan bundled and user-installed directories for available providers.
+    """Scan directory and pip entry-point memory providers.
 
     Returns list of (name, description, is_available) tuples.
-    Bundled providers take precedence on name collisions.
+    Bundled providers take precedence on name collisions, followed by
+    user-installed directory providers, then pip entry-point providers.
     """
     results = []
+    seen: set[str] = set()
 
     for name, child in _iter_provider_dirs():
         # Read description from plugin.yaml if available
@@ -167,7 +199,7 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
         # Quick availability check — try loading and calling is_available()
         available = True
         try:
-            provider = _load_provider_from_dir(child)
+            provider = _load_provider_from_dir(child, register_skills=False)
             if provider:
                 available = provider.is_available()
             else:
@@ -176,26 +208,70 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
             available = False
 
         results.append((name, desc, available))
+        seen.add(name)
+
+    for entry_point in _iter_entry_points():
+        name = entry_point.name
+        if name in seen:
+            continue
+        desc = ""
+        available = True
+        try:
+            provider = _load_provider_from_entry_point(
+                entry_point,
+                register_skills=False,
+            )
+            if provider:
+                available = provider.is_available()
+            else:
+                available = False
+        except Exception:
+            available = False
+
+        results.append((name, desc, available))
+        seen.add(name)
 
     return results
 
 
-def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
+def load_memory_provider(
+    name: str,
+    *,
+    register_skills: Optional[bool] = None,
+) -> Optional["MemoryProvider"]:
     """Load and return a MemoryProvider instance by name.
 
-    Checks both bundled (``plugins/memory/<name>/``) and user-installed
-    (``$HERMES_HOME/plugins/<name>/``) directories.  Bundled takes
-    precedence on name collisions.
+    Checks bundled (``plugins/memory/<name>/``), user-installed
+    (``$HERMES_HOME/plugins/<name>/``), and pip entry-point providers.
+    Bundled providers take precedence on name collisions.
+
+    Skills register only when *name* is the configured active provider unless
+    ``register_skills`` is passed explicitly. This keeps status and setup
+    inspection of inactive providers free of registry side effects.
 
     Returns None if the provider is not found or fails to load.
     """
+    if register_skills is None:
+        register_skills = name == _get_active_memory_provider()
+
     provider_dir = find_provider_dir(name)
-    if not provider_dir:
-        logger.debug("Memory provider '%s' not found in bundled or user plugins", name)
+    entry_point = None if provider_dir else find_provider_entry_point(name)
+    if not provider_dir and entry_point is None:
+        logger.debug(
+            "Memory provider '%s' not found in bundled, user plugins, or entry points",
+            name,
+        )
         return None
 
     try:
-        provider = _load_provider_from_dir(provider_dir)
+        provider = (
+            _load_provider_from_dir(provider_dir, register_skills=register_skills)
+            if provider_dir
+            else _load_provider_from_entry_point(
+                entry_point,
+                register_skills=register_skills,
+            )
+        )
         if provider:
             return provider
         logger.warning("Memory provider '%s' loaded but no provider instance found", name)
@@ -205,7 +281,61 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
         return None
 
 
-def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
+def _load_provider_from_entry_point(
+    entry_point,
+    *,
+    register_skills: bool = True,
+) -> Optional["MemoryProvider"]:
+    """Import a provider entry point and extract the MemoryProvider instance."""
+    from agent.memory_provider import MemoryProvider
+
+    loaded = entry_point.load()
+
+    if isinstance(loaded, MemoryProvider):
+        return loaded
+
+    if isinstance(loaded, type) and issubclass(loaded, MemoryProvider):
+        try:
+            return loaded()
+        except Exception:
+            pass
+
+    if hasattr(loaded, "register"):
+        collector = _ProviderCollector(entry_point.name, register_skills=register_skills)
+        loaded.register(collector)
+        if collector.provider:
+            return collector.provider
+
+    if callable(loaded):
+        try:
+            provider = loaded()
+            if isinstance(provider, MemoryProvider):
+                return provider
+        except TypeError:
+            pass
+
+        collector = _ProviderCollector(entry_point.name, register_skills=register_skills)
+        loaded(collector)
+        return collector.provider
+
+    for attr_name in dir(loaded):
+        attr = getattr(loaded, attr_name, None)
+        if (isinstance(attr, type) and issubclass(attr, MemoryProvider)
+                and attr is not MemoryProvider):
+            try:
+                return attr()
+            except Exception:
+                pass
+
+    logger.debug("Memory provider entry point '%s' loaded no provider", entry_point.name)
+    return None
+
+
+def _load_provider_from_dir(
+    provider_dir: Path,
+    *,
+    register_skills: bool = True,
+) -> Optional["MemoryProvider"]:
     """Import a provider module and extract the MemoryProvider instance.
 
     The module must have either:
@@ -294,7 +424,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
 
     # Try register(ctx) pattern first (how our plugins are written)
     if hasattr(mod, "register"):
-        collector = _ProviderCollector()
+        collector = _ProviderCollector(name, register_skills=register_skills)
         try:
             mod.register(collector)
             if collector.provider:
@@ -319,11 +449,37 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
 class _ProviderCollector:
     """Fake plugin context that captures register_memory_provider calls."""
 
-    def __init__(self):
+    def __init__(self, name: str, *, register_skills: bool = True):
+        self.name = name
         self.provider = None
+        self._register_skills = register_skills
 
     def register_memory_provider(self, provider):
         self.provider = provider
+
+    def register_skill(self, *args, **kwargs):
+        """Forward plugin-provided skills to the general plugin registry.
+
+        Memory provider discovery uses this lightweight collector instead of
+        the general PluginContext. Forwarding keeps skills registered by memory
+        provider shims visible to skill_view() while preserving the exclusive
+        memory-provider activation path.
+        """
+        if not self._register_skills:
+            return
+        try:
+            from hermes_cli.plugins import PluginManifest, PluginContext, get_plugin_manager
+
+            manager = get_plugin_manager()
+            manifest = PluginManifest(name=self.name, key=self.name)
+            PluginContext(manifest, manager).register_skill(*args, **kwargs)
+            skill_name = args[0] if args else kwargs.get("name")
+            qualified_name = f"{self.name}:{skill_name}"
+            registered_path = manager.find_plugin_skill(qualified_name)
+            if registered_path is not None:
+                _REGISTERED_MEMORY_PROVIDER_SKILLS[qualified_name] = registered_path
+        except Exception as exc:
+            logger.debug("Memory provider '%s' failed to register skill: %s", self.name, exc)
 
     # No-op for other registration methods
     def register_tool(self, *args, **kwargs):
@@ -349,6 +505,27 @@ def _get_active_memory_provider() -> Optional[str]:
         return cfg_get(config, "memory", "provider") or None
     except Exception:
         return None
+
+
+def _prune_inactive_memory_provider_skills(
+    active_provider: Optional[str] = None,
+) -> None:
+    """Remove tracked skills that no longer belong to the active provider."""
+    if active_provider is None:
+        active_provider = _get_active_memory_provider()
+
+    from hermes_cli.plugins import get_plugin_manager
+
+    manager = get_plugin_manager()
+    for qualified_name, registered_path in list(
+        _REGISTERED_MEMORY_PROVIDER_SKILLS.items()
+    ):
+        namespace, _, _ = qualified_name.partition(":")
+        if namespace == active_provider:
+            continue
+        if manager.find_plugin_skill(qualified_name) == registered_path:
+            manager.remove_plugin_skill(qualified_name)
+        _REGISTERED_MEMORY_PROVIDER_SKILLS.pop(qualified_name, None)
 
 
 def discover_plugin_cli_commands() -> List[dict]:

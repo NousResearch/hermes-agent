@@ -679,6 +679,208 @@ class TestUserInstalledProviderCli:
         assert p.name == "extcliload"
 
 
+class TestEntryPointMemoryProviderDiscovery:
+    """Memory providers installed as Python packages should be discoverable."""
+
+    class FakeEntryPoint:
+        def __init__(self, name, module, exposure="register"):
+            self.name = name
+            self.value = f"{module}:{exposure}"
+            self.group = "hermes_agent.memory_providers"
+            self._module = module
+            self._exposure = exposure
+
+        def load(self):
+            import importlib
+
+            return getattr(importlib.import_module(self._module), self._exposure)
+
+    class FakeEntryPoints(list):
+        def select(self, *, group):
+            return [ep for ep in self if ep.group == group]
+
+    def _make_entrypoint_module(
+        self,
+        tmp_path,
+        module_name="ep_memory_provider",
+        exposure="register",
+        include_skill=False,
+    ):
+        module_file = tmp_path / f"{module_name}.py"
+        register_skill = ""
+        if include_skill:
+            skill_md = tmp_path / "skills" / "maintenance" / "SKILL.md"
+            skill_md.parent.mkdir(parents=True)
+            skill_md.write_text(
+                "---\nname: maintenance\ndescription: Memory maintenance\n---\n\n"
+                "Packaged provider maintenance body.\n"
+            )
+            register_skill = (
+                "    ctx.register_skill(\n"
+                "        'maintenance',\n"
+                "        Path(__file__).parent / 'skills' / 'maintenance' / 'SKILL.md',\n"
+                "    )\n"
+            )
+        module_file.write_text(
+            "from pathlib import Path\n"
+            "from agent.memory_provider import MemoryProvider\n"
+            "class Provider(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return 'entrymem'\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider(Provider())\n"
+            f"{register_skill}"
+            "def make_provider():\n"
+            "    return Provider()\n"
+        )
+        return module_name, exposure
+
+    def test_discover_finds_entry_point_provider(self, tmp_path, monkeypatch):
+        from plugins.memory import discover_memory_providers
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(tmp_path)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+
+        providers = discover_memory_providers()
+
+        assert ("entrymem", "", True) in providers
+
+    @pytest.mark.parametrize("exposure", ["register", "Provider", "make_provider"])
+    def test_load_entry_point_provider(self, tmp_path, monkeypatch, exposure):
+        from plugins.memory import load_memory_provider
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(tmp_path, exposure=exposure)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+
+        provider = load_memory_provider("entrymem")
+
+        assert provider is not None
+        assert provider.name == "entrymem"
+        assert provider.is_available()
+
+    def test_active_entry_point_provider_registers_skill(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(
+            tmp_path,
+            module_name="ep_memory_provider_with_skill",
+            include_skill=True,
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+        monkeypatch.setattr(
+            memory_plugins,
+            "_get_active_memory_provider",
+            lambda: "entrymem",
+        )
+
+        result = json.loads(skill_view("entrymem:maintenance"))
+
+        assert result["success"] is True
+        assert result["name"] == "entrymem:maintenance"
+        assert "Packaged provider maintenance body." in result["content"]
+
+    def test_inactive_entry_point_load_does_not_register_skill(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli.plugins import get_plugin_manager
+        from plugins.memory import load_memory_provider
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(
+            tmp_path,
+            module_name="ep_inactive_memory_provider_with_skill",
+            include_skill=True,
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+        monkeypatch.setattr(
+            memory_plugins,
+            "_get_active_memory_provider",
+            lambda: "other-provider",
+        )
+
+        provider = load_memory_provider("entrymem")
+
+        assert provider is not None
+        assert get_plugin_manager().find_plugin_skill("entrymem:maintenance") is None
+
+    def test_switching_provider_prunes_registered_entry_point_skill(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli.plugins import get_plugin_manager
+        from tools.skills_tool import skill_view
+        import plugins.memory as memory_plugins
+
+        module_name, exposure = self._make_entrypoint_module(
+            tmp_path,
+            module_name="ep_switched_memory_provider_with_skill",
+            include_skill=True,
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(memory_plugins, "_get_user_plugins_dir", lambda: None)
+        monkeypatch.setattr(
+            memory_plugins.importlib.metadata,
+            "entry_points",
+            lambda: self.FakeEntryPoints([
+                self.FakeEntryPoint("entrymem", module_name, exposure)
+            ]),
+        )
+        active = {"name": "entrymem"}
+        monkeypatch.setattr(
+            memory_plugins,
+            "_get_active_memory_provider",
+            lambda: active["name"],
+        )
+
+        loaded = json.loads(skill_view("entrymem:maintenance"))
+        active["name"] = "other-provider"
+        switched = json.loads(skill_view("entrymem:maintenance"))
+
+        assert loaded["success"] is True
+        assert switched["success"] is False
+        assert "not found" in switched["error"].lower()
+        assert get_plugin_manager().find_plugin_skill("entrymem:maintenance") is None
+
+
 # ---------------------------------------------------------------------------
 # Sequential dispatch routing tests
 # ---------------------------------------------------------------------------

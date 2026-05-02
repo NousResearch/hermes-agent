@@ -421,7 +421,8 @@ THREAT_PATTERNS = [
     (r'npm\s+install\s+(?!.*@\d)',
      "unpinned_npm_install", "medium", "supply_chain",
      "npm install without version pinning"),
-    (r'uv\s+run\s+',
+    (r'^\s*(?:[$#]\s*)?uv\s+run\s+|\bRun:\s*uv\s+run\s+|'
+     r'\b(?:execute|run|use)\s+`?uv\s+run\s+',
      "uv_run", "medium", "supply_chain",
      "uv run (may auto-install unpinned dependencies)"),
 
@@ -512,7 +513,10 @@ THREAT_PATTERNS = [
      "claims new policy/guidelines (may be social engineering)"),
 
     # ── Context window exfiltration ──
-    (r'(include|output|print|send|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|context)',
+    (r'\b(include|output|print|send|share)\s+(?:\w+\s+){0,6}'
+     r'(conversation\s+history|chat\s+history|previous\s+messages|'
+     r'previous\s+conversation|context\s+window|full\s+context|'
+     r'conversation\s+context|(?:all|entire|current)\s+context)\b',
      "context_exfil", "high", "exfiltration",
      "instructs agent to output/share conversation history"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',

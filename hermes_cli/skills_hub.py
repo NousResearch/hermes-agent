@@ -13,6 +13,7 @@ handler are thin wrappers that parse args and delegate.
 import json
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -782,6 +783,89 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     else:
         c.print("[dim]Skill will be available in your next session.[/]")
         c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
+
+
+def _local_skill_scan_path(identifier: str) -> Optional[Path]:
+    path = Path(identifier).expanduser()
+    if not path.exists():
+        return None
+    if path.is_dir():
+        return path if (path / "SKILL.md").is_file() else None
+    if path.is_file() and path.name == "SKILL.md":
+        return path
+    return None
+
+
+def _write_bundle_to_temp(bundle, root: Path) -> Path:
+    from tools.skills_hub import _validate_bundle_rel_path
+
+    skill_name = (
+        bundle.name
+        if _is_valid_installed_skill_name(getattr(bundle, "name", ""))
+        else "skill"
+    )
+    skill_path = root / skill_name
+    skill_path.mkdir(parents=True, exist_ok=True)
+
+    for rel_path, file_content in (getattr(bundle, "files", {}) or {}).items():
+        safe_rel_path = _validate_bundle_rel_path(rel_path)
+        dest = skill_path.joinpath(*safe_rel_path.split("/"))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(file_content, bytes):
+            dest.write_bytes(file_content)
+        else:
+            dest.write_text(str(file_content), encoding="utf-8")
+
+    return skill_path
+
+
+def do_scan(
+    identifier: str, source: str = "local", console: Optional[Console] = None
+) -> None:
+    """Run the Skills Guard checks against a local or registry skill without installing."""
+    from tools.skills_hub import GitHubAuth, create_source_router
+    from tools.skills_guard import format_scan_report, scan_skill
+
+    c = console or _console
+    local_path = _local_skill_scan_path(identifier)
+    if local_path is not None:
+        result = scan_skill(local_path, source=source or "local")
+        c.print(format_scan_report(result))
+        return
+
+    if Path(identifier).expanduser().exists():
+        c.print(
+            "[bold red]Error:[/] Local scan target must be a skill directory "
+            "containing SKILL.md or a SKILL.md file.\n"
+        )
+        return
+
+    auth = GitHubAuth()
+    sources = create_source_router(auth)
+
+    if "/" not in identifier:
+        identifier = _resolve_short_name(identifier, sources, c)
+        if not identifier:
+            return
+
+    c.print(f"\n[bold]Fetching for scan:[/] {identifier}")
+    meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
+    if not bundle:
+        c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.\n")
+        return
+
+    scan_source = (
+        getattr(bundle, "identifier", "")
+        or getattr(meta, "identifier", "")
+        or identifier
+    )
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-skill-scan-") as tmp:
+            scan_path = _write_bundle_to_temp(bundle, Path(tmp))
+            result = scan_skill(scan_path, source=scan_source)
+            c.print(format_scan_report(result))
+    except ValueError as exc:
+        c.print(f"[bold red]Scan blocked:[/] {exc}\n")
 
 
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
@@ -1713,6 +1797,8 @@ def skills_command(args) -> None:
         do_install(args.identifier, category=args.category, force=args.force,
                    skip_confirm=getattr(args, "yes", False),
                    name_override=getattr(args, "name", "") or "")
+    elif action == "scan":
+        do_scan(args.identifier, source=getattr(args, "source", "local") or "local")
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":
@@ -1766,7 +1852,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|scan|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1783,6 +1869,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills install openai/skills/skill-creator
         /skills install openai/skills/skill-creator --force
         /skills install https://example.com/path/SKILL.md
+        /skills scan openai/skills/skill-creator
         /skills inspect openai/skills/skill-creator
         /skills list
         /skills list --source hub
@@ -1886,6 +1973,20 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_install(identifier, category=category, force=force,
                    skip_confirm=skip_confirm, invalidate_cache=invalidate_cache,
                    name_override=name_override, console=c)
+
+    elif action == "scan":
+        if not args:
+            c.print(
+                "[bold red]Usage:[/] /skills scan <identifier-or-path> "
+                "[--source <source>]\n"
+            )
+            return
+        identifier = args[0]
+        source = "local"
+        for i, arg in enumerate(args):
+            if arg == "--source" and i + 1 < len(args):
+                source = args[i + 1]
+        do_scan(identifier, source=source, console=c)
 
     elif action == "inspect":
         if not args:
@@ -1997,6 +2098,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"
         "  [cyan]search[/] <query>              Search registries for skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
+        "  [cyan]scan[/] <identifier-or-path>   Run security scan without installing\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
         "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
         "       List installed skills; --enabled-only filters to the active profile's live set\n"

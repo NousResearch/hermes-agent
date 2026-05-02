@@ -5,7 +5,14 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    do_check,
+    do_install,
+    do_list,
+    do_scan,
+    do_update,
+    handle_skills_slash,
+)
 
 
 class _DummyLockFile:
@@ -369,6 +376,127 @@ def test_do_install_scans_official_bundles_with_source_provenance(
     do_install("official/agent/prunus-gaia", console=console, skip_confirm=True)
 
     assert scanned["source"] == "official"
+
+
+def test_do_scan_local_skill_uses_guard_report_without_installing(monkeypatch, tmp_path):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# My Skill\n", encoding="utf-8")
+
+    scanned = {}
+    scan_result = guard.ScanResult(
+        skill_name="my-skill",
+        source="local-test",
+        trust_level="community",
+        verdict="safe",
+    )
+
+    def _scan_skill(skill_path, source="community"):
+        scanned["path"] = skill_path
+        scanned["source"] = source
+        return scan_result
+
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(
+        guard,
+        "format_scan_report",
+        lambda result: f"formatted:{result is scan_result}",
+    )
+    monkeypatch.setattr(
+        hub,
+        "quarantine_bundle",
+        lambda bundle: pytest.fail("scan must not quarantine-install"),
+    )
+    monkeypatch.setattr(
+        hub,
+        "install_from_quarantine",
+        lambda *args, **kwargs: pytest.fail("scan must not install"),
+    )
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_scan(str(skill_dir), source="local-test", console=console)
+
+    assert scanned == {"path": skill_dir, "source": "local-test"}
+    assert "formatted:True" in sink.getvalue()
+
+
+def test_do_scan_remote_identifier_fetches_temp_bundle_without_installing(
+    monkeypatch, tmp_path, hub_env
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    canonical_identifier = "skills-sh/trampoline-ai/predict-rlm/rlm"
+    temp_scan_paths = []
+    scan_result = guard.ScanResult(
+        skill_name="rlm",
+        source=canonical_identifier,
+        trust_level="community",
+        verdict="caution",
+    )
+
+    class _ResolvedSource:
+        def inspect(self, identifier):
+            return type(
+                "Meta", (), {"extra": {}, "identifier": canonical_identifier}
+            )()
+
+        def fetch(self, identifier):
+            return type(
+                "Bundle",
+                (),
+                {
+                    "name": "rlm",
+                    "files": {
+                        "SKILL.md": "# RLM\n",
+                        "scripts/run.sh": "echo ok\n",
+                    },
+                    "source": "skills.sh",
+                    "identifier": canonical_identifier,
+                    "trust_level": "community",
+                    "metadata": {},
+                },
+            )()
+
+    def _scan_skill(skill_path, source="community"):
+        temp_scan_paths.append(skill_path)
+        assert (skill_path / "SKILL.md").is_file()
+        assert (skill_path / "scripts" / "run.sh").is_file()
+        assert source == canonical_identifier
+        return scan_result
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [_ResolvedSource()])
+    monkeypatch.setattr(
+        hub,
+        "quarantine_bundle",
+        lambda bundle: pytest.fail("scan must not use quarantine"),
+    )
+    monkeypatch.setattr(
+        hub,
+        "install_from_quarantine",
+        lambda *args, **kwargs: pytest.fail("scan must not install"),
+    )
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(
+        guard,
+        "format_scan_report",
+        lambda result: f"formatted:{result is scan_result}",
+    )
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_scan(canonical_identifier, console=console)
+
+    assert len(temp_scan_paths) == 1
+    assert not temp_scan_paths[0].exists()
+    assert "formatted:True" in sink.getvalue()
 
 
 def test_do_install_preserves_nested_official_optional_path(
@@ -780,4 +908,3 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
-

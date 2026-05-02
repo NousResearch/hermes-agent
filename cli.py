@@ -6581,7 +6581,11 @@ class HermesCLI:
             quick_commands = self.config.get("quick_commands", {})
             if base_cmd.lstrip("/") in quick_commands:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
-                if qcmd.get("type") == "exec":
+                if not isinstance(qcmd, dict):
+                    logger.warning(f"quick_commands entry for {base_cmd!r} is not a dict (got {type(qcmd).__name__}), skipping")
+                    # fall through to plugin commands / skill commands checks
+                    pass
+                elif qcmd.get("type") == "exec":
                     import subprocess
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:

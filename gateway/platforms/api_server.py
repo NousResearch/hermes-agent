@@ -127,6 +127,7 @@ def _normalize_chat_content(
 _TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
 _FILE_PART_TYPES = frozenset({"file", "input_file"})
+_AUDIO_PART_TYPES = frozenset({"input_audio"})
 
 
 def _normalize_multimodal_content(content: Any) -> Any:
@@ -222,6 +223,34 @@ def _normalize_multimodal_content(content: Any) -> Any:
             normalized_parts.append(image_part)
             continue
 
+        if part_type in _AUDIO_PART_TYPES:
+            # Passthrough: input_audio parts arrive in OpenAI canonical shape
+            # ({"type": "input_audio", "input_audio": {"data": "<b64>", "format": "wav"}}).
+            # Validate the structure, then pass through for downstream routing.
+            audio_ref = part.get("input_audio")
+            if not isinstance(audio_ref, dict):
+                raise ValueError(
+                    "invalid_content_part:"
+                    "input_audio parts must include an input_audio object with data and format."
+                )
+            data = audio_ref.get("data")
+            fmt = audio_ref.get("format", "wav")
+            if not isinstance(data, str) or not data.strip():
+                raise ValueError(
+                    "invalid_content_part:"
+                    "input_audio.data must be a non-empty base64-encoded string."
+                )
+            if fmt not in ("wav", "mp3"):
+                raise ValueError(
+                    "invalid_content_part:"
+                    f"input_audio.format must be 'wav' or 'mp3', got {fmt!r}."
+                )
+            normalized_parts.append({
+                "type": "input_audio",
+                "input_audio": {"data": data.strip(), "format": fmt},
+            })
+            continue
+
         if part_type in _FILE_PART_TYPES:
             raise ValueError(
                 "unsupported_content_type:Inline image inputs are supported, "
@@ -232,7 +261,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
         # instead of a silently dropped turn.
         raise ValueError(
             f"unsupported_content_type:Unsupported content part type {raw_type!r}. "
-            "Only text and image_url/input_image parts are supported."
+            "Only text, image_url/input_image, and input_audio parts are supported."
         )
 
     if not normalized_parts:
@@ -259,6 +288,8 @@ def _content_has_visible_payload(content: Any) -> bool:
                     return True
                 if ptype in _IMAGE_PART_TYPES:
                     return True
+                if ptype in _AUDIO_PART_TYPES:
+                    return True
     return False
 
 
@@ -277,6 +308,40 @@ def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Respons
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
+
+
+def _extract_audio_from_content(content: list) -> list:
+    """Extract audio data from a normalized multimodal content list.
+
+    Returns a list of dicts, each with:
+      - For base64-encoded ``input_audio`` parts:
+        ``{"source": "base64", "data": "<str>", "format": "wav"|"mp3"}``
+      - For URL-based audio (future-proofing):
+        ``{"source": "url", "url": "<str>"}``
+
+    The list must already have been through ``_normalize_multimodal_content``.
+    """
+    audio_items = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") not in _AUDIO_PART_TYPES:
+            continue
+        audio_ref = part.get("input_audio")
+        if isinstance(audio_ref, dict):
+            data = audio_ref.get("data", "")
+            fmt = audio_ref.get("format", "wav")
+            if isinstance(data, str) and data.strip():
+                audio_items.append({
+                    "source": "base64",
+                    "data": data.strip(),
+                    "format": fmt if fmt in ("wav", "mp3") else "wav",
+                })
+        # Future: URL-based audio
+        url = part.get("audio_url")
+        if isinstance(url, str) and url.strip():
+            audio_items.append({"source": "url", "url": url.strip()})
+    return audio_items
 
 
 class ResponseStore:
@@ -857,6 +922,101 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         })
 
+    async def _enrich_api_content_with_audio(self, content: list) -> str:
+        """Pre-transcribe audio in a multimodal content list via transcribe_audio.
+
+        Called when ``decide_audio_input_mode`` returns ``"text"`` for an
+        API server request.  Decodes base64 ``input_audio`` parts (or downloads
+        URL-based audio) to temp files, runs ``transcribe_audio`` on each,
+        and returns enriched text with transcripts prepended.
+
+        Returns a plain string so downstream code (history, logging,
+        trajectory) sees the same shape as text-only turns.
+        """
+        import asyncio
+        import base64
+        import os
+        import subprocess
+        import tempfile
+
+        audio_items = _extract_audio_from_content(content)
+        if not audio_items:
+            return _normalize_multimodal_content(content)
+
+        # Extract original user text from text parts
+        original_text = ""
+        for part in content:
+            if isinstance(part, dict) and part.get("type") in _TEXT_PART_TYPES:
+                original_text += str(part.get("text") or "")
+
+        enriched_parts = []
+        for item in audio_items:
+            tmp_path = None
+            try:
+                # ── Write audio to temp file ──
+                tmp = tempfile.NamedTemporaryFile(
+                    suffix=f".{item['format']}", delete=False
+                )
+                tmp_path = tmp.name
+                if item["source"] == "base64":
+                    raw = base64.b64decode(item["data"])
+                    tmp.write(raw)
+                elif item["source"] == "url":
+                    import urllib.request
+                    urllib.request.urlretrieve(item["url"], tmp_path)
+                tmp.close()
+
+                # ── Convert .caf to .wav via ffmpeg if needed ──
+                if tmp_path.endswith(".caf"):
+                    wav_path = tmp_path.rsplit(".", 1)[0] + ".wav"
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-i", tmp_path, wav_path],
+                        check=True,
+                        capture_output=True,
+                        timeout=30,
+                    )
+                    os.unlink(tmp_path)
+                    tmp_path = wav_path
+
+                # ── Transcribe ──
+                from tools.transcription_tools import transcribe_audio
+
+                result = await asyncio.to_thread(transcribe_audio, tmp_path)
+                if result.get("success"):
+                    transcript = result["transcript"]
+                    enriched_parts.append(
+                        '[The user sent an audio message~ '
+                        f'Here\'s what they said: "{transcript}"]'
+                    )
+                else:
+                    error = result.get("error", "unknown error")
+                    logger.warning(
+                        "Audio transcription failed: %s", error,
+                    )
+                    enriched_parts.append(
+                        "[The user sent an audio message but I couldn't "
+                        "transcribe it right now (>_<)]"
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Audio enrichment failed: %s", exc,
+                )
+                enriched_parts.append(
+                    "[The user sent an audio message but something went wrong "
+                    "when I tried to transcribe it.]"
+                )
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+        prefix = "\n\n".join(enriched_parts)
+        if original_text:
+            return f"{prefix}\n\n{original_text}"
+        return prefix
+
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         auth_err = self._check_auth(request)
@@ -965,6 +1125,45 @@ class APIServerAdapter(BasePlatformAdapter):
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
+
+        # ── Audio routing: respect agent.audio_input_mode config ──
+        # The api_server historically bypassed the gateway's per-turn
+        # audio-routing decision (CLI/TUI/messaging platforms call
+        # _decide_audio_input_mode before passing content to the agent).
+        # Match that behaviour here so users with non-audio primary
+        # models can still process voice memos via STT transcription.
+        if isinstance(user_message, list) and any(
+            isinstance(p, dict) and p.get("type") in _AUDIO_PART_TYPES
+            for p in user_message
+        ):
+            try:
+                from agent.audio_routing import decide_audio_input_mode
+                from agent.auxiliary_client import _read_main_model, _read_main_provider
+                from hermes_cli.config import load_config
+
+                cfg = load_config()
+                provider = _read_main_provider()
+                model = _read_main_model()
+                audio_mode = decide_audio_input_mode(provider, model, cfg)
+                audio_count = sum(
+                    1 for p in user_message
+                    if isinstance(p, dict) and p.get("type") in _AUDIO_PART_TYPES
+                )
+                if audio_mode == "text":
+                    logger.info(
+                        "Audio routing: text (mode=%s). Transcribing %d audio part(s).",
+                        audio_mode, audio_count,
+                    )
+                    user_message = await self._enrich_api_content_with_audio(user_message)
+                else:
+                    logger.info(
+                        "Audio routing: native. %d audio part(s) attached inline.",
+                        audio_count,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Audio routing failed: %s. Passing audio through unchanged.", exc,
+                )
 
         if stream:
             import queue as _q

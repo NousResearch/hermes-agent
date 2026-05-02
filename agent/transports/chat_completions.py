@@ -9,6 +9,10 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 import copy
 from typing import Any, Dict, List, Optional
 
@@ -289,7 +293,15 @@ class ChatCompletionsTransport(ProviderTransport):
         overrides = params.get("request_overrides")
         if overrides:
             api_kwargs.update(overrides)
+            logger.info("API 调用透传参数已应用：%s", overrides)
 
+        logger.debug("API 调用参数：model=%s, temperature=%s, max_tokens=%s, top_p=%s, extra_body=%s",
+            api_kwargs.get("model"),
+            api_kwargs.get("temperature"),
+            api_kwargs.get("max_tokens") or api_kwargs.get("max_completion_tokens"),
+            api_kwargs.get("top_p"),
+            api_kwargs.get("extra_body"),
+        )
         return api_kwargs
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:

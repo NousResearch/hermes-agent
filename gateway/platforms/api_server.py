@@ -580,6 +580,12 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        # Param override whitelist: None = allow all, set = filter to these keys
+        _allowed_raw = extra.get("allowed_params")
+        if _allowed_raw is None or _allowed_raw == ["*"] or _allowed_raw == []:
+            self._allowed_params: Optional[set] = None
+        else:
+            self._allowed_params = set(_allowed_raw)
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -806,6 +812,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         x_user_token: Optional[str] = None,
+        params_overrides: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -867,6 +874,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
+            request_overrides=params_overrides or None,
         )
         return agent
 
@@ -940,6 +948,17 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = body.get("stream", False)
+
+        # Extract user-requested parameter overrides (temperature, max_tokens, etc.)
+        # Filtered through config.yaml's api_server.allowed_params whitelist.
+        overrides = body.get("params")
+        if isinstance(overrides, dict):
+            if self._allowed_params is not None:
+                overrides = {k: v for k, v in overrides.items() if k in self._allowed_params}
+            if not overrides:
+                overrides = None
+        else:
+            overrides = None
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -1133,6 +1152,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 model_override=model_name,
                 x_user_token=x_user_token,
+                params_overrides=overrides,
             ))
 
             return await self._write_sse_chat_completion(
@@ -1154,6 +1174,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 model_override=model_name,
+                params_overrides=overrides,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -2708,6 +2729,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         model_override: str = None,
         x_user_token: Optional[str] = None,
+        params_overrides: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2726,6 +2748,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 x_user_token=x_user_token,
+                params_overrides=params_overrides,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

@@ -10,7 +10,7 @@ Covers:
 
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from hermes_cli.main import cmd_update
 
@@ -116,8 +116,12 @@ class TestUpdateYesConfigMigration:
         with patch("builtins.input", return_value="n") as mock_input, patch(
             "hermes_cli.main.sys"
         ) as mock_sys:
-            mock_sys.stdin.isatty.return_value = True
-            mock_sys.stdout.isatty.return_value = True
+            mock_stdin = MagicMock()
+            mock_stdin.isatty.return_value = True
+            mock_stdout = MagicMock()
+            mock_stdout.isatty.return_value = True
+            mock_sys.stdin = mock_stdin
+            mock_sys.stdout = mock_stdout
             cmd_update(args)
             # The user was actually prompted.
             assert mock_input.called

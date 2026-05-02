@@ -30,17 +30,19 @@ class TodoStore:
       - id: unique string identifier (agent-chosen)
       - content: task description
       - status: pending | in_progress | completed | cancelled
+      - model: optional model for subagent (e.g. 'gpt-4o', 'claude-3-sonnet')
+      - provider: optional provider for subagent (e.g. 'openrouter', 'openai')
     """
 
     def __init__(self):
-        self._items: List[Dict[str, str]] = []
+        self._items: List[Dict[str, Any]] = []
 
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
         """
         Write todos. Returns the full current list after writing.
 
         Args:
-            todos: list of {id, content, status} dicts
+            todos: list of {id, content, status, model?, provider?} dicts
             merge: if False, replace the entire list. If True, update
                    existing items by id and append new ones.
         """
@@ -63,6 +65,10 @@ class TodoStore:
                         status = str(t["status"]).strip().lower()
                         if status in VALID_STATUSES:
                             existing[item_id]["status"] = status
+                    if "model" in t:
+                        existing[item_id]["model"] = str(t["model"]).strip() if t["model"] else None
+                    if "provider" in t:
+                        existing[item_id]["provider"] = str(t["provider"]).strip() if t["provider"] else None
                 else:
                     # New item -- validate fully and append to end
                     validated = self._validate(t)
@@ -127,7 +133,7 @@ class TodoStore:
         Validate and normalize a todo item.
 
         Ensures required fields exist and status is valid.
-        Returns a clean dict with only {id, content, status}.
+        Returns a clean dict with {id, content, status} plus optional {model, provider}.
         """
         item_id = str(item.get("id", "")).strip()
         if not item_id:
@@ -141,7 +147,19 @@ class TodoStore:
         if status not in VALID_STATUSES:
             status = "pending"
 
-        return {"id": item_id, "content": content, "status": status}
+        result = {"id": item_id, "content": content, "status": status}
+
+        if item.get("model"):
+            model = str(item["model"]).strip()
+            if model:
+                result["model"] = model
+
+        if item.get("provider"):
+            provider = str(item["provider"]).strip()
+            if provider:
+                result["provider"] = provider
+
+        return result
 
     @staticmethod
     def _dedupe_by_id(todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -218,6 +236,7 @@ TODO_SCHEMA = {
         "- merge=true: update existing items by id, add any new ones\n\n"
         "Each item: {id: string, content: string, "
         "status: pending|in_progress|completed|cancelled}\n"
+        "Optional overrides (use together): model (e.g. 'gpt-4o'), provider (e.g. 'openrouter').\n"
         "List order is priority. Only ONE item in_progress at a time.\n"
         "Mark items completed immediately when done. If something fails, "
         "cancel it and add a revised item.\n\n"
@@ -244,6 +263,14 @@ TODO_SCHEMA = {
                             "type": "string",
                             "enum": ["pending", "in_progress", "completed", "cancelled"],
                             "description": "Current status"
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Model for subagent (e.g. 'gpt-4o', 'claude-3-sonnet')"
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Override the global provider for this subagent (e.g. 'openrouter', 'openai'). Use together with model."
                         }
                     },
                     "required": ["id", "content", "status"]

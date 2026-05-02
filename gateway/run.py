@@ -11558,6 +11558,16 @@ class GatewayRunner:
                     if source.platform == Platform.MATRIX:
                         _effective_cursor = ""
                         _buffer_only = True
+                    # WeCom: use stream msgtype for progressive display
+                    _use_stream_msgtype = False
+                    _stream_id = None
+                    if source.platform == Platform.WECOM:
+                        _use_stream_msgtype = getattr(_adapter, "SUPPORTS_STREAM_MESSAGES", False)
+                        if _use_stream_msgtype:
+                            import uuid
+                            _stream_id = f"stream_{uuid.uuid4().hex[:16]}"
+                        _effective_cursor = ""
+                        _buffer_only = True
                     # Fresh-final applies to Telegram only — other
                     # platforms either edit in place cheaply (Discord,
                     # Slack) or don't have the timestamp-on-edit
@@ -12301,6 +12311,13 @@ class GatewayRunner:
                         # duplicate messages (partial + final).
                         _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
                         if not _adapter_supports_edit:
+                        _use_stream_msgtype = False
+                        _stream_id = None
+                        if source.platform == Platform.WECOM:
+                            _use_stream_msgtype = getattr(_adapter, "SUPPORTS_STREAM_MESSAGES", False)
+                            if _use_stream_msgtype:
+                                import uuid
+                        if not _adapter_supports_edit and not _use_stream_msgtype:
                             raise RuntimeError("skip streaming for non-editable platform")
                         _effective_cursor = _scfg.cursor
                         # Some Matrix clients render the streaming cursor
@@ -12308,6 +12325,8 @@ class GatewayRunner:
                         # streaming text on Matrix, but suppress the cursor.
                         _buffer_only = False
                         if source.platform == Platform.MATRIX:
+                            _effective_cursor = ""
+                            _buffer_only = True
                             _effective_cursor = ""
                             _buffer_only = True
                         # Fresh-final applies to Telegram only — other

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import run_agent as run_agent_module
 from run_agent import AIAgent
 
@@ -20,6 +22,7 @@ def _bare_agent() -> AIAgent:
     agent._memory_store = object()
     agent._memory_enabled = True
     agent._user_profile_enabled = False
+    agent.reasoning_config = None
     agent._MEMORY_REVIEW_PROMPT = "review memory"
     agent._SKILL_REVIEW_PROMPT = "review skills"
     agent._COMBINED_REVIEW_PROMPT = "review both"
@@ -189,4 +192,50 @@ def test_background_review_summary_is_attributed_to_self_improvement_loop(monkey
     assert len(captured_bg_callback) == 1
     assert captured_bg_callback[0].startswith("💾 Self-improvement review:"), (
         captured_bg_callback[0]
+    )
+
+
+@pytest.mark.parametrize("reasoning_cfg", [
+    None,
+    {"enabled": True, "effort": "xhigh"},
+    {"enabled": False},
+])
+def test_background_review_inherits_reasoning_config(monkeypatch, reasoning_cfg):
+    """_spawn_background_review() must forward the parent's reasoning_config.
+
+    Without this, a session configured for xhigh reasoning effort spawns a
+    review agent that falls back to the transport default (medium), generating
+    unexpected medium-effort upstream requests (#18871).
+    """
+    captured: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured["reasoning_config"] = kwargs.get("reasoning_config")
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent.reasoning_config = reasoning_cfg
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert captured["reasoning_config"] == reasoning_cfg, (
+        f"Expected reasoning_config={reasoning_cfg!r} to be forwarded to the "
+        f"review agent, got {captured['reasoning_config']!r}"
     )

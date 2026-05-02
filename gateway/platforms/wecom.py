@@ -173,6 +173,8 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+        self._progress_stream_ids: Dict[str, str] = {}  # chat_id -> stream_id
+        self._progress_sent_content: Dict[str, str] = {}  # chat_id -> sent content
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.

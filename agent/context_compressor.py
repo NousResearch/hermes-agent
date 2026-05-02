@@ -998,17 +998,40 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     def _sanitize_tool_pairs(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs after compression.
 
-        Two failure modes:
-        1. A tool *result* references a call_id whose assistant tool_call was
+        Three failure modes:
+        1. A tool *result* has a missing/null/empty ``tool_call_id`` field.
+           The API rejects this with ``tool_call_id is not set`` (HTTP 400).
+           Compression can produce these when messages are copied or when
+           upstream providers return malformed tool messages.
+        2. A tool *result* references a call_id whose assistant tool_call was
            removed (summarized/truncated).  The API rejects this with
            "No tool call found for function call output with call_id ...".
-        2. An assistant message has tool_calls whose results were dropped.
+        3. An assistant message has tool_calls whose results were dropped.
            The API rejects this because every tool_call must be followed by
            a tool result with the matching call_id.
 
-        This method removes orphaned results and inserts stub results for
-        orphaned calls so the message list is always well-formed.
+        This method removes malformed/orphaned results and inserts stub
+        results for orphaned calls so the message list is always well-formed.
         """
+        # 0. Remove tool messages with missing/null/empty tool_call_id.
+        #    These slip through the orphan check below (they never enter
+        #    result_call_ids) but still cause API 400 errors.
+        malformed = [
+            m for m in messages
+            if m.get("role") == "tool" and not m.get("tool_call_id")
+        ]
+        if malformed:
+            messages = [
+                m for m in messages
+                if not (m.get("role") == "tool" and not m.get("tool_call_id"))
+            ]
+            if not self.quiet_mode:
+                logger.info(
+                    "Compression sanitizer: removed %d tool message(s) with "
+                    "missing/null/empty tool_call_id",
+                    len(malformed),
+                )
+
         surviving_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "assistant":

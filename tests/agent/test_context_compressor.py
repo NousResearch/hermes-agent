@@ -664,6 +664,67 @@ class TestCompressWithClient:
             "call_123"
         ]
 
+    def test_sanitizer_removes_tool_messages_with_none_tool_call_id(self, compressor):
+        """Tool messages with tool_call_id=None must be removed — they cause
+        API 400 'tool_call_id is not set' errors (e.g. MiMo, OpenAI)."""
+        msgs = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "read_file", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "file content"},
+            {"role": "tool", "tool_call_id": None, "content": "orphan with None id"},
+            {"role": "user", "content": "thanks"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        tool_msgs = [m for m in sanitized if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "tc_1"
+
+    def test_sanitizer_removes_tool_messages_with_empty_tool_call_id(self, compressor):
+        """Tool messages with tool_call_id='' must be removed."""
+        msgs = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "terminal", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "exit 0"},
+            {"role": "tool", "tool_call_id": "", "content": "empty id result"},
+            {"role": "tool", "content": "completely missing tool_call_id field"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        tool_msgs = [m for m in sanitized if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["tool_call_id"] == "tc_1"
+
+    def test_sanitizer_removes_all_orphaned_when_no_assistant_calls(self, compressor):
+        """When there are no assistant tool_calls at all, all tool messages
+        (including those with valid-looking but orphaned IDs) should be removed."""
+        msgs = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "let me check"},
+            {"role": "tool", "tool_call_id": "tc_old", "content": "stale result"},
+            {"role": "tool", "tool_call_id": None, "content": "null id result"},
+            {"role": "user", "content": "what happened?"},
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        tool_msgs = [m for m in sanitized if m.get("role") == "tool"]
+        assert len(tool_msgs) == 0
+
     def test_summary_role_avoids_consecutive_user_messages(self):
         """Summary role should alternate with the last head message to avoid consecutive same-role messages."""
         mock_client = MagicMock()

@@ -631,6 +631,8 @@ Common gateway problems:
 - **Gateway dies on SSH logout**: Enable linger: `sudo loginctl enable-linger $USER`
 - **Gateway dies on WSL2 close**: WSL2 requires `systemd=true` in `/etc/wsl.conf` for systemd services to work. Without it, gateway falls back to `nohup` (dies when session closes).
 - **Gateway crash loop**: Reset the failed state: `systemctl --user reset-failed hermes-gateway`
+- **Cron jobs do not fire**: The scheduler runs inside the gateway process, so gateway liveness is foundational for cron. Use an outside-in supervisor or health check (systemd, Docker healthcheck, host cron, Uptime Kuma, Healthchecks.io, etc.) instead of relying only on Hermes cron to report its own failure.
+- **Container status confusion**: In Docker or sandboxed environments, `hermes cron status` can be incomplete or misleading across PID namespaces. Corroborate it with the actual gateway container/service state, gateway logs, last cron run timestamps, and any deployment-specific health/status artifacts before concluding the scheduler is alive or dead.
 
 ### Platform-specific issues
 - **Discord bot silent**: Must enable **Message Content Intent** in Bot → Privileged Gateway Intents.

@@ -1042,7 +1042,8 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # Retain controls
         self._auto_retain = self._config.get("auto_retain", True)
-        self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
+        banks_retain_every_n = banks.get("retain_every_n_turns", 1) if isinstance(banks, dict) else 1
+        self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", banks_retain_every_n)))
         self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
 
         # Recall controls

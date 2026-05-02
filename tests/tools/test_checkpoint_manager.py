@@ -205,6 +205,42 @@ class TestTakeCheckpoint:
         r = mgr.ensure_checkpoint(str(Path.home()), "home")
         assert r is False
 
+    def test_skip_home_dir_when_home_is_symlinked(self, mgr, tmp_path, monkeypatch, checkpoint_base, caplog):
+        """HOME on a symlinked mount (e.g. macOS /tmp -> /private/tmp) must still be skipped.
+
+        ``ensure_checkpoint`` resolves the incoming directory with ``.resolve()``,
+        so the guard must compare against a resolved HOME too — otherwise a user
+        whose HOME lives under a symlinked prefix would silently snapshot their
+        entire home directory.
+
+        Plain ``assert r is False`` is ambiguous here because ensure_checkpoint
+        swallows every downstream exception and returns False.  Assert instead
+        that the guard's own short-circuit log line fires, which happens only
+        when the guard actually identifies the directory as HOME.
+        """
+        # Build a symlinked HOME: real dir at tmp_path/real_home, symlink
+        # tmp_path/home_link -> real_home. ``Path.home()`` returns the link
+        # path, but ``.resolve()`` resolves to ``real_home``.
+        real_home = tmp_path / "real_home"
+        real_home.mkdir()
+        home_link = tmp_path / "home_link"
+        home_link.symlink_to(real_home)
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home_link))
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+
+        with caplog.at_level(logging.DEBUG, logger="tools.checkpoint_manager"):
+            r = mgr.ensure_checkpoint(str(home_link), "symlinked home")
+
+        assert r is False
+        assert any(
+            "directory too broad" in record.getMessage()
+            for record in caplog.records
+        ), (
+            "HOME guard did not fire; ensure_checkpoint fell through for a "
+            "symlinked HOME path."
+        )
+
 
 # =========================================================================
 # CheckpointManager — listing checkpoints

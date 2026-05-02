@@ -325,8 +325,13 @@ class CheckpointManager:
 
         abs_dir = str(_normalize_path(working_dir))
 
-        # Skip root, home, and other overly broad directories
-        if abs_dir in ("/", str(Path.home())):
+        # Skip root, home, and other overly broad directories.
+        # ``abs_dir`` is fully resolved (symlinks followed), so compare against
+        # the resolved form of HOME too — otherwise on macOS where ``/tmp``
+        # resolves to ``/private/tmp`` (and similarly for other symlinked
+        # mount points) the guard silently lets HOME through.
+        _home_resolved = str(_normalize_path(str(Path.home())))
+        if abs_dir in ("/", _home_resolved):
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 

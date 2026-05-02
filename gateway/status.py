@@ -111,7 +111,19 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
+    """Return a stable process start marker when available.
+
+    Prefer psutil for cross-platform support (Linux/macOS/Windows). Fall back
+    to /proc on Linux-only environments where psutil is unavailable.
+    """
+    try:
+        import psutil  # type: ignore
+        # Convert to integer milliseconds so comparisons are stable across
+        # JSON round-trips and platforms.
+        return int(psutil.Process(pid).create_time() * 1000)
+    except Exception:
+        pass
+
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
@@ -127,6 +139,14 @@ def get_process_start_time(pid: int) -> Optional[int]:
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
     """Return the process command line as a space-separated string."""
+    try:
+        import psutil  # type: ignore
+        cmd_parts = psutil.Process(pid).cmdline()
+        if cmd_parts:
+            return " ".join(str(part) for part in cmd_parts if part)
+    except Exception:
+        pass
+
     cmdline_path = Path(f"/proc/{pid}/cmdline")
     try:
         raw = cmdline_path.read_bytes()
@@ -517,6 +537,14 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     existing.get("start_time") is not None
                     and current_start is not None
                     and current_start != existing.get("start_time")
+                ):
+                    stale = True
+                # Cross-platform stale lock guard: if PID is alive but does
+                # not look like a Hermes gateway process, treat lock as stale.
+                if (
+                    not stale
+                    and existing.get("kind") == _GATEWAY_KIND
+                    and not _looks_like_gateway_process(existing_pid)
                 ):
                     stale = True
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped

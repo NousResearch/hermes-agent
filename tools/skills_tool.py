@@ -986,6 +986,25 @@ def skill_view(
                 if skill_md:
                     break
 
+        # Frontmatter-name fallback: when directory-name lookup fails,
+        # try matching the frontmatter "name" field. This fixes the
+        # tool-calling loop where skills_list reports a frontmatter name
+        # but skill_view can only resolve by directory name (#18872).
+        if not skill_md:
+            for search_dir in all_dirs:
+                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                    try:
+                        fm_content = found_skill_md.read_text(encoding="utf-8")[:4000]
+                        fm, _ = _parse_frontmatter(fm_content)
+                        if fm.get("name") == name:
+                            skill_dir = found_skill_md.parent
+                            skill_md = found_skill_md
+                            break
+                    except Exception:
+                        continue
+                if skill_md:
+                    break
+
         if not skill_md or not skill_md.exists():
             available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
             return json.dumps(

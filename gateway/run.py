@@ -529,10 +529,31 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
-def _resolve_progress_thread_id(platform: Any, source_thread_id: Any, event_message_id: Any) -> Optional[str]:
-    """Return thread/root ID that progress/status bubbles should target."""
+def _resolve_progress_thread_id(
+    platform: Any,
+    source_thread_id: Any,
+    event_message_id: Any,
+    *,
+    reply_in_thread: bool = True,
+) -> Optional[str]:
+    """Return thread/root ID that progress/status bubbles should target.
+
+    ``reply_in_thread=False`` (Slack ``platforms.slack.extra.reply_in_thread``)
+    disables the synthetic-thread fallback: progress messages must not create
+    a thread the final flat reply would then inherit. A source.thread_id equal
+    to the event's own message id is the adapter's synthetic session-keying
+    thread, not a real thread — treat it as "no thread" too (#18859).
+    """
     platform_value = getattr(platform, "value", platform)
     platform_key = str(platform_value or "").lower()
+    if not reply_in_thread:
+        if (
+            source_thread_id
+            and event_message_id
+            and str(source_thread_id) == str(event_message_id)
+        ):
+            return None
+        return str(source_thread_id) if source_thread_id else None
     if source_thread_id:
         return str(source_thread_id)
     if platform_key in {"slack", "mattermost"} and event_message_id:
@@ -20046,8 +20067,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # - Feishu only honors reply_in_thread when sending a reply, so topic
         #   progress uses the triggering event message as the reply target
         # - Other platforms should use explicit source.thread_id only
+        #
+        # Slack honours platforms.slack.extra.reply_in_thread=false: if the
+        # user has opted out of threaded replies, don't synthesise a thread
+        # for progress messages either — the very first progress message
+        # would otherwise create a thread that all subsequent replies
+        # (including the final answer) would inherit (#18859).
+        _progress_reply_in_thread = True
+        if source.platform == Platform.SLACK:
+            _slack_adapter_for_progress = self._adapter_for_source(source)
+            if _slack_adapter_for_progress is not None:
+                try:
+                    _progress_reply_in_thread = bool(
+                        _slack_adapter_for_progress.config.extra.get(
+                            "reply_in_thread", True
+                        )
+                    )
+                except Exception:
+                    _progress_reply_in_thread = True
         _progress_thread_id = _resolve_progress_thread_id(
             source.platform, source.thread_id, event_message_id,
+            reply_in_thread=_progress_reply_in_thread,
         )
         _progress_metadata = (
             self._thread_metadata_for_source(source, event_message_id)

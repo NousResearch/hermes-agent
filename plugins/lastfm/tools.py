@@ -31,8 +31,17 @@ logger = logging.getLogger(__name__)
 
 # ── auth guard ────────────────────────────────────────────────────────────────
 
+_ATTRIBUTION = "Powered by Last.fm (https://www.last.fm)"
+
+
 def _check_lastfm_available() -> bool:
     return bool(os.getenv("LASTFM_API_KEY", "").strip())
+
+
+def _result(data: Dict[str, Any]) -> str:
+    """Wrap tool_result, injecting required Last.fm attribution (ToS §4)."""
+    data["_source"] = _ATTRIBUTION
+    return tool_result(data)
 
 
 def _client() -> LastFmClient:
@@ -246,7 +255,7 @@ def _handle_lastfm_discover(args: Dict[str, Any], **_kw: Any) -> str:
             seen[key] = r
 
     final = list(seen.values())[:count]
-    return tool_result({
+    return _result({
         "count": len(final),
         "scoring": scoring,
         "artist_seeds": artist_seeds,
@@ -272,7 +281,7 @@ def _handle_lastfm_artist(args: Dict[str, Any], **_kw: Any) -> str:
             stats = a.get("stats", {})
             bio = a.get("bio", {})
             tags = [t["name"] for t in a.get("tags", {}).get("tag", [])]
-            return tool_result({
+            return _result({
                 "name": a.get("name", artist),
                 "url": a.get("url", ""),
                 "listeners": int(stats.get("listeners") or 0) or None,
@@ -288,7 +297,7 @@ def _handle_lastfm_artist(args: Dict[str, Any], **_kw: Any) -> str:
             limit = _coerce_limit(args.get("limit"), default=20)
             data = lf.artist_get_similar(artist, limit=limit)
             similar = data.get("similarartists", {}).get("artist", [])
-            return tool_result({
+            return _result({
                 "artist": artist,
                 "similar": [
                     {"name": a.get("name", ""), "match": round(float(a.get("match", 0)) * 100, 1)}
@@ -300,7 +309,7 @@ def _handle_lastfm_artist(args: Dict[str, Any], **_kw: Any) -> str:
             limit = _coerce_limit(args.get("limit"), default=10)
             data = lf.artist_get_top_tracks(artist, limit=limit)
             tracks = data.get("toptracks", {}).get("track", [])
-            return tool_result({
+            return _result({
                 "artist": artist,
                 "top_tracks": [
                     {
@@ -318,7 +327,7 @@ def _handle_lastfm_artist(args: Dict[str, Any], **_kw: Any) -> str:
             limit = _coerce_limit(args.get("limit"), default=10)
             data = lf.artist_get_top_albums(artist, limit=limit)
             albums = data.get("topalbums", {}).get("album", [])
-            return tool_result({
+            return _result({
                 "artist": artist,
                 "top_albums": [
                     {
@@ -334,7 +343,7 @@ def _handle_lastfm_artist(args: Dict[str, Any], **_kw: Any) -> str:
         if action == "top_tags":
             data = lf.artist_get_top_tags(artist)
             tags = data.get("toptags", {}).get("tag", [])
-            return tool_result({
+            return _result({
                 "artist": artist,
                 "tags": [
                     {"name": t.get("name", ""), "count": int(t.get("count") or 0)}
@@ -350,7 +359,7 @@ def _handle_lastfm_artist(args: Dict[str, Any], **_kw: Any) -> str:
                     .get("artistmatches", {})
                     .get("artist", [])
             )
-            return tool_result({
+            return _result({
                 "query": artist,
                 "results": [
                     {
@@ -392,7 +401,7 @@ def _handle_lastfm_track(args: Dict[str, Any], **_kw: Any) -> str:
                     .get("trackmatches", {})
                     .get("track", [])
             )
-            return tool_result({
+            return _result({
                 "query": query,
                 "results": [
                     {
@@ -414,7 +423,7 @@ def _handle_lastfm_track(args: Dict[str, Any], **_kw: Any) -> str:
             album = t.get("album", {})
             tags = [tg["name"] for tg in t.get("toptags", {}).get("tag", [])]
             wiki = t.get("wiki", {})
-            return tool_result({
+            return _result({
                 "artist": t.get("artist", {}).get("name", artist) if isinstance(t.get("artist"), dict) else artist,
                 "name": t.get("name", track),
                 "duration_ms": int(t.get("duration") or 0) or None,
@@ -431,7 +440,7 @@ def _handle_lastfm_track(args: Dict[str, Any], **_kw: Any) -> str:
             limit = _coerce_limit(args.get("limit"), default=20)
             data = lf.track_get_similar(artist, track, limit=limit)
             similar = data.get("similartracks", {}).get("track", [])
-            return tool_result({
+            return _result({
                 "artist": artist,
                 "track": track,
                 "similar": [
@@ -470,7 +479,7 @@ def _handle_lastfm_tag(args: Dict[str, Any], **_kw: Any) -> str:
             data = lf.tag_get_info(tag)
             t = data.get("tag", {})
             wiki = t.get("wiki", {})
-            return tool_result({
+            return _result({
                 "name": t.get("name", tag),
                 "reach": int(t.get("reach") or 0) or None,
                 "total": int(t.get("total") or 0) or None,
@@ -480,7 +489,7 @@ def _handle_lastfm_tag(args: Dict[str, Any], **_kw: Any) -> str:
         if action == "top_artists":
             data = lf.tag_get_top_artists(tag, limit=limit)
             artists = data.get("topartists", {}).get("artist", [])
-            return tool_result({
+            return _result({
                 "tag": tag,
                 "top_artists": [
                     {
@@ -495,7 +504,7 @@ def _handle_lastfm_tag(args: Dict[str, Any], **_kw: Any) -> str:
         if action == "top_tracks":
             data = lf.tag_get_top_tracks(tag, limit=limit)
             tracks = data.get("tracks", {}).get("track", [])
-            return tool_result({
+            return _result({
                 "tag": tag,
                 "top_tracks": [
                     {
@@ -511,7 +520,7 @@ def _handle_lastfm_tag(args: Dict[str, Any], **_kw: Any) -> str:
         if action == "top_albums":
             data = lf.tag_get_top_albums(tag, limit=limit)
             albums = data.get("albums", {}).get("album", [])
-            return tool_result({
+            return _result({
                 "tag": tag,
                 "top_albums": [
                     {
@@ -527,7 +536,7 @@ def _handle_lastfm_tag(args: Dict[str, Any], **_kw: Any) -> str:
         if action == "similar":
             data = lf.tag_get_similar(tag)
             similar = data.get("similartags", {}).get("tag", [])
-            return tool_result({
+            return _result({
                 "tag": tag,
                 "similar_tags": [t.get("name", "") for t in similar],
             })
@@ -558,7 +567,7 @@ def _handle_lastfm_charts(args: Dict[str, Any], **_kw: Any) -> str:
             else:
                 data = lf.chart_get_top_artists(limit=limit)
                 artists = data.get("artists", {}).get("artist", [])
-            return tool_result({
+            return _result({
                 "scope": country or "global",
                 "top_artists": [
                     {
@@ -578,7 +587,7 @@ def _handle_lastfm_charts(args: Dict[str, Any], **_kw: Any) -> str:
             else:
                 data = lf.chart_get_top_tracks(limit=limit)
                 tracks = data.get("tracks", {}).get("track", [])
-            return tool_result({
+            return _result({
                 "scope": country or "global",
                 "top_tracks": [
                     {

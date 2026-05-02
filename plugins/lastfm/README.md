@@ -118,6 +118,12 @@ plugins/lastfm/
 | `geo.getTopArtists` | `lastfm_charts top_artists` (country) |
 | `geo.getTopTracks` | `lastfm_charts top_tracks` (country) |
 
+## Last.fm API Terms of Service
+
+- **Attribution** — The [Last.fm API ToS](https://www.last.fm/api/tos) requires displaying "Powered by Last.fm" attribution wherever their data appears. All tool responses include a `_source` field (`"Powered by Last.fm"`) for this purpose. Applications built on top of this plugin should surface that attribution to end users.
+- **Commercial use** — The free API key is for non-commercial use only. If you're building a commercial product, contact Last.fm at partners@last.fm before deploying.
+- **Rate limit** — ~5 requests per second. `lastfm_discover` with multiple seeds makes several sequential calls; stay within this limit.
+
 ## Notes
 
 - All API calls are read-only — no write/scrobble endpoints are used.

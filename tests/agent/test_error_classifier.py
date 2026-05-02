@@ -55,7 +55,7 @@ class TestFailoverReason:
             "auth", "auth_permanent", "billing", "rate_limit",
             "overloaded", "server_error", "timeout",
             "context_overflow", "payload_too_large", "image_too_large",
-            "model_not_found", "format_error",
+            "model_not_found", "format_error", "tool_message_malformed",
             "provider_policy_blocked",
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
@@ -623,6 +623,31 @@ class TestClassifyApiError:
         result = classify_api_error(e, approx_tokens=1000)
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
+
+    def test_400_tool_call_id_malformed(self):
+        """400 with 'tool_call_id' in message → tool_message_malformed, retryable."""
+        e = MockAPIError(
+            "Param Incorrect: 'tool_call_id' is not set",
+            status_code=400,
+            body={"error": {"message": "Param Incorrect: 'tool_call_id' is not set", "code": "400"}},
+        )
+        result = classify_api_error(e, approx_tokens=30000, num_messages=150)
+        assert result.reason == FailoverReason.tool_message_malformed
+        assert result.retryable is True
+        assert result.should_sanitize_tools is True
+        assert result.should_fallback is False
+
+    def test_400_no_tool_call_found_for_output(self):
+        """400 'No tool call found for function call output' → tool_message_malformed."""
+        e = MockAPIError(
+            "No tool call found for function call output with call_id call_abc123",
+            status_code=400,
+            body={"error": {"message": "No tool call found for function call output with call_id call_abc123"}},
+        )
+        result = classify_api_error(e, approx_tokens=20000, num_messages=100)
+        assert result.reason == FailoverReason.tool_message_malformed
+        assert result.retryable is True
+        assert result.should_sanitize_tools is True
 
     def test_422_format_error(self):
         e = MockAPIError("Unprocessable Entity", status_code=422)

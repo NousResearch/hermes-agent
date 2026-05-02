@@ -8977,6 +8977,50 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
+    def _sanitize_tool_messages_for_retry(self, messages: list) -> int:
+        """Remove tool messages with missing/null/empty tool_call_id in-place.
+
+        Called when the API rejects a request due to malformed tool messages
+        (classified as ``tool_message_malformed``).  Returns the number of
+        messages removed so the caller can decide whether to retry.
+        """
+        before = len(messages[:])  # snapshot for count
+        to_remove = set()
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "tool" and not msg.get("tool_call_id"):
+                to_remove.add(i)
+        if not to_remove:
+            return 0
+        # Also remove orphaned tool results (valid tool_call_id but no
+        # matching assistant tool_call) and add stubs for tool_calls
+        # whose results were removed.
+        # Build surviving call IDs from assistant messages
+        surviving_call_ids = set()
+        for msg in messages:
+            if msg.get("role") == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    cid = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                    if cid:
+                        surviving_call_ids.add(cid)
+        # Check remaining tool messages for orphans
+        for i, msg in enumerate(messages):
+            if i in to_remove:
+                continue
+            if msg.get("role") == "tool":
+                cid = msg.get("tool_call_id")
+                if cid and cid not in surviving_call_ids:
+                    to_remove.add(i)
+        # Remove in reverse order to preserve indices
+        for i in sorted(to_remove, reverse=True):
+            messages.pop(i)
+        removed = len(to_remove)
+        if removed:
+            logger.info(
+                "Tool message sanitizer (retry): removed %d malformed/orphaned tool message(s)",
+                removed,
+            )
+        return removed
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -12522,6 +12566,25 @@ class AIAgent:
                                 "failed": True,
                                 "compression_exhausted": True,
                             }
+
+                    # ── Tool message sanitization recovery ────────────────
+                    # If the API rejected the request because of malformed
+                    # tool_call/result pairs (e.g. missing tool_call_id from
+                    # compression), sanitize the message history and retry
+                    # instead of falling back.  This recovers sessions that
+                    # got stuck after a bad compression pass.
+                    if classified.should_sanitize_tools:
+                        _sanitized = self._sanitize_tool_messages_for_retry(api_messages)
+                        if _sanitized > 0:
+                            self._emit_status(
+                                f"🔧 Fixed {_sanitized} malformed tool message(s) — retrying..."
+                            )
+                            continue
+                        else:
+                            logger.info(
+                                "tool_message_malformed classified but sanitizer "
+                                "found nothing to fix — falling through to normal handling"
+                            )
 
                     # Check for non-retryable client errors.  The classifier
                     # already accounts for 413, 429, 529 (transient), context

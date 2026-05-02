@@ -50,6 +50,7 @@ class FailoverReason(enum.Enum):
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
+    tool_message_malformed = "tool_message_malformed"  # 400 from orphaned/malformed tool messages — sanitize pairs and retry
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
@@ -79,6 +80,7 @@ class ClassifiedError:
     should_compress: bool = False
     should_rotate_credential: bool = False
     should_fallback: bool = False
+    should_sanitize_tools: bool = False  # tool_call/result pairs may be malformed
 
     @property
     def is_auth(self) -> bool:
@@ -198,6 +200,17 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     "max input token",
     "input token",
     "exceeds the maximum number of input tokens",
+]
+
+# Patterns indicating malformed tool messages in the request.
+# When the API rejects a request because tool_call/result pairs are
+# broken (e.g. missing tool_call_id, orphaned results), we can recover
+# by sanitizing the message history instead of failing over.
+_TOOL_CALL_MALFORMED_PATTERNS = [
+    "tool_call_id",                   # MiMo: "'tool_call_id' is not set"
+    "tool call id",
+    "function call output",           # OpenAI: "No tool call found for function call output"
+    "no tool call found",
 ]
 
 # Model not found patterns
@@ -776,6 +789,15 @@ def _classify_400(
         )
 
     # Non-retryable format error
+    # But first check if this looks like a tool message format error —
+    # these are recoverable by sanitizing tool pairs.
+    if any(p in error_msg for p in _TOOL_CALL_MALFORMED_PATTERNS):
+        return result_fn(
+            FailoverReason.tool_message_malformed,
+            retryable=True,
+            should_sanitize_tools=True,
+        )
+
     return result_fn(
         FailoverReason.format_error,
         retryable=False,

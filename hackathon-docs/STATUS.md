@@ -1,6 +1,6 @@
 # Hackathon Build Status
 
-**Last updated**: 2 May 2026  
+**Last updated**: 2 May 2026 (evening)  
 **Deadline**: EOD Sunday 3 May 2026 (1 day remaining)
 
 ---
@@ -140,40 +140,86 @@ Chat correction loop retained as fallback for mobile/no-dashboard users.
 ```
 plugins/phonetic-captions/dashboard/
 ├── manifest.json        tab: /captions, icon: FileText, after:skills
-├── plugin_api.py        7 FastAPI routes at /api/plugins/phonetic-captions/*
+├── plugin_api.py        12 FastAPI routes at /api/plugins/phonetic-captions/*
 ├── src/index.tsx        React editor UI (state-based nav, no react-router-dom)
 ├── build.mjs            esbuild → IIFE (React from SDK, lucide-react bundled)
 ├── package.json         devDeps: esbuild, lucide-react, typescript
 ├── tsconfig.json
-└── dist/index.js        pre-built 12KB IIFE (committed, no user build step)
+└── dist/index.js        pre-built 35.8kB IIFE (committed, no user build step)
 ```
 
 **Plugin API** (`plugin_api.py` — `router = APIRouter()`):
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/plugins/phonetic-captions/jobs` | List all jobs |
-| `GET /api/plugins/phonetic-captions/jobs/{id}` | Get full job (segments, style, paths) |
-| `PUT /api/plugins/phonetic-captions/jobs/{id}/segments` | Save edited segments |
-| `PUT /api/plugins/phonetic-captions/jobs/{id}/style` | Save style changes |
-| `POST /api/plugins/phonetic-captions/jobs/{id}/burn` | Re-burn via FFmpeg (runs in `asyncio.to_thread`) |
-| `GET /api/plugins/phonetic-captions/jobs/{id}/video` | Stream video for in-browser player |
-| `GET /api/plugins/phonetic-captions/jobs/{id}/download` | Download final output |
+| `GET /jobs` | List all jobs (includes `status` field) |
+| `GET /jobs/{id}` | Get full job (segments, style, paths) |
+| `PUT /jobs/{id}/segments` | Save edited segments |
+| `PUT /jobs/{id}/style` | Save style changes |
+| `POST /jobs/{id}/burn` | Re-burn via FFmpeg + write style diff to `MemoryStore` |
+| `GET /jobs/{id}/video` | Stream video for in-browser player |
+| `GET /jobs/{id}/download` | Download final output |
+| `POST /upload` | Create job from uploaded video; runs pipeline in background thread |
+| `GET /jobs/{id}/status` | Poll pipeline status (`pending/transcribing/generating_phonetics/ready/error`) |
+| `POST /jobs/{id}/nl-edit` | NL instruction → AIAgent proposes JSON patch array |
+| `POST /jobs/{id}/qa` | AI quality review → returns segment flag list |
+| `GET /style/suggestion` | Cross-session style analysis via `MemoryStore` + `AIAgent` |
 
 Auth: all `/api/plugins/*` routes are auth-exempt by framework design (localhost only).
 
 **Frontend** (`src/index.tsx` → `dist/index.js`):
-- Two-column layout: video player + style panel (left), segment editor (right)
-- Per-segment: text, phonetic field (VI only), EN/VI badge toggle
-- Re-burn: saves segments + style → triggers burn → reloads video player
-- Download: direct fetch, no auth header needed
+- Two-column layout: video player (left), segment editor + style panel (right)
+- Per-segment: text, phonetic field (VI only), EN/VI badge toggle, word-level split (✂)
+- `UploadModal`: video + optional segments JSON, auto-pipeline toggle, 2s polling with live status
+- `NLEditPanel`: text instruction → AI patch diff with per-change checkboxes → apply selected
+- QA review: amber flag borders on problem segments, "Fix with AI" pre-fills NL panel
+- Style panel: Load/Save preset (JSON, no backend), "Suggest style" from MemoryStore history
+- Re-burn: saves segments + style → FFmpeg → reloads video player
 - State-based routing (`useState` + `window.history.pushState`) — no react-router-dom
 
-**Core files untouched**: `hermes_cli/web_server.py`, `web/src/App.tsx`, `web/src/pages/`
+**Core files minimally touched**: `web/src/App.tsx` (1-line catch-all guard for hard-refresh deep-link fix)
 
 ---
 
-### 7. Testing Steps (End-to-End) 🧪
+### 7. Hermes-Integrated Dashboard Features ✅ (2 May — plan v4)
+
+#### a) File Upload
+- "+ New Job" button on job list opens `UploadModal`
+- Video file picker with server-side extension validation
+- Toggle: auto-pipeline (Whisper + Kimi) vs. manual segments JSON import
+- Background pipeline with 2s polling and live status text in modal
+- Job cards show status badges (amber spinner for in-progress, red for error)
+
+#### b) Natural Language Segment Editing
+- Text input docked below segment list in editor
+- Supports: edit text/phonetics/lang, shift timing, merge segments, split at word boundary
+- Agent returns structured JSON patch array; frontend shows before/after diff with per-change checkboxes
+- User approves/rejects individually; accepted patches auto-save via `PUT /segments`
+- Agent never writes to disk — propose only
+
+#### c) Segment QA Review
+- "Review all" button in segments header
+- Agent flags: wrong lang, mangled diacritics, phonetics mismatch, timing anomalies, empty text
+- Flagged segments get amber left border with issue + suggestion
+- "Fix with AI" pre-fills NL panel with the QA suggestion
+
+#### d) Cross-Session Style Memory
+- On every burn: style diff vs. defaults written to Hermes `MemoryStore` (silent, instant)
+- After ≥ 3 diff entries: "Suggest style" button appears in style panel
+- Click → `AIAgent` analyses history → returns `CaptionStyle` + 1-sentence explanation
+- Inline dismissible banner with "Apply" button updates local style state
+
+#### e) Style Preset Load/Save
+- "Load": file input → `FileReader` → validate keys → `setStyle()` (no backend call)
+- "Save": serialize style → Blob → `<a>` download as `caption-style.json` (no backend call)
+
+#### f) Hard Refresh Deep-Link Fix
+- `web/src/App.tsx`: `*` catch-all suppressed while `pluginsLoading` is true
+- Hard refresh on `/captions/{id}` now stays on the correct page instead of bouncing to `/sessions`
+
+---
+
+### 8. Testing Steps (End-to-End) 🧪
 
 #### Prerequisites (run once)
 ```bash
@@ -255,11 +301,12 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 
 ---
 
-### 8. Hackathon Plans — `hackathon-docs/` ✅
+### 9. Hackathon Plans — `hackathon-docs/` ✅
 
-- `PLAN_v1.md` — original Telegram-native plan (executed, backend pipeline complete)
+- `PLAN_v1.md` — original Telegram-native plan (executed)
 - `PLAN_v2.md` — dashboard core-edit approach (archived)
-- `PLAN.md` — v3 plugin architecture (current)
+- `PLAN_v3.md` — plugin architecture, editor + burn (executed)
+- `PLAN.md` — v4 Hermes-integrated dashboard: upload, NL edits, QA, style memory (current)
 
 ---
 
@@ -274,8 +321,10 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 | Set `NVIDIA_API_KEY` | Add to `~/.hermes/.env` to enable Kimi phonetics |
 | Enable toolset | Add `video-caption` to `toolsets` in `~/.hermes/config.yaml` |
 | Load skill | `hermes skills add skills/video/phonetic-captions` |
-| End-to-end smoke test | CLI caption → dashboard → edit → re-burn → download (see Test 1+2 above) |
-| Telegram flow test | Send video via Telegram, verify path injection → captions → dashboard link (Test 3) |
+| End-to-end smoke test | CLI caption → dashboard → edit → re-burn → download |
+| Upload smoke test | "+ New Job" → upload video → pipeline runs → editor opens with segments |
+| NL edit smoke test | Type instruction → diff shown → apply → segments updated |
+| Telegram flow test | Send video via Telegram → path injection → captions → dashboard link |
 
 ### P1 — Important for demo quality
 
@@ -283,19 +332,19 @@ curl http://localhost:9119/api/dashboard/plugins | python -m json.tool
 |---|---|
 | Font selection | "Arial" is safe fallback; "Montserrat Bold" looks better for Shorts |
 | Style tuning | Run against a real Shorts clip, adjust `font_size` / `margin_bottom` to taste |
-| Demo video 1 | 10–20s clip — show raw → captioned → editor → corrected |
-| Demo video 2 | Same topic, second take — show that style is remembered |
+| Style memory seed | Burn 3+ jobs with non-default style to make "Suggest style" button appear in demo |
+| Demo video 1 | 10–20s clip — show raw → captioned → NL correction → re-burn |
+| Demo video 2 | Same topic, second take — show style suggestion applied from memory |
 
 ### P2 — Nice to have
 
 | Task | Notes |
 |---|---|
 | Whisper model upgrade | `large-v3` for better accuracy (~3GB RAM, slower CPU) |
-| Vietnamese font rendering | ASS with Vietnamese diacritics should work out of the box, but test `ơ ư ạ ề ọ` characters display correctly in output |
-| Style slash command | `/caption-style` shortcut to show/edit current caption style — not needed for MVP |
-| Progress feedback | faster-whisper can take 10–30s on CPU for 20s clips — add a "transcribing…" acknowledgement message before calling the tool |
-| Segment merge heuristic | Very short segments (< 1s) can be merged with adjacent ones for cleaner captions |
-| CLI mode | Verify the same workflow works from Hermes CLI (not just Telegram), useful as a fallback demo |
+| Vietnamese font rendering | Test `ơ ư ạ ề ọ` characters display correctly in burned output |
+| Progress feedback in CLI | faster-whisper can take 10–30s — add "transcribing…" acknowledgement before tool call |
+| NL split UI polish | Currently defers to interactive ✂ button — could apply programmatically with word index |
+| QA auto-run on upload | Run QA pass automatically after pipeline completes, not only on button click |
 
 ---
 
@@ -391,8 +440,14 @@ Send the same clip through Telegram so we can verify the gateway path injection 
 - [ ] NVIDIA_API_KEY set in `~/.hermes/.env`
 - [ ] `video-caption` toolset enabled
 - [ ] `phonetic-captions` skill loaded
-- [ ] Demo video 1 recorded: show video → captions → corrections → final output
-- [ ] Demo video 2 recorded: show memory auto-applied from Video 1
+- [ ] End-to-end smoke test: Telegram → pipeline → editor → re-burn → download
+- [ ] Upload flow: "+ New Job" → auto-pipeline → editor opens with segments
+- [ ] NL edit: instruction → diff shown → apply → segments updated + saved
+- [ ] QA review: flagged segments visible, "Fix with AI" pre-fills NL panel
+- [ ] Style memory: 3+ burns done, "Suggest style" appears and applies correctly
+- [ ] Hard refresh: `/captions/{id}` reloads correctly (not redirected to `/sessions`)
+- [ ] Demo video 1 recorded: raw video → Telegram → captions → dashboard editor → NL correction → re-burn
+- [ ] Demo video 2 recorded: show style suggestion applied from memory
 - [ ] Kimi proof: show NVIDIA_API_KEY in config / API call in logs
 - [ ] Tweet posted tagging @NousResearch
 - [ ] Discord submission in `#creative-hackathon-submissions`

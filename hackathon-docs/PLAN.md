@@ -1,274 +1,242 @@
-# Hermes Caption Agent — Plan v3 (Dashboard Plugin)
+# Hermes Caption Agent — Plan v4 (Hermes-Integrated Dashboard)
 
 **Hackathon**: Hermes Agent Creative Hackathon  
 **Prize pool**: $25k (Main $15k + Kimi Track $5k)  
 **Deadline**: EOD Sunday May 3rd, 2026  
-**Previous plans**: 
-- `PLAN_v1.md` (Telegram-native, executed — backend pipeline complete)
-- `PLAN_v2.md` (Dashboard visual editor, core approach — now replaced by plugin model)
+**Previous plans**:
+- `PLAN_v1.md` — Telegram-native pipeline (executed)
+- `PLAN_v2.md` — Dashboard core-edit approach (archived)
+- `PLAN_v3.md` — Plugin architecture, editing + burn (executed)
 
 ---
 
-## Key Insight: Use the Plugin System
+## What Changed from v3
 
-The Hermes dashboard was built to be extended without forking — **themes and plugins are first-class citizens**. Rather than edit core files (`web/src/App.tsx`, `hermes_cli/web_server.py`), the caption editor ships as a **self-contained dashboard plugin**.
+Plan v3 shipped a fully working caption editor plugin. The dashboard still required the Hermes agent tool (triggered via Telegram or CLI) to create jobs — the UI could only *edit* what the agent already made.
 
-**References:**
-- [Extending the Dashboard](https://hermes-agent.nousresearch.com/docs/user-guide/features/extending-the-dashboard) — official guide
-- [Combined theme + plugin demo](https://hermes-agent.nousresearch.com/docs/user-guide/features/extending-the-dashboard#combined-theme--plugin-demo) — working example (`strike-freedom-cockpit`)
-
+Plan v4 makes the dashboard **fully self-contained** and elevates it from a simple editor into a tool that actively uses Hermes' intelligence (LLM, memory) to assist the user at every stage.
 
 ---
 
-## Problem Statement (Unchanged)
+## New Capabilities
 
-Content creators making bilingual (English + Vietnamese) videos spend 30–45 minutes per video manually choosing font, size, color, position in CapCut, typing Vietnamese captions with no consistency, and fixing translation mistakes with no memory of prior corrections.
+### 1. File Upload — Dashboard-Initiated Jobs
 
-**User quote**: *"I was hoping that the tool can auto generate the caption for both English and Vietnamese with the same font, size and color and where it appears on the video with the same style that I'm doing in each video right now."*
+Users can now create a caption job entirely from the dashboard, without going through the agent.
+
+**Upload modal** ("+ New Job" button on the job list):
+- Video file picker (`.mp4 .mov .avi .mkv .webm .m4v .ts .mts`)
+- Toggle: "Auto-transcribe & generate phonetics" (default ON)
+  - **ON**: uploads video → server runs Whisper + Kimi phonetics in a background thread → UI polls every 2s showing live status ("Transcribing audio…" → "Generating phonetics…") → navigates to editor when ready
+  - **OFF**: second file picker appears for a segments JSON — skips pipeline entirely, job is immediately ready
+
+**New job status lifecycle**: `pending → transcribing → generating_phonetics → ready | error`
+
+Status is stored in the job JSON and exposed via `GET /jobs/{id}/status` for polling. Existing jobs without a `status` field default to `"ready"` (backward compat).
 
 ---
 
-## Architecture (Plugin-Based)
+### 2. Natural Language Segment Editing
+
+A text input panel docked below the segment list. Users describe what they want in plain English; Hermes proposes a structured diff; the user approves or rejects each change individually.
+
+**Supported operations via NL:**
+- Edit text, phonetics, or language classification on any segment
+- Shift timing (`start`/`end` in seconds)
+- Merge two or more segments into one
+- Split a segment at a word boundary
+
+**Flow:**
+1. User types instruction, e.g. *"fix the diacritics in segment 4"* or *"merge segments 8 and 9"*
+2. `POST /jobs/{id}/nl-edit` → `AIAgent` (1 iteration, `quiet_mode=True`) returns a JSON patch array
+3. Frontend shows a before/after list with per-change checkboxes (all checked by default)
+4. "Apply N changes" commits selected patches to local state and auto-saves via `PUT /segments`
+5. "Dismiss" discards everything
+
+The agent never writes to disk — it only proposes. The user is always in control.
+
+**QA → NL link**: "Fix with AI" buttons on flagged segments pre-fill the NL panel with the QA suggestion, letting users review before submitting.
+
+---
+
+### 3. Segment QA — AI Quality Review
+
+"Review all" button in the segments header. Sends all segments to the agent with structured QA instructions; highlights problems in the editor.
+
+**What gets flagged:**
+- Wrong language classification (Vietnamese text labelled EN or vice versa)
+- Mangled Vietnamese diacritics (Whisper artifacts)
+- Phonetic guide that doesn't phonetically match the Vietnamese text
+- Very short segments (< 0.3 s) — likely stray words, candidate for merge
+- Very long segments (> 8 s) — likely should be split
+- Empty text field
+
+**UI**: Flagged segments get an amber left border. Each flag shows the issue + a one-line suggestion + "Fix with AI" button that pre-fills the NL panel.
+
+---
+
+### 4. Cross-Session Style Memory (Hermes-Powered)
+
+The style suggestion system uses Hermes' own `MemoryStore` to learn from past burns across sessions — not a simple cache of last-used values.
+
+**How it works:**
+1. **Passive accumulation**: On every successful burn, the diff between the used style and the defaults is written to `MemoryStore` as a compact entry: `"Caption style edit (job abc): {font_size: 56, primary_color: '&H0000FFFF'}"`. Zero UI, instant, uses the same memory infrastructure Hermes uses for conversation notes.
+
+2. **On-demand analysis**: Once ≥ 3 diff entries exist, a "Suggest style" button appears in the style panel. Clicking it calls `GET /style/suggestion`, which runs an `AIAgent` pass over the accumulated diffs and returns a `CaptionStyle` object + a 1-sentence explanation of the observed pattern (e.g. *"Based on 10 sessions: larger font (56), yellow text, wider bottom margin"*).
+
+3. **Inline Apply**: The suggestion appears as a dismissible banner above the style fields with an "Apply" button. Applying updates the local style state — no burn triggered, user can still tweak before committing.
+
+**Why this is better than a "last used" cache**: the agent identifies *patterns across content types*, summarises its reasoning in plain language, and keeps the memory compact via periodic summarisation. It also surfaces the reasoning to the user rather than silently overriding their choices.
+
+---
+
+### 5. Style Preset File Load/Save
+
+Simple stateless import/export for sharing style configs between machines or team members.
+
+- **Load**: "Load" button → hidden file input → `FileReader` → validates required `CaptionStyle` keys → updates local style state. No backend call.
+- **Save**: "Save" button → serialises current style → `Blob` → `<a>` click → downloads `caption-style.json`. No backend call.
+
+---
+
+### 6. Deep-Link on Hard Refresh Fix
+
+Plugin routes (e.g. `/captions/abc123`) now survive a hard refresh (`Cmd+R`). Previously, the React Router `*` catch-all would fire before plugin manifests had loaded, immediately redirecting to `/sessions`. Fixed by suppressing the catch-all while `pluginsLoading` is true in `web/src/App.tsx`.
+
+---
+
+## Architecture (v4)
 
 ```
-Telegram (trigger)
-  ↓
-Agent: transcribe (Whisper) + generate phonetics (Kimi K2.5, once)
-  ↓
-Save job JSON to ~/.hermes/caption-jobs/{id}.json
-  ↓
-Burn initial draft video (FFmpeg)
-  ↓
-Return: draft video + link to /captions/{id}
-  ↓
-Plugin at ~/.hermes/plugins/phonetic-captions/dashboard/
-  ├── manifest.json          (tab registration, icon, entry point)
-  ├── plugin_api.py          (7 FastAPI routes at /api/plugins/phonetic-captions/*)
-  ├── src/index.tsx          (React editor — IIFE, no build step for users)
-  └── dist/index.js          (pre-built bundle)
-  ↓
-Dashboard /captions/{id}
-  ┌─────────────────────┬─────────────────────────────────────┐
-  │   <video> player    │  Segment list (editable)            │
-  │   (auto-reloads     │  [EN/VI badge] [text] [phonetic]   │
-  │    after re-burn)   │                                     │
-  │                     │  Style panel                        │
-  │                     │  Font / Size / Color / Margin       │
-  │                     │                                     │
-  │                     │  [Re-burn]  [Download]              │
-  └─────────────────────┴─────────────────────────────────────┘
+                          ┌──────────────────────────────────────┐
+  Telegram / CLI          │  Dashboard /captions                 │
+  (trigger only)          │                                      │
+       │                  │  [+ New Job] ─── UploadModal         │
+       ▼                  │    ├── video file picker             │
+  Agent pipeline          │    ├── toggle: auto-pipeline         │
+  Whisper → Kimi          │    └── segments JSON (skip pipeline) │
+  save job JSON           │         │                            │
+  burn draft              │         ▼                            │
+  reply with link ────────┼──► JobListView (status badges)       │
+                          │         │                            │
+                          │         ▼                            │
+                          │  EditorView                          │
+                          │  ┌──────────────┬─────────────────┐  │
+                          │  │ video player │ segments list   │  │
+                          │  │              │ [Review all] ───┤  │
+                          │  │ [Re-burn]    │ flagged ←amber  │  │
+                          │  │ [Download]   │ [Fix with AI]   │  │
+                          │  │              │                 │  │
+                          │  │              │ NL Edit Panel   │  │
+                          │  │              │ [instruction]   │  │
+                          │  │              │ [patch diff]    │  │
+                          │  │              │                 │  │
+                          │  │              │ Style Panel     │  │
+                          │  │              │ [Load] [Save]   │  │
+                          │  │              │ [Suggest style] │  │
+                          │  └──────────────┴─────────────────┘  │
+                          └──────────────────────────────────────┘
+                                         │
+                          ┌──────────────▼──────────────────────┐
+                          │  plugin_api.py (12 routes total)    │
+                          │                                     │
+                          │  POST /upload            ← new      │
+                          │  GET  /jobs/{id}/status  ← new      │
+                          │  POST /jobs/{id}/nl-edit ← new      │
+                          │  POST /jobs/{id}/qa      ← new      │
+                          │  GET  /style/suggestion  ← new      │
+                          │  POST /jobs/{id}/burn    ← +memory  │
+                          │  GET  /jobs                         │
+                          │  GET  /jobs/{id}                    │
+                          │  PUT  /jobs/{id}/segments           │
+                          │  PUT  /jobs/{id}/style              │
+                          │  GET  /jobs/{id}/video              │
+                          │  GET  /jobs/{id}/download           │
+                          └─────────────────────────────────────┘
+                                         │
+                          ┌──────────────▼──────────────────────┐
+                          │  Hermes internals                   │
+                          │  AIAgent   (nl-edit, qa, suggest)   │
+                          │  MemoryStore (style diff history)   │
+                          │  tools.video_caption (pipeline)     │
+                          └─────────────────────────────────────┘
 ```
 
-**Key differences from v2:**
-- No `/web/src/` changes — plugin provides the UI
-- Plugin API routes mounted at `/api/plugins/phonetic-captions/` (auth-free on localhost by design)
-- Pre-built IIFE bundle — no user-facing build step
-- Core dashboard remains unchanged — easier future maintenance
-
 ---
 
-## Implementation Phases
+## Files Changed (v4)
 
-### Phase 1 — Backend: plugin_api.py (1h)
-
-**Location**: `plugins/phonetic-captions/dashboard/plugin_api.py`
-
-Create FastAPI router with 7 endpoints (moved from Plan v2's `web_server.py` additions):
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/jobs` | List all jobs |
-| `GET` | `/jobs/{id}` | Get full job state |
-| `PUT` | `/jobs/{id}/segments` | Save edited segments |
-| `PUT` | `/jobs/{id}/style` | Save style changes |
-| `POST` | `/jobs/{id}/burn` | Re-burn + update output_path |
-| `GET` | `/jobs/{id}/video` | Stream video for `<video>` player |
-| `GET` | `/jobs/{id}/download` | Download final output |
-
-**Auth note**: Plugin routes bypass `_require_token()` — the framework explicitly skips `/api/plugins/*` prefix in the auth middleware. This is safe because dashboard only binds to `localhost` by default.
-
-**Imports**: `_build_ass_content`, `burn` from `tools.video_caption` (direct, no subprocess).
-
-**Helpers**: Copy `_caption_jobs_dir()`, `_load_caption_job()`, `_save_caption_job_data()` helpers into this file.
-
-### Phase 2 — Plugin manifest and build setup (30 min)
-
-**`plugins/phonetic-captions/dashboard/manifest.json`**:
-```json
-{
-  "name": "phonetic-captions",
-  "label": "Captions",
-  "description": "Bilingual EN/VI phonetic caption editor",
-  "icon": "FileText",
-  "version": "1.0.0",
-  "tab": {
-    "path": "/captions",
-    "position": "after:skills"
-  },
-  "entry": "dist/index.js",
-  "api": "plugin_api.py"
-}
-```
-
-**`plugins/phonetic-captions/dashboard/package.json`**:
-```json
-{
-  "private": true,
-  "scripts": { "build": "node build.mjs" },
-  "devDependencies": {
-    "esbuild": "^0.25",
-    "lucide-react": "*",
-    "typescript": "*"
-  }
-}
-```
-
-**`plugins/phonetic-captions/dashboard/build.mjs`** — esbuild config:
-- Redirect `react` imports → `window.__HERMES_PLUGIN_SDK__.React`
-- Redirect `react/jsx-runtime` → SDK shim for JSX transform
-- Bundle `lucide-react` icons directly (~10KB)
-- Format: IIFE
-- Output: `dist/index.js`
-
-### Phase 3 — React plugin UI (2h)
-
-**`plugins/phonetic-captions/dashboard/src/index.tsx`**
-
-Adapted from Plan v2's `CaptionEditorPage.tsx` with these changes:
-
-1. **No react-router-dom** — use state-based navigation:
-   - `useState<string | null>(null)` for `selectedJobId`
-   - `useEffect` checks `window.location.pathname` on mount — if `/captions/<id>`, auto-select that job
-   - Use `window.history.pushState()` to update URL for shareability
-
-2. **SDK components** — replace `@nous-research/ui`:
-   - `Button` → `SDK.components.Button`
-   - Typography → plain `<div>` with Tailwind classes (`text-xl font-semibold`, etc.)
-   - Use `SDK.React` for all `createElement` calls
-
-3. **API paths** — update to plugin routes:
-   - `/api/caption/jobs` → `/api/plugins/phonetic-captions/jobs`
-   - `/api/caption/jobs/{id}/video` → `/api/plugins/phonetic-captions/jobs/{id}/video`
-   - etc.
-
-4. **SDK utilities**:
-   - `SDK.fetchJSON` — handles auth automatically (no token plumbing needed)
-   - `SDK.hooks.useState`, `SDK.hooks.useEffect`, etc.
-   - `SDK.utils.cn` — Tailwind class merger
-
-5. **Download**:
-   ```js
-   const res = await fetch(`/api/plugins/phonetic-captions/jobs/${id}/download`);
-   // No auth header needed (plugin routes auth-free on localhost)
-   ```
-
-6. **Registration** — wrap in IIFE and register:
-   ```js
-   (function() {
-     const SDK = window.__HERMES_PLUGIN_SDK__;
-     const PLUGINS = window.__HERMES_PLUGINS__;
-     if (!SDK || !PLUGINS) return; // guard for old dashboards
-     
-     // ... component definitions ...
-     
-     PLUGINS.register('phonetic-captions', CaptionApp);
-   })();
-   ```
-
-7. **Spinner** — keep as local inline CSS component (no SDK equivalent)
-
-8. **Icons** — import from `lucide-react` — bundled directly into IIFE
-
-**Pre-build** `dist/index.js` and commit — no build step required for end users.
-
-### Phase 4 — Verify core files unchanged (verify only)
-
-No changes needed to:
-- `hermes_cli/web_server.py` — caption endpoints stay out
-- `web/src/App.tsx` — no caption routes added
-- `web/src/pages/` — no new page added
-
-The plugin system auto-discovers at `/api/dashboard/plugins` — no hardcoding needed.
-
-### Phase 5 — Minor skill update (15 min)
-
-**`skills/video/phonetic_captions/SKILL.md`**:
-- After `caption` op, agent surfaces the dashboard link to the job ID
-- Link format: `http://localhost:9119/captions/{job_id}` (or `https://` if exposed)
-- Plugin reads this on mount and auto-opens the job
-
----
-
-## Files Changed / Created
-
-| File | Action | Phase |
-|---|---|---|
-| `plugins/phonetic-captions/dashboard/manifest.json` | Create | 2 |
-| `plugins/phonetic-captions/dashboard/plugin_api.py` | Create | 1 |
-| `plugins/phonetic-captions/dashboard/src/index.tsx` | Create | 3 |
-| `plugins/phonetic-captions/dashboard/build.mjs` | Create | 2 |
-| `plugins/phonetic-captions/dashboard/package.json` | Create | 2 |
-| `plugins/phonetic-captions/dashboard/dist/index.js` | Create (pre-built) | 3 |
-| `skills/video/phonetic_captions/SKILL.md` | Minor update | 5 |
-| `web/src/App.tsx` | None | — |
-| `hermes_cli/web_server.py` | None | — |
-
----
-
-## Why This Is Better
-
-| Aspect | Plan v2 (Core Edits) | Plan v3 (Plugin) |
-|---|---|---|
-| Core file changes | 3 files (App.tsx, web_server.py, new page) | 0 files |
-| Build dependency | Yes — `npm run build` required | No — pre-built plugin |
-| User install | Copy core code + rebuild | Drop `~/.hermes/plugins/` directory |
-| Future maintenance | Merge conflicts if core changes | Zero interference |
-| Extensibility | Hard to add features | Plugin slots, theme integration ready |
-| Demo story | "We forked Hermes for this" | "We built a Hermes plugin" ✨ |
-
----
-
-## Demo Story
-
-**Meet Linh — she makes bilingual cooking content.**
-
-1. Opens Telegram, sends today's video
-2. Hermes replies: captioned draft + link to `/captions/abc123`
-3. Linh clicks — caption editor opens
-4. She edits segments, changes font size
-5. Clicks "Re-burn" — video updates in 5s (FFmpeg only)
-6. Downloads final video
-
-**Why the plugin approach shines in a demo:**
-- "This was built as a drop-in Hermes plugin — no fork, no build step"
-- Shows the extensibility of the Hermes ecosystem
-- Judges see best practices: uses official plugin SDK, follows auth patterns, etc.
-
----
-
-## Kimi Track Strategy (Unchanged)
-
-Submission video will show:
-1. `NVIDIA_API_KEY` + `moonshotai/kimi-k2.5` config
-2. Raw Whisper vs Kimi-corrected Vietnamese + phonetics
-3. Plugin-based caption editor showing manual refinement on top
-
----
-
-## Risks & Mitigations
-
-| Risk | Mitigation |
+| File | Change |
 |---|---|
-| Plugin SDK missing method | Guard: `if (!SDK.method) { fallback }` — works with old dashboards |
-| Video streaming CORS | Serve via FastAPI with `Content-Type` + range support (built-in) |
-| Re-burn blocks event loop | Run `burn()` in `asyncio.to_thread()` |
-| Large job JSON | Cap at 500 segments; V2 feature: merging |
+| `plugins/phonetic-captions/dashboard/plugin_api.py` | 5 new endpoints; `_run_pipeline`, `_call_agent`, `_update_job_status` helpers; `burn` writes to `MemoryStore` |
+| `plugins/phonetic-captions/dashboard/src/index.tsx` | `UploadModal`, `NLEditPanel`, QA highlighting, style suggestion banner, style preset load/save, status badges on job cards |
+| `plugins/phonetic-captions/dashboard/dist/index.js` | Rebuilt bundle (35.8 kB) |
+| `web/src/App.tsx` | Catch-all redirect suppressed during `pluginsLoading` |
+| `hermes_cli/web_dist/` | Rebuilt web dist |
 
 ---
 
-## Out of Scope (V2)
+## Testing Flows
 
-- Real-time caption preview
-- Drag-and-drop timeline editor
-- Multi-video batch management
-- Mobile-responsive layout
+### Test A — Upload with auto-pipeline
+
+1. Open dashboard → Captions tab → "+ New Job"
+2. Select a `.mp4` file; leave "Auto-transcribe" ON → "Create Job"
+3. Modal shows "Transcribing audio…" → "Generating phonetics…"
+4. Editor opens automatically with segments populated
+5. **Verify**: segments have `lang` set; Vietnamese segments have `phonetic` field
+
+### Test B — Upload with manual segments
+
+1. "+ New Job" → select video → uncheck "Auto-transcribe" → upload a segments `.json` → "Create Job"
+2. Editor opens immediately (no pipeline wait)
+3. **Verify**: segments match the uploaded JSON exactly
+
+### Test C — NL segment editing
+
+1. Open any job with segments
+2. Type *"fix the diacritics in segment 3"* → Enter
+3. Diff list appears with proposed `text`/`phonetic` changes, all checked
+4. Uncheck one change → "Apply N changes"
+5. **Verify**: only checked changes appear in the list; `PUT /segments` fires (check network tab)
+6. Type *"merge segments 4 and 5"* → apply
+7. **Verify**: single merged segment, IDs renumbered
+
+### Test D — Segment QA
+
+1. Open a freshly transcribed job (likely has Whisper diacritics issues)
+2. Click "Review all"
+3. **Verify**: flagged segments get amber border; flag shows issue + suggestion
+4. Click "Fix with AI" → NL panel pre-fills with suggestion text
+5. Submit → apply patch → flags cleared on next "Review all"
+
+### Test E — Style memory suggestion
+
+1. Open 3+ different jobs; change style settings (e.g. font_size → 56, text color → yellow); Re-burn each
+2. Open a new job → Style panel → "Suggest style" button visible
+3. Click → amber banner with explanation (e.g. *"Based on N sessions: font_size 56, yellow text"*)
+4. Click "Apply" → style fields update
+5. **Verify**: banner is dismissible; suggestion persists across page reloads
+
+### Test F — Style preset round-trip
+
+1. Set custom style → "Save" → `caption-style.json` downloads
+2. Open a different job → "Load" → select the file
+3. **Verify**: style fields match saved values; no burn triggered
+
+### Test G — Hard refresh deep-link
+
+1. Navigate to an open job at `/captions/abc123`
+2. Press `Cmd+Shift+R`
+3. **Verify**: page reloads to the same job editor, not `/sessions`
+
+---
+
+## Known Limitations
+
+| Item | Notes |
+|---|---|
+| NL split op | Split via NL returns `{op: "split", at_word_index}` but the frontend defers this to the interactive `SplitEditor` UI (word-chip picker); a note in the diff list directs the user to the ✂ button |
+| Style suggestion threshold | Requires ≥ 3 burns with non-default styles before "Suggest" appears |
+| NL/QA requires model config | `_call_agent` reads the configured model from `config.yaml`; errors gracefully with 502 if unset |
+| Upload size | File picker has no explicit limit; validated server-side only by extension |

@@ -295,7 +295,7 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
     if len(first_parts) == 1:
         prefix = first_parts.pop()
         # Only strip if it looks like a hermes dir name
-        if prefix in (".hermes", "hermes"):
+        if prefix.lower() in (".hermes", "hermes"):
             return prefix + "/"
 
     return ""

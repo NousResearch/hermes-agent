@@ -597,6 +597,19 @@ class TestValidation:
         with zipfile.ZipFile(buf, "r") as zf:
             assert _detect_prefix(zf) == ".hermes/"
 
+    def test_detect_prefix_hermes_case_insensitive(self):
+        """Detects Hermes/ prefix regardless of case."""
+        import io
+        from hermes_cli.backup import _detect_prefix
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("Hermes/config.yaml", "test")
+            zf.writestr("Hermes/skills/a/SKILL.md", "skill")
+        buf.seek(0)
+        with zipfile.ZipFile(buf, "r") as zf:
+            assert _detect_prefix(zf) == "Hermes/"
+
     def test_detect_prefix_none(self):
         """No prefix when entries are at root."""
         import io

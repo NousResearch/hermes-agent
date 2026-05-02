@@ -71,6 +71,7 @@ EMAIL_ALLOWED_USERS=your@email.com,colleague@work.com
 EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
 EMAIL_SMTP_PORT=587                    # Default: 587 (SMTP STARTTLS)
 EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15)
+EMAIL_RECEIVE_MODE=poll                # poll, idle, or auto (default: poll)
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 ```
 
@@ -87,7 +88,7 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 On startup, the adapter:
 1. Tests IMAP and SMTP connections
 2. Marks all existing inbox messages as "seen" (only processes new emails)
-3. Starts polling for new messages
+3. Starts receiving new messages with the configured receive mode
 
 ---
 
@@ -95,7 +96,7 @@ On startup, the adapter:
 
 ### Receiving Messages
 
-The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval (default: 15 seconds). For each new email:
+By default, the adapter polls the IMAP inbox for UNSEEN messages at a configurable interval (default: 15 seconds). For each new email:
 
 - **Subject line** is included as context (e.g., `[Subject: Deploy to production]`)
 - **Reply emails** (subject starting with `Re:`) skip the subject prefix — the thread context is already established
@@ -105,6 +106,24 @@ The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval 
 - **HTML-only emails** have tags stripped for plain text extraction
 - **Self-messages** are filtered out to prevent reply loops
 - **Automated/noreply senders** are silently ignored — `noreply@`, `mailer-daemon@`, `bounce@`, `no-reply@`, and emails with `Auto-Submitted`, `Precedence: bulk`, or `List-Unsubscribe` headers
+
+### Receive Modes
+
+The default receive mode is polling because it works with the widest range of IMAP providers. If your provider supports the IMAP `IDLE` command, you can opt in to reduce idle mailbox polling load:
+
+```bash
+EMAIL_RECEIVE_MODE=idle
+```
+
+Available modes:
+
+| Mode | Behavior |
+|------|----------|
+| `poll` | Check the inbox every `EMAIL_POLL_INTERVAL` seconds. This is the default and most compatible option. |
+| `idle` | Use IMAP IDLE when the server advertises support. If IDLE is not advertised, Hermes falls back to polling. |
+| `auto` | Use IMAP IDLE when available, otherwise use polling. |
+
+IDLE delivery latency depends on provider behavior and may not be faster than short-interval polling. Exchange and self-hosted IMAP servers that document reliable IDLE support are good candidates. Some consumer providers either delay IDLE notifications, do not support IDLE, or do not document it clearly; keep `poll` for those providers unless you have tested IDLE successfully.
 
 ### Sending Replies
 
@@ -156,7 +175,8 @@ Email access follows the same pattern as all other Hermes platforms:
 | **Messages not received** | Check `EMAIL_ALLOWED_USERS` includes the sender's email. Check spam folder — some providers flag automated replies. |
 | **"Authentication failed"** | For Gmail, you must use an App Password, not your regular password. Ensure 2FA is enabled first. |
 | **Duplicate replies** | Ensure only one gateway instance is running. Check `hermes gateway status`. |
-| **Slow response** | The default poll interval is 15 seconds. Reduce with `EMAIL_POLL_INTERVAL=5` for faster response (but more IMAP connections). |
+| **Slow response** | The default poll interval is 15 seconds. Reduce with `EMAIL_POLL_INTERVAL=5` for faster response (but more IMAP connections). IDLE can reduce polling load, but provider delivery latency varies. |
+| **IDLE falls back to polling** | The IMAP server did not advertise the `IDLE` capability. Keep polling enabled or check whether your provider supports IMAP IDLE. |
 | **Replies not threading** | The adapter uses In-Reply-To headers. Some email clients (especially web-based) may not thread correctly with automated messages. |
 
 ---
@@ -185,6 +205,7 @@ Email access follows the same pattern as all other Hermes platforms:
 | `EMAIL_IMAP_PORT` | No | `993` | IMAP server port |
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
+| `EMAIL_RECEIVE_MODE` | No | `poll` | Receive mode: `poll`, `idle`, or `auto` |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |

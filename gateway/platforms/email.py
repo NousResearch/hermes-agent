@@ -11,6 +11,7 @@ Environment variables:
     EMAIL_SMTP_PORT     — SMTP server port (default: 587)
     EMAIL_ADDRESS       — Email address for the agent
     EMAIL_PASSWORD      — Email password or app-specific password
+    EMAIL_RECEIVE_MODE  — Receive mode: poll, idle, or auto (default: poll)
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
 """
@@ -21,8 +22,11 @@ import imaplib
 import logging
 import os
 import re
+import select
+import socket
 import smtplib
 import ssl
+import time
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -61,6 +65,14 @@ _AUTOMATED_HEADERS = {
 
 # Gmail-safe max length per email body
 MAX_MESSAGE_LENGTH = 50_000
+
+# RFC 2177 recommends terminating IDLE at least every 29 minutes.
+_IDLE_RECONNECT_SECONDS = 25 * 60
+_IDLE_READ_TIMEOUT_SECONDS = 5
+_IDLE_EVENT = "event"
+_IDLE_BACKOFF = "backoff"
+_IDLE_RECONNECT = "reconnect"
+_VALID_RECEIVE_MODES = {"poll", "idle", "auto"}
 
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
@@ -232,6 +244,13 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
         self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
         self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+        self._receive_mode = os.getenv("EMAIL_RECEIVE_MODE", "poll").strip().lower()
+        if self._receive_mode not in _VALID_RECEIVE_MODES:
+            logger.warning(
+                "[Email] Invalid EMAIL_RECEIVE_MODE=%r; falling back to polling",
+                self._receive_mode,
+            )
+            self._receive_mode = "poll"
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -244,6 +263,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
+        self._idle_task: Optional[asyncio.Task] = None
 
         # Map chat_id (sender email) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
@@ -271,11 +291,13 @@ class EmailAdapter(BasePlatformAdapter):
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
     async def connect(self) -> bool:
-        """Connect to the IMAP server and start polling for new messages."""
+        """Connect to the IMAP server and start receiving new messages."""
+        imap_supports_idle = False
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
+            imap_supports_idle = self._imap_supports_idle(imap)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
             status, data = imap.uid("search", None, "ALL")
@@ -302,21 +324,57 @@ class EmailAdapter(BasePlatformAdapter):
             return False
 
         self._running = True
-        self._poll_task = asyncio.create_task(self._poll_loop())
-        print(f"[Email] Connected as {self._address}")
+        receive_mode = self._resolve_receive_mode(imap_supports_idle)
+        if receive_mode == "idle":
+            self._idle_task = asyncio.create_task(self._idle_loop())
+            logger.info("[Email] Receiving messages with IMAP IDLE.")
+        else:
+            self._poll_task = asyncio.create_task(self._poll_loop())
+            logger.info("[Email] Receiving messages with polling every %d seconds.", self._poll_interval)
+        print(f"[Email] Connected as {self._address} (receive_mode: {receive_mode})")
         return True
 
     async def disconnect(self) -> None:
-        """Stop polling and disconnect."""
+        """Stop receiving and disconnect."""
         self._running = False
-        if self._poll_task:
-            self._poll_task.cancel()
+        for task_attr in ("_poll_task", "_idle_task"):
+            task = getattr(self, task_attr)
+            if not task:
+                continue
+            task.cancel()
             try:
-                await self._poll_task
+                await task
             except asyncio.CancelledError:
                 pass
-            self._poll_task = None
+            setattr(self, task_attr, None)
         logger.info("[Email] Disconnected.")
+
+    def _resolve_receive_mode(self, imap_supports_idle: bool) -> str:
+        """Resolve configured receive mode after server capability probing."""
+        if self._receive_mode == "poll":
+            return "poll"
+        if imap_supports_idle:
+            return "idle"
+        if self._receive_mode == "idle":
+            logger.warning("[Email] IMAP server does not advertise IDLE; falling back to polling.")
+        else:
+            logger.info("[Email] IMAP server does not advertise IDLE; using polling.")
+        return "poll"
+
+    def _imap_supports_idle(self, imap: imaplib.IMAP4_SSL) -> bool:
+        """Return True when the connected IMAP server advertises IDLE."""
+        try:
+            status, data = imap.capability()
+        except Exception as e:
+            logger.debug("[Email] IMAP capability check failed: %s", e)
+            return False
+        if str(status).upper() != "OK" or not data:
+            return False
+        capabilities = b" ".join(
+            item if isinstance(item, bytes) else str(item).encode("ascii", errors="ignore")
+            for item in data
+        ).upper().split()
+        return b"IDLE" in capabilities
 
     async def _poll_loop(self) -> None:
         """Poll IMAP for new messages at regular intervals."""
@@ -328,6 +386,98 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("[Email] Poll error: %s", e)
             await asyncio.sleep(self._poll_interval)
+
+    async def _idle_loop(self) -> None:
+        """Wait for IMAP IDLE notifications, then reuse the normal inbox check."""
+        while self._running:
+            try:
+                await self._check_inbox()
+                idle_result = await asyncio.to_thread(self._idle_wait_once)
+                if idle_result == _IDLE_EVENT and self._running:
+                    await self._check_inbox()
+                elif idle_result == _IDLE_BACKOFF and self._running:
+                    await asyncio.sleep(self._poll_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error("[Email] IDLE error: %s", e)
+                await asyncio.sleep(self._poll_interval)
+
+    def _idle_wait_once(self) -> str:
+        """Block in IMAP IDLE until a mailbox event or periodic reconnect.
+
+        Returns:
+            "event" when the server sent an untagged mailbox update,
+            "backoff" when IDLE is unavailable or rejected, and
+            "reconnect" when the wait ended normally or the connection closed.
+        """
+        imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+        idling = False
+        try:
+            imap.login(self._address, self._password)
+            if not self._imap_supports_idle(imap):
+                logger.warning("[Email] IMAP server stopped advertising IDLE; falling back to polling wait.")
+                return _IDLE_BACKOFF
+            imap.select("INBOX")
+            tag = imap._new_tag()
+            if isinstance(tag, str):
+                tag_bytes = tag.encode("ascii")
+            else:
+                tag_bytes = tag
+            imap.send(tag_bytes + b" IDLE\r\n")
+
+            continuation = imap.readline()
+            if not continuation.startswith(b"+"):
+                logger.warning("[Email] IMAP IDLE was not accepted by server: %r", continuation)
+                return _IDLE_BACKOFF
+
+            idling = True
+            deadline = time.monotonic() + _IDLE_RECONNECT_SECONDS
+            sock = getattr(imap, "sock", None)
+
+            while self._running and time.monotonic() < deadline:
+                try:
+                    # Do not block forever in readline(); waiting with select()
+                    # lets disconnect() stop promptly without putting imaplib's
+                    # buffered reader into a bad state after socket timeouts.
+                    if sock is not None:
+                        readable, _, _ = select.select([sock], [], [], _IDLE_READ_TIMEOUT_SECONDS)
+                        if not readable:
+                            continue
+                    line = imap.readline()
+                except (TimeoutError, socket.timeout):
+                    return _IDLE_RECONNECT
+                if not line:
+                    return _IDLE_RECONNECT
+                upper = line.upper()
+                if b"EXISTS" in upper or b"RECENT" in upper or b"EXPUNGE" in upper:
+                    return _IDLE_EVENT
+            return _IDLE_RECONNECT
+        finally:
+            if idling:
+                try:
+                    imap.send(b"DONE\r\n")
+                    self._drain_idle_completion(imap)
+                except Exception:
+                    pass
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+    def _set_imap_socket_timeout(self, imap: imaplib.IMAP4_SSL, timeout: int) -> None:
+        """Set the underlying IMAP socket timeout when available."""
+        sock = getattr(imap, "sock", None)
+        if sock is not None:
+            sock.settimeout(timeout)
+
+    def _drain_idle_completion(self, imap: imaplib.IMAP4_SSL) -> None:
+        """Read the tagged completion response after sending DONE."""
+        self._set_imap_socket_timeout(imap, _IDLE_READ_TIMEOUT_SECONDS)
+        try:
+            imap.readline()
+        except (TimeoutError, socket.timeout):
+            pass
 
     async def _check_inbox(self) -> None:
         """Check INBOX for unseen messages and dispatch them."""

@@ -767,6 +767,124 @@ class TestConnectDisconnect(unittest.TestCase):
             if adapter._poll_task:
                 adapter._poll_task.cancel()
 
+    def test_connect_defaults_to_polling(self):
+        """Email adapter should keep polling as the default receive mode."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1 IDLE"])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+
+            result = asyncio.run(adapter.connect())
+
+            self.assertTrue(result)
+            self.assertIsNotNone(adapter._poll_task)
+            self.assertIsNone(adapter._idle_task)
+            adapter._running = False
+            if adapter._poll_task:
+                adapter._poll_task.cancel()
+
+    def test_connect_idle_mode_starts_idle_task_when_supported(self):
+        """EMAIL_RECEIVE_MODE=idle should start IDLE when capability is advertised."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from gateway.platforms.email import EmailAdapter
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_RECEIVE_MODE": "idle",
+        }):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+        mock_imap.capability.return_value = ("OK", [b"imap4rev1 idle"])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+
+            result = asyncio.run(adapter.connect())
+
+            self.assertTrue(result)
+            self.assertIsNotNone(adapter._idle_task)
+            self.assertIsNone(adapter._poll_task)
+            adapter._running = False
+            if adapter._idle_task:
+                adapter._idle_task.cancel()
+
+    def test_connect_auto_mode_uses_idle_when_supported(self):
+        """EMAIL_RECEIVE_MODE=auto should use IDLE when available."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from gateway.platforms.email import EmailAdapter
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_RECEIVE_MODE": "auto",
+        }):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1", b"IDLE"])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+
+            result = asyncio.run(adapter.connect())
+
+            self.assertTrue(result)
+            self.assertIsNotNone(adapter._idle_task)
+            self.assertIsNone(adapter._poll_task)
+            adapter._running = False
+            if adapter._idle_task:
+                adapter._idle_task.cancel()
+
+    def test_connect_auto_mode_falls_back_to_polling_without_idle(self):
+        """EMAIL_RECEIVE_MODE=auto should poll when IDLE is not advertised."""
+        import asyncio
+        from gateway.config import PlatformConfig
+        from gateway.platforms.email import EmailAdapter
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_RECEIVE_MODE": "auto",
+        }):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1"])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+
+            result = asyncio.run(adapter.connect())
+
+            self.assertTrue(result)
+            self.assertIsNotNone(adapter._poll_task)
+            self.assertIsNone(adapter._idle_task)
+            adapter._running = False
+            if adapter._poll_task:
+                adapter._poll_task.cancel()
+
     def test_connect_imap_failure(self):
         """IMAP connection failure returns False."""
         import asyncio
@@ -804,6 +922,21 @@ class TestConnectDisconnect(unittest.TestCase):
 
         self.assertFalse(adapter._running)
         self.assertIsNone(adapter._poll_task)
+
+    def test_disconnect_cancels_idle(self):
+        """disconnect() should cancel the IDLE task."""
+        import asyncio
+        adapter = self._make_adapter()
+        adapter._running = True
+
+        async def _exercise_disconnect():
+            adapter._idle_task = asyncio.create_task(asyncio.sleep(100))
+            await adapter.disconnect()
+
+        asyncio.run(_exercise_disconnect())
+
+        self.assertFalse(adapter._running)
+        self.assertIsNone(adapter._idle_task)
 
 
 class TestFetchNewMessages(unittest.TestCase):
@@ -947,6 +1080,139 @@ class TestPollLoop(unittest.TestCase):
 
         self.assertEqual(len(dispatched), 1)
         self.assertEqual(dispatched[0]["subject"], "Inbox Test")
+
+
+class TestIdleLoop(unittest.TestCase):
+    """Test optional IMAP IDLE receive mode."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_POLL_INTERVAL": "1",
+            "EMAIL_RECEIVE_MODE": "idle",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def test_capability_check_is_case_insensitive(self):
+        """IDLE capability detection should ignore case."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.capability.return_value = ("OK", [b"imap4rev1 idle"])
+
+        self.assertTrue(adapter._imap_supports_idle(mock_imap))
+
+    def test_capability_check_returns_false_without_idle(self):
+        """Missing IDLE capability should be treated as unsupported."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1 STARTTLS"])
+
+        self.assertFalse(adapter._imap_supports_idle(mock_imap))
+
+    def test_idle_loop_checks_inbox_after_event(self):
+        """IDLE events should trigger the normal inbox check path."""
+        import asyncio
+        adapter = self._make_adapter()
+        calls = []
+
+        async def mock_check_inbox():
+            calls.append("check")
+            if len(calls) >= 2:
+                adapter._running = False
+
+        adapter._check_inbox = mock_check_inbox
+        adapter._idle_wait_once = MagicMock(return_value="event")
+        adapter._running = True
+
+        asyncio.run(adapter._idle_loop())
+
+        self.assertEqual(calls, ["check", "check"])
+        adapter._idle_wait_once.assert_called_once()
+
+    def test_idle_loop_backs_off_after_rejected_idle(self):
+        """Rejected IDLE should back off in the async loop after IMAP cleanup."""
+        import asyncio
+        adapter = self._make_adapter()
+        calls = []
+
+        async def mock_check_inbox():
+            calls.append("check")
+
+        async def mock_sleep(seconds):
+            calls.append(f"sleep:{seconds}")
+            adapter._running = False
+
+        adapter._check_inbox = mock_check_inbox
+        adapter._idle_wait_once = MagicMock(return_value="backoff")
+        adapter._running = True
+
+        with patch("asyncio.sleep", side_effect=mock_sleep):
+            asyncio.run(adapter._idle_loop())
+
+        self.assertEqual(calls, ["check", "sleep:1"])
+        adapter._idle_wait_once.assert_called_once()
+
+    def test_idle_loop_handles_idle_errors(self):
+        """IDLE loop errors should be caught without leaving the loop broken."""
+        import asyncio
+        adapter = self._make_adapter()
+        calls = []
+
+        async def mock_check_inbox():
+            calls.append("check")
+            adapter._running = False
+
+        adapter._check_inbox = mock_check_inbox
+        adapter._idle_wait_once = MagicMock(side_effect=Exception("idle failed"))
+        adapter._running = True
+
+        asyncio.run(adapter._idle_loop())
+
+        self.assertEqual(calls, ["check"])
+
+    def test_idle_wait_sends_done_after_mailbox_event(self):
+        """_idle_wait_once should enter IDLE and leave it with DONE."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.sock = None
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1 IDLE"])
+        mock_imap._new_tag.return_value = b"A001"
+        mock_imap.readline.side_effect = [
+            b"+ idling\r\n",
+            b"* 2 EXISTS\r\n",
+            b"A001 OK IDLE terminated\r\n",
+        ]
+        adapter._running = True
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            result = adapter._idle_wait_once()
+
+        self.assertEqual(result, "event")
+        mock_imap.send.assert_any_call(b"A001 IDLE\r\n")
+        mock_imap.send.assert_any_call(b"DONE\r\n")
+        mock_imap.logout.assert_called_once()
+
+    def test_idle_wait_returns_backoff_when_idle_rejected(self):
+        """Rejected IDLE should return backoff after logging out."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.capability.return_value = ("OK", [b"IMAP4rev1 IDLE"])
+        mock_imap._new_tag.return_value = b"A001"
+        mock_imap.readline.return_value = b"A001 NO IDLE not accepted\r\n"
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("time.sleep") as mock_sleep:
+            result = adapter._idle_wait_once()
+
+        self.assertEqual(result, "backoff")
+        mock_sleep.assert_not_called()
+        mock_imap.logout.assert_called_once()
 
 
 class TestSendEmailStandalone(unittest.TestCase):

@@ -902,11 +902,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
         try:
             import aiohttp
 
-            await self._http_session.post(
+            # Must wrap in `async with` — a bare `await session.post(...)`
+            # leaves the response object alive until GC, holding its TCP
+            # socket in CLOSE_WAIT. See #18451.
+            async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/typing",
                 json={"chatId": chat_id},
                 timeout=aiohttp.ClientTimeout(total=5)
-            )
+            ):
+                pass
         except Exception:
             pass  # Ignore typing indicator failures
     

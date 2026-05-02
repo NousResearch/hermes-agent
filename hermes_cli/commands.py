@@ -611,13 +611,26 @@ def _collect_gateway_skill_entries(
     try:
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
+        from agent.skill_utils import get_external_skills_dirs
         _skills_dir = str(SKILLS_DIR.resolve())
-        _hub_dir = str((SKILLS_DIR / ".hub").resolve())
+        _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
+        # Build set of allowed directory prefixes: local skills dir + any
+        # user-configured ``skills.external_dirs``. Ensure each prefix ends
+        # with ``/`` so ``/my-skills`` does not also match ``/my-skills-extra``.
+        # Without this widening, external skills are visible in
+        # ``hermes skills list`` and the agent's ``/skill-name`` dispatch but
+        # silently excluded from gateway slash menus (#8110).
+        _allowed_prefixes = [_skills_dir.rstrip("/") + "/"]
+        _allowed_prefixes.extend(
+            str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
+        )
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
             info = skill_cmds[cmd_key]
             skill_path = info.get("skill_md_path", "")
-            if not skill_path.startswith(_skills_dir):
+            if not skill_path:
+                continue
+            if not any(skill_path.startswith(prefix) for prefix in _allowed_prefixes):
                 continue
             if skill_path.startswith(_hub_dir):
                 continue

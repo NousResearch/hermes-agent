@@ -63,6 +63,10 @@ def _make_runner(session_db=None):
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
+    adapter.send_image_file = AsyncMock()
+    adapter._bot = None
+    adapter._create_dm_topic = AsyncMock(return_value=None)
+    adapter.rename_dm_topic = AsyncMock()
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
@@ -150,7 +154,7 @@ async def test_root_telegram_dm_prompt_is_system_lobby_when_topic_mode_enabled(m
     result = await runner._handle_message(_make_event("hello from root"))
 
     assert "main chat is reserved for system commands" in result
-    assert "+ button" in result
+    assert "All Messages" in result
     runner._run_agent.assert_not_called()
     runner.session_store.get_or_create_session.assert_not_called()
 
@@ -172,8 +176,8 @@ async def test_root_telegram_dm_new_shows_create_topic_instruction(monkeypatch):
     result = await runner._handle_message(_make_event("/new"))
 
     assert "create a new topic" in result
-    assert "+ button" in result
-    assert "Use /new inside a topic" in result
+    assert "All Messages" in result
+    assert "Use /new inside" in result
     runner._run_agent.assert_not_called()
     runner.session_store.reset_session.assert_not_called()
     runner.session_store.get_or_create_session.assert_not_called()
@@ -357,8 +361,8 @@ async def test_new_inside_telegram_topic_resets_current_topic_with_parallel_tip(
     result = await runner._handle_message(_make_event("/new", thread_id="17585"))
 
     assert "Started a new Hermes session in this topic" in result
-    assert "for parallel work" in result
-    assert "+ button" in result
+    assert "parallel work" in result
+    assert "All Messages" in result
     runner.session_store.reset_session.assert_called_once_with(topic_key)
 
 
@@ -379,7 +383,7 @@ async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp
     result = await runner._handle_message(_make_event("/topic"))
 
     assert "Telegram multi-session topics are enabled" in result
-    assert "+ button" in result
+    assert "All Messages" in result
     assert session_db.get_meta("telegram_dm_topic_schema_version") == "1"
     assert session_db.is_telegram_topic_mode_enabled(chat_id="208214988", user_id="208214988")
     assert runner._telegram_topic_mode_enabled(_make_source()) is True
@@ -462,7 +466,7 @@ async def test_topic_root_command_handles_no_unlinked_sessions(tmp_path, monkeyp
 
     assert "Telegram multi-session topics are enabled" in result
     assert "No previous unlinked Telegram sessions found" in result
-    assert "+ button" in result
+    assert "All Messages" in result
     runner._run_agent.assert_not_called()
 
 
@@ -623,3 +627,124 @@ async def test_first_message_inside_topic_records_topic_binding(tmp_path, monkey
     assert binding["user_id"] == "208214988"
     assert binding["session_id"] == "sess-topic"
     assert binding["session_key"] == build_session_key(_make_source(thread_id="17585"))
+
+
+@pytest.mark.asyncio
+async def test_topic_root_command_checks_getme_capabilities_before_enabling(tmp_path, monkeypatch):
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=session_db)
+    bot = AsyncMock()
+    bot.get_me.return_value = SimpleNamespace(
+        has_topics_enabled=False,
+        allows_users_to_create_topics=True,
+    )
+    runner.adapters[Platform.TELEGRAM]._bot = bot
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/topic capability failure must not enter the agent loop")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/topic"))
+
+    assert "topics are not enabled" in result
+    assert "Open @BotFather" in result
+    assert session_db.is_telegram_topic_mode_enabled(chat_id="208214988", user_id="208214988") is False
+    bot.get_me.assert_awaited_once()
+    runner.adapters[Platform.TELEGRAM].send_image_file.assert_awaited_once()
+    image_kwargs = runner.adapters[Platform.TELEGRAM].send_image_file.await_args.kwargs
+    assert image_kwargs["chat_id"] == "208214988"
+    assert image_kwargs["image_path"].endswith("telegram-botfather-threads-settings.jpg")
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_topic_root_command_creates_and_pins_system_topic(tmp_path, monkeypatch):
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=session_db)
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter._create_dm_topic.return_value = 4242
+    adapter.send.return_value = SimpleNamespace(success=True, message_id="777")
+    bot = AsyncMock()
+    bot.get_me.return_value = {
+        "has_topics_enabled": True,
+        "allows_users_to_create_topics": True,
+    }
+    adapter._bot = bot
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/topic"))
+
+    assert "Telegram multi-session topics are enabled" in result
+    adapter._create_dm_topic.assert_awaited_once_with(208214988, "System")
+    adapter.send.assert_awaited_once_with(
+        "208214988",
+        "System topic for Hermes commands and status.",
+        metadata={"thread_id": "4242"},
+    )
+    bot.pin_chat_message.assert_awaited_once_with(
+        chat_id=208214988,
+        message_id=777,
+        disable_notification=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "  Build   Telegram Topic UX  ",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="Build Telegram Topic UX",
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_generated_title_does_not_rename_topic_bound_to_other_session(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-other", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-other",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Wrong Session Title",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_called()

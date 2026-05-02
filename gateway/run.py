@@ -1050,6 +1050,7 @@ class GatewayRunner:
         )
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
+        self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
         self._shutdown_event = asyncio.Event()
         self._exit_cleanly = False
         self._exit_with_failure = False
@@ -1493,17 +1494,19 @@ class GatewayRunner:
     def _telegram_topic_root_lobby_message(self) -> str:
         return (
             "This main chat is reserved for system commands.\n\n"
-            "To chat with Hermes, create a new topic using the + button in "
-            "this bot interface. Each topic works as an independent Hermes "
-            "session."
+            "To start a new Hermes chat, open the All Messages topic at the top "
+            "of this bot interface and send any message there. Telegram will "
+            "create a new topic for that message; each topic works as an "
+            "independent Hermes session."
         )
 
     def _telegram_topic_root_new_message(self) -> str:
         return (
-            "To start a new parallel Hermes chat, create a new topic with the "
-            "+ button in this bot interface.\n\n"
-            "Each topic is an independent Hermes session. Use /new inside a "
-            "topic only if you want to replace that topic's current session."
+            "To start a new parallel Hermes chat, open the All Messages topic "
+            "at the top of this bot interface and send any message there. "
+            "Telegram will create a new topic for it.\n\n"
+            "Each topic is an independent Hermes session. Use /new inside an "
+            "existing topic only if you want to replace that topic's current session."
         )
 
     def _telegram_topic_new_header(self, source: SessionSource) -> Optional[str]:
@@ -1511,9 +1514,9 @@ class GatewayRunner:
             return None
         return (
             "Started a new Hermes session in this topic.\n\n"
-            "Tip: for parallel work, create a new topic with the + button "
-            "instead of using /new here. /new replaces the session attached "
-            "to the current topic."
+            "Tip: for parallel work, open All Messages and send a message there "
+            "to create a separate topic instead of using /new here. /new replaces "
+            "the session attached to the current topic."
         )
 
     def _record_telegram_topic_binding(
@@ -2767,6 +2770,10 @@ class GatewayRunner:
         Returns True if at least one adapter connected successfully.
         """
         logger.info("Starting Hermes Gateway...")
+        try:
+            self._gateway_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._gateway_loop = None
         logger.info("Session storage: %s", self.config.sessions_dir)
         # Log the resolved max_iterations budget so operators can verify the
         # config.yaml → env bridge did the right thing at a glance (instead
@@ -9569,7 +9576,193 @@ class GatewayRunner:
             logger.warning("Manual compress failed: %s", e)
             return f"Compression failed: {e}"
 
-    async def _handle_topic_command(self, event: MessageEvent) -> str:
+    async def _get_telegram_topic_capabilities(self, source: SessionSource) -> dict:
+        """Read Telegram private-topic capability flags via Bot API getMe."""
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        bot = getattr(adapter, "_bot", None)
+        if bot is None or not hasattr(bot, "get_me"):
+            return {"checked": False}
+        try:
+            me = await bot.get_me()
+        except Exception:
+            logger.debug("Failed to fetch Telegram getMe topic capabilities", exc_info=True)
+            return {"checked": False}
+
+        def _field(name: str):
+            if hasattr(me, name):
+                return getattr(me, name)
+            api_kwargs = getattr(me, "api_kwargs", None)
+            if isinstance(api_kwargs, dict) and name in api_kwargs:
+                return api_kwargs.get(name)
+            if isinstance(me, dict):
+                return me.get(name)
+            return None
+
+        return {
+            "checked": True,
+            "has_topics_enabled": _field("has_topics_enabled"),
+            "allows_users_to_create_topics": _field("allows_users_to_create_topics"),
+        }
+
+    async def _ensure_telegram_system_topic(self, source: SessionSource) -> None:
+        """Create/pin the managed System topic after /topic activation when possible."""
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        if adapter is None or not source.chat_id:
+            return
+
+        thread_id = None
+        create_topic = getattr(adapter, "_create_dm_topic", None)
+        if callable(create_topic):
+            try:
+                thread_id = await create_topic(int(source.chat_id), "System")
+            except Exception:
+                logger.debug("Failed to create Telegram System topic", exc_info=True)
+        if not thread_id:
+            return
+
+        message_id = None
+        try:
+            send_result = await adapter.send(
+                source.chat_id,
+                "System topic for Hermes commands and status.",
+                metadata={"thread_id": str(thread_id)},
+            )
+            message_id = getattr(send_result, "message_id", None)
+        except Exception:
+            logger.debug("Failed to send Telegram System topic intro", exc_info=True)
+        if not message_id:
+            return
+
+        bot = getattr(adapter, "_bot", None)
+        if bot is None or not hasattr(bot, "pin_chat_message"):
+            return
+        try:
+            await bot.pin_chat_message(
+                chat_id=int(source.chat_id),
+                message_id=int(message_id),
+                disable_notification=True,
+            )
+        except Exception:
+            logger.debug("Failed to pin Telegram System topic intro", exc_info=True)
+
+    async def _send_telegram_topic_setup_image(self, source: SessionSource) -> None:
+        """Send the bundled BotFather Threads Settings screenshot when available."""
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        if adapter is None or not source.chat_id or not hasattr(adapter, "send_image_file"):
+            return
+        image_path = Path(__file__).resolve().parent / "assets" / "telegram-botfather-threads-settings.jpg"
+        if not image_path.exists():
+            return
+        try:
+            await adapter.send_image_file(
+                chat_id=source.chat_id,
+                image_path=str(image_path),
+                caption="BotFather → Bot Settings → Threads Settings",
+                metadata={"thread_id": str(source.thread_id)} if source.thread_id else None,
+            )
+        except Exception:
+            logger.debug("Failed to send Telegram topic setup image", exc_info=True)
+
+    def _sanitize_telegram_topic_title(self, title: str) -> str:
+        """Return a Bot API-safe forum topic name from a generated session title."""
+        cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
+        if not cleaned:
+            return "Hermes Chat"
+        # Telegram forum topic names are short (currently 1-128 chars). Keep
+        # extra room for multi-byte titles and avoid trailing ellipsis churn.
+        if len(cleaned) > 120:
+            cleaned = cleaned[:117].rstrip() + "..."
+        return cleaned
+
+    async def _rename_telegram_topic_for_session_title(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
+        if not self._is_telegram_topic_lane(source) or not source.chat_id or not source.thread_id:
+            return
+        session_db = getattr(self, "_session_db", None)
+        if session_db is not None:
+            try:
+                binding = session_db.get_telegram_topic_binding(
+                    chat_id=str(source.chat_id),
+                    thread_id=str(source.thread_id),
+                )
+                if binding and str(binding.get("session_id") or "") != str(session_id):
+                    return
+            except Exception:
+                logger.debug("Failed to verify Telegram topic binding before rename", exc_info=True)
+                return
+
+        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        if adapter is None:
+            return
+        topic_name = self._sanitize_telegram_topic_title(title)
+        try:
+            rename_topic = getattr(adapter, "rename_dm_topic", None)
+            if rename_topic is not None:
+                await rename_topic(
+                    chat_id=str(source.chat_id),
+                    thread_id=str(source.thread_id),
+                    name=topic_name,
+                )
+                return
+
+            bot = getattr(adapter, "_bot", None)
+            edit_forum_topic = getattr(bot, "edit_forum_topic", None) if bot is not None else None
+            if edit_forum_topic is None:
+                edit_forum_topic = getattr(bot, "editForumTopic", None) if bot is not None else None
+            if edit_forum_topic is None:
+                return
+            try:
+                await edit_forum_topic(
+                    chat_id=int(source.chat_id),
+                    message_thread_id=int(source.thread_id),
+                    name=topic_name,
+                )
+            except (TypeError, ValueError):
+                await edit_forum_topic(
+                    chat_id=source.chat_id,
+                    message_thread_id=source.thread_id,
+                    name=topic_name,
+                )
+        except Exception:
+            logger.debug("Failed to rename Telegram topic for auto-generated title", exc_info=True)
+
+    def _schedule_telegram_topic_title_rename(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Schedule a topic rename from the auto-title background thread."""
+        if not title or not self._is_telegram_topic_lane(source):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = getattr(self, "_gateway_loop", None)
+        if loop is None or loop.is_closed():
+            return
+        try:
+            copied_source = dataclasses.replace(source)
+        except Exception:
+            copied_source = source
+        future = asyncio.run_coroutine_threadsafe(
+            self._rename_telegram_topic_for_session_title(copied_source, session_id, title),
+            loop,
+        )
+        def _log_rename_failure(fut) -> None:
+            try:
+                fut.result()
+            except Exception:
+                logger.debug("Telegram topic title rename failed", exc_info=True)
+
+        future.add_done_callback(_log_rename_failure)
+
+    async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
         """Handle /topic for Telegram DM user-managed topic sessions."""
         source = event.source
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
@@ -9581,19 +9774,47 @@ class GatewayRunner:
         if args:
             if not source.thread_id:
                 return (
-                    "To restore a session, first create or open a Telegram topic "
-                    "with the + button, then send /topic <session-id> inside that topic."
+                    "To restore a session, first create or open a Telegram topic, "
+                    "then send /topic <session-id> inside that topic. To create a "
+                    "new topic, open All Messages and send any message there."
                 )
             return await self._restore_telegram_topic_session(event, args)
+
+        capabilities = await self._get_telegram_topic_capabilities(source)
+        if capabilities.get("checked"):
+            if capabilities.get("has_topics_enabled") is False:
+                await self._send_telegram_topic_setup_image(source)
+                return (
+                    "Telegram topics are not enabled for this bot yet.\n\n"
+                    "How to enable them:\n"
+                    "1. Open @BotFather.\n"
+                    "2. Choose your bot.\n"
+                    "3. Open Bot Settings → Threads Settings.\n"
+                    "4. Turn on Threaded Mode and make sure users are allowed to create new threads.\n\n"
+                    "Then send /topic again."
+                )
+            if capabilities.get("allows_users_to_create_topics") is False:
+                await self._send_telegram_topic_setup_image(source)
+                return (
+                    "Telegram topics are enabled, but users are not allowed to create topics.\n\n"
+                    "Open @BotFather → choose your bot → Bot Settings → Threads Settings, "
+                    "then turn off 'Disallow users to create new threads'.\n\n"
+                    "Then send /topic again."
+                )
 
         try:
             self._session_db.enable_telegram_topic_mode(
                 chat_id=str(source.chat_id),
                 user_id=str(source.user_id),
+                has_topics_enabled=capabilities.get("has_topics_enabled"),
+                allows_users_to_create_topics=capabilities.get("allows_users_to_create_topics"),
             )
         except Exception as exc:
             logger.exception("Failed to enable Telegram topic mode")
             return f"Failed to enable Telegram topic mode: {exc}"
+
+        if not source.thread_id:
+            await self._ensure_telegram_system_topic(source)
 
         if source.thread_id:
             try:
@@ -9617,13 +9838,14 @@ class GatewayRunner:
                     f"Session: {session_label}\n"
                     f"ID: {session_id}\n\n"
                     "Use /new to replace this topic with a fresh session.\n"
-                    "For parallel work, create another topic with the + button."
+                    "For parallel work, open All Messages and send a message there "
+                    "to create another topic."
                 )
             return (
                 "Telegram multi-session topics are enabled.\n\n"
                 "This topic will be used as an independent Hermes session. "
                 "Use /new to replace this topic's current session. For parallel "
-                "work, create another topic with the + button."
+                "work, open All Messages and send a message there to create another topic."
             )
 
         return self._telegram_topic_root_status_message(source)
@@ -9632,7 +9854,9 @@ class GatewayRunner:
         lines = [
             "Telegram multi-session topics are enabled.",
             "",
-            "Create new Hermes chats with the + button in this bot interface.",
+            "To create a new Hermes chat, open All Messages at the top of this "
+            "bot interface and send any message there. Telegram will create a "
+            "new topic for it.",
             "",
         ]
         try:
@@ -9658,7 +9882,7 @@ class GatewayRunner:
             lines.extend([
                 "",
                 "To restore one:",
-                "1. Create or open a topic with the + button.",
+                "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
                 "2. Send /topic <session-id> inside that topic.",
                 f"Example: Send /topic {sessions[0].get('id')} inside a topic.",
             ])
@@ -9667,9 +9891,8 @@ class GatewayRunner:
                 "No previous unlinked Telegram sessions found.",
                 "",
                 "To restore a previous session later:",
-                "1. Create a new topic with the + button.",
-                "2. Open that topic.",
-                "3. Send /topic <session-id>.",
+                "1. Create or open a topic. To create a new one, open All Messages and send any message there.",
+                "2. Send /topic <session-id> inside that topic.",
             ])
         return "\n".join(lines)
 
@@ -13549,20 +13772,29 @@ class GatewayRunner:
                     _title_failure_cb = getattr(
                         agent, "_emit_auxiliary_failure", None
                     )
-                    maybe_auto_title(
-                        self._session_db,
-                        effective_session_id,
-                        message,
-                        final_response,
-                        all_msgs,
-                        failure_callback=_title_failure_cb,
-                        main_runtime={
+                    maybe_auto_title_kwargs = {
+                        "failure_callback": _title_failure_cb,
+                        "main_runtime": {
                             "model": getattr(agent, "model", None),
                             "provider": getattr(agent, "provider", None),
                             "base_url": getattr(agent, "base_url", None),
                             "api_key": getattr(agent, "api_key", None),
                             "api_mode": getattr(agent, "api_mode", None),
                         } if agent else None,
+                    }
+                    if self._is_telegram_topic_lane(source):
+                        maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
+                            source,
+                            effective_session_id,
+                            title,
+                        )
+                    maybe_auto_title(
+                        self._session_db,
+                        effective_session_id,
+                        message,
+                        final_response,
+                        all_msgs,
+                        **maybe_auto_title_kwargs,
                     )
                 except Exception:
                     pass

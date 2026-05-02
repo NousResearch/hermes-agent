@@ -112,13 +112,15 @@ def test_request_json_returns_error_payload_on_network_error(monkeypatch):
     assert "connection refused" in result["error"]
 
 
-def test_register_exposes_first_version_tools():
+def test_register_exposes_phase_one_tools():
     plugin = _load_plugin()
     ctx = FakeContext()
 
     plugin.register(ctx)
 
     assert set(ctx.tools) == {
+        "vibe_ask",
+        "vibe_ask_ashare",
         "vibe_health",
         "vibe_list_skills",
         "vibe_list_swarm_presets",
@@ -132,3 +134,83 @@ def test_register_exposes_first_version_tools():
     assert ctx.tools["vibe_health"]["toolset"] == "vibe-trading"
     assert callable(ctx.tools["vibe_run_swarm"]["handler"])
 
+
+def test_vibe_ask_creates_session_sends_question_and_returns_assistant(monkeypatch):
+    plugin = _load_plugin()
+    calls = []
+
+    def fake_request_json(method, path, payload=None, query=None):
+        calls.append({"method": method, "path": path, "payload": payload, "query": query})
+        if method == "POST" and path == "/sessions":
+            return json.dumps({"session_id": "s1"})
+        if method == "POST" and path == "/sessions/s1/messages":
+            return json.dumps({"message_id": "m1", "attempt_id": "a1"})
+        if method == "GET" and path == "/sessions/s1/messages":
+            return json.dumps([
+                {"role": "user", "content": "分析 600219.SH"},
+                {"role": "assistant", "content": "南山铝业分析报告"},
+            ], ensure_ascii=False)
+        raise AssertionError(f"Unexpected call: {method} {path}")
+
+    monkeypatch.setattr(plugin, "_request_json", fake_request_json)
+
+    result = json.loads(plugin._vibe_ask({"question": "分析 600219.SH"}))
+
+    assert result == {
+        "success": True,
+        "session_id": "s1",
+        "attempt_id": "a1",
+        "answer": "南山铝业分析报告",
+    }
+    assert calls[0]["payload"] == {"title": "Vibe-Trading Ask"}
+    assert calls[1]["payload"] == {"content": "分析 600219.SH"}
+    assert calls[2]["query"] == {"limit": 50}
+
+
+def test_vibe_ask_ashare_wraps_question_with_akshare_first_instruction(monkeypatch):
+    plugin = _load_plugin()
+    sent_payloads = []
+
+    def fake_request_json(method, path, payload=None, query=None):
+        if method == "POST" and path == "/sessions":
+            return json.dumps({"session_id": "s2"})
+        if method == "POST" and path == "/sessions/s2/messages":
+            sent_payloads.append(payload)
+            return json.dumps({"message_id": "m2", "attempt_id": "a2"})
+        if method == "GET" and path == "/sessions/s2/messages":
+            return json.dumps([{"role": "assistant", "content": "A股 Agent 报告"}], ensure_ascii=False)
+        raise AssertionError(f"Unexpected call: {method} {path}")
+
+    monkeypatch.setattr(plugin, "_request_json", fake_request_json)
+
+    result = json.loads(plugin._vibe_ask_ashare({"question": "南山铝业600219什么位置买卖比较好"}))
+
+    assert result["success"] is True
+    assert result["answer"] == "A股 Agent 报告"
+    content = sent_payloads[0]["content"]
+    assert "南山铝业600219什么位置买卖比较好" in content
+    assert "A股" in content
+    assert "AKShare" in content
+    assert "不要默认调用 Tushare 或 QVeris" in content
+    assert "最终回答不要输出" in content
+
+
+def test_vibe_ask_strips_empty_think_tags(monkeypatch):
+    plugin = _load_plugin()
+
+    def fake_request_json(method, path, payload=None, query=None):
+        if method == "POST" and path == "/sessions":
+            return json.dumps({"session_id": "s3"})
+        if method == "POST" and path == "/sessions/s3/messages":
+            return json.dumps({"message_id": "m3", "attempt_id": "a3"})
+        if method == "GET" and path == "/sessions/s3/messages":
+            return json.dumps([
+                {"role": "assistant", "content": "<think>\n</think>\n\n最终报告"},
+            ], ensure_ascii=False)
+        raise AssertionError(f"Unexpected call: {method} {path}")
+
+    monkeypatch.setattr(plugin, "_request_json", fake_request_json)
+
+    result = json.loads(plugin._vibe_ask({"question": "分析 600219.SH"}))
+
+    assert result["answer"] == "最终报告"

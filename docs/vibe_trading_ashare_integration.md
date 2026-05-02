@@ -3,7 +3,7 @@
 记录日期：2026-05-02  
 目标：通过飞书与 Hermes Agent 对话时，让 Hermes 调用 Vibe-Trading 完成 A 股研究、买卖建议辅助、策略回测和风险检查。
 
-实施状态：第一版 Hermes 插件已完成并部署到 `192.168.1.63:/root/.hermes/plugins/vibe-trading/`，已在 Hermes 配置中启用。
+实施状态：第一阶段 Hermes 插件已完成并部署到 `192.168.1.63:/root/.hermes/plugins/vibe-trading/`，已在 Hermes 配置中启用。当前阶段使用免费的 AKShare 优先方案，不默认使用 Tushare Pro 或 QVerisAI。
 
 ## 1. 当前部署事实
 
@@ -48,7 +48,7 @@ plugins:
     - vibe-trading
 ```
 
-尚未配置 `mcp_servers`。第一版集成已沿用现有插件模式，没有在 Hermes 容器内安装 Vibe-Trading 的 MCP 依赖。
+尚未配置 `mcp_servers`。第一阶段集成已沿用现有插件模式，没有在 Hermes 容器内安装 Vibe-Trading 的 MCP 依赖。
 
 ## 2. 推荐集成方式
 
@@ -152,8 +152,8 @@ Vibe-Trading 仓库中包含：
 
 Vibe-Trading 支持 A 股行情数据源：
 
-- `tushare`：适合更稳定的 A 股数据，需要 `TUSHARE_TOKEN`。
-- `akshare`：免费数据源，可作为 fallback。
+- `akshare`：免费数据源，第一阶段默认优先使用。
+- `tushare`：适合更稳定的 A 股数据，需要 `TUSHARE_TOKEN`；第一阶段不默认使用。
 - `auto`：根据证券代码自动判断并选择数据源。
 
 适用问题：
@@ -291,14 +291,16 @@ Vibe-Trading 提供 29 个 swarm preset。A 股买卖建议相关场景中优先
 分析我的同花顺交割单，提取影子账户策略，并回测过去一年如果按这些规则交易会有什么差异。
 ```
 
-第一版 Hermes 集成可以暂不开放文件上传，等基础查询和分析稳定后再处理飞书附件到 Vibe `/upload` 的链路。
+第一阶段 Hermes 集成暂不开放文件上传，等基础查询和分析稳定后再处理飞书附件到 Vibe `/upload` 的链路。
 
-## 5. 第一版插件建议暴露的工具
+## 5. 第一阶段插件工具
 
-第一版建议只暴露高价值且可控的工具：
+第一阶段已暴露高价值且可控的工具。其中飞书里的股票自然语言问题应优先走 `vibe_ask_ashare`。
 
 | Hermes 工具名 | 调用目标 | 用途 |
 | --- | --- | --- |
+| `vibe_ask_ashare` | `POST /sessions` + `POST /sessions/{session_id}/messages` + 轮询 `GET /sessions/{session_id}/messages` | A 股或股票问题的自然语言入口，默认要求 Vibe Agent 优先使用免费 AKShare |
+| `vibe_ask` | 同上 | 通用 Vibe-Trading Agent 自然语言转发 |
 | `vibe_health` | `GET /health` | 检查 Vibe-Trading 服务是否可用 |
 | `vibe_list_skills` | `GET /skills` | 查看可用金融技能 |
 | `vibe_list_swarm_presets` | `GET /swarm/presets` | 查看可用多代理团队 |
@@ -319,6 +321,22 @@ Vibe-Trading 提供 29 个 swarm preset。A 股买卖建议相关场景中优先
 这些能力有用，但需要额外做路径、权限、文件大小、敏感信息和金融风险边界设计。
 
 ## 6. 飞书使用示例
+
+### 自然语言 A 股分析
+
+用户在飞书中不需要记工具名，也不需要记参数。直接问股票问题即可：
+
+```text
+我想看看南山铝业600219的投资策略，在什么位置买入或者卖出比较好
+```
+
+Hermes 应选择 `vibe_ask_ashare`，把用户原始问题转发给 Vibe-Trading Agent，并附加第一阶段约束：
+
+- 优先使用免费 AKShare 数据源和 Vibe-Trading 内置 A 股能力。
+- 不默认调用 Tushare 或 QVeris。
+- 输出中文结构化报告。
+- 明确说明数据时效和限制。
+- 保留“仅供研究参考，不构成投资建议”的免责声明。
 
 ### 个股买卖建议
 
@@ -382,15 +400,24 @@ A 股买卖建议高度依赖实时或准实时数据。每次输出应说明：
 
 ### 操作边界
 
-第一版只做分析和研究，不连接券商交易接口，不自动下单。
+第一阶段只做分析和研究，不连接券商交易接口，不自动下单。
 
-## 8. 下一步实施计划
+### 响应耗时边界
 
-第一版已完成：
+完整 Vibe Agent 分析通常需要几十秒到两分钟以上。插件默认等待 `180` 秒，可以通过环境变量调整：
+
+```text
+VIBE_TRADING_AGENT_TIMEOUT_SECONDS=180
+VIBE_TRADING_AGENT_POLL_SECONDS=3
+```
+
+## 8. 第一阶段完成情况
+
+第一阶段已完成：
 
 1. 已在 `192.168.1.63:/root/.hermes/plugins/vibe-trading/` 创建 Hermes 插件。
 2. 插件默认连接 `http://192.168.1.58:8899`，也支持通过 `VIBE_TRADING_BASE_URL` 覆盖。
-3. 已注册第一版工具：健康检查、技能列表、swarm preset、运行 swarm、查询 run、会话发送消息。
+3. 已注册第一阶段工具：自然语言 A 股转发、通用 Vibe Agent 转发、健康检查、技能列表、swarm preset、运行 swarm、查询 run、会话发送消息。
 4. 已更新 `/root/.hermes/config.yaml`：
 
 ```yaml
@@ -402,11 +429,13 @@ plugins:
 
 5. 已重启 Hermes 容器。
 6. 已验证 `vibe_health` 到 Vibe-Trading API 的连通性。
+7. 已验证 `vibe_ask_ashare` 可以创建 Vibe session、发送股票自然语言问题、等待 Agent 完成并返回中文报告。
 
 后续可以在飞书中测试：
 
 ```text
 检查 Vibe-Trading 是否可用
+我想看看南山铝业600219的投资策略，在什么位置买入或者卖出比较好
 用 Vibe-Trading 的 investment_committee 分析 600519.SH
 ```
 

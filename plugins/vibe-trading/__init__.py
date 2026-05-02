@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,6 +17,8 @@ logger = logging.getLogger(__name__)
 TOOLSET = "vibe-trading"
 DEFAULT_BASE_URL = "http://192.168.1.58:8899"
 DEFAULT_TIMEOUT_SECONDS = 20.0
+DEFAULT_AGENT_TIMEOUT_SECONDS = 180.0
+DEFAULT_AGENT_POLL_SECONDS = 3.0
 
 
 def _base_url() -> str:
@@ -27,6 +31,22 @@ def _timeout_seconds() -> float:
         return max(1.0, float(raw))
     except ValueError:
         return DEFAULT_TIMEOUT_SECONDS
+
+
+def _agent_timeout_seconds() -> float:
+    raw = os.getenv("VIBE_TRADING_AGENT_TIMEOUT_SECONDS", str(DEFAULT_AGENT_TIMEOUT_SECONDS))
+    try:
+        return max(10.0, float(raw))
+    except ValueError:
+        return DEFAULT_AGENT_TIMEOUT_SECONDS
+
+
+def _agent_poll_seconds() -> float:
+    raw = os.getenv("VIBE_TRADING_AGENT_POLL_SECONDS", str(DEFAULT_AGENT_POLL_SECONDS))
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return DEFAULT_AGENT_POLL_SECONDS
 
 
 def _json_dumps(payload: Any) -> str:
@@ -86,6 +106,114 @@ def _request_json(
 
 def _vibe_health(args: dict[str, Any], **kwargs) -> str:
     return _request_json("GET", "/health")
+
+
+def _latest_assistant_message(messages: Any) -> str | None:
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "assistant":
+            content = _clean_agent_answer(str(message.get("content") or ""))
+            if content:
+                return content
+    return None
+
+
+def _clean_agent_answer(content: str) -> str:
+    text = content.strip()
+    return re.sub(r"^<think>\s*</think>\s*", "", text, flags=re.IGNORECASE).strip()
+
+
+def _vibe_agent_ask(question: str, *, title: str, instruction: str | None = None) -> str:
+    clean_question = question.strip()
+    if not clean_question:
+        return _json_dumps({"success": False, "error": "question is required"})
+
+    create_payload = json.loads(_request_json("POST", "/sessions", {"title": title}))
+    if create_payload.get("success") is False:
+        return _json_dumps(create_payload)
+    session_id = str(create_payload.get("session_id") or "").strip()
+    if not session_id:
+        return _json_dumps({
+            "success": False,
+            "error": "Vibe-Trading did not return session_id",
+            "response": create_payload,
+        })
+
+    content = clean_question if not instruction else f"{instruction.strip()}\n\n用户原始问题：\n{clean_question}"
+    send_payload = json.loads(_request_json(
+        "POST",
+        f"/sessions/{urllib.parse.quote(session_id, safe='')}/messages",
+        {"content": content},
+    ))
+    if send_payload.get("success") is False:
+        send_payload.setdefault("session_id", session_id)
+        return _json_dumps(send_payload)
+    attempt_id = send_payload.get("attempt_id")
+
+    deadline = time.monotonic() + _agent_timeout_seconds()
+    last_messages: Any = None
+    while time.monotonic() < deadline:
+        messages_payload = json.loads(_request_json(
+            "GET",
+            f"/sessions/{urllib.parse.quote(session_id, safe='')}/messages",
+            query={"limit": 50},
+        ))
+        last_messages = messages_payload
+        answer = _latest_assistant_message(messages_payload)
+        if answer:
+            return _json_dumps({
+                "success": True,
+                "session_id": session_id,
+                "attempt_id": attempt_id,
+                "answer": answer,
+            })
+        time.sleep(_agent_poll_seconds())
+
+    return _json_dumps({
+        "success": False,
+        "error": "Timed out waiting for Vibe-Trading Agent response",
+        "session_id": session_id,
+        "attempt_id": attempt_id,
+        "last_messages": last_messages,
+    })
+
+
+ASHARE_AKSHARE_INSTRUCTION = """请作为 Vibe-Trading A股投资分析 Agent 处理以下问题，并直接输出最终中文分析报告。
+
+第一阶段约束：
+- 优先使用免费 AKShare 数据源和 Vibe-Trading 内置 A股能力。
+- 不要默认调用 Tushare 或 QVeris；只有用户明确要求时才使用它们。
+- 如果无法获取实时或最新数据，请明确说明数据时效和限制。
+- 最终回答不要输出 <minimax:tool_call>、<invoke>、工具 XML 或代码块式工具调用标记。
+
+请尽量输出结构化报告，包含：
+1. 当前行情状态
+2. 技术指标和趋势判断
+3. 买入、加仓、卖出或观望条件
+4. 止损位和止盈目标
+5. 风险收益比
+6. 关键风险与反向信号
+7. 操作建议总结
+8. 免责声明：仅供研究参考，不构成投资建议
+"""
+
+
+def _vibe_ask(args: dict[str, Any], **kwargs) -> str:
+    return _vibe_agent_ask(
+        str(args.get("question", "")),
+        title=args.get("title") or "Vibe-Trading Ask",
+    )
+
+
+def _vibe_ask_ashare(args: dict[str, Any], **kwargs) -> str:
+    return _vibe_agent_ask(
+        str(args.get("question", "")),
+        title=args.get("title") or "A股自然语言分析",
+        instruction=ASHARE_AKSHARE_INSTRUCTION,
+    )
 
 
 def _vibe_list_skills(args: dict[str, Any], **kwargs) -> str:
@@ -149,6 +277,52 @@ VIBE_HEALTH_SCHEMA = {
     "name": "vibe_health",
     "description": "Check whether the Vibe-Trading API service is reachable and healthy.",
     "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+VIBE_ASK_SCHEMA = {
+    "name": "vibe_ask",
+    "description": (
+        "Forward a natural-language finance or trading question directly to the "
+        "Vibe-Trading Agent and return the final assistant report."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "User's original natural-language question.",
+            },
+            "title": {
+                "type": "string",
+                "description": "Optional Vibe-Trading session title.",
+            },
+        },
+        "required": ["question"],
+    },
+}
+
+VIBE_ASK_ASHARE_SCHEMA = {
+    "name": "vibe_ask_ashare",
+    "description": (
+        "Use this first for A-share or stock questions from Feishu, including buy/sell "
+        "points, stop-loss, take-profit, risk, technical analysis, sector analysis, "
+        "and strategy questions. It forwards natural language to Vibe-Trading Agent "
+        "with free AKShare-first instructions."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "User's original A-share natural-language question.",
+            },
+            "title": {
+                "type": "string",
+                "description": "Optional Vibe-Trading session title.",
+            },
+        },
+        "required": ["question"],
+    },
 }
 
 VIBE_LIST_SKILLS_SCHEMA = {
@@ -257,6 +431,8 @@ VIBE_LIST_RUNS_SCHEMA = {
 def register(ctx):
     """Register Vibe-Trading bridge tools."""
     tools = [
+        ("vibe_ask", VIBE_ASK_SCHEMA, _vibe_ask),
+        ("vibe_ask_ashare", VIBE_ASK_ASHARE_SCHEMA, _vibe_ask_ashare),
         ("vibe_health", VIBE_HEALTH_SCHEMA, _vibe_health),
         ("vibe_list_skills", VIBE_LIST_SKILLS_SCHEMA, _vibe_list_skills),
         ("vibe_list_swarm_presets", VIBE_LIST_SWARM_PRESETS_SCHEMA, _vibe_list_swarm_presets),

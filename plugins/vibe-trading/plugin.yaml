@@ -3,6 +3,8 @@ version: "1.0.0"
 description: Vibe-Trading API bridge for A-share research, swarm analysis, sessions, and run lookup
 author: yukun
 provides_tools:
+  - vibe_ask
+  - vibe_ask_ashare
   - vibe_health
   - vibe_list_skills
   - vibe_list_swarm_presets

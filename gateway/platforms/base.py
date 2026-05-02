@@ -2489,15 +2489,20 @@ class BasePlatformAdapter(ABC):
 
         try:
             response = await self._message_handler(event)
-            # Old adapter task (if any) is cancelled AFTER the runner has
-            # fully handled the command — keeps ordering deterministic.
-            await self.cancel_session_processing(
-                session_key,
-                release_guard=False,
-                discard_pending=False,
-            )
             _text, _eph_ttl = self._unwrap_ephemeral(response)
+            # Send the response BEFORE cancelling the old task so the send
+            # cannot be affected by task-cancellation side effects (race
+            # condition fix — issue #18912).  Previously the send happened
+            # after cancel_session_processing, which could silently drop the
+            # "/new" confirmation when an agent was actively running.
             if _text:
+                logger.info(
+                    "[%s] Sending command '/%s' response (%d chars) to %s",
+                    self.name,
+                    cmd,
+                    len(_text),
+                    event.source.chat_id,
+                )
                 _r = await self._send_with_retry(
                     chat_id=event.source.chat_id,
                     content=_text,
@@ -2510,6 +2515,13 @@ class BasePlatformAdapter(ABC):
                         message_id=_r.message_id,
                         ttl_seconds=_eph_ttl,
                     )
+            # Old adapter task (if any) is cancelled AFTER the response has
+            # been sent — keeps ordering deterministic and avoids the race.
+            await self.cancel_session_processing(
+                session_key,
+                release_guard=False,
+                discard_pending=False,
+            )
         except Exception:
             # On failure, restore the original guard if one still exists so
             # we don't leave the session in a half-reset state.

@@ -548,3 +548,266 @@ def test_reconcile_model_block_visible_in_full_report(curator_env):
     md = (run_dir / "REPORT.md").read_text()
     assert "duplicate content, now a subsection" in md
     assert "pre-curator junk" in md
+
+
+# ---------------------------------------------------------------------------
+# _extract_absorbed_into_declarations — authoritative signal from delete calls
+# ---------------------------------------------------------------------------
+
+
+def test_extract_absorbed_into_picks_up_consolidation(curator_env):
+    """Delete call with absorbed_into=<umbrella> yields a declaration."""
+    declarations = curator_env._extract_absorbed_into_declarations([
+        {
+            "name": "skill_manage",
+            "arguments": json.dumps({
+                "action": "delete",
+                "name": "narrow-skill",
+                "absorbed_into": "umbrella",
+            }),
+        },
+    ])
+    assert declarations == {
+        "narrow-skill": {"into": "umbrella", "declared": True},
+    }
+
+
+def test_extract_absorbed_into_empty_string_is_explicit_prune(curator_env):
+    """absorbed_into='' is recorded as an explicit prune declaration."""
+    declarations = curator_env._extract_absorbed_into_declarations([
+        {
+            "name": "skill_manage",
+            "arguments": json.dumps({
+                "action": "delete",
+                "name": "stale",
+                "absorbed_into": "",
+            }),
+        },
+    ])
+    assert declarations == {"stale": {"into": "", "declared": True}}
+
+
+def test_extract_absorbed_into_missing_arg_ignored(curator_env):
+    """Delete call without absorbed_into is skipped — fallback to heuristic."""
+    declarations = curator_env._extract_absorbed_into_declarations([
+        {
+            "name": "skill_manage",
+            "arguments": json.dumps({
+                "action": "delete",
+                "name": "legacy-skill",
+            }),
+        },
+    ])
+    assert declarations == {}
+
+
+def test_extract_absorbed_into_ignores_non_delete_actions(curator_env):
+    """Patch, create, write_file etc. must not leak into declarations."""
+    declarations = curator_env._extract_absorbed_into_declarations([
+        {
+            "name": "skill_manage",
+            "arguments": json.dumps({
+                "action": "patch",
+                "name": "umbrella",
+                "old_string": "...",
+                "new_string": "...",
+                "absorbed_into": "something",  # bogus on non-delete, must be ignored
+            }),
+        },
+    ])
+    assert declarations == {}
+
+
+def test_extract_absorbed_into_accepts_dict_arguments(curator_env):
+    """arguments can arrive as a dict (defensive path) — still works."""
+    declarations = curator_env._extract_absorbed_into_declarations([
+        {
+            "name": "skill_manage",
+            "arguments": {
+                "action": "delete",
+                "name": "narrow",
+                "absorbed_into": "umbrella",
+            },
+        },
+    ])
+    assert declarations == {"narrow": {"into": "umbrella", "declared": True}}
+
+
+def test_extract_absorbed_into_strips_whitespace(curator_env):
+    declarations = curator_env._extract_absorbed_into_declarations([
+        {
+            "name": "skill_manage",
+            "arguments": json.dumps({
+                "action": "delete",
+                "name": "  narrow  ",
+                "absorbed_into": "  umbrella  ",
+            }),
+        },
+    ])
+    assert declarations == {"narrow": {"into": "umbrella", "declared": True}}
+
+
+def test_extract_absorbed_into_ignores_non_skill_manage_calls(curator_env):
+    declarations = curator_env._extract_absorbed_into_declarations([
+        {"name": "terminal", "arguments": json.dumps({"command": "ls"})},
+        {"name": "read_file", "arguments": json.dumps({"path": "/tmp/x"})},
+    ])
+    assert declarations == {}
+
+
+def test_extract_absorbed_into_handles_malformed_arguments(curator_env):
+    """Garbage JSON in arguments must not crash the extractor."""
+    declarations = curator_env._extract_absorbed_into_declarations([
+        {"name": "skill_manage", "arguments": "{not json"},
+        {"name": "skill_manage", "arguments": None},
+        {"name": "skill_manage"},  # no arguments key at all
+    ])
+    assert declarations == {}
+
+
+# ---------------------------------------------------------------------------
+# _reconcile_classification with absorbed_into declarations (authoritative)
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_absorbed_into_beats_everything_else(curator_env):
+    """Model declared absorbed_into at delete; YAML/heuristic disagree — declaration wins.
+
+    This is the exact #18671 regression: the model forgets to emit the YAML
+    summary block, the heuristic's substring match misses because the
+    umbrella's patch content doesn't literally contain the old skill's
+    slug. Previously this fell through to 'no-evidence fallback' prune,
+    which dropped the cron ref instead of rewriting. With absorbed_into
+    declared, the model tells us directly.
+    """
+    out = curator_env._reconcile_classification(
+        removed=["pr-review-format"],
+        heuristic={"consolidated": [], "pruned": [{"name": "pr-review-format"}]},
+        model_block={"consolidations": [], "prunings": []},  # model forgot YAML block
+        destinations={"hermes-agent-dev"},
+        absorbed_declarations={
+            "pr-review-format": {"into": "hermes-agent-dev", "declared": True},
+        },
+    )
+    assert len(out["consolidated"]) == 1
+    assert out["pruned"] == []
+    e = out["consolidated"][0]
+    assert e["name"] == "pr-review-format"
+    assert e["into"] == "hermes-agent-dev"
+    assert "absorbed_into" in e["source"]
+
+
+def test_reconcile_absorbed_into_empty_is_explicit_prune(curator_env):
+    """absorbed_into='' takes precedence and routes to pruned, not fallback."""
+    out = curator_env._reconcile_classification(
+        removed=["stale"],
+        heuristic={"consolidated": [], "pruned": [{"name": "stale"}]},
+        model_block={"consolidations": [], "prunings": []},
+        destinations=set(),
+        absorbed_declarations={
+            "stale": {"into": "", "declared": True},
+        },
+    )
+    assert out["consolidated"] == []
+    assert len(out["pruned"]) == 1
+    assert "model-declared prune" in out["pruned"][0]["source"]
+
+
+def test_reconcile_absorbed_into_nonexistent_target_falls_through(curator_env):
+    """If the declared umbrella doesn't exist in destinations, fall through to
+    heuristic/YAML logic. Shouldn't happen in practice (the tool validates at
+    delete time) but the reconciler is defensive."""
+    out = curator_env._reconcile_classification(
+        removed=["thing"],
+        heuristic={
+            "consolidated": [{"name": "thing", "into": "real-umbrella", "evidence": "..."}],
+            "pruned": [],
+        },
+        model_block={"consolidations": [], "prunings": []},
+        destinations={"real-umbrella"},
+        absorbed_declarations={
+            "thing": {"into": "ghost-umbrella", "declared": True},
+        },
+    )
+    assert len(out["consolidated"]) == 1
+    assert out["consolidated"][0]["into"] == "real-umbrella"
+    assert "tool-call audit" in out["consolidated"][0]["source"]
+
+
+def test_reconcile_declaration_preserves_yaml_reason(curator_env):
+    """When the model both declared absorbed_into AND emitted YAML with reason,
+    the reason carries through so REPORT.md still has it."""
+    out = curator_env._reconcile_classification(
+        removed=["narrow"],
+        heuristic={"consolidated": [], "pruned": []},
+        model_block={
+            "consolidations": [{
+                "from": "narrow",
+                "into": "umbrella",
+                "reason": "duplicate of umbrella's main content",
+            }],
+            "prunings": [],
+        },
+        destinations={"umbrella"},
+        absorbed_declarations={
+            "narrow": {"into": "umbrella", "declared": True},
+        },
+    )
+    assert len(out["consolidated"]) == 1
+    e = out["consolidated"][0]
+    assert e["into"] == "umbrella"
+    assert "absorbed_into" in e["source"]
+    assert e["reason"] == "duplicate of umbrella's main content"
+
+
+def test_reconcile_without_declarations_preserves_legacy_behavior(curator_env):
+    """Backward compat: no absorbed_declarations arg → all existing logic intact."""
+    out = curator_env._reconcile_classification(
+        removed=["thing"],
+        heuristic={
+            "consolidated": [{"name": "thing", "into": "umbrella", "evidence": "..."}],
+            "pruned": [],
+        },
+        model_block={"consolidations": [], "prunings": []},
+        destinations={"umbrella"},
+        # no absorbed_declarations — defaults to None → behaves identically to pre-change
+    )
+    assert len(out["consolidated"]) == 1
+    assert out["consolidated"][0]["into"] == "umbrella"
+
+
+def test_reconcile_mixed_declarations_and_legacy_calls(curator_env):
+    """Real-world run: some deletes declared absorbed_into, some didn't.
+    Declared ones use the authoritative path; others fall through to YAML/heuristic.
+    """
+    out = curator_env._reconcile_classification(
+        removed=["declared-cons", "declared-prune", "legacy-cons", "legacy-prune"],
+        heuristic={
+            "consolidated": [
+                {"name": "legacy-cons", "into": "umbrella-a", "evidence": "..."},
+            ],
+            "pruned": [{"name": "legacy-prune"}],
+        },
+        model_block={"consolidations": [], "prunings": []},
+        destinations={"umbrella-a", "umbrella-b"},
+        absorbed_declarations={
+            "declared-cons": {"into": "umbrella-b", "declared": True},
+            "declared-prune": {"into": "", "declared": True},
+        },
+    )
+    cons_by_name = {e["name"]: e for e in out["consolidated"]}
+    pruned_by_name = {e["name"]: e for e in out["pruned"]}
+
+    assert "declared-cons" in cons_by_name
+    assert cons_by_name["declared-cons"]["into"] == "umbrella-b"
+    assert "absorbed_into" in cons_by_name["declared-cons"]["source"]
+
+    assert "legacy-cons" in cons_by_name
+    assert cons_by_name["legacy-cons"]["into"] == "umbrella-a"
+    assert "tool-call audit" in cons_by_name["legacy-cons"]["source"]
+
+    assert "declared-prune" in pruned_by_name
+    assert "model-declared prune" in pruned_by_name["declared-prune"]["source"]
+
+    assert "legacy-prune" in pruned_by_name
+    assert "no-evidence fallback" in pruned_by_name["legacy-prune"]["source"]

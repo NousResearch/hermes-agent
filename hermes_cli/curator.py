@@ -160,7 +160,11 @@ def _cmd_run(args) -> int:
         print("curator: disabled via config; enable with `curator.enabled: true`")
         return 1
 
-    print("curator: running review pass...")
+    dry = bool(getattr(args, "dry_run", False))
+    if dry:
+        print("curator: running DRY-RUN (report only, no mutations)...")
+    else:
+        print("curator: running review pass...")
 
     def _on_summary(msg: str) -> None:
         print(msg)
@@ -168,17 +172,29 @@ def _cmd_run(args) -> int:
     result = curator.run_curator_review(
         on_summary=_on_summary,
         synchronous=bool(args.synchronous),
+        dry_run=dry,
     )
     auto = result.get("auto_transitions", {})
     if auto:
-        print(
-            f"auto: checked={auto.get('checked', 0)} "
-            f"stale={auto.get('marked_stale', 0)} "
-            f"archived={auto.get('archived', 0)} "
-            f"reactivated={auto.get('reactivated', 0)}"
-        )
+        if dry:
+            print(
+                f"auto (preview): {auto.get('checked', 0)} candidate skill(s) "
+                "— no transitions applied in dry-run"
+            )
+        else:
+            print(
+                f"auto: checked={auto.get('checked', 0)} "
+                f"stale={auto.get('marked_stale', 0)} "
+                f"archived={auto.get('archived', 0)} "
+                f"reactivated={auto.get('reactivated', 0)}"
+            )
     if not args.synchronous:
         print("llm pass running in background — check `hermes curator status` later")
+    if dry:
+        print(
+            "dry-run: no changes applied. When the report lands, read it with "
+            "`hermes curator status` and run `hermes curator run` (no flag) to apply."
+        )
     return 0
 
 
@@ -229,6 +245,98 @@ def _cmd_restore(args) -> int:
     return 0 if ok else 1
 
 
+def _cmd_backup(args) -> int:
+    """Take a manual snapshot of the skills tree. Same mechanism as the
+    automatic pre-run snapshot, just user-initiated."""
+    from agent import curator_backup
+    if not curator_backup.is_enabled():
+        print(
+            "curator: backups are disabled via config "
+            "(`curator.backup.enabled: false`); re-enable to snapshot"
+        )
+        return 1
+    reason = getattr(args, "reason", None) or "manual"
+    snap = curator_backup.snapshot_skills(reason=reason)
+    if snap is None:
+        print("curator: snapshot failed — check logs (backup disabled or IO error)")
+        return 1
+    print(f"curator: snapshot created at ~/.hermes/skills/.curator_backups/{snap.name}")
+    return 0
+
+
+def _cmd_rollback(args) -> int:
+    """Restore the skills tree from a snapshot. Defaults to newest.
+
+    ``--list`` prints available snapshots and exits. ``--id <stamp>`` picks
+    a specific one. Without ``-y``, prompts for confirmation. A safety
+    snapshot of the current tree is always taken first, so rollbacks are
+    themselves undoable.
+    """
+    from agent import curator_backup
+
+    if getattr(args, "list", False):
+        print(curator_backup.summarize_backups())
+        return 0
+
+    backup_id = getattr(args, "backup_id", None)
+    target_path = curator_backup._resolve_backup(backup_id)
+    if target_path is None:
+        rows = curator_backup.list_backups()
+        if not rows:
+            print(
+                "curator: no snapshots exist yet. Take one with "
+                "`hermes curator backup` or wait for the next curator run."
+            )
+        else:
+            print(
+                f"curator: no snapshot matching "
+                f"{'id ' + repr(backup_id) if backup_id else 'your query'}."
+            )
+            print("Available:")
+            print(curator_backup.summarize_backups())
+        return 1
+
+    manifest = curator_backup._read_manifest(target_path)
+    print(f"Rollback target: {target_path.name}")
+    if manifest:
+        print(f"  reason:      {manifest.get('reason', '?')}")
+        print(f"  created_at:  {manifest.get('created_at', '?')}")
+        print(f"  skill files: {manifest.get('skill_files', '?')}")
+        cron = manifest.get("cron_jobs") or {}
+        if isinstance(cron, dict):
+            if cron.get("backed_up"):
+                print(
+                    f"  cron jobs:   {cron.get('jobs_count', 0)} "
+                    f"(will be restored for skill-link fields only)"
+                )
+            else:
+                reason = cron.get("reason", "not captured")
+                print(f"  cron jobs:   not in snapshot ({reason})")
+    print(
+        "\nThis will replace the current ~/.hermes/skills/ tree (a safety "
+        "snapshot of the current state is taken first so this is undoable). "
+        "Cron jobs that still exist will have their skills/skill fields "
+        "restored from the snapshot; all other cron fields are left alone."
+    )
+
+    if not getattr(args, "yes", False):
+        try:
+            ans = input("Proceed? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\ncancelled")
+            return 1
+        if ans not in ("y", "yes"):
+            print("cancelled")
+            return 1
+
+    ok, msg, _ = curator_backup.rollback(backup_id=target_path.name)
+    if ok:
+        print(f"curator: {msg}")
+        return 0
+    print(f"curator: rollback failed — {msg}")
+    return 1
+
+
 # ---------------------------------------------------------------------------
 # argparse wiring (called from hermes_cli.main)
 # ---------------------------------------------------------------------------
@@ -250,6 +358,11 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
         "--sync", "--synchronous", dest="synchronous", action="store_true",
         help="Wait for the LLM review pass to finish (default: background thread)",
     )
+    p_run.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Report only — no state changes, no archives, no consolidation "
+             "(use this to preview what curator would do)",
+    )
     p_run.set_defaults(func=_cmd_run)
 
     p_pause = subs.add_parser("pause", help="Pause the curator until resumed")
@@ -269,6 +382,36 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_restore = subs.add_parser("restore", help="Restore an archived skill")
     p_restore.add_argument("skill", help="Skill name")
     p_restore.set_defaults(func=_cmd_restore)
+
+    p_backup = subs.add_parser(
+        "backup",
+        help="Take a manual tar.gz snapshot of ~/.hermes/skills/ "
+             "(curator also does this automatically before every real run)",
+    )
+    p_backup.add_argument(
+        "--reason", default=None,
+        help="Free-text label stored in manifest.json (default: 'manual')",
+    )
+    p_backup.set_defaults(func=_cmd_backup)
+
+    p_rollback = subs.add_parser(
+        "rollback",
+        help="Restore ~/.hermes/skills/ from a curator snapshot "
+             "(defaults to the newest)",
+    )
+    p_rollback.add_argument(
+        "--list", action="store_true",
+        help="List available snapshots and exit without restoring",
+    )
+    p_rollback.add_argument(
+        "--id", dest="backup_id", default=None,
+        help="Snapshot id to restore (see `--list`); default: newest",
+    )
+    p_rollback.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Skip confirmation prompt",
+    )
+    p_rollback.set_defaults(func=_cmd_rollback)
 
 
 def cli_main(argv=None) -> int:

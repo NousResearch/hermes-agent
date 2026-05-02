@@ -305,6 +305,7 @@ class TestBuiltinDiscovery:
             "tools.homeassistant_tool",
             "tools.human_approval_tool",
             "tools.image_generation_tool",
+            "tools.kanban_tools",
             "tools.memory_tool",
             "tools.mixture_of_agents_tool",
             "tools.process_registry",

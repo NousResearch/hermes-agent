@@ -7226,17 +7226,24 @@ def _update_node_dependencies() -> None:
         if not (path / "package.json").exists():
             continue
 
+        # Stream npm output (no `--silent`, no `capture_output`) so any
+        # optional dependency postinstall scripts (e.g. `agent-browser`'s
+        # Chromium fetch on first install) print progress instead of
+        # appearing to hang silently for minutes (#18840).  The
+        # `_UpdateOutputStream` wrapper installed by the updater mirrors
+        # streamed output to ``~/.hermes/logs/update.log`` so nothing is lost.
         result = _run_npm_install_deterministic(
             npm,
             path,
-            extra_args=("--silent", "--no-fund", "--no-audit", "--progress=false"),
+            extra_args=("--no-fund", "--no-audit", "--progress=false"),
+            capture_output=False,
         )
         if result.returncode == 0:
             print(f"  ✓ {label}")
             continue
 
         print(f"  ⚠ npm install failed in {label}")
-        stderr = (result.stderr or "").strip()
+        stderr = (result.stderr or "").strip() if result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
 

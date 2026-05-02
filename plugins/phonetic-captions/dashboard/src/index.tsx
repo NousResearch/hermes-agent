@@ -196,7 +196,7 @@ function InfoSidebar() {
                 {s.icon}
               </div>
               <div>
-                <p className="text-xs font-semibold text-foreground mb-0.5">{s.title}</p>
+                <p className="text-sm font-semibold text-foreground mb-0.5">{s.title}</p>
                 <p className="text-xs text-muted-foreground leading-relaxed">{s.body}</p>
               </div>
             </li>
@@ -212,7 +212,7 @@ function InfoSidebar() {
         <h2 className="text-sm font-semibold text-foreground mb-3">Key features</h2>
         <ul className="space-y-2">
           {features.map((f, i) => (
-            <li key={i} className="flex items-start gap-2 text-xs text-muted-foreground">
+            <li key={i} className="flex items-start gap-2 text-xs text-foreground">
               <span className="text-primary mt-0.5 shrink-0">{f.icon}</span>
               {f.label}
             </li>
@@ -273,7 +273,7 @@ function JobListView({ onSelect }: { onSelect: (id: string) => void }) {
   }
 
   return (
-    <div className="p-6 grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-8 max-w-6xl">
+    <div className="p-6 grid grid-cols-1 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-8 max-w-6xl">
       {/* ── Left: job list ── */}
       <div>
         <div className="flex items-center justify-between mb-1">

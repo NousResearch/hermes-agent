@@ -387,6 +387,11 @@ CURATOR_REVIEW_PROMPT = (
     "  - skill_manage action=write_file — add a references/, templates/, "
     "or scripts/ file under an existing skill (the skill must already "
     "exist)\n"
+    "  - skill_manage action=delete     — archive a skill. MUST pass "
+    "`absorbed_into=<umbrella>` when you've merged its content into another "
+    "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
+    "forwarding target. This drives cron-job skill-reference migration — "
+    "guessing from your YAML summary after the fact is fragile.\n"
     "  - terminal                       — mv a sibling into the archive "
     "OR move its content into a support subfile\n\n"
     "'keep' is a legitimate decision ONLY when the skill is already a "
@@ -637,15 +642,76 @@ def _parse_structured_summary(
     return out
 
 
+def _extract_absorbed_into_declarations(
+    tool_calls: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """Walk this run's tool calls and extract model-declared absorption targets.
+
+    The curator prompt requires every ``skill_manage(action='delete')`` call
+    to pass ``absorbed_into=<umbrella>`` when consolidating, or
+    ``absorbed_into=""`` when truly pruning. This is the single authoritative
+    signal for classification — the model's own declaration at the moment of
+    deletion, which beats both post-hoc YAML summary parsing and substring
+    heuristics on other tool calls.
+
+    Returns ``{skill_name: {"into": "<umbrella>" | "", "declared": True}}``.
+    Entries with ``into == ""`` are explicit prunings.
+    Skills without a ``skill_manage(delete)`` call, or with one that omitted
+    ``absorbed_into``, are not in the returned dict — caller falls back to
+    the existing heuristic/YAML logic for those (backward compat with older
+    curator runs and any callers that don't populate the arg).
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for tc in tool_calls or []:
+        if not isinstance(tc, dict):
+            continue
+        if tc.get("name") != "skill_manage":
+            continue
+        raw = tc.get("arguments") or ""
+        args: Dict[str, Any] = {}
+        if isinstance(raw, dict):
+            args = raw
+        elif isinstance(raw, str):
+            try:
+                args = json.loads(raw)
+            except Exception:
+                continue
+        if not isinstance(args, dict):
+            continue
+        if args.get("action") != "delete":
+            continue
+        name = args.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        # absorbed_into must be present (even empty string is meaningful);
+        # missing key means the model didn't declare intent.
+        if "absorbed_into" not in args:
+            continue
+        target = args.get("absorbed_into")
+        if target is None:
+            continue
+        if not isinstance(target, str):
+            continue
+        out[name.strip()] = {"into": target.strip(), "declared": True}
+    return out
+
+
 def _reconcile_classification(
     removed: List[str],
     heuristic: Dict[str, List[Dict[str, Any]]],
     model_block: Dict[str, List[Dict[str, str]]],
     destinations: Set[str],
+    absorbed_declarations: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Merge heuristic (tool-call evidence) with the model's structured block.
 
-    Rules:
+    Rules (evaluated in order; first match wins):
+    - **Model-declared `absorbed_into` at delete time is authoritative.** Any
+      entry in ``absorbed_declarations`` beats every other signal. This is
+      the model telling us directly, at the moment of deletion, what it did.
+      ``into != ""`` and target exists → consolidated. ``into == ""`` →
+      pruned. ``into != ""`` but target doesn't exist → hallucination; fall
+      through to the usual signals.
     - Model-declared consolidation wins when its ``into`` target exists
       in ``destinations`` (survived or newly-created). This gives the
       model authority over intent + rationale.
@@ -666,6 +732,8 @@ def _reconcile_classification(
     model_cons = {e["from"]: e for e in model_block.get("consolidations", [])}
     model_pruned = {e["name"]: e for e in model_block.get("prunings", [])}
 
+    declared = absorbed_declarations or {}
+
     consolidated: List[Dict[str, Any]] = []
     pruned: List[Dict[str, Any]] = []
 
@@ -673,6 +741,36 @@ def _reconcile_classification(
         mc = model_cons.get(name)
         mp = model_pruned.get(name)
         hc = heur_cons.get(name)
+        dec = declared.get(name)
+
+        # Authoritative: model declared `absorbed_into` at the delete call.
+        if dec is not None:
+            into_claim = dec.get("into", "")
+            if into_claim and into_claim in destinations:
+                entry: Dict[str, Any] = {
+                    "name": name,
+                    "into": into_claim,
+                    "source": "absorbed_into (model-declared at delete)",
+                    "reason": (mc.get("reason") or "") if mc else "",
+                }
+                if hc and hc.get("evidence"):
+                    entry["evidence"] = hc["evidence"]
+                consolidated.append(entry)
+                continue
+            if into_claim == "":
+                # Explicit prune declaration
+                pruned.append({
+                    "name": name,
+                    "source": "absorbed_into=\"\" (model-declared prune)",
+                    "reason": (mp.get("reason") or "") if mp else "",
+                })
+                continue
+            # into_claim is non-empty but target doesn't exist: the model
+            # named a nonexistent umbrella at delete time. The tool already
+            # rejects this at the skill_manage layer, so we shouldn't see it
+            # in practice — but if it slips through (e.g. the umbrella was
+            # deleted LATER in the same run), fall through to the usual
+            # signals rather than trusting a broken reference.
 
         # Model says consolidated — trust it if the destination is real.
         if mc and mc.get("into") in destinations:
@@ -808,11 +906,20 @@ def _write_run_report(
     )
     model_block = _parse_structured_summary(llm_meta.get("final", "") or "")
     destinations = set(after_names) | set(added or [])
+    # Authoritative signal: extract per-delete `absorbed_into` declarations
+    # from this run's tool calls. These beat both the YAML summary block and
+    # the substring heuristic — the model is telling us directly, at the
+    # moment of deletion, whether each archived skill was consolidated
+    # (into=<umbrella>) or pruned (into="").
+    absorbed_declarations = _extract_absorbed_into_declarations(
+        llm_meta.get("tool_calls", []) or []
+    )
     classification = _reconcile_classification(
         removed=removed,
         heuristic=heuristic,
         model_block=model_block,
         destinations=destinations,
+        absorbed_declarations=absorbed_declarations,
     )
     consolidated = classification["consolidated"]
     pruned = classification["pruned"]

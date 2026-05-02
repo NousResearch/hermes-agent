@@ -1,0 +1,13 @@
+{
+  "name": "ttm-control-plane",
+  "label": "TTM Control Plane",
+  "description": "TTM control-plane spawn shim — receives runtime dispatch from TTM, validates the principal-scoped payload, and binds the runtime to the run. PR-F-H1 of the Hermes alignment plan.",
+  "icon": "Network",
+  "version": "0.1.0",
+  "tab": {
+    "hidden": true
+  },
+  "slots": [],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

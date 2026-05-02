@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ai.hermes.dashboard.plist
+
+  Runs the Hermes dashboard as a long-lived launchd service so the
+  ttm-control-plane plugin (mounted at /api/plugins/ttm-control-plane/)
+  is reachable continuously by TTM. Mirrors ai.hermes.gateway.plist
+  conventions.
+
+  Install:
+    cp ai.hermes.dashboard.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/ai.hermes.dashboard.plist
+    launchctl list | grep ai.hermes.dashboard
+    curl -s http://127.0.0.1:9119/api/plugins/ttm-control-plane/health | jq .
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/ai.hermes.dashboard.plist
+    rm ~/Library/LaunchAgents/ai.hermes.dashboard.plist
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ai.hermes.dashboard</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/oc_runtime/.hermes/hermes-agent/venv/bin/python</string>
+        <string>-m</string>
+        <string>hermes_cli.main</string>
+        <string>dashboard</string>
+        <string>--no-open</string>
+        <string>--port</string>
+        <string>9119</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/oc_runtime/.hermes/hermes-agent</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/oc_runtime/.hermes/hermes-agent/venv/bin:/Users/oc_runtime/.hermes/hermes-agent/node_modules/.bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>VIRTUAL_ENV</key>
+        <string>/Users/oc_runtime/.hermes/hermes-agent/venv</string>
+        <key>HERMES_HOME</key>
+        <string>/Users/oc_runtime/.hermes</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/oc_runtime/.hermes/logs/dashboard.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/oc_runtime/.hermes/logs/dashboard.error.log</string>
+</dict>
+</plist>

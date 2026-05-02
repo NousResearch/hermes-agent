@@ -1,0 +1,14 @@
+name: vibe-trading
+version: "1.0.0"
+description: Vibe-Trading API bridge for A-share research, swarm analysis, sessions, and run lookup
+author: yukun
+provides_tools:
+  - vibe_health
+  - vibe_list_skills
+  - vibe_list_swarm_presets
+  - vibe_run_swarm
+  - vibe_get_swarm_run
+  - vibe_create_session
+  - vibe_send_message
+  - vibe_get_run_result
+  - vibe_list_runs

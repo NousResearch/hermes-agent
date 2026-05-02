@@ -1,5 +1,7 @@
 """Regression tests for gateway /model support of config.yaml custom_providers."""
 
+from types import SimpleNamespace
+
 import yaml
 import pytest
 
@@ -14,6 +16,9 @@ def _make_runner():
     runner.adapters = {}
     runner._voice_mode = {}
     runner._session_model_overrides = {}
+    runner._pending_model_notes = {}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = None
     return runner
 
 
@@ -61,3 +66,52 @@ async def test_handle_model_command_lists_saved_custom_provider(tmp_path, monkey
     assert "Local (127.0.0.1:4141)" in result
     assert "custom:local-(127.0.0.1:4141)" in result
     assert "rotator-openrouter-coding" in result
+
+
+@pytest.mark.asyncio
+async def test_model_switch_uses_config_api_key(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "default": "glm-5-turbo",
+                    "provider": "custom",
+                    "base_url": "http://127.0.0.1:8000/v1",
+                    "api_key": "cfg-secret-key",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    def fake_switch_model(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            success=True,
+            new_model="glm-5.1",
+            target_provider="custom",
+            api_key=kwargs["current_api_key"],
+            base_url=kwargs["current_base_url"],
+            api_mode="chat_completions",
+            provider_label="custom",
+            model_info=None,
+            warning_message=None,
+        )
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", fake_switch_model)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_display_context_length",
+        lambda *args, **kwargs: None,
+    )
+
+    result = await _make_runner()._handle_model_command(_make_event("/model glm-5.1"))
+
+    assert "Model switched to `glm-5.1`" in result
+    assert captured["current_api_key"] == "cfg-secret-key"

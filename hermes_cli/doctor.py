@@ -10,7 +10,7 @@ import subprocess
 import shutil
 from pathlib import Path
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import get_project_root, get_hermes_home, get_env_path, get_env_value
 from hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
@@ -167,7 +167,6 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
 
 def run_doctor(args):
     """Run diagnostic checks."""
-    from hermes_cli.config import get_env_value
 
     should_fix = getattr(args, 'fix', False)
 
@@ -952,7 +951,7 @@ def run_doctor(args):
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
         ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                             "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
-        ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
+        ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
         # MiniMax: the /anthropic endpoint doesn't support /models, but the /v1 endpoint does.
         ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", True),
@@ -1023,7 +1022,8 @@ def run_doctor(args):
                         )
                         if _resp2.status_code == 200:
                             _region = "intl" if "intl" in _fallback_url else "cn"
-                            print(f"\r  {color('✓', Colors.GREEN)} {_label} {color(f'(key valid on {_region} endpoint — set DASHSCOPE_BASE_URL to avoid recheck)', Colors.DIM)}")
+                            _hint_base = _fallback_url.rstrip("/").removesuffix("/models")
+                            print(f"\r  {color('✓', Colors.GREEN)} {_label} {color(f'(valid on {_region} — set DASHSCOPE_BASE_URL={_hint_base})', Colors.DIM)}")
                             _resp = _resp2  # treat as success
                     if _resp.status_code == 401:
                         print(f"\r  {color('✗', Colors.RED)} {_label} {color('(invalid API key)', Colors.DIM)}           ")

@@ -9372,13 +9372,12 @@ class GatewayRunner:
                 f"Unknown mode `{arg}`. Use `/busy queue`, `/busy steer`, or `/busy interrupt`."
             )
 
-        # Update the in-memory mode immediately
-        self._busy_input_mode = arg
-
-        # Persist to config
+        # Persist to config FIRST, then update in-memory.
+        # This prevents divergent state when the save fails.
         try:
             from cli import save_config_value
             if save_config_value("display.busy_input_mode", arg):
+                self._busy_input_mode = arg
                 if arg == "queue":
                     behavior = "Messages will be queued for the next turn while Hermes is busy."
                 elif arg == "steer":
@@ -9391,12 +9390,12 @@ class GatewayRunner:
                 )
             else:
                 return EphemeralReply(
-                    f"Busy input mode set to **`{arg}`** (session only, could not save to config)."
+                    f"Busy input mode could not be saved to config. Mode unchanged."
                 )
         except Exception as e:
             logger.warning("Failed to save busy_input_mode: %s", e)
             return EphemeralReply(
-                f"Busy input mode set to **`{arg}`** (session only, save failed: {e})."
+                f"Could not save busy input mode: {e}. Mode unchanged."
             )
 
     async def _handle_footer_command(self, event: MessageEvent) -> str:

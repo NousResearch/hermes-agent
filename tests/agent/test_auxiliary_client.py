@@ -495,6 +495,23 @@ class TestExplicitProviderRouting:
             for record in caplog.records
         )
 
+    def test_explicit_api_key_used_for_openrouter(self, monkeypatch):
+        """resolve_provider_client must forward explicit_api_key to _try_openrouter.
+
+        Regression test for #18338: when a credential pool supplies a runtime
+        API key for OpenRouter, resolve_provider_client should pass it through
+        so the fallback uses the pool key instead of ignoring it.
+        """
+        # No pool entry, no env var — _try_openrouter would normally return (None, None)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            client, model = resolve_provider_client(
+                "openrouter", explicit_api_key="my-pool-runtime-key"
+            )
+        # explicit_api_key should be used, so client must not be None
+        assert client is not None
+        assert model is not None
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 

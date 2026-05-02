@@ -1149,7 +1149,18 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 
-def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_openrouter(explicit_api_key: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+    # If an explicit key was passed (e.g. from a credential pool via
+    # resolve_provider_client), use it directly — bypass pool/env lookup.
+    if explicit_api_key:
+        base_url = OPENROUTER_BASE_URL
+        pool_present, entry = _select_pool_entry("openrouter")
+        if pool_present and entry is not None:
+            base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
+        logger.debug("Auxiliary client: OpenRouter via explicit key")
+        return OpenAI(api_key=explicit_api_key, base_url=base_url,
+                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         or_key = _pool_runtime_api_key(entry)
@@ -2055,7 +2066,7 @@ def resolve_provider_client(
 
     # ── OpenRouter ───────────────────────────────────────────────────
     if provider == "openrouter":
-        client, default = _try_openrouter()
+        client, default = _try_openrouter(explicit_api_key=explicit_api_key)
         if client is None:
             logger.warning(
                 "resolve_provider_client: openrouter requested but %s",

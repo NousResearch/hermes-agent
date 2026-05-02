@@ -4030,6 +4030,11 @@ class GatewayRunner:
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
 
+        if canonical == "busy":
+            return await self._handle_busy_command(event)
+
+        if canonical == "footer":
+            return await self._handle_footer_command(event)
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
 
@@ -6415,6 +6420,19 @@ class GatewayRunner:
         if hasattr(raw, "guild") and raw.guild:
             return raw.guild.id
         return None
+
+    async def _handle_busy_command(self, event: MessageEvent) -> str:
+        """Handle /busy [queue|steer|interrupt|status] command for gateway sessions."""
+        args = (event.get_command_args() or "").strip().lower()
+        if args in ("", "status"):
+            return f"Busy mode: {self._busy_input_mode}"
+
+        if args not in ("queue", "steer", "interrupt"):
+            return "Usage: /busy [queue|steer|interrupt|status]"
+
+        self._busy_input_mode = args
+        os.environ["HERMES_GATEWAY_BUSY_INPUT_MODE"] = args
+        return f"Busy mode set to {args}."
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""

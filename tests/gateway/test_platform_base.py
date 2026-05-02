@@ -351,8 +351,12 @@ class TestExtractMedia:
         assert "Here" in cleaned
         assert "After" in cleaned
 
-    def test_media_tag_supports_unquoted_flac_paths_with_spaces(self, tmp_path, monkeypatch):
-        media_file = self._safe_media_file(tmp_path, monkeypatch, "Jane Doe/speech.flac")
+    def test_media_tag_supports_unquoted_flac_paths_with_spaces(
+        self, tmp_path, monkeypatch
+    ):
+        media_file = self._safe_media_file(
+            tmp_path, monkeypatch, "Jane Doe/speech.flac"
+        )
         content = f"MEDIA:{media_file}"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [(str(media_file), False)]
@@ -367,8 +371,9 @@ class TestExtractMedia:
 
         media, cleaned = BasePlatformAdapter.extract_media(f"MEDIA:{secret}")
 
-        assert media == []
-        assert f"MEDIA:{secret}" in cleaned
+        assert media == [(str(secret), False)]
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+        assert cleaned == ""
 
     def test_media_tag_rejects_arbitrary_existing_path_without_extension(
         self, tmp_path, monkeypatch
@@ -379,8 +384,9 @@ class TestExtractMedia:
 
         media, cleaned = BasePlatformAdapter.extract_media(f"MEDIA:{host_file}")
 
-        assert media == []
-        assert f"MEDIA:{host_file}" in cleaned
+        assert media == [(str(host_file), False)]
+        assert BasePlatformAdapter.validate_media_delivery_path(str(host_file)) is None
+        assert cleaned == ""
 
     def test_media_tag_rejects_unsafe_path_even_inside_code_block(
         self, tmp_path, monkeypatch
@@ -392,8 +398,9 @@ class TestExtractMedia:
 
         media, cleaned = BasePlatformAdapter.extract_media(content)
 
-        assert media == []
-        assert f"MEDIA:{host_file}" in cleaned
+        assert media == [(str(host_file), False)]
+        assert BasePlatformAdapter.validate_media_delivery_path(str(host_file)) is None
+        assert cleaned == "```text\n\n```"
 
     def test_media_tag_rejects_symlink_escape(self, tmp_path, monkeypatch):
         root = tmp_path / "media-cache"
@@ -412,8 +419,9 @@ class TestExtractMedia:
 
         media, cleaned = BasePlatformAdapter.extract_media(f"MEDIA:{link}")
 
-        assert media == []
-        assert f"MEDIA:{link}" in cleaned
+        assert media == [(str(link), False)]
+        assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
+        assert cleaned == ""
 
     def test_media_tag_allows_explicit_operator_media_root(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
@@ -467,32 +475,38 @@ class TestExtractMedia:
 # should_send_media_as_audio
 # ---------------------------------------------------------------------------
 
+
 class TestShouldSendMediaAsAudio:
     """Audio-routing policy shared by gateway + scheduler + send_message."""
 
     def test_unknown_extension_returns_false(self):
         from gateway.platforms.base import should_send_media_as_audio
+
         assert should_send_media_as_audio(None, ".png") is False
         assert should_send_media_as_audio("telegram", ".pdf") is False
 
     def test_non_telegram_platforms_route_all_audio(self):
         from gateway.platforms.base import should_send_media_as_audio
+
         for ext in (".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opus"):
             assert should_send_media_as_audio("discord", ext) is True
             assert should_send_media_as_audio("slack", ext) is True
 
     def test_telegram_mp3_and_m4a_route_to_audio(self):
         from gateway.platforms.base import should_send_media_as_audio
+
         assert should_send_media_as_audio("telegram", ".mp3") is True
         assert should_send_media_as_audio("telegram", ".m4a") is True
 
     def test_telegram_wav_and_flac_fall_through_to_document(self):
         from gateway.platforms.base import should_send_media_as_audio
+
         assert should_send_media_as_audio("telegram", ".wav") is False
         assert should_send_media_as_audio("telegram", ".flac") is False
 
     def test_telegram_ogg_opus_only_when_voice_flagged(self):
         from gateway.platforms.base import should_send_media_as_audio
+
         assert should_send_media_as_audio("telegram", ".ogg", is_voice=True) is True
         assert should_send_media_as_audio("telegram", ".opus", is_voice=True) is True
         assert should_send_media_as_audio("telegram", ".ogg") is False
@@ -501,9 +515,11 @@ class TestShouldSendMediaAsAudio:
     def test_accepts_platform_enum(self):
         from gateway.config import Platform
         from gateway.platforms.base import should_send_media_as_audio
+
         assert should_send_media_as_audio(Platform.TELEGRAM, ".mp3") is True
         assert should_send_media_as_audio(Platform.TELEGRAM, ".flac") is False
         assert should_send_media_as_audio(Platform.DISCORD, ".flac") is True
+
 
 # ---------------------------------------------------------------------------
 # truncate_message

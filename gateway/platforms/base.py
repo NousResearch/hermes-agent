@@ -2188,9 +2188,12 @@ class BasePlatformAdapter(ABC):
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
-            path = BasePlatformAdapter.validate_media_delivery_path(match.group("path"))
+            path = match.group("path").strip()
+            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+                path = path[1:-1].strip()
+            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
-                media.append((path, has_voice_tag))
+                media.append((os.path.expanduser(path), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
@@ -3275,13 +3278,23 @@ class BasePlatformAdapter(ABC):
                 _image_paths: list = []
                 _non_image_media: list = []
                 for media_path, is_voice in media_files:
-                    _ext = Path(media_path).suffix.lower()
-                    if (_ext in _IMAGE_EXTS
-                            and not is_voice
-                            and not force_document_attachments):
-                        _image_paths.append(media_path)
+                    validated_media_path = self.validate_media_delivery_path(media_path)
+                    if not validated_media_path:
+                        logger.warning(
+                            "[%s] Skipping unsafe MEDIA directive path: %s",
+                            self.name,
+                            media_path,
+                        )
+                        continue
+                    _ext = Path(validated_media_path).suffix.lower()
+                    if (
+                        _ext in _IMAGE_EXTS
+                        and not is_voice
+                        and not force_document_attachments
+                    ):
+                        _image_paths.append(validated_media_path)
                     else:
-                        _non_image_media.append((media_path, is_voice))
+                        _non_image_media.append((validated_media_path, is_voice))
                 _non_image_local: list = []
                 for file_path in local_files:
                     if (Path(file_path).suffix.lower() in _IMAGE_EXTS

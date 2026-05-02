@@ -248,7 +248,9 @@ class SignalAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
 
-        self.client = httpx.AsyncClient(timeout=30.0)
+        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
             # Health check — verify signal-cli daemon is reachable
             try:

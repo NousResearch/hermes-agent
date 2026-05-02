@@ -799,7 +799,7 @@ def _resolve_explicit_runtime(
     if pconfig and pconfig.auth_type == "api_key":
         env_url = ""
         if pconfig.base_url_env_var:
-            env_url = os.getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
+            env_url = (auth_mod.get_env_value(pconfig.base_url_env_var) or "").strip().rstrip("/")
 
         base_url = explicit_base_url
         if not base_url:

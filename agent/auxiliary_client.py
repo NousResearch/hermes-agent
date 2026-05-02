@@ -247,17 +247,13 @@ _PROVIDER_VISION_MODELS: Dict[str, str] = {
 # Providers whose endpoint does not accept image input, even though the
 # provider's broader ecosystem has vision models available elsewhere.  When
 # `auxiliary.vision.provider: auto` sees one of these as the main provider,
-# it must skip straight to the aggregator chain instead of returning a client
-# that will 404 on every vision request.
+# Providers whose main endpoint does not accept image input and must be
+# skipped on the vision auto-detect path, falling through to the aggregator
+# chain instead of returning a client that will 404 on every vision request.
 #
-# kimi-coding / kimi-coding-cn: the Kimi Coding Plan routes through
-# api.kimi.com/coding (Anthropic Messages wire) which Kimi's own docs
-# describe as having no image_in capability. Vision lives on the separate
-# Kimi Platform (api.moonshot.ai, OpenAI-wire, pay-as-you-go).  See #17076.
-_PROVIDERS_WITHOUT_VISION: frozenset = frozenset({
-    "kimi-coding",
-    "kimi-coding-cn",
-})
+# kimi-coding / kimi-coding-cn were removed in #18990 because Kimi Coding
+# now supports vision upstream.
+_PROVIDERS_WITHOUT_VISION: frozenset = frozenset()
 
 # OpenRouter app attribution headers
 _OR_HEADERS = {
@@ -2631,19 +2627,6 @@ def resolve_vision_provider_client(
                         main_provider, default_model or resolved_model or main_model,
                     )
                     return _finalize(main_provider, sync_client, default_model)
-            elif main_provider in _PROVIDERS_WITHOUT_VISION:
-                # Kimi Coding Plan's /coding endpoint (Anthropic Messages wire)
-                # does not accept image input — Kimi's own docs say "Current
-                # model does not support image input, switch to a model with
-                # image_in capability" and vision lives on the separate Kimi
-                # Platform (api.moonshot.ai). Skip the main provider and fall
-                # through to the aggregator chain instead of returning a
-                # client that will 404 on every vision request (#17076).
-                logger.debug(
-                    "Vision auto-detect: skipping main provider %s (no "
-                    "vision support) — falling through to aggregator chain",
-                    main_provider,
-                )
             else:
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,

@@ -199,6 +199,102 @@ class TestGenerate:
         assert tool["background"] == "opaque"
         assert tool["partial_images"] == 1
 
+    def test_codex_stream_request_includes_remote_reference_images(self, provider, monkeypatch):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(
+                type="image_generation_call",
+                status="generating",
+                id="ig_test",
+                result=_b64_png(),
+            )
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            final_response = SimpleNamespace(output=[], status="completed", output_text="")
+            return _FakeStream([done_event], final_response)
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        result = provider.generate(
+            "turn this into a poster",
+            aspect_ratio="square",
+            reference_images=["https://example.com/reference.png"],
+        )
+
+        assert result["success"] is True
+        assert result["reference_images"] == 1
+        assert captured["input"][0]["content"] == [
+            {"type": "input_text", "text": "turn this into a poster"},
+            {"type": "input_image", "image_url": "https://example.com/reference.png"},
+        ]
+
+    def test_codex_stream_request_embeds_local_reference_images(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+
+        captured = {}
+
+        def _stream(**kwargs):
+            captured.update(kwargs)
+            output_item = SimpleNamespace(
+                type="image_generation_call",
+                status="generating",
+                id="ig_test",
+                result=_b64_png(),
+            )
+            done_event = SimpleNamespace(type="response.output_item.done", item=output_item)
+            final_response = SimpleNamespace(output=[], status="completed", output_text="")
+            return _FakeStream([done_event], final_response)
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_stream))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+
+        ref = tmp_path / "ref.png"
+        ref.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        result = provider.generate(
+            "edit local image",
+            reference_images=[str(ref)],
+        )
+
+        assert result["success"] is True
+        image_part = captured["input"][0]["content"][1]
+        assert image_part["type"] == "input_image"
+        assert image_part["image_url"].startswith("data:image/png;base64,")
+
+    def test_local_reference_images_must_be_real_images(self, tmp_path):
+        ref = tmp_path / "not-image.png"
+        ref.write_text("not actually an image")
+
+        with pytest.raises(ValueError, match="Unsupported or invalid reference image"):
+            codex_plugin._build_input_content("edit", [str(ref)])
+
+    def test_local_reference_images_must_be_absolute(self):
+        with pytest.raises(ValueError, match="absolute paths"):
+            codex_plugin._build_input_content("edit", ["relative/ref.png"])
+
+    def test_reference_image_count_is_limited(self):
+        refs = ["https://example.com/ref.png"] * (codex_plugin._MAX_REFERENCE_IMAGES + 1)
+
+        with pytest.raises(ValueError, match="At most"):
+            codex_plugin._build_input_content("edit", refs)
+
+    def test_invalid_reference_images_return_invalid_argument(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=lambda **kwargs: None))
+        monkeypatch.setattr(codex_plugin, "_build_codex_client", lambda: fake_client)
+        ref = tmp_path / "not-image.png"
+        ref.write_text("not actually an image")
+
+        result = provider.generate("edit", reference_images=[str(ref)])
+
+        assert result["success"] is False
+        assert result["error_type"] == "invalid_argument"
+        assert "Unsupported or invalid reference image" in result["error"]
+
     def test_partial_image_event_used_when_done_missing(self, provider, monkeypatch):
         """If the stream never emits output_item.done, fall back to the
         partial_image event so users at least get the latest preview frame."""

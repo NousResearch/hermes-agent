@@ -15,11 +15,14 @@ def _reset_registry():
 
 
 class _FakeCodexProvider(ImageGenProvider):
+    last_kwargs = None
+
     @property
     def name(self) -> str:
         return "codex"
 
     def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+        type(self).last_kwargs = kwargs
         return {
             "success": True,
             "image": "/tmp/codex-test.png",
@@ -97,3 +100,28 @@ class TestPluginDispatch:
         assert payload["success"] is True
         assert payload["provider"] == "codex"
         assert payload["aspect_ratio"] == "portrait"
+
+    def test_handle_forwards_reference_images_to_configured_provider(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+        from hermes_cli import plugins as plugins_module
+        from agent import image_gen_registry as registry_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: codex\n")
+        _FakeCodexProvider.last_kwargs = None
+
+        monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+        monkeypatch.setattr(registry_module, "get_provider", lambda name: _FakeCodexProvider() if name == "codex" else None)
+
+        dispatched = image_generation_tool._handle_image_generate({
+            "prompt": "use this reference",
+            "aspect_ratio": "square",
+            "reference_images": ["https://example.com/ref.png"],
+        })
+        payload = json.loads(dispatched)
+
+        assert payload["success"] is True
+        assert _FakeCodexProvider.last_kwargs == {
+            "reference_images": ["https://example.com/ref.png"]
+        }

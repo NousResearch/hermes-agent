@@ -11,11 +11,24 @@ from pathlib import Path
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: ~/.hermes).
 
-    Reads HERMES_HOME env var, falls back to ~/.hermes.
-    This is the single source of truth — all other copies should import this.
+    Reads HERMES_HOME env var, falls back to ~/.hermes in classic mode.
+    In profile-mode subprocesses (HERMES_PROFILE/HERMES_PROFILE_NAME set),
+    missing HERMES_HOME is treated as a hard error to avoid silent
+    cross-profile reads/writes.
     """
     val = os.environ.get("HERMES_HOME", "").strip()
-    return Path(val) if val else Path.home() / ".hermes"
+    if val:
+        return Path(val)
+
+    # Guard profile-mode workers against silently falling back to ~/.hermes.
+    if os.environ.get("HERMES_PROFILE") or os.environ.get("HERMES_PROFILE_NAME"):
+        raise ValueError(
+            "HERMES_HOME is not set in a profile-scoped process. "
+            "Set HERMES_HOME to the active profile directory "
+            "(e.g. ~/.hermes/profiles/<name>)."
+        )
+
+    return Path.home() / ".hermes"
 
 
 def get_default_hermes_root() -> Path:

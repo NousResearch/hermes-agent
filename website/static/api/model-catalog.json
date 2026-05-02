@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-04-26T19:27:12Z",
+  "updated_at": "2026-04-30T03:06:09Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -164,6 +164,9 @@
         },
         {
           "id": "xiaomi/mimo-v2.5"
+        },
+        {
+          "id": "tencent/hy3-preview"
         },
         {
           "id": "anthropic/claude-opus-4.7"

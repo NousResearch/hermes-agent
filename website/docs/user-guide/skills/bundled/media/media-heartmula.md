@@ -1,14 +1,14 @@
 ---
-title: "Heartmula — Set up and run HeartMuLa, the open-source music generation model family (Suno-like)"
+title: "Heartmula — HeartMuLa: Suno-like song generation from lyrics + tags"
 sidebar_label: "Heartmula"
-description: "Set up and run HeartMuLa, the open-source music generation model family (Suno-like)"
+description: "HeartMuLa: Suno-like song generation from lyrics + tags"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Heartmula
 
-Set up and run HeartMuLa, the open-source music generation model family (Suno-like). Generates full songs from lyrics + tags with multilingual support.
+HeartMuLa: Suno-like song generation from lyrics + tags.
 
 ## Skill metadata
 
@@ -29,7 +29,7 @@ The following is the complete skill definition that Hermes loads when this skill
 # HeartMuLa - Open-Source Music Generation
 
 ## Overview
-HeartMuLa is a family of open-source music foundation models (Apache-2.0) that generates music conditioned on lyrics and tags. Comparable to Suno for open-source. Includes:
+HeartMuLa is a family of open-source music foundation models (Apache-2.0) that generates music conditioned on lyrics and tags, with multilingual support. Generates full songs from lyrics + tags. Comparable to Suno for open-source. Includes:
 - **HeartMuLa** - Music language model (3B/7B) for generation from lyrics + tags
 - **HeartCodec** - 12.5Hz music codec for high-fidelity audio reconstruction
 - **HeartTranscriptor** - Whisper-based lyrics transcription

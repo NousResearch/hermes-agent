@@ -30,14 +30,13 @@ model:
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
+  #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
   #
   # Local servers (LM Studio, Ollama, vLLM, llama.cpp):
-  #   "custom"       - Any OpenAI-compatible endpoint. Set base_url below.
-  #   Aliases: "lmstudio", "ollama", "vllm", "llamacpp" all map to "custom".
-  #   Example for LM Studio:
-  #     provider: "lmstudio"
-  #     base_url: "http://localhost:1234/v1"
-  #   No API key needed — local servers typically ignore auth.
+  #   "custom"       - Any other OpenAI-compatible endpoint. Set base_url below.
+  #   Aliases: "ollama", "vllm", "llamacpp" all map to "custom".
+  #   LM Studio is first-class and uses provider: "lmstudio".
+  #   It works with both no-auth and auth-enabled server modes.
   #
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
@@ -181,6 +180,11 @@ terminal:
 #   lifetime_seconds: 300
 #   docker_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   docker_mount_cwd_to_workspace: true   # Explicit opt-in: mount your launch cwd into /workspace
+#   # Optional: run the container as your host user's uid:gid so files written
+#   # into bind-mounted dirs are owned by you, not root. Drops SETUID/SETGID
+#   # caps too since no gosu privilege drop is needed. Leave off if your
+#   # chosen docker_image expects to start as root.
+#   docker_run_as_host_user: true
 #   # Optional: explicitly forward selected env vars into Docker.
 #   # These values come from your current shell first, then ~/.hermes/.env.
 #   # Warning: anything forwarded here is visible to commands run in the container.
@@ -284,6 +288,25 @@ browser:
   # Inactivity timeout in seconds - browser sessions are automatically closed
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
+
+# =============================================================================
+# Tool Loop Guardrails
+# =============================================================================
+# Soft warnings are enabled by default. They append guidance to repeated failed
+# or non-progressing tool results but still let the tool execute. Hard stops are
+# opt-in circuit breakers for autonomous/cron sessions where stopping a loop is
+# preferable to spending the full iteration budget.
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: false
+  warn_after:
+    exact_failure: 2
+    same_tool_failure: 3
+    idempotent_no_progress: 2
+  hard_stop_after:
+    exact_failure: 5
+    same_tool_failure: 8
+    idempotent_no_progress: 5
 
 # =============================================================================
 # Context Compression (Auto-shrinks long conversations)
@@ -566,7 +589,7 @@ agent:
 #   - A preset like "hermes-cli" or "hermes-telegram" (curated tool set)
 #   - A list of individual toolsets to compose your own (see list below)
 #
-# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot
+# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot, teams
 #
 # Examples:
 #
@@ -596,6 +619,7 @@ agent:
 #   signal:        hermes-signal         (same as telegram)
 #   homeassistant: hermes-homeassistant  (same as telegram)
 #   qqbot:            hermes-qqbot            (same as telegram)
+#   teams:            hermes-teams            (same as telegram)
 #
 platform_toolsets:
   cli: [hermes-cli]
@@ -607,6 +631,7 @@ platform_toolsets:
   homeassistant: [hermes-homeassistant]
   qqbot: [hermes-qqbot]
   yuanbao: [hermes-yuanbao]
+  teams: [hermes-teams]
 
 # =============================================================================
 # Gateway Platform Settings
@@ -928,7 +953,7 @@ display:
   #     agent_name: "My Agent"               # Banner title and branding
   #     welcome: "Welcome message"           # Shown at CLI startup
   #     response_label: " ⚔ Agent "         # Response box header label
-  #     prompt_symbol: "⚔ ❯ "              # Prompt symbol
+  #     prompt_symbol: "⚔"                  # Prompt symbol (bare token; renderers add trailing space)
   #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
   #
   skin: default

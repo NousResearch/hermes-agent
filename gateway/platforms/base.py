@@ -23,6 +23,45 @@ from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
+# Audio file extensions Hermes recognizes for native audio delivery.
+# Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
+# should_send_media_as_audio() below.
+_AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
+# Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
+# formats either need to go through sendVoice (Opus/OGG) or must be
+# delivered as a regular document.
+_TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
+_TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+
+
+def _platform_name(platform) -> str:
+    """Normalize a Platform enum / raw string into a lowercase name."""
+    value = getattr(platform, "value", platform)
+    return str(value or "").lower()
+
+
+def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
+    """Return True when a media file should use the platform's audio sender.
+
+    Other platforms: every recognized audio extension routes through the
+    audio sender.
+
+    Telegram: the Bot API only accepts MP3/M4A for sendAudio and
+    Opus/OGG for sendVoice. Opus/OGG is only routed as audio when the
+    caller flagged ``is_voice=True`` (so we don't turn a regular audio
+    attachment into a voice bubble just because the file happens to be
+    Opus). Everything else falls through to document delivery by
+    returning ``False``.
+    """
+    normalized_ext = (ext or "").lower()
+    if normalized_ext not in _AUDIO_EXTS:
+        return False
+    if _platform_name(platform) == "telegram":
+        if normalized_ext in _TELEGRAM_VOICE_EXTS:
+            return is_voice
+        return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
+    return True
+
 
 def utf16_len(s: str) -> int:
     """Count UTF-16 code units in *s*.
@@ -377,7 +416,7 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
+from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 from enum import Enum
 
 from pathlib import Path as _Path
@@ -942,7 +981,7 @@ def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
         return
 
 
-@dataclass 
+@dataclass
 class SendResult:
     """Result of sending a message."""
     success: bool
@@ -950,6 +989,45 @@ class SendResult:
     error: Optional[str] = None
     raw_response: Any = None
     retryable: bool = False  # True for transient connection errors — base will retry automatically
+
+
+class EphemeralReply(str):
+    """System-notice reply that auto-deletes after a TTL.
+
+    Slash-command handlers in ``gateway/run.py`` can return this wrapper
+    instead of a plain string to request that the reply message be deleted
+    after ``ttl_seconds`` on platforms that support ``delete_message``.
+
+    Subclassing ``str`` keeps the wrapper transparent to anything that
+    treats handler return values as text (existing tests use ``in`` /
+    ``startswith`` / equality; the ``_process_message_background`` pipeline
+    extracts attachments from the string content).  ``isinstance(r,
+    EphemeralReply)`` still distinguishes ephemeral replies from plain
+    strings so the send path can schedule deletion.
+
+    Platforms that don't override :meth:`BasePlatformAdapter.delete_message`
+    silently ignore the TTL — the message is sent normally and left in
+    place.  When ``ttl_seconds`` is ``None``, the pipeline uses the
+    configured ``display.ephemeral_system_ttl`` default.  A default of ``0``
+    disables auto-deletion globally, preserving prior behavior.
+    """
+
+    ttl_seconds: Optional[int]
+
+    def __new__(cls, text: str, ttl_seconds: Optional[int] = None):
+        instance = super().__new__(cls, text)
+        instance.ttl_seconds = ttl_seconds
+        return instance
+
+    @property
+    def text(self) -> str:
+        """Return the underlying text.
+
+        Provided for call sites that want an explicit string conversion,
+        though ``str(reply)`` and using ``reply`` directly where a string
+        is expected both work identically.
+        """
+        return str.__str__(self)
 
 
 def merge_pending_message_event(
@@ -995,6 +1073,11 @@ def merge_pending_message_event(
                     existing.text = event.text
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
+            elif (
+                getattr(existing, "message_type", None) == MessageType.TEXT
+                and event.message_type != MessageType.TEXT
+            ):
+                existing.message_type = event.message_type
             return
 
         if (
@@ -1029,8 +1112,10 @@ _RETRYABLE_ERROR_PATTERNS = (
 )
 
 
-# Type for message handlers
-MessageHandler = Callable[[MessageEvent], Awaitable[Optional[str]]]
+# Type for message handlers.  Handlers may return a plain string (normal
+# reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
+# ``None`` when the response was already delivered (e.g. via streaming).
+MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
 
 
 def resolve_channel_prompt(
@@ -1415,6 +1500,119 @@ class BasePlatformAdapter(ABC):
         """
         return False
 
+    def _get_ephemeral_system_ttl_default(self) -> int:
+        """Read ``display.ephemeral_system_ttl`` from config.
+
+        Returns the TTL in seconds to use when an :class:`EphemeralReply`
+        does not specify one explicitly.  ``0`` (the default) disables
+        auto-deletion.  Non-fatal if config is unreadable.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_config
+        except Exception:
+            return 0
+        try:
+            cfg = _load_config()
+        except Exception:
+            return 0
+        display = cfg.get("display", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(display, dict):
+            return 0
+        raw = display.get("ephemeral_system_ttl", 0)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+
+    def _schedule_ephemeral_delete(
+        self,
+        chat_id: str,
+        message_id: str,
+        ttl_seconds: int,
+    ) -> None:
+        """Spawn a detached task that deletes ``message_id`` after ``ttl_seconds``.
+
+        Best-effort — failures (gateway restart, permission denied, message
+        too old for Telegram's 48h window) are swallowed at debug level.
+        Does not block the caller.
+        """
+
+        async def _run_delete() -> None:
+            try:
+                await asyncio.sleep(max(1, int(ttl_seconds)))
+                await self.delete_message(chat_id=chat_id, message_id=message_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug(
+                    "[%s] Ephemeral delete failed for %s/%s: %s",
+                    self.name, chat_id, message_id, e,
+                )
+
+        coro = _run_delete()
+        try:
+            asyncio.create_task(coro)
+        except RuntimeError:
+            # No running loop (e.g. unit tests that never reach the async
+            # path).  Close the coroutine cleanly so Python doesn't warn
+            # about it never being awaited, then drop silently.
+            coro.close()
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a three-option slash-command confirmation prompt.
+
+        Used by the gateway's generic slash-confirm primitive (see
+        ``GatewayRunner._request_slash_confirm``) for commands that have a
+        non-destructive but expensive side effect the user should explicitly
+        acknowledge — the current caller is ``/reload-mcp``, which
+        invalidates the provider prompt cache.
+
+        Platforms with inline-button support (Telegram, Discord, Slack,
+        Matrix, Feishu) should override this to render three buttons:
+        Approve Once / Always Approve / Cancel.  Button callbacks MUST be
+        routed back through the gateway by calling
+        ``GatewayRunner._resolve_slash_confirm(confirm_id, choice)`` where
+        ``choice`` is ``"once"`` / ``"always"`` / ``"cancel"``.
+
+        Platforms without button UIs leave this as the default and fall
+        through to the gateway's text fallback (which sends ``message`` as
+        plain text and intercepts the next ``/approve`` / ``/always`` /
+        ``/cancel`` reply).
+
+        ``confirm_id`` is a short string generated by the gateway; the
+        adapter stores it alongside any platform-specific state needed to
+        route the callback (e.g. Telegram's ``_approval_state`` dict).
+        """
+        return SendResult(success=False, error="Not supported")
+
+    async def send_private_notice(
+        self,
+        chat_id: str,
+        user_id: Optional[str],
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a notice privately when the platform supports it.
+
+        The default implementation falls back to a normal send so callers can
+        use one code path across platforms.
+        """
+        return await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
         Send a typing indicator.
@@ -1431,7 +1629,64 @@ class BasePlatformAdapter(ABC):
         Default is a no-op for platforms with one-shot typing indicators.
         """
         pass
-    
+
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images.
+
+        Accepts ``http(s)://``, ``file://`` URIs in the first tuple
+        element.
+
+        Default implementation sends each item individually,
+        routing animated GIFs through ``send_animation`` and local
+        files through ``send_image_file``.
+
+        Override in subclasses to bundle into a single native API call
+        (e.g. Signal's multi-attachment RPC)
+        """
+        from urllib.parse import unquote as _unquote
+
+        for image_url, alt_text in images:
+            if human_delay > 0:
+                await asyncio.sleep(human_delay)
+            try:
+                logger.info(
+                    "[%s] Sending image: %s (alt=%s)",
+                    self.name,
+                    safe_url_for_log(image_url),
+                    alt_text[:30] if alt_text else "",
+                )
+                if image_url.startswith("file://"):
+                    img_result = await self.send_image_file(
+                        chat_id=chat_id,
+                        image_path=_unquote(image_url[7:]),
+                        caption=alt_text if alt_text else None,
+                        metadata=metadata,
+                    )
+                elif self._is_animation_url(image_url):
+                    img_result = await self.send_animation(
+                        chat_id=chat_id,
+                        animation_url=image_url,
+                        caption=alt_text if alt_text else None,
+                        metadata=metadata,
+                    )
+                else:
+                    img_result = await self.send_image(
+                        chat_id=chat_id,
+                        image_url=image_url,
+                        caption=alt_text if alt_text else None,
+                        metadata=metadata,
+                    )
+                if not img_result.success:
+                    logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+            except Exception as img_err:
+                logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+
     async def send_image(
         self,
         chat_id: str,
@@ -1640,7 +1895,7 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -1780,11 +2035,19 @@ class BasePlatformAdapter(ABC):
                 if stop_event is None:
                     await asyncio.sleep(interval)
                     continue
-                try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=interval)
-                except asyncio.TimeoutError:
-                    continue
-                return
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + interval
+                while not stop_event.is_set():
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    # Poll instead of wait_for(stop_event.wait()).  Cancelling
+                    # wait_for while it owns the inner Event.wait task can leave
+                    # shutdown paths stuck awaiting the typing task on Python
+                    # 3.11/pytest-asyncio; sleep cancellation is immediate.
+                    await asyncio.sleep(min(0.25, remaining))
+                if stop_event.is_set():
+                    return
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
         finally:
@@ -1903,6 +2166,28 @@ class BasePlatformAdapter(ABC):
             return False
         lowered = error.lower()
         return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
+
+    def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
+        """Unwrap a handler response into (text, ttl_seconds).
+
+        Accepts a plain string, ``None``, or an :class:`EphemeralReply`.
+        Returns ``(text, ttl)`` where ``ttl > 0`` means the caller should
+        schedule a deletion via :meth:`_schedule_ephemeral_delete` after
+        the send succeeds.  ``ttl`` is forced to 0 when the adapter
+        doesn't override :meth:`delete_message` so non-supporting
+        platforms silently degrade to normal sends.
+        """
+        if isinstance(response, EphemeralReply):
+            ttl = response.ttl_seconds
+            if ttl is None:
+                try:
+                    ttl = int(self._get_ephemeral_system_ttl_default())
+                except Exception:
+                    ttl = 0
+            if ttl and ttl > 0 and type(self).delete_message is BasePlatformAdapter.delete_message:
+                ttl = 0
+            return response.text, int(ttl or 0)
+        return response, 0
 
     async def _send_with_retry(
         self,
@@ -2117,6 +2402,12 @@ class BasePlatformAdapter(ABC):
         ``release_guard=False`` keeps the adapter-level session guard in place
         so reset-like commands can finish atomically before follow-up messages
         are allowed to start a fresh background task.
+
+        Bounded by a 5s timeout so a wedged finally block in the cancelled
+        task (typing-task cleanup, on_processing_complete hook, etc.) can't
+        stall the calling dispatch coroutine — particularly under pytest-
+        asyncio where the event loop's cancellation-propagation semantics
+        differ subtly from a bare ``asyncio.run`` harness.
         """
         task = self._session_tasks.pop(session_key, None)
         if task is not None and not task.done():
@@ -2128,9 +2419,15 @@ class BasePlatformAdapter(ABC):
             self._expected_cancelled_tasks.add(task)
             task.cancel()
             try:
-                await task
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
             except asyncio.CancelledError:
                 pass
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] Cancelled task for %s did not exit within 5s; "
+                    "unblocking dispatch and letting the task unwind in the background",
+                    self.name, session_key,
+                )
             except Exception:
                 logger.debug(
                     "[%s] Session cancellation raised while unwinding %s",
@@ -2199,13 +2496,20 @@ class BasePlatformAdapter(ABC):
                 release_guard=False,
                 discard_pending=False,
             )
-            if response:
-                await self._send_with_retry(
+            _text, _eph_ttl = self._unwrap_ephemeral(response)
+            if _text:
+                _r = await self._send_with_retry(
                     chat_id=event.source.chat_id,
-                    content=response,
+                    content=_text,
                     reply_to=event.message_id,
                     metadata=thread_meta,
                 )
+                if _eph_ttl > 0 and _r.success and _r.message_id:
+                    self._schedule_ephemeral_delete(
+                        chat_id=event.source.chat_id,
+                        message_id=_r.message_id,
+                        ttl_seconds=_eph_ttl,
+                    )
         except Exception:
             # On failure, restore the original guard if one still exists so
             # we don't leave the session in a half-reset state.
@@ -2285,13 +2589,20 @@ class BasePlatformAdapter(ABC):
                 try:
                     _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
                     response = await self._message_handler(event)
-                    if response:
-                        await self._send_with_retry(
+                    _text, _eph_ttl = self._unwrap_ephemeral(response)
+                    if _text:
+                        _r = await self._send_with_retry(
                             chat_id=event.source.chat_id,
-                            content=response,
+                            content=_text,
                             reply_to=event.message_id,
                             metadata=_thread_meta,
                         )
+                        if _eph_ttl > 0 and _r.success and _r.message_id:
+                            self._schedule_ephemeral_delete(
+                                chat_id=event.source.chat_id,
+                                message_id=_r.message_id,
+                                ttl_seconds=_eph_ttl,
+                            )
                 except Exception as e:
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
                 return
@@ -2365,7 +2676,6 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
-        callback_generation = getattr(interrupt_event, "_hermes_run_generation", None)
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
@@ -2382,13 +2692,32 @@ class BasePlatformAdapter(ABC):
                 **_keep_typing_kwargs,
             )
         )
+
+        async def _stop_typing_task() -> None:
+            typing_task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                # Cancellation cleanup must not block adapter shutdown.  The
+                # typing task is already cancelled; if the parent task is also
+                # cancelling, let this message-processing task unwind now.
+                pass
         
         try:
             await self._run_processing_hook("on_processing_start", event)
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
-            
+
+            # Slash-command handlers may return an EphemeralReply sentinel to
+            # request that their reply message auto-delete after a TTL (used
+            # for system notices like "✨ New session started!" that the user
+            # doesn't need to keep in the thread).  Unwrap here so all the
+            # downstream extract_media / text-processing logic sees a plain
+            # string, and remember the TTL + platform capability so the
+            # post-send block can schedule the deletion.
+            response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or
             # when the message was queued behind an active agent.  Log at
@@ -2477,53 +2806,78 @@ class BasePlatformAdapter(ABC):
                     )
                     _record_delivery(result)
 
+                    # Schedule auto-deletion of system-notice replies.
+                    # Detached so the handler returns immediately; errors
+                    # (permission denied, message too old) are swallowed.
+                    if (
+                        _ephemeral_ttl
+                        and _ephemeral_ttl > 0
+                        and result.success
+                        and result.message_id
+                    ):
+                        self._schedule_ephemeral_delete(
+                            chat_id=event.source.chat_id,
+                            message_id=result.message_id,
+                            ttl_seconds=_ephemeral_ttl,
+                        )
+
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
 
                 # Send extracted images as native attachments
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
-                for image_url, alt_text in images:
-                    if human_delay > 0:
-                        await asyncio.sleep(human_delay)
                     try:
-                        logger.info(
-                            "[%s] Sending image: %s (alt=%s)",
-                            self.name,
-                            safe_url_for_log(image_url),
-                            alt_text[:30] if alt_text else "",
+                        await self.send_multiple_images(
+                            chat_id=event.source.chat_id,
+                            images=images,
+                            metadata=_thread_metadata,
+                            human_delay=human_delay,
                         )
-                        # Route animated GIFs through send_animation for proper playback
-                        if self._is_animation_url(image_url):
-                            img_result = await self.send_animation(
-                                chat_id=event.source.chat_id,
-                                animation_url=image_url,
-                                caption=alt_text if alt_text else None,
-                                metadata=_thread_metadata,
-                            )
-                        else:
-                            img_result = await self.send_image(
-                                chat_id=event.source.chat_id,
-                                image_url=image_url,
-                                caption=alt_text if alt_text else None,
-                                metadata=_thread_metadata,
-                            )
-                        if not img_result.success:
-                            logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
-                    except Exception as img_err:
-                        logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                    except Exception as batch_err:
+                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+
 
                 # Send extracted media files — route by file type
-                _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
                 _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
+                # Partition images out of media_files + local_files so they
+                # can be sent as a single batch (Signal RPC)
+                from urllib.parse import quote as _quote
+                _image_paths: list = []
+                _non_image_media: list = []
                 for media_path, is_voice in media_files:
+                    _ext = Path(media_path).suffix.lower()
+                    if _ext in _IMAGE_EXTS and not is_voice:
+                        _image_paths.append(media_path)
+                    else:
+                        _non_image_media.append((media_path, is_voice))
+                _non_image_local: list = []
+                for file_path in local_files:
+                    if Path(file_path).suffix.lower() in _IMAGE_EXTS:
+                        _image_paths.append(file_path)
+                    else:
+                        _non_image_local.append(file_path)
+
+                if _image_paths:
+                    try:
+                        _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
+                        await self.send_multiple_images(
+                            chat_id=event.source.chat_id,
+                            images=_batch,
+                            metadata=_thread_metadata,
+                            human_delay=human_delay,
+                        )
+                    except Exception as batch_err:
+                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+
+                for media_path, is_voice in _non_image_media:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
                         ext = Path(media_path).suffix.lower()
-                        if ext in _AUDIO_EXTS:
+                        if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                             media_result = await self.send_voice(
                                 chat_id=event.source.chat_id,
                                 audio_path=media_path,
@@ -2533,12 +2887,6 @@ class BasePlatformAdapter(ABC):
                             media_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=media_path,
-                                metadata=_thread_metadata,
-                            )
-                        elif ext in _IMAGE_EXTS:
-                            media_result = await self.send_image_file(
-                                chat_id=event.source.chat_id,
-                                image_path=media_path,
                                 metadata=_thread_metadata,
                             )
                         else:
@@ -2553,19 +2901,13 @@ class BasePlatformAdapter(ABC):
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
-                # Send auto-detected local files as native attachments
-                for file_path in local_files:
+                # Send auto-detected local non-image files as native attachments
+                for file_path in _non_image_local:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
                         ext = Path(file_path).suffix.lower()
-                        if ext in _IMAGE_EXTS:
-                            await self.send_image_file(
-                                chat_id=event.source.chat_id,
-                                image_path=file_path,
-                                metadata=_thread_metadata,
-                            )
-                        elif ext in _VIDEO_EXTS:
+                        if ext in _VIDEO_EXTS:
                             await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
@@ -2604,14 +2946,28 @@ class BasePlatformAdapter(ABC):
                 _active = self._active_sessions.get(session_key)
                 if _active is not None:
                     _active.clear()
-                typing_task.cancel()
+                await _stop_typing_task()
+                # Spawn a fresh task for the pending message instead of
+                # recursing.  Issue #17758: `await
+                # self._process_message_background(...)` here grew the
+                # call stack one frame per chained follow-up, and under
+                # sustained pending-queue activity the C stack would
+                # exhaust at ~2000 frames and SIGSEGV the process.
+                # Mirror the late-arrival drain pattern below: hand off
+                # to a new task and return so this frame can unwind.
+                drain_task = asyncio.create_task(
+                    self._process_message_background(pending_event, session_key)
+                )
+                # Hand ownership of the session to the drain task so
+                # stale-lock detection keeps working while it runs.
+                self._session_tasks[session_key] = drain_task
                 try:
-                    await typing_task
-                except asyncio.CancelledError:
+                    self._background_tasks.add(drain_task)
+                    drain_task.add_done_callback(self._background_tasks.discard)
+                except TypeError:
+                    # Tests stub create_task() with non-hashable sentinels; tolerate.
                     pass
-                # Process pending message in new background task
-                await self._process_message_background(pending_event, session_key)
-                return  # Already cleaned up
+                return  # Drain task owns the session now.
                 
         except asyncio.CancelledError:
             current_task = asyncio.current_task()
@@ -2642,7 +2998,20 @@ class BasePlatformAdapter(ABC):
         finally:
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
-            _callback_generation = callback_generation
+            #
+            # Snapshot the callback generation HERE (after the agent has run),
+            # not at the top of this task.  _hermes_run_generation is set on
+            # the interrupt event by GatewayRunner._bind_adapter_run_generation
+            # during _handle_message_with_agent — which happens DURING the
+            # self._message_handler(event) await above.  Snapshotting earlier
+            # always captured None, which bypassed the generation-ownership
+            # check in pop_post_delivery_callback and let stale runs fire a
+            # fresher run's callbacks.
+            _callback_generation = getattr(
+                interrupt_event,
+                "_hermes_run_generation",
+                None,
+            )
             if hasattr(self, "pop_post_delivery_callback"):
                 _post_cb = self.pop_post_delivery_callback(
                     session_key,
@@ -2656,11 +3025,7 @@ class BasePlatformAdapter(ABC):
                 except Exception:
                     pass
             # Stop typing indicator
-            typing_task.cancel()
-            try:
-                await typing_task
-            except asyncio.CancelledError:
-                pass
+            await _stop_typing_task()
             # Also cancel any platform-level persistent typing tasks (e.g. Discord)
             # that may have been recreated by _keep_typing after the last stop_typing()
             try:
@@ -2677,25 +3042,41 @@ class BasePlatformAdapter(ABC):
             # dropped (user never gets a reply).
             late_pending = self._pending_messages.pop(session_key, None)
             if late_pending is not None:
-                logger.debug(
-                    "[%s] Late-arrival pending message during cleanup — spawning drain task",
-                    self.name,
-                )
-                _active = self._active_sessions.get(session_key)
-                if _active is not None:
-                    _active.clear()
-                drain_task = asyncio.create_task(
-                    self._process_message_background(late_pending, session_key)
-                )
-                # Hand ownership of the session to the drain task so stale-lock
-                # detection keeps working while it runs.
-                self._session_tasks[session_key] = drain_task
-                try:
-                    self._background_tasks.add(drain_task)
-                    drain_task.add_done_callback(self._background_tasks.discard)
-                except TypeError:
-                    # Tests stub create_task() with non-hashable sentinels; tolerate.
-                    pass
+                current_task = asyncio.current_task()
+                existing_task = self._session_tasks.get(session_key)
+                if (
+                    existing_task is not None
+                    and existing_task is not current_task
+                ):
+                    # The in-band drain (or an earlier late-arrival drain)
+                    # already spawned a follow-up task that owns this
+                    # session.  Re-queue the late-arrival event so that
+                    # task picks it up — avoids spawning two concurrent
+                    # _process_message_background tasks for the same key
+                    # (#17758 follow-up: prevents the create_task path
+                    # from racing with itself across the in-band/finally
+                    # boundary).
+                    self._pending_messages[session_key] = late_pending
+                else:
+                    logger.debug(
+                        "[%s] Late-arrival pending message during cleanup — spawning drain task",
+                        self.name,
+                    )
+                    _active = self._active_sessions.get(session_key)
+                    if _active is not None:
+                        _active.clear()
+                    drain_task = asyncio.create_task(
+                        self._process_message_background(late_pending, session_key)
+                    )
+                    # Hand ownership of the session to the drain task so stale-lock
+                    # detection keeps working while it runs.
+                    self._session_tasks[session_key] = drain_task
+                    try:
+                        self._background_tasks.add(drain_task)
+                        drain_task.add_done_callback(self._background_tasks.discard)
+                    except TypeError:
+                        # Tests stub create_task() with non-hashable sentinels; tolerate.
+                        pass
                 # Leave _active_sessions[session_key] populated — the drain
                 # task's own lifecycle will clean it up.
             else:
@@ -2703,16 +3084,34 @@ class BasePlatformAdapter(ABC):
                 # reset-like command that already swapped in its own
                 # command_guard (and cancelled us) can't be accidentally
                 # cleared by our unwind.  The command owns the session now.
+                #
+                # The owner-check also covers the in-band drain handoff
+                # above: when we spawned a drain_task and transferred
+                # ownership via ``_session_tasks[session_key] = drain_task``,
+                # ``_session_tasks.get(session_key) is current_task`` is
+                # False, so we leave _active_sessions populated.  Without
+                # this guard, the drain task picks up the same
+                # interrupt_event in its own _process_message_background
+                # entry, _release_session_guard's guard-match succeeds,
+                # and we'd delete the entry while the drain task is still
+                # running — letting a concurrent inbound message pass
+                # the Level-1 guard and spawn a second handler for the
+                # same session.
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     del self._session_tasks[session_key]
-                self._release_session_guard(session_key, guard=interrupt_event)
+                    self._release_session_guard(session_key, guard=interrupt_event)
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
 
         Used during gateway shutdown/replacement so active sessions from the old
         process do not keep running after adapters are being torn down.
+
+        Each cancelled task is awaited with a 5s bound so a wedged finally
+        (typing-task cleanup, on_processing_complete hook) can't stall the
+        whole shutdown path.  Stragglers are released from our tracking and
+        allowed to finish unwinding on their own.
         """
         # Loop until no new tasks appear.  Without this, a message
         # arriving during the `await asyncio.gather` below would spawn
@@ -2731,7 +3130,21 @@ class BasePlatformAdapter(ABC):
             for task in tasks:
                 self._expected_cancelled_tasks.add(task)
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *(asyncio.shield(t) for t in tasks),
+                        return_exceptions=True,
+                    ),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] %d background task(s) did not exit within 5s; "
+                    "releasing tracking and letting them unwind in the background",
+                    self.name, len([t for t in tasks if not t.done()]),
+                )
+                break
             # Loop: late-arrival tasks spawned during the gather above
             # will be in self._background_tasks now.  Re-check.
         self._background_tasks.clear()

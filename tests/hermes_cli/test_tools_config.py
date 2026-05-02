@@ -120,7 +120,16 @@ def test_get_platform_tools_preserves_explicit_empty_selection():
 
     enabled = _get_platform_tools(config, "cli")
 
-    assert enabled == set()
+    # An explicit empty list disables every CONFIGURABLE toolset (web,
+    # terminal, memory, …). Non-configurable platform toolsets that ride
+    # along on the platform's default composite (e.g. `kanban`, whose tools
+    # live in _HERMES_CORE_TOOLS but aren't user-toggleable) are still
+    # auto-recovered by _get_platform_tools so saving via `hermes tools`
+    # doesn't silently drop them. The contract this test guards is the
+    # configurable side: nothing the user could have checked in the TUI
+    # checklist should reappear here.
+    configurable = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    assert enabled.isdisjoint(configurable)
 
 
 def test_apply_toolset_change_from_default_does_not_enable_default_off_toolsets():

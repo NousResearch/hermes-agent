@@ -1,14 +1,14 @@
 ---
-title: "Github Code Review"
+title: "Github Code Review — Review PRs: diffs, inline comments via gh or REST"
 sidebar_label: "Github Code Review"
-description: "Review code changes by analyzing git diffs, leaving inline comments on PRs, and performing thorough pre-push review"
+description: "Review PRs: diffs, inline comments via gh or REST"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Github Code Review
 
-Review code changes by analyzing git diffs, leaving inline comments on PRs, and performing thorough pre-push review. Works with gh CLI or falls back to git + GitHub REST API via curl.
+Review PRs: diffs, inline comments via gh or REST.
 
 ## Skill metadata
 

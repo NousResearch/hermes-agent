@@ -13,6 +13,7 @@ from hermes_cli.commands import (
     SlashCommandAutoSuggest,
     SlashCommandCompleter,
     _CMD_NAME_LIMIT,
+    _SLACK_RESERVED_COMMANDS,
     _TG_NAME_LIMIT,
     _clamp_command_names,
     _clamp_telegram_names,
@@ -299,8 +300,18 @@ class TestSlackNativeSlashes:
     def test_includes_canonical_commands(self):
         names = {n for n, _d, _h in slack_native_slashes()}
         # Sample of gateway-available canonical commands
-        for expected in ("new", "stop", "background", "model", "help", "status"):
+        for expected in ("new", "stop", "background", "model", "help"):
             assert expected in names, f"missing canonical /{expected}"
+
+    def test_excludes_slack_reserved_commands(self):
+        """Slack built-in commands (e.g. /status, /me, /join) cannot be
+        registered by apps and must be excluded from the manifest.
+        Users can still reach them via /hermes <command>."""
+        names = {n for n, _d, _h in slack_native_slashes()}
+        for reserved in _SLACK_RESERVED_COMMANDS:
+            assert reserved not in names, (
+                f"/{reserved} is a Slack built-in and must not appear in the manifest"
+            )
 
     def test_includes_aliases_as_first_class_slashes(self):
         """Aliases (/btw, /bg, /reset, /q) must be registered as standalone
@@ -319,6 +330,9 @@ class TestSlackNativeSlashes:
         Telegram but not Slack (because of Slack's 50-slash cap), this
         test fails loudly so we can curate the list rather than silently
         dropping parity.
+
+        Slack-reserved built-in commands (e.g. /status) are excluded
+        from parity checks since they cannot be registered on Slack.
         """
         slack_names = {n for n, _d, _h in slack_native_slashes()}
         tg_names = {n for n, _d in telegram_bot_commands()}
@@ -329,7 +343,8 @@ class TestSlackNativeSlashes:
 
         slack_norm = {_norm(n) for n in slack_names}
         tg_norm = {_norm(n) for n in tg_names}
-        missing = tg_norm - slack_norm
+        reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
+        missing = (tg_norm - slack_norm) - reserved_norm
         assert not missing, (
             f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
         )
@@ -404,6 +419,21 @@ class TestGatewayConfigGate:
         lines = gateway_help_lines()
         joined = "\n".join(lines)
         assert "`/verbose" in joined
+
+    def test_config_gate_quoted_false_stays_disabled_everywhere(self, tmp_path, monkeypatch):
+        """Quoted false must not enable config-gated gateway commands."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text('display:\n  tool_progress_command: "false"\n')
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        names = {name for name, _ in telegram_bot_commands()}
+        mapping = slack_subcommand_map()
+
+        assert "`/verbose" not in joined
+        assert "verbose" not in names
+        assert "verbose" not in mapping
 
     def test_config_gate_excluded_from_telegram_when_off(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.yaml"

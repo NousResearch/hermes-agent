@@ -12,6 +12,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 import copy
 from typing import Any, Dict, List, Optional
 
+from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
@@ -19,13 +20,20 @@ from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
-    """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig.
-
-    Gemini native/cloud-code adapters do not read ``extra_body.reasoning``.
-    They only inspect ``extra_body.thinking_config`` / ``thinkingConfig`` and
-    then request thought parts with ``includeThoughts`` enabled.
-    """
+    """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if reasoning_config is None or not isinstance(reasoning_config, dict):
+        return None
+
+    normalized_model = (model or "").strip().lower()
+    if normalized_model.startswith("google/"):
+        normalized_model = normalized_model.split("/", 1)[1]
+
+    # ``thinking_config`` is a Gemini-only request parameter. The same
+    # ``gemini`` provider also serves Gemma (and historically PaLM/Bard);
+    # those reject the field with HTTP 400 "Unknown name 'thinking_config':
+    # Cannot find field" — including the polite ``{"includeThoughts": False}``
+    # form. Omit the field entirely on non-Gemini models. (#17426)
+    if not normalized_model.startswith("gemini"):
         return None
 
     if reasoning_config.get("enabled") is False:
@@ -38,9 +46,6 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         return {"includeThoughts": False}
 
     thinking_config: Dict[str, Any] = {"includeThoughts": True}
-    normalized_model = (model or "").strip().lower()
-    if normalized_model.startswith("google/"):
-        normalized_model = normalized_model.split("/", 1)[1]
 
     # Gemini 2.5 accepts thinkingBudget; don't guess a budget from Hermes'
     # coarse effort levels. ``includeThoughts`` alone is enough to surface
@@ -68,6 +73,30 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
             )
 
     return thinking_config
+
+
+def _snake_case_gemini_thinking_config(config: dict | None) -> dict | None:
+    """Convert Gemini thinking config keys to the OpenAI-compat field names."""
+    if not isinstance(config, dict) or not config:
+        return None
+
+    translated: Dict[str, Any] = {}
+    if isinstance(config.get("includeThoughts"), bool):
+        translated["include_thoughts"] = config["includeThoughts"]
+    if isinstance(config.get("thinkingLevel"), str) and config["thinkingLevel"].strip():
+        translated["thinking_level"] = config["thinkingLevel"].strip().lower()
+    if isinstance(config.get("thinkingBudget"), (int, float)):
+        translated["thinking_budget"] = int(config["thinkingBudget"])
+    return translated or None
+
+
+def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
+    normalized = str(base_url or "").strip().rstrip("/").lower()
+    if not normalized:
+        return False
+    if "generativelanguage.googleapis.com" not in normalized:
+        return False
+    return normalized.endswith("/openai")
 
 
 class ChatCompletionsTransport(ProviderTransport):
@@ -153,6 +182,7 @@ class ChatCompletionsTransport(ProviderTransport):
             is_github_models: bool
             is_nvidia_nim: bool
             is_kimi: bool
+            is_lmstudio: bool
             is_custom_provider: bool
             ollama_num_ctx: int | None
             # Provider routing
@@ -166,6 +196,7 @@ class ChatCompletionsTransport(ProviderTransport):
             # Reasoning
             supports_reasoning: bool
             github_reasoning_extra: dict | None
+            lmstudio_reasoning_options: list[str] | None  # raw allowed_options from /api/v1/models
             # Claude on OpenRouter/Nous max output
             anthropic_max_output: int | None
             # Extra
@@ -287,6 +318,18 @@ class ChatCompletionsTransport(ProviderTransport):
                         _tokenhub_effort = _e
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
+        # LM Studio: top-level reasoning_effort. Only emit when the model
+        # declares reasoning support via /api/v1/models capabilities (gated
+        # upstream by params["supports_reasoning"]). resolve_lmstudio_effort
+        # is shared with run_agent's summary path so both stay in sync.
+        if params.get("is_lmstudio", False) and params.get("supports_reasoning", False):
+            _lm_effort = resolve_lmstudio_effort(
+                reasoning_config,
+                params.get("lmstudio_reasoning_options"),
+            )
+            if _lm_effort is not None:
+                api_kwargs["reasoning_effort"] = _lm_effort
+
         # extra_body assembly
         extra_body: Dict[str, Any] = {}
 
@@ -294,6 +337,7 @@ class ChatCompletionsTransport(ProviderTransport):
         is_nous = params.get("is_nous", False)
         is_github_models = params.get("is_github_models", False)
         provider_name = str(params.get("provider_name") or "").strip().lower()
+        base_url = params.get("base_url")
 
         provider_prefs = params.get("provider_preferences")
         if provider_prefs and is_openrouter:
@@ -309,8 +353,9 @@ class ChatCompletionsTransport(ProviderTransport):
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
             }
 
-        # Reasoning
-        if params.get("supports_reasoning", False):
+        # Reasoning. LM Studio is handled above via top-level reasoning_effort,
+        # so skip emitting extra_body.reasoning for it.
+        if params.get("supports_reasoning", False) and not params.get("is_lmstudio", False):
             if is_github_models:
                 gh_reasoning = params.get("github_reasoning_extra")
                 if gh_reasoning is not None:
@@ -346,7 +391,19 @@ class ChatCompletionsTransport(ProviderTransport):
         if is_qwen:
             extra_body["vl_high_resolution_images"] = True
 
-        if provider_name in {"gemini", "google-gemini-cli"}:
+        if provider_name == "gemini":
+            raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
+            if _is_gemini_openai_compat_base_url(base_url):
+                thinking_config = _snake_case_gemini_thinking_config(raw_thinking_config)
+                if thinking_config:
+                    openai_compat_extra = extra_body.get("extra_body", {})
+                    google_extra = openai_compat_extra.get("google", {})
+                    google_extra["thinking_config"] = thinking_config
+                    openai_compat_extra["google"] = google_extra
+                    extra_body["extra_body"] = openai_compat_extra
+            elif raw_thinking_config:
+                extra_body["thinking_config"] = raw_thinking_config
+        elif provider_name == "google-gemini-cli":
             thinking_config = _build_gemini_thinking_config(model, reasoning_config)
             if thinking_config:
                 extra_body["thinking_config"] = thinking_config
@@ -420,9 +477,13 @@ class ChatCompletionsTransport(ProviderTransport):
         # so keep them apart in provider_data rather than merging.
         reasoning = getattr(msg, "reasoning", None)
         reasoning_content = getattr(msg, "reasoning_content", None)
+        if reasoning_content is None and hasattr(msg, "model_extra"):
+            model_extra = getattr(msg, "model_extra", None) or {}
+            if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
+                reasoning_content = model_extra["reasoning_content"]
 
         provider_data: Dict[str, Any] = {}
-        if reasoning_content:
+        if reasoning_content is not None:
             provider_data["reasoning_content"] = reasoning_content
         rd = getattr(msg, "reasoning_details", None)
         if rd:

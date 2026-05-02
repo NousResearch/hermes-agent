@@ -259,7 +259,7 @@ class TestAnthropicOAuthFlag:
         assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
 
 
-class TestTryCodex:
+class TestBuildCodexClient:
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):
         with (
             patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
@@ -267,14 +267,22 @@ class TestTryCodex:
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             mock_openai.return_value = MagicMock()
-            from agent.auxiliary_client import _try_codex
+            from agent.auxiliary_client import _build_codex_client
 
-            client, model = _try_codex()
+            client, model = _build_codex_client("gpt-5.4")
 
         assert client is not None
-        assert model == "gpt-5.2-codex"
+        assert model == "gpt-5.4"
         assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
         assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+    def test_rejects_missing_model(self):
+        """Callers must pass an explicit model; no hardcoded default."""
+        from agent.auxiliary_client import _build_codex_client
+
+        client, model = _build_codex_client("")
+        assert client is None
+        assert model is None
 
 
 class TestExpiredCodexFallback:
@@ -507,14 +515,14 @@ class TestGetTextAuxiliaryClient:
             patch("agent.auxiliary_client.OpenAI"),
             patch("hermes_cli.auth._read_codex_tokens", side_effect=AssertionError("legacy codex store should not run")),
         ):
-            from agent.auxiliary_client import _try_codex
+            from agent.auxiliary_client import _build_codex_client
 
-            client, model = _try_codex()
+            client, model = _build_codex_client("gpt-5.4")
 
         from agent.auxiliary_client import CodexAuxiliaryClient
 
         assert isinstance(client, CodexAuxiliaryClient)
-        assert model == "gpt-5.2-codex"
+        assert model == "gpt-5.4"
 
     def test_returns_none_when_nothing_available(self, monkeypatch):
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -783,11 +791,15 @@ class TestIsPaymentError:
 class TestGetProviderChain:
     """_get_provider_chain() resolves functions at call time (testable)."""
 
-    def test_returns_five_entries(self):
+    def test_returns_four_entries(self):
         chain = _get_provider_chain()
-        assert len(chain) == 5
+        assert len(chain) == 4
         labels = [label for label, _ in chain]
-        assert labels == ["openrouter", "nous", "local/custom", "openai-codex", "api-key"]
+        assert labels == ["openrouter", "nous", "local/custom", "api-key"]
+        # Codex is deliberately NOT in this chain — see _get_provider_chain
+        # docstring. ChatGPT-account Codex has a shifting model allow-list;
+        # guessing a model to fall back on breaks more often than it helps.
+        assert "openai-codex" not in labels
 
     def test_picks_up_patched_functions(self):
         """Patches on _try_* functions must be visible in the chain."""
@@ -814,7 +826,6 @@ class TestTryPaymentFallback:
         with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
-             patch("agent.auxiliary_client._try_codex", return_value=(None, None)), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
              patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"):
             client, model, label = _try_payment_fallback("openrouter")
@@ -825,23 +836,26 @@ class TestTryPaymentFallback:
         """'codex' should map to 'openai-codex' in the skip set."""
         mock_client = MagicMock()
         with patch("agent.auxiliary_client._try_openrouter", return_value=(mock_client, "or-model")), \
-             patch("agent.auxiliary_client._try_codex", return_value=(None, None)), \
              patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"):
             client, model, label = _try_payment_fallback("openai-codex", task="vision")
         assert client is mock_client
         assert label == "openrouter"
 
-    def test_skips_to_codex_when_or_and_nous_fail(self):
-        mock_codex = MagicMock()
+    def test_codex_not_in_fallback_chain(self):
+        """Codex is deliberately NOT a fallback rung (shifting model allow-list).
+
+        When OR/Nous/custom/api-key all fail, payment-fallback returns None —
+        Codex is never tried with a guessed model.
+        """
         with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
-             patch("agent.auxiliary_client._try_codex", return_value=(mock_codex, "gpt-5.2-codex")), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
              patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"):
             client, model, label = _try_payment_fallback("openrouter")
-        assert client is mock_codex
-        assert model == "gpt-5.2-codex"
-        assert label == "openai-codex"
+        assert client is None
+        assert model is None
+        assert label == ""
 
 
 class TestCallLlmPaymentFallback:
@@ -1360,14 +1374,14 @@ class TestAuxiliaryAuthRefreshRetry:
         with (
             patch(
                 "agent.auxiliary_client.resolve_vision_provider_client",
-                side_effect=[("openai-codex", failing_client, "gpt-5.2-codex"), ("openai-codex", fresh_client, "gpt-5.2-codex")],
+                side_effect=[("openai-codex", failing_client, "gpt-5.4"), ("openai-codex", fresh_client, "gpt-5.4")],
             ),
             patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
         ):
             resp = call_llm(
                 task="vision",
                 provider="openai-codex",
-                model="gpt-5.2-codex",
+                model="gpt-5.4",
                 messages=[{"role": "user", "content": "hi"}],
             )
 
@@ -1384,14 +1398,14 @@ class TestAuxiliaryAuthRefreshRetry:
         fresh_client.chat.completions.create.return_value = _DummyResponse("fresh-non-vision")
 
         with (
-            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.2-codex", None, None, None)),
-            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.2-codex"), (fresh_client, "gpt-5.2-codex")]),
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.4"), (fresh_client, "gpt-5.4")]),
             patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
         ):
             resp = call_llm(
                 task="compression",
                 provider="openai-codex",
-                model="gpt-5.2-codex",
+                model="gpt-5.4",
                 messages=[{"role": "user", "content": "hi"}],
             )
 
@@ -1439,14 +1453,14 @@ class TestAuxiliaryAuthRefreshRetry:
         with (
             patch(
                 "agent.auxiliary_client.resolve_vision_provider_client",
-                side_effect=[("openai-codex", failing_client, "gpt-5.2-codex"), ("openai-codex", fresh_client, "gpt-5.2-codex")],
+                side_effect=[("openai-codex", failing_client, "gpt-5.4"), ("openai-codex", fresh_client, "gpt-5.4")],
             ),
             patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
         ):
             resp = await async_call_llm(
                 task="vision",
                 provider="openai-codex",
-                model="gpt-5.2-codex",
+                model="gpt-5.4",
                 messages=[{"role": "user", "content": "hi"}],
             )
 
@@ -1635,3 +1649,106 @@ class TestCodexAdapterReasoningTranslation:
         )
         assert "reasoning" not in captured
 
+
+
+class TestVisionAutoSkipsKimiCoding:
+    """_resolve_auto vision branch skips providers that have no vision on
+    their main endpoint (e.g. Kimi Coding Plan /coding) and falls through
+    to the aggregator chain instead of handing back a client that will 404
+    on every request (#17076).
+    """
+
+    def test_kimi_coding_skipped_falls_through_to_openrouter(self, monkeypatch):
+        """kimi-coding as main + vision auto → OpenRouter (not kimi)."""
+        fake_or_client = MagicMock(name="openrouter_client")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "kimi-coding",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model", lambda: "kimi-code",
+        )
+        # Guard: if the skip doesn't fire, _resolve_strict_vision_backend
+        # and resolve_provider_client both would try kimi-coding — detect
+        # either via the main-provider call and fail loud.
+        rpc_mock = MagicMock(side_effect=AssertionError(
+            "resolve_provider_client should NOT be called for kimi-coding "
+            "on the vision auto path"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client", rpc_mock,
+        )
+
+        def fake_strict(provider, model=None):
+            if provider == "openrouter":
+                return fake_or_client, "google/gemini-3-flash-preview"
+            if provider == "nous":
+                return None, None
+            raise AssertionError(
+                f"strict vision backend should not be called for {provider!r} "
+                "when main provider is kimi-coding"
+            )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            fake_strict,
+        )
+
+        provider, client, model = resolve_vision_provider_client()
+        assert provider == "openrouter"
+        assert client is fake_or_client
+        assert model == "google/gemini-3-flash-preview"
+
+    def test_kimi_coding_cn_skipped_too(self, monkeypatch):
+        """Same skip applies to the CN variant."""
+        fake_or_client = MagicMock(name="openrouter_client")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "kimi-coding-cn",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model", lambda: "kimi-code",
+        )
+        rpc_mock = MagicMock(side_effect=AssertionError(
+            "resolve_provider_client should NOT be called for kimi-coding-cn"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client", rpc_mock,
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            lambda p, m=None: (fake_or_client, "gemini")
+            if p == "openrouter"
+            else (None, None),
+        )
+
+        provider, client, _ = resolve_vision_provider_client()
+        assert provider == "openrouter"
+        assert client is fake_or_client
+
+    def test_explicit_override_to_kimi_coding_still_honored(self, monkeypatch):
+        """When a user *explicitly* requests kimi-coding for vision (e.g.
+        they know what they're doing, or are running a future build that
+        adds image_in capability to Kimi Code), the explicit path still
+        routes to kimi-coding — only the auto branch applies the skip.
+        """
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "openrouter",
+        )
+        fake_kimi_client = MagicMock(name="kimi_client")
+        gcc_mock = MagicMock(return_value=(fake_kimi_client, "kimi-code"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client", gcc_mock,
+        )
+
+        provider, client, model = resolve_vision_provider_client(
+            provider="kimi-coding",
+        )
+        assert provider == "kimi-coding"
+        assert client is fake_kimi_client
+        gcc_mock.assert_called_once()
+
+    def test_skip_set_covers_exactly_known_entries(self):
+        """Guard against accidental widening of the skip list."""
+        from agent.auxiliary_client import _PROVIDERS_WITHOUT_VISION
+        assert _PROVIDERS_WITHOUT_VISION == frozenset({
+            "kimi-coding",
+            "kimi-coding-cn",
+        })

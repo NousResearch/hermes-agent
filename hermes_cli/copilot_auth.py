@@ -282,16 +282,90 @@ def copilot_device_code_login(
 _jwt_cache: dict[str, tuple[str, float]] = {}
 _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
 
+# Module-level set of token fingerprints we've already warned about for
+# subscription failures, so the WARNING log fires once per token per process
+# rather than on every request.
+_subscription_warned: set[str] = set()
+
 # Token exchange endpoint and headers (matching VS Code / Copilot CLI)
 _TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
 _EDITOR_VERSION = "vscode/1.104.1"
 _EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
 
 
+class CopilotSubscriptionError(ValueError):
+    """Raised when a GitHub account has no active paid Copilot subscription.
+
+    Confirmed by probing ``/copilot_internal/user`` and reading
+    ``access_type_sku``. Only fires for known-free SKUs (currently
+    ``free_limited_copilot``); for any other SKU we let the caller fall back
+    to the raw token because raw tokens DO work against
+    ``api.githubcopilot.com`` for paid accounts when the OAuth app issuing
+    the token isn't trusted to mint a chat token (e.g. ``gh`` CLI's own
+    OAuth app — ``/copilot_internal/v2/token`` returns 404 even though the
+    account is paid).
+
+    Subclasses ValueError so existing ``except ValueError`` handlers keep
+    catching it; callers that want to distinguish can match this type.
+    """
+
+
+# /copilot_internal/user values that indicate a free-tier account with no
+# paid chat entitlement. Conservative on purpose — for any unknown SKU we
+# prefer the silent raw-token fallback over a false-positive subscription
+# error that would block a paying user.
+_FREE_TIER_SKUS = frozenset({
+    "free_limited_copilot",
+})
+
+_COPILOT_USER_URL = "https://api.github.com/copilot_internal/user"
+
+
 def _token_fingerprint(raw_token: str) -> str:
     """Short fingerprint of a raw token for cache keying (avoids storing full token)."""
     import hashlib
     return hashlib.sha256(raw_token.encode()).hexdigest()[:16]
+
+
+def _classify_copilot_account(raw_token: str, *, timeout: float = 5.0) -> str:
+    """Probe ``/copilot_internal/user`` and classify the account.
+
+    Returns one of:
+      * ``"free"`` — confirmed no paid chat entitlement (sku in _FREE_TIER_SKUS)
+      * ``"paid"`` — has a recognized paid SKU
+      * ``"unknown"`` — endpoint unreachable, returned non-2xx, or sku missing.
+        Treat as paid for fallback purposes (don't block on uncertainty).
+    """
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        _COPILOT_USER_URL,
+        method="GET",
+        headers={
+            "Authorization": f"token {raw_token}",
+            "User-Agent": _EXCHANGE_USER_AGENT,
+            "Accept": "application/json",
+            "Editor-Version": _EDITOR_VERSION,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as exc:
+        # Broad catch on purpose: if the probe fails for any reason
+        # (network, JSON parse, HTTP 5xx, etc.) we degrade to "unknown"
+        # and let the silent raw-token fallback take over rather than
+        # bubbling a probe failure into the user-visible auth flow.
+        logger.debug("Copilot user probe failed: %s", exc)
+        return "unknown"
+
+    sku = str(data.get("access_type_sku") or "").strip().lower()
+    if not sku:
+        return "unknown"
+    if sku in _FREE_TIER_SKUS:
+        return "free"
+    return "paid"
 
 
 def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[str, float]:
@@ -304,8 +378,14 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     used as ``Authorization: Bearer <token>`` for Copilot API requests.
 
     Results are cached in-process and reused until close to expiry.
-    Raises ``ValueError`` on failure.
+    Raises ``CopilotSubscriptionError`` (a ``ValueError`` subclass) when a
+    follow-up probe of ``/copilot_internal/user`` confirms the account is
+    on a free-tier SKU. Raises a plain ``ValueError`` for other failures
+    (network errors, malformed responses, paid-account 404s caused by
+    untrusted OAuth apps, etc.) so the silent raw-token fallback in
+    ``get_copilot_api_token`` can take over.
     """
+    import urllib.error
     import urllib.request
 
     fp = _token_fingerprint(raw_token)
@@ -331,6 +411,27 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            # 404 here is ambiguous: free-tier accounts can't mint a chat
+            # token, AND paid accounts whose token came from an OAuth app
+            # other than the Copilot CLI (e.g. ``gh auth token``) also get
+            # 404 even though the raw token works fine for chat completions.
+            # Probe /copilot_internal/user to disambiguate before blocking.
+            classification = _classify_copilot_account(raw_token)
+            if classification == "free":
+                raise CopilotSubscriptionError(
+                    "GitHub account has no active paid Copilot subscription "
+                    "(/copilot_internal/user reports a free-tier SKU). "
+                    "Free-tier accounts cannot use the chat completions API. "
+                    "Upgrade at https://github.com/settings/copilot, or sign "
+                    "in with a different GitHub account: "
+                    "`hermes auth add copilot`."
+                ) from exc
+            # Paid or unknown: let the caller fall back to the raw token,
+            # which the Copilot chat API accepts directly for paid accounts
+            # even when /copilot_internal/v2/token won't issue a chat token.
+        raise ValueError(f"Copilot token exchange failed: {exc}") from exc
     except Exception as exc:
         raise ValueError(f"Copilot token exchange failed: {exc}") from exc
 
@@ -353,16 +454,30 @@ def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[st
 def get_copilot_api_token(raw_token: str) -> str:
     """Exchange a raw GitHub token for a Copilot API token, with fallback.
 
-    Convenience wrapper: returns the exchanged token on success, or the
-    raw token unchanged if the exchange fails (e.g. network error, unsupported
-    account type). This preserves existing behaviour for accounts that don't
-    need exchange while enabling access to internal-only models for those that do.
+    Convenience wrapper: returns the exchanged token on success.
+
+    Behaviour on failure:
+      * ``CopilotSubscriptionError`` (HTTP 404 — no paid subscription): logs
+        once at WARNING level and re-raises. The raw token is useless against
+        ``api.githubcopilot.com`` — falling back silently here turns a clear
+        auth failure into a misleading ``model_not_supported`` for every
+        model the user picks.
+      * Other ``ValueError`` (network blip, malformed response, etc.): logs at
+        DEBUG and falls back to the raw token. Some account types and PATs
+        don't need exchange and use the raw token directly, so this preserves
+        them.
     """
     if not raw_token:
         return raw_token
     try:
         api_token, _ = exchange_copilot_token(raw_token)
         return api_token
+    except CopilotSubscriptionError as exc:
+        fp = _token_fingerprint(raw_token)
+        if fp not in _subscription_warned:
+            _subscription_warned.add(fp)
+            logger.warning("%s", exc)
+        raise
     except Exception as exc:
         logger.debug("Copilot token exchange failed, using raw token: %s", exc)
         return raw_token

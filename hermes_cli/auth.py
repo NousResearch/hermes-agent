@@ -507,10 +507,27 @@ def _resolve_api_key_provider_secret(
     if provider_id == "copilot":
         # Use the dedicated copilot auth module for proper token validation
         try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
+            from hermes_cli.copilot_auth import (
+                CopilotSubscriptionError,
+                get_copilot_api_token,
+                resolve_copilot_token,
+            )
             token, source = resolve_copilot_token()
             if token:
                 return get_copilot_api_token(token), source
+        except CopilotSubscriptionError as exc:
+            # No paid Copilot on this GitHub account — surface as a proper
+            # AuthError so format_auth_error can show actionable guidance,
+            # rather than letting the request layer fail later with a
+            # misleading "model_not_supported". relogin_required=False
+            # because re-authing the same account won't help; the user
+            # needs a different account or a paid subscription.
+            raise AuthError(
+                str(exc),
+                provider="copilot",
+                code="copilot_subscription_required",
+                relogin_required=False,
+            ) from exc
         except ValueError as exc:
             logger.warning("Copilot token validation failed: %s", exc)
         except Exception:
@@ -681,6 +698,14 @@ def format_auth_error(error: Exception) -> str:
         return (
             "No active paid subscription found on Nous Portal. "
             "Please purchase/activate a subscription, then retry."
+        )
+
+    if error.code == "copilot_subscription_required":
+        return (
+            "Your GitHub account has no active paid Copilot subscription "
+            "(free tier cannot use the chat API). Either upgrade at "
+            "https://github.com/settings/copilot, or sign in with a "
+            "different GitHub account: `hermes auth add copilot`."
         )
 
     if error.code == "insufficient_credits":

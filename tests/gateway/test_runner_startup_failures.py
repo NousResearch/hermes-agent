@@ -1,3 +1,6 @@
+import logging
+import re
+
 import pytest
 from unittest.mock import AsyncMock
 
@@ -163,6 +166,53 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
     ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=1)
 
     assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_stderr_verbosity_includes_timestamp(
+    monkeypatch, tmp_path, capsys
+):
+    """Gateway stderr logs need app timestamps for docker log triage."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _CleanExitRunner:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = True
+            self.exit_reason = None
+            self.adapters = {}
+
+        async def start(self):
+            return True
+
+        async def stop(self):
+            return None
+
+    pre_existing_handlers = list(logging.getLogger().handlers)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
+
+    from gateway.run import start_gateway
+
+    try:
+        ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=1)
+        assert ok is True
+
+        logging.getLogger("gateway.run").warning("timestamp smoke")
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        stderr = capsys.readouterr().err
+    finally:
+        root = logging.getLogger()
+        for handler in list(root.handlers):
+            if handler not in pre_existing_handlers:
+                root.removeHandler(handler)
+                handler.close()
+
+    assert re.search(r"\d{2}:\d{2}:\d{2} WARNING gateway\.run: timestamp smoke", stderr)
 
 
 @pytest.mark.asyncio

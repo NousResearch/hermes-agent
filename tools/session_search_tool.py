@@ -48,6 +48,35 @@ def _get_session_search_max_concurrency(default: int = 3) -> int:
     return max(1, min(value, 5))
 
 
+def _is_timeout_exception(exc: BaseException) -> bool:
+    """Return True for expected provider/network timeout exceptions.
+
+    Keep this structural instead of importing every optional provider/client
+    exception type. Gateway installs can vary, but OpenAI/httpx/httpcore
+    timeout failures all carry timeout-oriented class names and modules.
+    """
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return True
+
+    timeout_class_names = {
+        "APITimeoutError",
+        "ConnectTimeout",
+        "PoolTimeout",
+        "ReadTimeout",
+        "TimeoutException",
+        "WriteTimeout",
+    }
+    if {cls.__name__ for cls in type(exc).__mro__} & timeout_class_names:
+        return True
+
+    module = type(exc).__module__
+    name = type(exc).__name__
+    return (
+        module.startswith(("openai", "httpx", "httpcore"))
+        and "Timeout" in name
+    )
+
+
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
 
@@ -245,6 +274,9 @@ async def _summarize_session(
             logging.warning("No auxiliary model available for session summarization")
             return None
         except Exception as e:
+            if _is_timeout_exception(e):
+                logging.warning("Session summarization timed out: %s", e)
+                return None
             if attempt < max_retries - 1:
                 await asyncio.sleep(1 * (attempt + 1))
             else:
@@ -473,10 +505,7 @@ def session_search(
             from model_tools import _run_async
             results = _run_async(_summarize_all())
         except concurrent.futures.TimeoutError:
-            logging.warning(
-                "Session summarization timed out after 60 seconds",
-                exc_info=True,
-            )
+            logging.warning("Session summarization timed out")
             return json.dumps({
                 "success": False,
                 "error": "Session summarization timed out. Try a more specific query or reduce the limit.",

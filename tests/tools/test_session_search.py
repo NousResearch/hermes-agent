@@ -10,6 +10,7 @@ from tools.session_search_tool import (
     _format_conversation,
     _truncate_around_matches,
     _get_session_search_max_concurrency,
+    _is_timeout_exception,
     _list_recent_sessions,
     _HIDDEN_SESSION_SOURCES,
     MAX_SESSION_CHARS,
@@ -113,6 +114,99 @@ class TestFormatConversation:
     def test_empty_messages(self):
         result = _format_conversation([])
         assert result == ""
+
+
+class TestSummarizeSessionTimeouts:
+    @pytest.mark.asyncio
+    async def test_timeout_failure_logs_concise_warning_without_traceback(
+        self, caplog, monkeypatch
+    ):
+        """Expected provider read timeouts should not flood gateway logs."""
+        from unittest.mock import AsyncMock
+
+        from tools import session_search_tool
+
+        monkeypatch.setattr(
+            session_search_tool,
+            "async_call_llm",
+            AsyncMock(side_effect=TimeoutError("Request timed out.")),
+        )
+        monkeypatch.setattr(
+            session_search_tool.asyncio,
+            "sleep",
+            AsyncMock(),
+        )
+
+        with caplog.at_level("WARNING"):
+            result = await session_search_tool._summarize_session(
+                "[USER]: find my old logs",
+                "old logs",
+                {"source": "cli", "started_at": 1700000000},
+            )
+
+        assert result is None
+        timeout_records = [
+            record
+            for record in caplog.records
+            if "timed out" in record.getMessage().lower()
+        ]
+        assert timeout_records
+        assert all(record.exc_info is None for record in timeout_records)
+
+    def test_timeout_classifier_recognizes_provider_timeout_shapes(self):
+        timeout_cases = [
+            TimeoutError("built-in timeout"),
+            type("APITimeoutError", (Exception,), {"__module__": "openai"})(),
+            type("ReadTimeout", (Exception,), {"__module__": "httpx"})(),
+            type("ConnectTimeout", (Exception,), {"__module__": "httpcore"})(),
+        ]
+
+        for exc in timeout_cases:
+            assert _is_timeout_exception(exc)
+
+        assert not _is_timeout_exception(ValueError("not a timeout"))
+
+    def test_outer_summarization_timeout_logs_concise_warning_without_traceback(
+        self, caplog, monkeypatch
+    ):
+        import concurrent.futures
+        from unittest.mock import MagicMock
+
+        import model_tools
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "older_sid",
+                "content": "match",
+                "source": "cli",
+                "session_started": 1700000000,
+                "model": "test",
+            }
+        ]
+        mock_db.get_session.return_value = {"parent_session_id": None}
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "find the timeout"},
+        ]
+
+        def raise_timeout(coro):
+            coro.close()
+            raise concurrent.futures.TimeoutError()
+
+        monkeypatch.setattr(model_tools, "_run_async", raise_timeout)
+
+        with caplog.at_level("WARNING"):
+            result = json.loads(session_search(query="timeout", db=mock_db))
+
+        assert result["success"] is False
+        timeout_records = [
+            record
+            for record in caplog.records
+            if "timed out" in record.getMessage().lower()
+        ]
+        assert timeout_records
+        assert all(record.exc_info is None for record in timeout_records)
 
 
 # =========================================================================

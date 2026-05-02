@@ -9986,6 +9986,9 @@ Examples:
         action="store_true",
         help="Write the benchmark markdown report to docs/camel-runtime-comparison.md",
     )
+    camel_subparsers.add_parser(
+        "update", help="Update Hermes/CaMeL code to the latest version"
+    )
 
     def cmd_camel(args):
         action = args.camel_action or "trace"
@@ -10031,6 +10034,10 @@ Examples:
                 print(f"Wrote {DOC_PATH}")
             else:
                 print(render_markdown(response_outcomes, tool_outcomes), end="")
+            return
+
+        if action == "update":
+            cmd_update(args)
             return
 
         camel_parser.print_help()

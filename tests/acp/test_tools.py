@@ -353,6 +353,70 @@ class TestBuildToolComplete:
         assert "Results truncated" in text
         assert result.raw_output is None
 
+    def test_build_tool_complete_for_process_list_formats_table(self):
+        result = build_tool_complete(
+            "tc-process",
+            "process",
+            '{"processes":[{"session_id":"p1","status":"running","pid":123,"command":"npm run dev"}]}',
+            function_args={"action":"list"},
+        )
+        text = result.content[0].content.text
+        assert "Processes: 1" in text
+        assert "`p1`" in text
+        assert "npm run dev" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_delegate_task_summarizes_children(self):
+        result = build_tool_complete(
+            "tc-delegate",
+            "delegate_task",
+            '{"results":[{"task_index":0,"status":"completed","summary":"Reviewed ACP rendering.","model":"gpt-5.5","duration_seconds":3.2,"tool_trace":[{"tool":"read_file"}]}],"total_duration_seconds":3.4}',
+        )
+        text = result.content[0].content.text
+        assert "Delegation results: 1 task" in text
+        assert "Reviewed ACP rendering" in text
+        assert "gpt-5.5" in text
+        assert "Tools: read_file" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_session_search_recent(self):
+        result = build_tool_complete(
+            "tc-session",
+            "session_search",
+            '{"success":true,"mode":"recent","results":[{"session_id":"s1","title":"ACP work","last_active":"2026-05-02","message_count":12,"preview":"Polished tool rendering."}],"count":1}',
+        )
+        text = result.content[0].content.text
+        assert "Recent sessions" in text
+        assert "ACP work" in text
+        assert "Polished tool rendering" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_memory_avoids_dumping_entries(self):
+        result = build_tool_complete(
+            "tc-memory",
+            "memory",
+            '{"success":true,"target":"user","entries":["private long memory"],"usage":"1% — 19/2000 chars","entry_count":1,"message":"Entry added."}',
+            function_args={"action":"add","target":"user","content":"User likes concise ACP rendering."},
+        )
+        text = result.content[0].content.text
+        assert "Memory add saved" in text
+        assert "User likes concise ACP rendering" in text
+        assert "private long memory" not in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_web_extract_summarizes_urls(self):
+        result = build_tool_complete(
+            "tc-web-extract",
+            "web_extract",
+            '{"results":[{"url":"https://example.com","title":"Example","content":"# Intro\\nThis is extracted content."}]}',
+        )
+        text = result.content[0].content.text
+        assert "Web extract: 1 URL" in text
+        assert "Example" in text
+        assert "Content:" in text
+        assert "Intro" in text
+        assert result.raw_output is None
+
     def test_build_tool_complete_truncates_large_output(self):
         """Very large outputs should be truncated."""
         big_output = "x" * 10000

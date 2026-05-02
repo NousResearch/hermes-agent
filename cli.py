@@ -2928,7 +2928,14 @@ class HermesCLI:
 
         def _expand_ref(match):
             path = Path(match.group(1))
-            return path.read_text(encoding="utf-8") if path.exists() else match.group(0)
+            # Use try/except instead of path.exists() to avoid TOCTOU race:
+            # the paste file may be deleted between check and read, causing
+            # the input to be silently dropped (#17666).
+            try:
+                return path.read_text(encoding="utf-8")
+            except (OSError, IOError):
+                logger.warning("Paste file gone or unreadable, returning placeholder: %s", path)
+                return match.group(0)
 
         return paste_ref_re.sub(_expand_ref, text)
 
@@ -11584,7 +11591,7 @@ class HermesCLI:
                             pass  # Non-fatal — don't break the main loop
 
                 except Exception as e:
-                    print(f"Error: {e}")
+                    logger.warning("process_loop unhandled error (msg may be lost): %s", e)
         
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)

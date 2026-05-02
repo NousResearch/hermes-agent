@@ -903,17 +903,23 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 or "does not exist" in _err_str
                 or "no available channel" in _err_str
             )
+            _is_rate_limited = (
+                _status == 413
+                or "rate limit" in _err_str
+                or "tpm" in _err_str
+                or "tokens per minute" in _err_str
+            )
             if (
                 _is_model_not_found
-                and self.summary_model
-                and self.summary_model != self.model
                 and not getattr(self, "_summary_model_fallen_back", False)
+                and (not self.summary_model or self.summary_model != self.model)
             ):
                 self._summary_model_fallen_back = True
+                _had_aux_model = bool(self.summary_model)
                 logging.warning(
                     "Summary model '%s' not available (%s). "
                     "Falling back to main model '%s' for compression.",
-                    self.summary_model, e, self.model,
+                    self.summary_model or "(default)", e, self.model,
                 )
                 # Record the aux-model failure so callers can warn the user
                 # even if the retry-on-main succeeds — a misconfigured aux
@@ -922,8 +928,15 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 if len(_err_text) > 220:
                     _err_text = _err_text[:217].rstrip() + "..."
                 self._last_aux_model_failure_error = _err_text
-                self._last_aux_model_failure_model = self.summary_model
-                self.summary_model = ""  # empty = use main model
+                self._last_aux_model_failure_model = self.summary_model or "(default)"
+                # When summary_model was explicitly set to a different model,
+                # clear it so the retry uses the default (main) provider.
+                # When it was empty (no override configured), the default
+                # provider may differ from self.model — set it explicitly.
+                if _had_aux_model:
+                    self.summary_model = ""
+                else:
+                    self.summary_model = self.model
                 self._summary_failure_cooldown_until = 0.0  # no cooldown
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)  # retry immediately
 
@@ -937,15 +950,18 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # aggregator rejections, etc.) where auto-retry is still safer
             # than dropping the turns.
             if (
-                self.summary_model
-                and self.summary_model != self.model
-                and not getattr(self, "_summary_model_fallen_back", False)
+                not getattr(self, "_summary_model_fallen_back", False)
+                and (
+                    (self.summary_model and self.summary_model != self.model)
+                    or (not self.summary_model and (_is_rate_limited or _is_model_not_found))
+                )
             ):
                 self._summary_model_fallen_back = True
+                _had_aux_model = bool(self.summary_model)
                 logging.warning(
                     "Summary model '%s' failed (%s). "
                     "Retrying on main model '%s' before giving up.",
-                    self.summary_model, e, self.model,
+                    self.summary_model or "(default)", e, self.model,
                 )
                 # Record the aux-model failure (see 404 branch above) — user
                 # should know their configured model is broken even if main
@@ -954,8 +970,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 if len(_err_text) > 220:
                     _err_text = _err_text[:217].rstrip() + "..."
                 self._last_aux_model_failure_error = _err_text
-                self._last_aux_model_failure_model = self.summary_model
-                self.summary_model = ""  # empty = use main model
+                self._last_aux_model_failure_model = self.summary_model or "(default)"
+                if _had_aux_model:
+                    self.summary_model = ""
+                else:
+                    self.summary_model = self.model
                 self._summary_failure_cooldown_until = 0.0
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 

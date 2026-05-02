@@ -376,6 +376,44 @@ class TestSummaryFallbackToMainModel:
         assert result is None
         assert c._summary_model_fallen_back is True
 
+    def test_empty_summary_model_413_falls_back_to_main(self):
+        """When summary_model_override is None (default), self.summary_model
+        is empty.  If the default provider returns a 413 rate-limit error,
+        the compressor should fall back to the main model explicitly."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        err_413 = Exception("413 TPM exhausted: rate limit exceeded")
+        err_413.status_code = 413
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override=None,  # default — no aux model
+                quiet_mode=True,
+            )
+
+        # summary_model should be empty when no override is set
+        assert c.summary_model == ""
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_413, mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        # Should retry: first call fails, second succeeds on main model
+        assert mock_call.call_count == 2
+        # Second call should explicitly use the main model
+        assert mock_call.call_args_list[1].kwargs.get("model") == "main-model"
+        assert result is not None
+        assert "summary via main model" in result
+        # Aux-model failure recorded with "(default)" placeholder
+        assert c._last_aux_model_failure_model == "(default)"
+        assert c._last_aux_model_failure_error is not None
+        assert "413" in c._last_aux_model_failure_error
+
 
 class TestAuxModelFallbackSurfacedToCallers:
     """When summary_model fails but retry-on-main succeeds, compress() must

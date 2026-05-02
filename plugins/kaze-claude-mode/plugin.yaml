@@ -1,0 +1,6 @@
+name: kaze-claude-mode
+version: 0.2.0
+description: Chat-level Telegram Claude lane (tool/edit-capable) for Kaze via Hermes tools.
+author: Kaze
+provides_hooks:
+  - pre_gateway_dispatch

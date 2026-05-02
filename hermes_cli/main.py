@@ -1340,6 +1340,14 @@ def cmd_chat(args):
         sys.exit(1)
 
 
+def cmd_browser_qa(args):
+    """Run a first-class browser QA mission through the normal agent runner."""
+    from hermes_cli.browser_qa import cmd_browser_qa as _cmd_browser_qa
+
+    return _cmd_browser_qa(args, cmd_chat)
+
+
+
 def cmd_gateway(args):
     """Gateway management commands."""
     from hermes_cli.gateway import gateway_command
@@ -8135,6 +8143,49 @@ def main():
 
     parser, subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=cmd_chat)
+
+    browser_qa_parser = subparsers.add_parser(
+        "browser-qa",
+        aliases=["web-qa"],
+        help="Run a repeatable browser QA mission against a web app",
+        description="Preload the dogfood QA skill and browser tools for a focused Web QA run.",
+    )
+    browser_qa_parser.add_argument("url", help="Target URL to QA")
+    browser_qa_parser.add_argument(
+        "--scope",
+        default=None,
+        help="QA scope/journeys to focus on (default: smoke-test core journeys)",
+    )
+    browser_qa_parser.add_argument(
+        "--output",
+        default=None,
+        help="Directory for screenshots and report (default: ./dogfood-output/<site>)",
+    )
+    browser_qa_parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=5,
+        help="Maximum pages/journeys to inspect (default: 5)",
+    )
+    browser_qa_parser.add_argument(
+        "--notes",
+        default=None,
+        help="Additional tester notes to include in the QA mission prompt",
+    )
+    browser_qa_parser.add_argument(
+        "-Q",
+        "--quiet",
+        action="store_true",
+        help="Quiet mode: suppress banner/spinner/tool previews like chat --quiet",
+    )
+    browser_qa_parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Maximum tool-calling iterations for the QA run",
+    )
+    browser_qa_parser.set_defaults(func=cmd_browser_qa)
 
     # =========================================================================
     # model command

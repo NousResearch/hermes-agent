@@ -61,7 +61,7 @@ def _get_fallback_provider(
             try:
                 _fallback_provider.shutdown()
             except Exception:
-                pass
+                logger.debug("Nowledge Mem fallback provider shutdown failed", exc_info=True)
 
         provider = NowledgeMemProvider()
         try:

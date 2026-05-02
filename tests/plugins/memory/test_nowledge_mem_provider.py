@@ -251,6 +251,30 @@ def test_resolve_space_explicit_empty_beats_environment():
             os.environ["NMEM_SPACE"] = previous
 
 
+def test_resolve_space_configured_beats_environment():
+    previous = os.environ.get("NMEM_SPACE")
+    os.environ["NMEM_SPACE"] = "Env Space"
+    try:
+        resolved = NowledgeMemProvider._resolve_space(
+            {"space": "Research Agent"},
+            {"agent_identity": "research"},
+        )
+        assert resolved == "Research Agent"
+    finally:
+        if previous is None:
+            os.environ.pop("NMEM_SPACE", None)
+        else:
+            os.environ["NMEM_SPACE"] = previous
+
+
+def test_resolve_space_template_falls_back_when_no_mapping():
+    resolved = NowledgeMemProvider._resolve_space(
+        {"space_template": "agent-{identity}"},
+        {"agent_identity": "ops"},
+    )
+    assert resolved == "agent-ops"
+
+
 def test_resolve_space_non_string_falls_through_to_identity():
     resolved = NowledgeMemProvider._resolve_space(
         {
@@ -260,6 +284,69 @@ def test_resolve_space_non_string_falls_through_to_identity():
         {"agent_identity": "research"},
     )
     assert resolved == "Research Agent"
+
+
+def test_resolve_space_missing_identity_does_not_synthesize_space(monkeypatch):
+    monkeypatch.delenv("NMEM_SPACE", raising=False)
+    monkeypatch.delenv("NMEM_SPACE_ID", raising=False)
+
+    resolved = NowledgeMemProvider._resolve_space(
+        {
+            "space_by_identity": {"default": "Default Agent"},
+            "space_template": "agent-{identity}",
+        },
+        {},
+    )
+
+    assert resolved is None
+
+
+def test_cli_explicit_empty_space_clears_inherited_environment(monkeypatch):
+    captured = {}
+
+    def _fake_run(_cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+
+        class _Result:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+
+        return _Result()
+
+    monkeypatch.setattr(client_module.subprocess, "run", _fake_run)
+    monkeypatch.setenv("NMEM_SPACE", "Env Space")
+    monkeypatch.setenv("NMEM_SPACE_ID", "Env Space")
+
+    client = client_module.NowledgeMemClient(space="")
+    client.working_memory()
+
+    assert "NMEM_SPACE" not in captured["env"]
+    assert "NMEM_SPACE_ID" not in captured["env"]
+
+
+def test_cli_explicit_space_sets_subprocess_environment(monkeypatch):
+    captured = {}
+
+    def _fake_run(_cmd, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+
+        class _Result:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+
+        return _Result()
+
+    monkeypatch.setattr(client_module.subprocess, "run", _fake_run)
+    monkeypatch.setenv("NMEM_SPACE", "Env Space")
+    monkeypatch.setenv("NMEM_SPACE_ID", "Env Space")
+
+    client = client_module.NowledgeMemClient(space="Research Agent")
+    client.working_memory()
+
+    assert captured["env"]["NMEM_SPACE"] == "Research Agent"
+    assert captured["env"]["NMEM_SPACE_ID"] == "Research Agent"
 
 
 def test_on_session_end_imports_clean_messages_then_appends_delta(monkeypatch, tmp_path):
@@ -416,3 +503,77 @@ def test_client_thread_append_posts_payload_without_subprocess_argv(monkeypatch)
     assert result["messages_added"] == 1
     assert captured["url"] == "http://mem.test/threads/hermes%2Fsession%201/append"
     assert payload["messages"][0]["content"] == "y" * 100_000
+    assert "space_id" not in payload
+
+
+def test_client_thread_append_includes_space_when_configured(monkeypatch):
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"success": true, "messages_added": 1}'
+
+    def _fake_urlopen(request, **_kwargs):
+        captured["body"] = request.data.decode("utf-8")
+        return _Response()
+
+    monkeypatch.setattr(
+        client_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("thread append must not send transcript through argv")
+        ),
+    )
+    monkeypatch.setattr(client_module.urlrequest, "urlopen", _fake_urlopen)
+    monkeypatch.setenv("NMEM_API_URL", "http://mem.test")
+    monkeypatch.setenv("NMEM_API_KEY", "")
+
+    client = client_module.NowledgeMemClient(space="Research Agent")
+    result = client.append_thread(
+        "hermes/session 1",
+        [{"role": "assistant", "content": "hello"}],
+    )
+
+    payload = json.loads(captured["body"])
+    assert result["messages_added"] == 1
+    assert payload["space_id"] == "Research Agent"
+
+
+def test_retry_urls_strip_remote_api_without_credential_query_params():
+    urls = client_module.NowledgeMemClient._retry_urls(
+        "https://mem.example.com/remote-api/threads/import?existing=1"
+    )
+
+    assert urls == ["https://mem.example.com/threads/import?existing=1"]
+    assert all("nmem_api_key" not in url.lower() for url in urls)
+
+
+def test_api_post_retries_remote_api_path_with_auth_headers_only(monkeypatch):
+    client = client_module.NowledgeMemClient()
+    seen = []
+
+    monkeypatch.setattr(client, "_api_url", lambda: "https://mem.example.com/remote-api")
+    monkeypatch.setattr(client, "_api_key", lambda: "secret-token")
+
+    def _fake_request_json(url, body, headers):
+        seen.append((url, body, headers.copy()))
+        if len(seen) == 1:
+            raise RuntimeError("proxy path failed")
+        return {"success": True}
+
+    monkeypatch.setattr(client, "_request_json", _fake_request_json)
+
+    assert client._api_post("/threads/import", {"messages": []}) == {"success": True}
+    assert [url for url, _body, _headers in seen] == [
+        "https://mem.example.com/remote-api/threads/import",
+        "https://mem.example.com/threads/import",
+    ]
+    assert all("nmem_api_key" not in url.lower() for url, _body, _headers in seen)
+    assert all(headers["Authorization"] == "Bearer secret-token" for _url, _body, headers in seen)
+    assert all(headers["X-NMEM-API-Key"] == "secret-token" for _url, _body, headers in seen)

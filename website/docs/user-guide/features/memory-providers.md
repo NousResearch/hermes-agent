@@ -590,12 +590,8 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
-<<<<<<< HEAD
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
-=======
-| **Honcho** | Cloud | Paid | 4 | `honcho-ai` | Dialectic user modeling |
 | **Nowledge Mem** | Local/Self-hosted | Free | 6 | `nmem` CLI | Cross-tool shared memory + Working Memory |
->>>>>>> d703cdd5 (feat(memory): add Nowledge Mem memory provider)
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
 | **Hindsight** | Cloud/Local | Free/Paid | 3 | `hindsight-client` | Knowledge graph + reflect synthesis |

@@ -10,6 +10,7 @@ To add an alias: set ``aliases=("short",)`` on the existing ``CommandDef``.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from utils import is_truthy_value
+
+logger = logging.getLogger(__name__)
 
 # prompt_toolkit is an optional CLI dependency — only needed for
 # SlashCommandCompleter and SlashCommandAutoSuggest.  Gateway and test
@@ -781,7 +784,12 @@ def discord_skill_commands_by_category(
     # Collect raw skill data --------------------------------------------------
     categories: dict[str, list[tuple[str, str, str]]] = {}
     uncategorized: list[tuple[str, str, str]] = []
-    _names_used: set[str] = set(reserved_names)
+    # Map clamped-32-char-name → what it came from, so we can emit an
+    # actionable warning on collision. Reserved (gateway-builtin) command
+    # names are marked with a sentinel so the warning distinguishes
+    # "skill collided with a reserved command" from "two skills collided
+    # on the 32-char clamp" — the latter is the rename-worthy case.
+    _names_used: dict[str, str] = {n: "<reserved>" for n in reserved_names}
     hidden = 0
 
     try:
@@ -836,12 +844,39 @@ def discord_skill_commands_by_category(
             # Clamp to 32 chars (Discord per-command name limit)
             discord_name = raw_name[:32]
             if discord_name in _names_used:
-                # Collision with a previously-registered name — drop and
-                # count. Almost always caused by a reserved built-in name,
-                # not by another skill (frontmatter names are unique).
+                # Two skills whose first 32 chars are identical. One wins
+                # (the first one seen, which is alphabetical because the
+                # caller iterates ``sorted(skill_cmds)``); the other is
+                # dropped from Discord's /skill autocomplete.
+                #
+                # Silently counting this as ``hidden`` (the old behavior)
+                # meant skill authors had no way to discover the drop —
+                # their skill just didn't appear in the picker. Emit a
+                # WARNING naming both sides so the author can rename the
+                # losing skill's frontmatter name to something with a
+                # distinct 32-char prefix.
+                prior = _names_used[discord_name]
+                if prior == "<reserved>":
+                    logger.warning(
+                        "Discord /skill: %r (from %r) collides on its 32-char "
+                        "clamp with a reserved gateway command name %r — the "
+                        "skill will not appear in the /skill autocomplete. "
+                        "Rename the skill's frontmatter ``name:`` to differ "
+                        "in its first 32 chars.",
+                        discord_name, cmd_key, discord_name,
+                    )
+                else:
+                    logger.warning(
+                        "Discord /skill: %r and %r both clamp to %r on "
+                        "Discord's 32-char command-name limit — only %r "
+                        "will appear in the /skill autocomplete. Rename "
+                        "one skill's frontmatter ``name:`` to differ in "
+                        "its first 32 chars.",
+                        prior, cmd_key, discord_name, prior,
+                    )
                 hidden += 1
                 continue
-            _names_used.add(discord_name)
+            _names_used[discord_name] = cmd_key
 
             desc = info.get("description", "")
             if len(desc) > 100:

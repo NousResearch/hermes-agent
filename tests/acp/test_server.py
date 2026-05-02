@@ -306,6 +306,8 @@ class TestSessionOps:
 
         mock_conn.session_update.reset_mock()
         resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
 
         assert isinstance(resp, LoadSessionResponse)
         calls = mock_conn.session_update.await_args_list
@@ -347,6 +349,8 @@ class TestSessionOps:
 
         mock_conn.session_update.reset_mock()
         resp = await agent.resume_session(cwd="/tmp", session_id=new_resp.session_id)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
 
         assert isinstance(resp, ResumeSessionResponse)
         updates = [call.kwargs["update"] for call in mock_conn.session_update.await_args_list]
@@ -355,6 +359,27 @@ class TestSessionOps:
             and update.content.text == "So tell me the current state"
             for update in updates
         )
+
+    @pytest.mark.asyncio
+    async def test_load_session_schedules_history_replay_after_response(self, agent):
+        """Zed only attaches replayed updates after session/load has completed."""
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        state.history = [{"role": "user", "content": "hello from history"}]
+        events = []
+
+        async def replay_after_response(_state):
+            events.append("replay")
+
+        with patch.object(agent, "_replay_session_history", side_effect=replay_after_response):
+            resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+            events.append("returned")
+
+        assert isinstance(resp, LoadSessionResponse)
+        assert events == ["returned"]
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert events == ["returned", "replay"]
 
     @pytest.mark.asyncio
     async def test_resume_session_creates_new_if_missing(self, agent):

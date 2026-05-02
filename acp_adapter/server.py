@@ -658,6 +658,18 @@ class HermesACPAgent(acp.Agent):
             models=self._build_model_state(state),
         )
 
+    def _schedule_history_replay(self, state: SessionState) -> None:
+        """Replay persisted history after session/load or session/resume returns.
+
+        Zed only attaches streamed transcript/tool updates once the load/resume
+        response has completed. Sending replay notifications while the request is
+        still in-flight can make the server look correct in logs while the editor
+        drops or fails to attach the tool-call history.
+        """
+        loop = asyncio.get_running_loop()
+        replay_coro = self._replay_session_history(state)
+        loop.call_soon(asyncio.create_task, replay_coro)
+
     async def load_session(
         self,
         cwd: str,
@@ -671,7 +683,7 @@ class HermesACPAgent(acp.Agent):
             return None
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Loaded session %s", session_id)
-        await self._replay_session_history(state)
+        self._schedule_history_replay(state)
         self._schedule_available_commands_update(session_id)
         self._schedule_usage_update(state)
         return LoadSessionResponse(models=self._build_model_state(state))
@@ -689,7 +701,7 @@ class HermesACPAgent(acp.Agent):
             state = self.session_manager.create_session(cwd=cwd)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("Resumed session %s", state.session_id)
-        await self._replay_session_history(state)
+        self._schedule_history_replay(state)
         self._schedule_available_commands_update(state.session_id)
         self._schedule_usage_update(state)
         return ResumeSessionResponse(models=self._build_model_state(state))

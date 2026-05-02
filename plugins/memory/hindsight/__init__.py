@@ -503,6 +503,12 @@ class HindsightMemoryProvider(MemoryProvider):
                 return available
             if mode == "local_external":
                 return True
+            # Cloud mode — verify the client package is importable
+            try:
+                importlib.import_module("hindsight_client")
+            except ImportError:
+                logger.warning("hindsight-client not installed — Hindsight memory unavailable")
+                return False
             has_key = bool(
                 cfg.get("apiKey")
                 or cfg.get("api_key")
@@ -805,7 +811,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 kwargs["idle_timeout"] = idle_timeout
                 self._client = HindsightEmbedded(**kwargs)
             else:
-                from hindsight_client import Hindsight
+                try:
+                    from hindsight_client import Hindsight
+                except ImportError:
+                    raise RuntimeError(
+                        "hindsight-client is required for cloud mode. "
+                        "Install it with: pip install hindsight-client"
+                    )
                 timeout = self._timeout or _DEFAULT_TIMEOUT
                 kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
                 if self._api_key:

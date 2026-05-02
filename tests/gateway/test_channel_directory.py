@@ -16,6 +16,7 @@ from gateway.channel_directory import (
     _apply_channel_aliases,
     _build_from_sessions,
     _build_slack,
+    _slack_directory_warning_last,
 )
 
 
@@ -575,6 +576,32 @@ class TestBuildSlack:
             entries = asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
 
         assert entries == []
+
+    def test_repeated_workspace_errors_are_warning_throttled(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        client = _make_slack_client([
+            {"ok": False, "error": "missing_scope"},
+            {"ok": False, "error": "missing_scope"},
+        ])
+        _slack_directory_warning_last.clear()
+        monkeypatch.setattr("gateway.channel_directory.time.monotonic", lambda: 1000.0)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), caplog.at_level("DEBUG"):
+            asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
+            asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
+
+        warning_messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelname == "WARNING"
+        ]
+        assert len(warning_messages) == 1
+        assert "missing_scope" in warning_messages[0]
+        assert any(
+            "suppressed repeated Slack channel list failure" in record.getMessage()
+            for record in caplog.records
+        )
 
 
 class TestChannelAliases:

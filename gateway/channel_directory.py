@@ -9,6 +9,7 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,14 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+# Throttle window for repeated Slack channel-directory refresh failures.
+# The directory rebuilds on a timer, so a persistent workspace error (e.g.
+# missing scope, revoked token) would otherwise re-log the same warning on
+# every refresh. Warn once per (team, error detail) per interval; repeats
+# drop to DEBUG.
+_SLACK_DIRECTORY_WARNING_INTERVAL_SECONDS = 3600
+_slack_directory_warning_last: Dict[tuple[str, str], float] = {}
+
 # User-maintained friendly-name overlay. The directory is fully regenerated
 # from live adapters + session data on a timer, so hand-edits to
 # channel_directory.json don't survive. Aliases declared here are re-applied
@@ -103,6 +112,27 @@ def _session_entry_name(origin: Dict[str, Any]) -> str:
 
     topic_label = origin.get("chat_topic") or f"topic {thread_id}"
     return f"{base_name} / {topic_label}"
+
+
+def _warn_slack_directory(team_id: str, detail: str) -> None:
+    """Warn once per team/error per interval for recurring Slack refresh failures."""
+    key = (str(team_id), str(detail))
+    now = time.monotonic()
+    last = _slack_directory_warning_last.get(key)
+    if last is None or now - last >= _SLACK_DIRECTORY_WARNING_INTERVAL_SECONDS:
+        _slack_directory_warning_last[key] = now
+        logger.warning(
+            "Channel directory: failed to list Slack channels for team %s: %s",
+            team_id,
+            detail,
+        )
+    else:
+        logger.debug(
+            "Channel directory: suppressed repeated Slack channel list failure "
+            "for team %s: %s",
+            team_id,
+            detail,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -240,11 +270,8 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
                     cursor=cursor,
                 )
                 if not response.get("ok"):
-                    logger.warning(
-                        "Channel directory: users.conversations not ok for team %s: %s",
-                        team_id,
-                        response.get("error", "unknown"),
-                    )
+                    detail = f"users.conversations not ok: {response.get('error', 'unknown')}"
+                    _warn_slack_directory(team_id, detail)
                     break
                 for ch in response.get("channels", []):
                     cid = ch.get("id")
@@ -261,10 +288,7 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
                 if not cursor:
                     break
         except Exception as e:
-            logger.warning(
-                "Channel directory: failed to list Slack channels for team %s: %s",
-                team_id, e,
-            )
+            _warn_slack_directory(team_id, str(e))
             continue
 
     # Merge in DM/group entries discovered from session history.

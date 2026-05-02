@@ -120,6 +120,14 @@ class _VikingClient:
         resp.raise_for_status()
         return resp.json()
 
+    def delete(self, path: str, params: dict = None) -> dict:
+        resp = self._httpx.delete(
+            self._url(path), params=params or {}, headers=self._headers(),
+            timeout=_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def health(self) -> bool:
         try:
             resp = self._httpx.get(
@@ -247,6 +255,30 @@ ADD_RESOURCE_SCHEMA = {
     },
 }
 
+DELETE_SCHEMA = {
+    "name": "viking_delete",
+    "description": (
+        "Delete a file or directory from the OpenViking knowledge base. "
+        "Use this to remove stale, duplicate, or incorrect entries. "
+        "Set recursive=true for directories."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "uri": {
+                "type": "string",
+                "description": "viking:// URI to delete (e.g., viking://user/default/memories/entities/stale.md)",
+            },
+            "recursive": {
+                "type": "boolean",
+                "description": "If true, delete directory recursively. Default: false.",
+                "default": False,
+            },
+        },
+        "required": ["uri"],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
@@ -350,7 +382,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 f"Active. Endpoint: {self._endpoint}\n"
                 "Use viking_search to find information, viking_read for details "
                 "(abstract/overview/full), viking_browse to explore.\n"
-                "Use viking_remember to store facts, viking_add_resource to index URLs/docs."
+                "Use viking_remember to store facts, viking_add_resource to index URLs/docs, "
+                "viking_delete to remove entries."
             )
         except Exception as e:
             logger.warning("OpenViking system_prompt_block failed: %s", e)
@@ -358,7 +391,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "# OpenViking Knowledge Base\n"
                 f"Active. Endpoint: {self._endpoint}\n"
                 "Use viking_search, viking_read, viking_browse, "
-                "viking_remember, viking_add_resource."
+                "viking_remember, viking_add_resource, viking_delete."
             )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -495,7 +528,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         t.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [SEARCH_SCHEMA, READ_SCHEMA, BROWSE_SCHEMA, REMEMBER_SCHEMA, ADD_RESOURCE_SCHEMA]
+        return [SEARCH_SCHEMA, READ_SCHEMA, BROWSE_SCHEMA, REMEMBER_SCHEMA, ADD_RESOURCE_SCHEMA, DELETE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._client:
@@ -512,6 +545,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return self._tool_remember(args)
             elif tool_name == "viking_add_resource":
                 return self._tool_add_resource(args)
+            elif tool_name == "viking_delete":
+                return self._tool_delete(args)
             return tool_error(f"Unknown tool: {tool_name}")
         except Exception as e:
             return tool_error(str(e))
@@ -755,6 +790,29 @@ class OpenVikingMemoryProvider(MemoryProvider):
             "status": "added",
             "root_uri": result.get("root_uri", ""),
             "message": "Resource queued for processing. Use viking_search after a moment to find it.",
+        }, ensure_ascii=False)
+
+    def _tool_delete(self, args: dict) -> str:
+        uri = args.get("uri", "")
+        if not uri:
+            return tool_error("uri is required")
+
+        params = {}
+        params["uri"] = uri
+        if args.get("recursive"):
+            params["recursive"] = "true"
+
+        try:
+            resp = self._client.delete("/api/v1/fs", params=params)
+        except Exception as e:
+            return tool_error(str(e))
+
+        data = self._unwrap_result(resp)
+        deleted = data.get("uri", uri) if isinstance(data, dict) else uri
+
+        return json.dumps({
+            "deleted": deleted,
+            "status": "ok",
         }, ensure_ascii=False)
 
 

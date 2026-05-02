@@ -15,6 +15,8 @@ def test_terminal_description_advertises_native_windows_powershell():
     description = terminal_tool.TERMINAL_TOOL_DESCRIPTION
 
     assert "PowerShell" in description
+    assert "PowerShell 7+" in description
+    assert "pwsh.exe" in description
     assert "Get-ChildItem" in description
     assert "Do NOT claim PowerShell is unavailable" in description
 

@@ -84,6 +84,43 @@ def test_windows_does_not_wrap_bash_or_explicit_shell_commands(monkeypatch):
     assert local_env._wrap_windows_powershell_command(bash_command) == bash_command
 
 
+def test_find_powershell_prefers_newest_stable_pwsh(monkeypatch):
+    local_env._IS_WINDOWS = True
+    monkeypatch.delenv("HERMES_POWERSHELL_PATH", raising=False)
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.delenv("ProgramW6432", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+
+    existing = {
+        r"C:\Program Files\PowerShell\6\pwsh.exe",
+        r"C:\Program Files\PowerShell\7\pwsh.exe",
+        r"C:\Program Files\PowerShell\7-preview\pwsh.exe",
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+    }
+
+    monkeypatch.setattr(local_env.os.path, "isdir", lambda path: path == r"C:\Program Files\PowerShell")
+    monkeypatch.setattr(local_env.os, "listdir", lambda path: ["6", "7-preview", "7"] if path == r"C:\Program Files\PowerShell" else [])
+    monkeypatch.setattr(local_env.os.path, "isfile", lambda path: path in existing)
+    monkeypatch.setattr(
+        local_env.shutil,
+        "which",
+        lambda name: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        if name in {"powershell", "powershell.exe"} else None,
+    )
+
+    assert local_env._find_powershell() == "C:/Program Files/PowerShell/7/pwsh.exe"
+
+
+def test_find_powershell_allows_explicit_override(monkeypatch):
+    local_env._IS_WINDOWS = True
+    override = r"D:\Tools\PowerShell\9\pwsh.exe"
+    monkeypatch.setenv("HERMES_POWERSHELL_PATH", override)
+    monkeypatch.setattr(local_env.os.path, "isfile", lambda path: path == override)
+
+    assert local_env._find_powershell() == "D:/Tools/PowerShell/9/pwsh.exe"
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows-only live regression")
 def test_local_environment_captures_stdout_on_windows():
     try:
@@ -122,3 +159,23 @@ def test_local_environment_runs_direct_powershell_cmdlets_on_windows():
     assert "command not found" not in result["output"]
     assert "#< CLIXML" not in result["output"]
     assert result["output"].strip()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only live regression")
+def test_local_environment_prefers_pwsh_on_windows_when_available():
+    if not local_env.shutil.which("pwsh"):
+        pytest.skip("PowerShell 7+ not installed")
+    try:
+        local_env._find_bash()
+    except RuntimeError as exc:
+        pytest.skip(str(exc))
+
+    env = local_env.LocalEnvironment(cwd=str(Path.cwd()), timeout=10)
+    try:
+        result = env.execute("$PSVersionTable.PSVersion.Major", timeout=10)
+    finally:
+        env.cleanup()
+
+    assert result["returncode"] == 0
+    assert "#< CLIXML" not in result["output"]
+    assert int(result["output"].strip().splitlines()[-1]) >= 7

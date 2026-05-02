@@ -554,8 +554,11 @@ NATIVE_WINDOWS_ENVIRONMENT_HINT = (
     "When a Windows-native operation is clearer, run PowerShell cmdlets "
     "directly (for example Get-ChildItem, Get-Process, Select-Object, "
     "$PSVersionTable, [Environment]::GetEnvironmentVariable(...)); Hermes "
-    "routes PowerShell-shaped commands through powershell.exe. For ambiguous "
-    "syntax, invoke powershell -NoProfile -Command ... explicitly."
+    "routes PowerShell-shaped commands through the newest installed pwsh.exe "
+    "/ PowerShell 7+ and falls back to Windows PowerShell only when pwsh is "
+    "unavailable. For ambiguous explicit shell invocations under Git Bash, "
+    "quote PowerShell snippets with single quotes, e.g. "
+    "pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'."
 )
 
 

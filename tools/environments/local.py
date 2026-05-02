@@ -174,38 +174,101 @@ _POWERSHELL_NONINTERACTIVE_PREAMBLE = (
 )
 
 
+def _powershell_version_key(dirname: str) -> tuple:
+    """Sort installed PowerShell directory names with stable releases first."""
+    numbers = tuple(int(part) for part in re.findall(r"\d+", dirname))
+    stable = 0 if "preview" in dirname.lower() else 1
+    return numbers, stable, dirname.lower()
+
+
+def _iter_programfiles_pwsh_candidates() -> list[str]:
+    """Return installed PowerShell 7+ pwsh.exe candidates, newest first."""
+    roots = []
+    for env_name in ("ProgramFiles", "ProgramW6432", "LOCALAPPDATA"):
+        root = os.environ.get(env_name)
+        if root:
+            roots.append(root)
+
+    candidates: list[tuple[tuple, str]] = []
+    seen_roots: set[str] = set()
+    for root in roots:
+        ps_root = (
+            os.path.join(root, "PowerShell")
+            if os.path.basename(root).lower() != "local"
+            else os.path.join(root, "Programs", "PowerShell")
+        )
+        normalized_root = os.path.normcase(os.path.abspath(ps_root))
+        if normalized_root in seen_roots:
+            continue
+        seen_roots.add(normalized_root)
+        if not os.path.isdir(ps_root):
+            continue
+
+        try:
+            version_dirs = os.listdir(ps_root)
+        except OSError:
+            continue
+        for dirname in version_dirs:
+            candidate = os.path.join(ps_root, dirname, "pwsh.exe")
+            if os.path.isfile(candidate):
+                candidates.append((_powershell_version_key(dirname), candidate))
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [path for _, path in candidates]
+
+
+def _dedupe_paths(paths: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for path in paths:
+        if not path:
+            continue
+        key = os.path.normcase(os.path.abspath(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
 def _find_powershell() -> str:
-    """Find a native Windows PowerShell executable for Git Bash to launch."""
+    """Find the newest native PowerShell executable for Git Bash to launch."""
     custom = os.environ.get("HERMES_POWERSHELL_PATH")
     if custom and os.path.isfile(custom):
         return _normalize_windows_shell_path(custom)
 
-    for name in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
-        found = shutil.which(name)
-        if found:
-            return _normalize_windows_shell_path(found)
+    candidates = _dedupe_paths(
+        _iter_programfiles_pwsh_candidates()
+        + [
+            shutil.which("pwsh.exe") or "",
+            shutil.which("pwsh") or "",
+            os.path.join(
+                os.environ.get("ProgramFiles", r"C:\Program Files"),
+                "PowerShell",
+                "7",
+                "pwsh.exe",
+            ),
+            shutil.which("powershell.exe") or "",
+            shutil.which("powershell") or "",
+        ]
+        + [
+            os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"),
+                "System32",
+                "WindowsPowerShell",
+                "v1.0",
+                "powershell.exe",
+            )
+        ]
+    )
 
-    for candidate in (
-        os.path.join(
-            os.environ.get("SystemRoot", r"C:\Windows"),
-            "System32",
-            "WindowsPowerShell",
-            "v1.0",
-            "powershell.exe",
-        ),
-        os.path.join(
-            os.environ.get("ProgramFiles", r"C:\Program Files"),
-            "PowerShell",
-            "7",
-            "pwsh.exe",
-        ),
-    ):
+    for candidate in candidates:
         if candidate and os.path.isfile(candidate):
             return _normalize_windows_shell_path(candidate)
 
     raise RuntimeError(
         "PowerShell not found. Native Windows PowerShell commands require "
-        "powershell.exe or pwsh.exe on PATH, or HERMES_POWERSHELL_PATH set."
+        "pwsh.exe or powershell.exe on PATH, or HERMES_POWERSHELL_PATH set."
     )
 
 

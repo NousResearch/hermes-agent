@@ -893,7 +893,7 @@ from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 # Tool description for LLM
 TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on the configured terminal environment. Filesystem usually persists between calls.
 
-Native Windows local backend: Git-Bash-compatible commands work, and native PowerShell commands work too. Commands that look like PowerShell syntax (for example Get-ChildItem, Get-Process, Select-Object, $PSVersionTable, [Environment]::...) are routed through powershell.exe automatically. Do NOT claim PowerShell is unavailable on native Windows; use direct PowerShell cmdlets when they are the right tool, or invoke powershell -NoProfile -Command ... explicitly for ambiguous syntax.
+Native Windows local backend: Git-Bash-compatible commands work, and native PowerShell commands work too. Commands that look like PowerShell syntax (for example Get-ChildItem, Get-Process, Select-Object, $PSVersionTable, [Environment]::...) are routed through the newest installed pwsh.exe / PowerShell 7+ automatically, falling back to Windows PowerShell only when pwsh is unavailable. Do NOT claim PowerShell is unavailable on native Windows; use direct PowerShell cmdlets when they are the right tool. For ambiguous explicit shell invocations under Git Bash, quote PowerShell snippets with single quotes, e.g. pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'.
 
 Do NOT use cat/head/tail to read files — use read_file instead.
 Do NOT use grep/rg/find to search — use search_files instead.

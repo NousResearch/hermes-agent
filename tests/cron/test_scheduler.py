@@ -819,6 +819,130 @@ class TestRunJobSessionPersistence:
             ),
         ]
 
+    def test_run_job_uses_configured_model_provider_when_job_provider_unset(self, tmp_path, monkeypatch):
+        job = {
+            "id": "config-provider-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: gpt-5.5\n"
+            "  provider: openai-codex\n"
+            "  base_url: https://chatgpt.com/backend-api/codex\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://chatgpt.com/backend-api/codex",
+                     "provider": "openai-codex",
+                     "api_mode": "codex_responses",
+                 },
+             ) as resolve_runtime_provider, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        resolve_runtime_provider.assert_called_once()
+        assert resolve_runtime_provider.call_args.kwargs["requested"] == "openai-codex"
+        assert resolve_runtime_provider.call_args.kwargs["explicit_base_url"] == "https://chatgpt.com/backend-api/codex"
+
+    def test_run_job_env_provider_does_not_inherit_config_base_url(self, tmp_path, monkeypatch):
+        job = {
+            "id": "env-provider-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: gpt-5.5\n"
+            "  provider: openai-codex\n"
+            "  base_url: https://chatgpt.com/backend-api/codex\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "anthropic")
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://api.anthropic.com",
+                     "provider": "anthropic",
+                     "api_mode": "anthropic",
+                 },
+             ) as resolve_runtime_provider, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert resolve_runtime_provider.call_args.kwargs["requested"] == "anthropic"
+        assert "explicit_base_url" not in resolve_runtime_provider.call_args.kwargs
+
+    def test_run_job_job_provider_does_not_inherit_config_base_url(self, tmp_path, monkeypatch):
+        job = {
+            "id": "job-provider-job",
+            "name": "test",
+            "prompt": "hello",
+            "provider": "openrouter",
+        }
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: gpt-5.5\n"
+            "  provider: openai-codex\n"
+            "  base_url: https://chatgpt.com/backend-api/codex\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://openrouter.ai/api/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ) as resolve_runtime_provider, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _output, _final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert resolve_runtime_provider.call_args.kwargs["requested"] == "openrouter"
+        assert "explicit_base_url" not in resolve_runtime_provider.call_args.kwargs
+
     def test_run_job_passes_enabled_toolsets_to_agent(self, tmp_path):
         job = {
             "id": "toolset-job",

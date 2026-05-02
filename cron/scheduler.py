@@ -913,6 +913,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             )
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        configured_provider = None
+        configured_base_url = None
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -928,6 +930,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
                         model = _model_cfg.get("default", model)
+                if isinstance(_model_cfg, dict):
+                    configured_provider = _model_cfg.get("provider")
+                    configured_base_url = _model_cfg.get("base_url")
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
@@ -974,11 +979,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         )
         from hermes_cli.auth import AuthError
         try:
+            job_provider = job.get("provider")
+            env_provider = os.getenv("HERMES_INFERENCE_PROVIDER")
             runtime_kwargs = {
-                "requested": job.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER"),
+                "requested": job_provider or env_provider or configured_provider,
             }
-            if job.get("base_url"):
-                runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            explicit_base_url = job.get("base_url")
+            if explicit_base_url is None and not job_provider and not env_provider:
+                explicit_base_url = configured_base_url
+            if explicit_base_url:
+                runtime_kwargs["explicit_base_url"] = explicit_base_url
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.

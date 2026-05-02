@@ -95,6 +95,41 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("nope")):
             assert generate_title("q", "a") is None
 
+    def test_strips_inline_thinking_blocks(self):
+        """Thinking models (MiniMax-M2.7, DeepSeek-R1, Qwen-QwQ) embed reasoning
+        in <think>/<reasoning> tags inside content. The title must drop those
+        blocks instead of saving them as the session title (#18529).
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "<think>The user is asking me to generate a title for a "
+            "conversation. Let me analyze the topic and pick something "
+            "concise.</think>Refactoring the Cron Scheduler"
+        )
+        mock_response.choices[0].message.reasoning = None
+        mock_response.choices[0].message.reasoning_content = None
+        mock_response.choices[0].message.reasoning_details = None
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("how do I refactor cron", "Sure, first…")
+            assert title == "Refactoring the Cron Scheduler"
+
+    def test_falls_back_to_reasoning_field_when_content_empty(self):
+        """When content is empty but reasoning_content is populated (Moonshot,
+        Novita, etc.) the title must still come back instead of None (#18529).
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = ""
+        mock_response.choices[0].message.reasoning = "Setting Up Postgres Replication"
+        mock_response.choices[0].message.reasoning_content = None
+        mock_response.choices[0].message.reasoning_details = None
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("postgres replica setup", "Sure…")
+            assert title == "Setting Up Postgres Replication"
+
     def test_truncates_long_messages(self):
         """Long user/assistant messages should be truncated in the LLM request."""
         captured_kwargs = {}

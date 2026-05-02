@@ -8,7 +8,7 @@ import logging
 import threading
 from typing import Callable, Optional
 
-from agent.auxiliary_client import call_llm
+from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,10 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
         )
-        title = (response.choices[0].message.content or "").strip()
+        # Use extract_content_or_reasoning() so titles from thinking models
+        # (MiniMax-M2.7, DeepSeek-R1, Qwen-QwQ, …) drop their <think>/<reasoning>
+        # blocks instead of leaking them into the saved session title.
+        title = extract_content_or_reasoning(response).strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
         title = title.strip('"\'')
         if title.lower().startswith("title:"):

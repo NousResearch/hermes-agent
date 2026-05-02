@@ -528,6 +528,21 @@ class SlackAdapter(BasePlatformAdapter):
                 return False
             lock_acquired = True
 
+            # Close any previous handler before creating a new one so that
+            # calling connect() a second time (e.g. during a gateway restart or
+            # in-process reconnect attempt) does not leave a zombie Socket Mode
+            # connection alive.  Both the old and new connections would otherwise
+            # receive every Slack event and dispatch it twice, producing double
+            # responses — the same bug that affected DiscordAdapter (#18187).
+            if self._handler is not None:
+                try:
+                    await self._handler.close_async()
+                except Exception:
+                    logger.debug("[%s] Failed to close previous Slack handler", self.name)
+                finally:
+                    self._handler = None
+                    self._app = None
+
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
             self._app = AsyncApp(token=primary_token)

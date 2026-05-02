@@ -49,7 +49,7 @@ Works with any language; demonstrated on Vietnamese.
 | **Diacritic correction** | Whisper mangles Vietnamese tones (e.g. `khong biet` → `không biết`). Kimi fixes them. |
 | **Language-agnostic phonetics** | Generates readable phonetic guides in the student's native language (e.g. Vietnamese: `không biết` → `[humm biet]`) |
 | **Teaching layout** | Target-language segments: bold main text + italic phonetic below. English segments: clean text only. |
-| **Visual editor** | Dashboard editor with per-segment EN/VI toggles, word-split, NL edits, QA review |
+| **Visual editor** | Dashboard editor with per-segment language toggles, word-split, NL edits, QA review |
 | **Telegram-native** | Full pipeline from a single chat message — no desktop app needed (works for any language teaching channel) |
 | **Hermes plugin** | Drop-in install, no core file changes, uses Hermes model as fallback if no NVIDIA key |
 
@@ -59,12 +59,12 @@ Works with any language; demonstrated on Vietnamese.
 
 Phonetic generation is the hardest part of this pipeline. It requires:
 
-1. **Language boundary detection** at segment level (one sentence may start EN, end VI)
-2. **Vietnamese diacritic restoration** from Whisper's transcription artifacts
+1. **Language boundary detection** at segment level (one sentence may start EN, end in the target language)
+2. **Diacritic and script restoration** from Whisper's transcription artifacts — Whisper mangles tones (`khong biet` → `không biết`), romanises scripts, and drops combining marks
 3. **Phonetic approximation** that sounds right to English ears — not IPA, just `[humm biet]`
-4. **Consistent JSON output** across hundreds of segments
+4. **Consistent JSON output** across hundreds of segments, reliably honouring the "no IPA" constraint
 
-Kimi K2.6's extended reasoning handles all four simultaneously in a single pass. The model's instruction-following and structured output reliability made it the clear choice for this task — smaller models frequently hallucinate IPA symbols or skip diacritics.
+Kimi K2.6's extended reasoning handles all four simultaneously in a single pass, across every supported language. The model's instruction-following and structured output reliability made it the clear choice — smaller models frequently hallucinate IPA symbols, skip diacritics, or misclassify code-switched segments.
 
 **Proof of Kimi usage**: The health banner in the dashboard shows `"Phonetics engine: NVIDIA Kimi K2.6"` when `NVIDIA_API_KEY` is set. The API call is visible in `~/.hermes/logs/agent.log` with `model: meta/llama-...` / `base_url: https://integrate.api.nvidia.com`. (See demo video.)
 
@@ -192,11 +192,29 @@ Hermes plugin — no core file changes.
 |---|---|
 | Kimi K2.6 via NVIDIA NIM | `plugins/phonetic-captions/pipeline.py` → `generate_phonetics()` — `base_url = "https://integrate.api.nvidia.com/v1"`, `model = "moonshotai/kimi-k2.6"` |
 | Hermes model fallback | Same function — falls back to `AIAgent` if `NVIDIA_API_KEY` absent |
-| Diacritic correction | System prompt in `generate_phonetics()` — explicit instruction to fix Whisper tone artifacts |
-| Phonetic-only output (no IPA) | System prompt + NL-edit system prompt — "NEVER use IPA symbols" rule |
+| Diacritic correction | `_phonetics_prompt()` in `pipeline.py` — explicit instruction to fix Whisper tone artifacts, parameterised per target language |
+| Phonetic-only output (no IPA) | `_phonetics_prompt()` + `_nl_system_prompt()` — "NEVER use IPA symbols" rule in both |
+| Any-language support | `LANG_NAMES` dict (17 languages), `_detect_target_lang()` auto-detects from Whisper segment tags, `target_lang` parameter flows through the full pipeline |
 | Dashboard is a Hermes plugin | `plugins/phonetic-captions/plugin.yaml`, `__init__.py` `register(ctx)`, `dashboard/manifest.json` |
 | No core file changes | Only `web/src/App.tsx` gets a 1-line catch-all guard; all pipeline + API + UI lives in `plugins/phonetic-captions/` |
 | SSE streaming prevents timeouts | `plugin_api.py` `_agent_sse()` generator, used by `/nl-edit` and `/qa` endpoints |
+
+---
+
+## Future Direction
+
+SpeakAlong is scoped to bilingual teaching videos for the hackathon, but the pipeline is already general. The natural growth path:
+
+**v2 — Monolingual captions (trivial)**  
+Whisper already transcribes any single-language video. Adding a "captions only, no phonetics" mode is a prompt removal and an additional ASS style — no architecture change. This makes the tool useful for any content creator, not just language educators.
+
+**v3 — Translation subtitles**  
+Replace the phonetics-generation prompt with a translation prompt. A monolingual Korean video could get English subtitles burned in; a Spanish teaching video could get French captions. Mechanically identical to the current pipeline — the LLM call is already there, just with a different instruction. This is deliberately deferred: it enters competitive territory with CapCut auto-translate, Descript, and YouTube auto-captions, and the positioning argument for SpeakAlong is strongest in the niche where those tools fail.
+
+**v4 — Phonetic direction reversal**  
+Currently the phonetic guide is always in English (the instructor's language). The inverse — generating phonetic guides in the *target* language for English words — is equally useful for language learners going the other direction (e.g., a Vietnamese learner watching an English teaching channel). Same pipeline, different prompt.
+
+**The core bet**: the bilingual teaching use case is underserved, growing, and technically hard in exactly the ways this stack handles well. Winning this niche first is a stronger foundation than competing on general captioning from day one.
 
 ---
 

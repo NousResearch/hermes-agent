@@ -13406,7 +13406,141 @@ class GatewayRunner:
         return response
 
 
-def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
+def _process_due_nudges(runner, adapters, loop):
+    """Check for due nudges and trigger agent wake-ups.
+
+    Called by the cron ticker to find and fire nudges that are scheduled
+    to wake up agent sessions. When a nudge fires, the agent receives a
+    synthetic message and continues processing with full context.
+    """
+    try:
+        from nudges import get_due_nudges, fire_nudge
+
+        due_nudges = get_due_nudges()
+        if not due_nudges:
+            return
+
+        logger.debug("Processing %d due nudges", len(due_nudges))
+
+        for nudge in due_nudges:
+            try:
+                # Mark as fired first to avoid duplicate processing
+                if not fire_nudge(nudge):
+                    continue
+
+                # Trigger the agent wake-up
+                _trigger_nudge_wake(runner, nudge, adapters, loop)
+
+            except Exception as e:
+                logger.exception("Failed to process nudge %s: %s", nudge.get("id"), e)
+
+    except Exception as e:
+        logger.debug("Error processing nudges: %s", e)
+
+
+def _trigger_nudge_wake(runner, nudge: dict, adapters, loop):
+    """Trigger an agent wake-up for a nudge.
+
+    Creates a synthetic user message from the nudge context and invokes
+    the agent to continue processing. The agent retains full context from
+    its previous turn.
+
+    Args:
+        runner: The GatewayRunner instance
+        nudge: The nudge dict containing session_id, session_key, context, etc.
+        adapters: Dict of platform adapters
+        loop: The asyncio event loop
+    """
+    import asyncio
+
+    session_key = nudge.get("session_key")
+    session_id = nudge.get("session_id")
+    context = nudge.get("context", "")
+    nudge_name = nudge.get("name", nudge.get("id", "unknown"))
+
+    if not session_key or not session_id:
+        logger.warning("Nudge %s missing session info, cannot trigger", nudge.get("id"))
+        return
+
+    try:
+        # Get session store
+        session_store = getattr(runner, '_session_store', None) or getattr(runner, 'session_store', None)
+        if not session_store:
+            logger.warning("No session store available for nudge trigger")
+            return
+
+        # Thread-safe session lookup using the session store's lock
+        with session_store._lock:
+            entry = session_store._entries.get(session_key)
+            if not entry:
+                logger.warning("Session %s not found for nudge trigger", session_key)
+                return
+
+            # Check if session is suspended
+            if entry.suspended:
+                logger.debug("Session %s is suspended, skipping nudge", session_key)
+                return
+
+            # Verify session ID matches (session may have been reset)
+            # Only check if session_id was stored in the nudge (may be empty for older nudges)
+            if session_id and entry.session_id != session_id:
+                logger.debug(
+                    "Session %s ID mismatch (nudge: %s, current: %s), skipping",
+                    session_key, session_id, entry.session_id
+                )
+                return
+
+            # Capture source for later use (outside lock)
+            source = entry.origin
+
+        if not source:
+            logger.warning("Session %s has no origin, cannot trigger nudge", session_key)
+            return
+
+        # Build the wake-up message
+        if context:
+            wake_message = f"[Scheduled reminder '{nudge_name}']: {context}"
+        else:
+            wake_message = f"[Scheduled reminder '{nudge_name}']: Continuing with scheduled task."
+
+        # Create a message event
+        event = MessageEvent(
+            source=source,
+            text=wake_message,
+            sender_id=source.user_id or "system",
+            sender_name="Reminder",
+        )
+
+        # NUDGES ALWAYS QUEUE - never interrupt the running agent
+        # Get the adapter for this session and queue the message
+        adapter = None
+        if adapters:
+            adapter = adapters.get(source.platform)
+
+        if adapter and hasattr(adapter, '_pending_messages'):
+            # Queue the nudge in the adapter's pending messages
+            merge_pending_message_event(adapter._pending_messages, session_key, event)
+            logger.info("Queued nudge for session %s (waiting for next turn)", session_key)
+        else:
+            # No adapter or no queue mechanism - fall back to direct handle
+            # This will still work but may interrupt if busy_input_mode=interrupt
+            logger.debug("No adapter queue available for session %s, using direct handle", session_key)
+
+        # If no agent is running for this session, trigger a new turn to process the queue
+        if loop and loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                runner._handle_message(event),
+                loop
+            )
+            logger.info("Triggered agent turn for session %s via nudge", session_key)
+        else:
+            logger.warning("Event loop not available for nudge trigger on session %s", session_key)
+
+    except Exception as e:
+        logger.exception("Failed to trigger agent turn for session %s: %s", session_key, e)
+
+
+def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60, runner=None):
     """
     Background thread that ticks the cron scheduler at a regular interval.
     
@@ -13493,6 +13627,23 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                 )
             except Exception as e:
                 logger.debug("Curator tick error: %s", e)
+
+        # Process due nudges - wake up agents that scheduled reminders
+        if runner:
+            try:
+                _process_due_nudges(runner, adapters, loop)
+            except Exception as e:
+                logger.debug("Nudge processing error: %s", e)
+
+        # Clean up old fired nudges periodically
+        if tick_count % 60 == 0:
+            try:
+                from nudges import cleanup_old_nudges
+                removed = cleanup_old_nudges(max_age_hours=24)
+                if removed:
+                    logger.info("Nudge cleanup: removed %d old fired nudge(s)", removed)
+            except Exception as e:
+                logger.debug("Nudge cleanup error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")
@@ -13781,11 +13932,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
+    # Pass the runner so nudged sessions can be processed.
     cron_stop = threading.Event()
     cron_thread = threading.Thread(
         target=_start_cron_ticker,
         args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop(), "runner": runner},
         daemon=True,
         name="cron-ticker",
     )

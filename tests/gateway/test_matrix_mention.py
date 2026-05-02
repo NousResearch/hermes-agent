@@ -259,6 +259,58 @@ class TestOutboundMentions:
         assert content["msgtype"] == "m.notice"
         assert content["m.mentions"] == {"user_ids": ["@alice:example.org"]}
 
+    @pytest.mark.asyncio
+    async def test_send_caches_outgoing_text_by_event_id(self):
+        result = await self.adapter.send("!room1:example.org", "Bot reply")
+
+        assert result.success is True
+        assert self.adapter._message_text_cache["$evt1"] == "Bot reply"
+
+
+# ---------------------------------------------------------------------------
+# Reply context
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reply_to_text_resolved_from_seen_message(monkeypatch):
+    monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    parent = _make_event("parent text", event_id="$parent")
+
+    await adapter._on_room_message(parent)
+
+    reply = _make_event("reply body", event_id="$reply")
+    reply.content["m.relates_to"] = {
+        "m.in_reply_to": {"event_id": "$parent"},
+    }
+
+    await adapter._on_room_message(reply)
+
+    msg = adapter.handle_message.await_args_list[-1].args[0]
+    assert msg.reply_to_message_id == "$parent"
+    assert msg.reply_to_text == "parent text"
+
+
+@pytest.mark.asyncio
+async def test_reply_to_text_uses_fallback_for_unknown_parent(monkeypatch):
+    monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    reply = _make_event("reply body", event_id="$reply")
+    reply.content["m.relates_to"] = {
+        "m.in_reply_to": {"event_id": "$missing"},
+    }
+
+    await adapter._on_room_message(reply)
+
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.reply_to_message_id == "$missing"
+    assert msg.reply_to_text == "reply message text unavailable"
+
 
 # ---------------------------------------------------------------------------
 # Require-mention gating in _on_room_message

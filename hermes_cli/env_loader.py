@@ -147,7 +147,11 @@ def load_hermes_dotenv(
     """Load Hermes environment files with user config taking precedence.
 
     Behavior:
-    - `~/.hermes/.env` overrides stale shell-exported values when present.
+    - `~/.hermes/.env` fills missing values by default (override=False),
+      respecting 12-factor env precedence so runtime-injected secrets
+      (systemd, Docker, k8s) are not overridden by stale .env values.
+    - Set ``HERMES_DOTENV_OVERRIDE=1`` to restore the legacy behavior
+      where .env overrides all pre-existing environment variables.
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
@@ -165,7 +169,13 @@ def load_hermes_dotenv(
         _sanitize_env_file_if_needed(project_env_path)
 
     if user_env.exists():
-        _load_dotenv_with_fallback(user_env, override=True)
+        # Respect 12-factor env precedence by default: runtime environment
+        # variables (systemd EnvironmentFile=, Docker secrets, k8s injection)
+        # take precedence over the .env file.  Users who rely on .env
+        # overriding stale shell exports can opt back in via
+        # HERMES_DOTENV_OVERRIDE=1 (see #18705).
+        user_override = os.getenv("HERMES_DOTENV_OVERRIDE", "0") == "1"
+        _load_dotenv_with_fallback(user_env, override=user_override)
         loaded.append(user_env)
 
     if project_env_path and project_env_path.exists():

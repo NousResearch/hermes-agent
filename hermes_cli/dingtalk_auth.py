@@ -165,7 +165,7 @@ def _ensure_qrcode_installed() -> bool:
 
     # Try uv first (Hermes convention), then pip
     for cmd in (
-        [sys.executable, "-m", "uv", "pip", "install", "qrcode"],
+        ["uv", "pip", "install", "qrcode"],
         [sys.executable, "-m", "pip", "install", "-q", "qrcode"],
     ):
         try:

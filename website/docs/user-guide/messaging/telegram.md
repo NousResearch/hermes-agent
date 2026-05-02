@@ -300,6 +300,28 @@ Hermes Agent works in Telegram group chats with a few considerations:
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
+### Troubleshooting: works in DMs but not groups
+
+If the bot responds in a private chat but stays silent in a group, check these
+gates in order:
+
+1. **Telegram delivery:** turn off BotFather privacy mode, promote the bot to
+   admin, or mention the bot directly. Hermes cannot respond to group messages
+   that Telegram never delivers to the bot.
+2. **Rejoin after changing privacy:** remove the bot from the group and add it
+   again after changing BotFather privacy settings. Telegram may keep the old
+   delivery behavior for existing memberships.
+3. **Hermes authorization:** make sure the sender is listed in
+   `TELEGRAM_ALLOWED_USERS` or `TELEGRAM_GROUP_ALLOWED_USERS`, or allow the
+   group chat with `TELEGRAM_GROUP_ALLOWED_CHATS`.
+4. **Mention filters:** if `telegram.require_mention: true` is set, normal
+   group chatter is ignored unless the message is a slash command, reply to the
+   bot, `@botusername` mention, or configured `mention_patterns` match.
+
+Negative chat IDs are normal for Telegram groups and supergroups. If you use
+chat-scoped authorization, put those IDs in `TELEGRAM_GROUP_ALLOWED_CHATS`, not
+the sender-user allowlist.
+
 ### Example group trigger configuration
 
 Add this to `~/.hermes/config.yaml`:

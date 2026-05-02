@@ -882,6 +882,11 @@ class AIAgent:
         # same image history.
         self._anthropic_image_fallback_cache: Dict[str, str] = {}
 
+        # DeepSeek V4 reasoning passback cache: maps tool_call_id → reasoning_content.
+        # Persists across outer-loop iterations so compressed messages don't lose
+        # reasoning that must be passed back verbatim on every subsequent API call.
+        self._deepseek_reasoning_by_tc_id: Dict[str, str] = {}
+
         # Initialize LLM client via centralized provider router.
         # The router handles auth resolution, base URL, headers, and
         # Codex/Anthropic wrapping for all known providers.
@@ -8763,14 +8768,15 @@ class AIAgent:
             # that had tool_calls when the model was in thinking mode.
             # Enforce this here as a safety net in case the passback was lost
             # (e.g. compressed context, session restore, delegation handoff).
+            # self._deepseek_reasoning_by_tc_id persists across outer-loop
+            # iterations so compressed messages never lose previously-seen reasoning.
             if "deepseek.com" in (self.base_url or "").lower():
-                _internal_by_tc_id: dict = {}
                 for _m in messages:
                     if _m.get("role") == "assistant" and _m.get("reasoning"):
                         for _tc in (_m.get("tool_calls") or []):
                             _tc_id = (_tc.get("id") or "") if isinstance(_tc, dict) else ""
                             if _tc_id:
-                                _internal_by_tc_id[_tc_id] = _m["reasoning"]
+                                self._deepseek_reasoning_by_tc_id[_tc_id] = _m["reasoning"]
                 for _api_m in api_messages:
                     if (
                         _api_m.get("role") == "assistant"
@@ -8779,7 +8785,7 @@ class AIAgent:
                     ):
                         for _tc in (_api_m.get("tool_calls") or []):
                             _tc_id = (_tc.get("id") or "") if isinstance(_tc, dict) else ""
-                            _rc = _internal_by_tc_id.get(_tc_id)
+                            _rc = self._deepseek_reasoning_by_tc_id.get(_tc_id)
                             if _rc:
                                 _api_m["reasoning_content"] = _rc
                                 break

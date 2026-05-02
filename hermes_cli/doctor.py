@@ -167,6 +167,8 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
 
 def run_doctor(args):
     """Run diagnostic checks."""
+    from hermes_cli.config import get_env_value
+
     should_fix = getattr(args, 'fix', False)
 
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
@@ -950,7 +952,7 @@ def run_doctor(args):
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
         ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                             "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
-        ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
+        ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
         # MiniMax: the /anthropic endpoint doesn't support /models, but the /v1 endpoint does.
         ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", True),
@@ -963,7 +965,7 @@ def run_doctor(args):
     for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
         _key = ""
         for _ev in _env_vars:
-            _key = os.getenv(_ev, "")
+            _key = (get_env_value(_ev) or "")
             if _key:
                 break
         if _key:
@@ -975,7 +977,7 @@ def run_doctor(args):
             print(f"  Checking {_pname} API...", end="", flush=True)
             try:
                 import httpx
-                _base = os.getenv(_base_env, "") if _base_env else ""
+                _base = (get_env_value(_base_env) or "") if _base_env else ""
                 # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com/coding/v1
                 # (OpenAI-compat surface, which exposes /models for health check).
                 if not _base and _key.startswith("sk-kimi-"):
@@ -1003,8 +1005,29 @@ def run_doctor(args):
                 if _resp.status_code == 200:
                     print(f"\r  {color('✓', Colors.GREEN)} {_label}                          ")
                 elif _resp.status_code == 401:
-                    print(f"\r  {color('✗', Colors.RED)} {_label} {color('(invalid API key)', Colors.DIM)}           ")
-                    issues.append(f"Check {_env_vars[0]} in .env")
+                    # DashScope: China keys only work on dashscope.aliyuncs.com,
+                    # international keys only work on dashscope-intl.aliyuncs.com.
+                    # When the user hasn't set DASHSCOPE_BASE_URL, try the
+                    # other region before declaring the key invalid.
+                    _fallback_url = None
+                    if not _base and "dashscope" in _default_url:
+                        if "dashscope-intl" in _default_url:
+                            _fallback_url = _default_url.replace("dashscope-intl.aliyuncs.com", "dashscope.aliyuncs.com")
+                        else:
+                            _fallback_url = _default_url.replace("dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com")
+                    if _fallback_url:
+                        _resp2 = httpx.get(
+                            _fallback_url,
+                            headers=_headers,
+                            timeout=10,
+                        )
+                        if _resp2.status_code == 200:
+                            _region = "intl" if "intl" in _fallback_url else "cn"
+                            print(f"\r  {color('✓', Colors.GREEN)} {_label} {color(f'(key valid on {_region} endpoint — set DASHSCOPE_BASE_URL to avoid recheck)', Colors.DIM)}")
+                            _resp = _resp2  # treat as success
+                    if _resp.status_code == 401:
+                        print(f"\r  {color('✗', Colors.RED)} {_label} {color('(invalid API key)', Colors.DIM)}           ")
+                        issues.append(f"Check {_env_vars[0]} in .env")
                 else:
                     print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
             except Exception as _e:
@@ -1115,7 +1138,6 @@ def run_doctor(args):
     else:
         check_warn("Skills Hub directory not initialized", "(run: hermes skills list)")
 
-    from hermes_cli.config import get_env_value
     github_token = get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN")
     if github_token:
         check_ok("GitHub token configured (authenticated API access)")

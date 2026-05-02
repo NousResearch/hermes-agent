@@ -1826,29 +1826,9 @@ class AIAgent:
                 _aux_context_config = None
         self._aux_compression_context_length_config = _aux_context_config
 
-        # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
-        if isinstance(_model_cfg, dict):
-            _config_context_length = _model_cfg.get("context_length")
-        else:
-            _config_context_length = None
-        if _config_context_length is not None:
-            try:
-                _config_context_length = int(_config_context_length)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Invalid model.context_length in config.yaml: %r — "
-                    "must be a plain integer (e.g. 256000, not '256K'). "
-                    "Falling back to auto-detection.",
-                    _config_context_length,
-                )
-                print(
-                    f"\n⚠ Invalid model.context_length in config.yaml: {_config_context_length!r}\n"
-                    f"  Must be a plain integer (e.g. 256000, not '256K').\n"
-                    f"  Falling back to auto-detected context window.\n",
-                    file=sys.stderr,
-                )
-                _config_context_length = None
+        if not isinstance(_model_cfg, dict):
+            _model_cfg = {}
 
         # Resolve custom_providers list once for reuse below (startup
         # context-length override and plugin context-engine init).
@@ -1860,57 +1840,12 @@ class AIAgent:
             if not isinstance(_custom_providers, list):
                 _custom_providers = []
 
-        # Check custom_providers per-model context_length
-        if _config_context_length is None and _custom_providers:
-            try:
-                from hermes_cli.config import get_custom_provider_context_length
-                _cp_ctx_resolved = get_custom_provider_context_length(
-                    model=self.model,
-                    base_url=self.base_url,
-                    custom_providers=_custom_providers,
-                )
-                if _cp_ctx_resolved:
-                    _config_context_length = int(_cp_ctx_resolved)
-            except Exception:
-                _cp_ctx_resolved = None
-
-            # Surface a clear warning if the user set a context_length but it
-            # wasn't a valid positive int — the helper silently skips those.
-            if _config_context_length is None:
-                _target = self.base_url.rstrip("/") if self.base_url else ""
-                for _cp_entry in _custom_providers:
-                    if not isinstance(_cp_entry, dict):
-                        continue
-                    _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
-                    if _target and _cp_url == _target:
-                        _cp_models = _cp_entry.get("models", {})
-                        if isinstance(_cp_models, dict):
-                            _cp_model_cfg = _cp_models.get(self.model, {})
-                            if isinstance(_cp_model_cfg, dict):
-                                _cp_ctx = _cp_model_cfg.get("context_length")
-                                if _cp_ctx is not None:
-                                    try:
-                                        _parsed = int(_cp_ctx)
-                                        if _parsed <= 0:
-                                            raise ValueError
-                                    except (TypeError, ValueError):
-                                        logger.warning(
-                                            "Invalid context_length for model %r in "
-                                            "custom_providers: %r — must be a positive "
-                                            "integer (e.g. 256000, not '256K'). "
-                                            "Falling back to auto-detection.",
-                                            self.model, _cp_ctx,
-                                        )
-                                        print(
-                                            f"\n⚠ Invalid context_length for model {self.model!r} in custom_providers: {_cp_ctx!r}\n"
-                                            f"  Must be a positive integer (e.g. 256000, not '256K').\n"
-                                            f"  Falling back to auto-detected context window.\n",
-                                            file=sys.stderr,
-                                        )
-                        break
-
-        # Persist for reuse on switch_model / fallback activation. Must come
-        # AFTER the custom_providers branch so per-model overrides aren't lost.
+        # Resolve the runtime config context length once for startup, then
+        # persist it for later runtime refreshes.
+        _config_context_length = self._resolve_runtime_config_context_length(
+            config=_agent_cfg,
+            custom_providers=_custom_providers,
+        )
         self._config_context_length = _config_context_length
 
         self._ensure_lmstudio_runtime_loaded(_config_context_length)
@@ -2223,6 +2158,120 @@ class AIAgent:
         except Exception as err:
             logger.debug("LM Studio preload skipped: %s", err)
 
+    def _resolve_runtime_config_context_length(
+        self,
+        *,
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+        custom_providers: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[int]:
+        """Resolve explicit runtime context_length config for the active model.
+
+        Precedence intentionally mirrors ``agent.model_metadata.get_model_context_length``
+        step 0 / 0b:
+        1. top-level ``model.context_length``
+        2. matching ``custom_providers[].models.<model>.context_length``
+        3. otherwise ``None`` (let probing/defaults decide)
+        """
+        model = model or getattr(self, "model", "")
+        base_url = base_url if base_url is not None else getattr(self, "base_url", "")
+
+        if config is None:
+            try:
+                from hermes_cli.config import load_config as _load_agent_config
+                config = _load_agent_config()
+            except Exception:
+                config = {}
+        if not isinstance(config, dict):
+            config = {}
+
+        def _warn_invalid_root_context(raw_value: Any) -> None:
+            logger.warning(
+                "Invalid model.context_length in config.yaml: %r — "
+                "must be a plain positive integer (e.g. 256000, not '256K'). "
+                "Falling back to auto-detection.",
+                raw_value,
+            )
+            print(
+                f"\n⚠ Invalid model.context_length in config.yaml: {raw_value!r}\n"
+                f"  Must be a plain positive integer (e.g. 256000, not '256K').\n"
+                f"  Falling back to auto-detected context window.\n",
+                file=sys.stderr,
+            )
+
+        def _warn_invalid_custom_context(raw_value: Any) -> None:
+            logger.warning(
+                "Invalid context_length for model %r in custom_providers: %r — "
+                "must be a positive integer (e.g. 256000, not '256K'). "
+                "Falling back to auto-detection.",
+                model,
+                raw_value,
+            )
+            print(
+                f"\n⚠ Invalid context_length for model {model!r} in custom_providers: {raw_value!r}\n"
+                f"  Must be a positive integer (e.g. 256000, not '256K').\n"
+                f"  Falling back to auto-detected context window.\n",
+                file=sys.stderr,
+            )
+
+        model_cfg = config.get("model", {})
+        raw_root_context = model_cfg.get("context_length") if isinstance(model_cfg, dict) else None
+        if raw_root_context is not None:
+            try:
+                parsed_root_context = int(raw_root_context)
+                if parsed_root_context <= 0:
+                    raise ValueError
+                return parsed_root_context
+            except (TypeError, ValueError):
+                _warn_invalid_root_context(raw_root_context)
+
+        if custom_providers is None:
+            try:
+                from hermes_cli.config import get_compatible_custom_providers
+                custom_providers = get_compatible_custom_providers(config)
+            except Exception:
+                raw_custom = config.get("custom_providers")
+                custom_providers = raw_custom if isinstance(raw_custom, list) else []
+        if not isinstance(custom_providers, list):
+            custom_providers = []
+
+        if custom_providers and model and base_url:
+            try:
+                from hermes_cli.config import get_custom_provider_context_length
+
+                resolved_custom_context = get_custom_provider_context_length(
+                    model=model,
+                    base_url=base_url,
+                    custom_providers=custom_providers,
+                )
+                if resolved_custom_context:
+                    return int(resolved_custom_context)
+            except Exception:
+                pass
+
+            target_url = base_url.rstrip("/") if isinstance(base_url, str) else ""
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                entry_url = (entry.get("base_url") or "").rstrip("/")
+                if target_url and entry_url == target_url:
+                    entry_models = entry.get("models", {})
+                    if isinstance(entry_models, dict):
+                        entry_model_cfg = entry_models.get(model, {})
+                        if isinstance(entry_model_cfg, dict):
+                            raw_custom_context = entry_model_cfg.get("context_length")
+                            if raw_custom_context is not None:
+                                try:
+                                    parsed_custom_context = int(raw_custom_context)
+                                    if parsed_custom_context <= 0:
+                                        raise ValueError
+                                except (TypeError, ValueError):
+                                    _warn_invalid_custom_context(raw_custom_context)
+                    break
+
+        return None
+
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Switch the model/provider in-place for a live agent.
 
@@ -2269,6 +2318,10 @@ class AIAgent:
             self._transport_cache.clear()
         if api_key:
             self.api_key = api_key
+        self._config_context_length = self._resolve_runtime_config_context_length(
+            model=self.model,
+            base_url=self.base_url,
+        )
 
         # ── Build new client ──
         if api_mode == "anthropic_messages":
@@ -7504,6 +7557,10 @@ class AIAgent:
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self._fallback_activated = True
+            self._config_context_length = self._resolve_runtime_config_context_length(
+                model=self.model,
+                base_url=self.base_url,
+            )
 
             # Honor per-provider / per-model request_timeout_seconds for the
             # fallback target (same knob the primary client uses).  None = use
@@ -7627,6 +7684,10 @@ class AIAgent:
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
             self.api_key = rt["api_key"]
+            self._config_context_length = self._resolve_runtime_config_context_length(
+                model=self.model,
+                base_url=self.base_url,
+            )
             self._client_kwargs = dict(rt["client_kwargs"])
             self._use_prompt_caching = rt["use_prompt_caching"]
             # Default to native layout when the restored snapshot predates the

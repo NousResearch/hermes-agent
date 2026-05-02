@@ -143,13 +143,14 @@ def load_hermes_dotenv(
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
 ) -> list[Path]:
-    """Load Hermes environment files with user config taking precedence.
+    """Load Hermes environment files with environment precedence preserved.
 
     Behavior:
-    - `~/.hermes/.env` overrides stale shell-exported values when present.
+    - Existing process environment variables keep highest precedence.
+    - `~/.hermes/.env` fills missing values but does not override runtime env.
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
-    - if no user env exists, the project `.env` also overrides stale shell vars.
+    - if no user env exists, the project `.env` may override stale shell vars.
     """
     loaded: list[Path] = []
 
@@ -164,7 +165,7 @@ def load_hermes_dotenv(
         _sanitize_env_file_if_needed(project_env_path)
 
     if user_env.exists():
-        _load_dotenv_with_fallback(user_env, override=True)
+        _load_dotenv_with_fallback(user_env, override=False)
         loaded.append(user_env)
 
     if project_env_path and project_env_path.exists():

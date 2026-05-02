@@ -6,7 +6,7 @@ from pathlib import Path
 from hermes_cli.env_loader import load_hermes_dotenv
 
 
-def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):
+def test_user_env_does_not_override_existing_runtime_env(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()
     env_file = home / ".env"
@@ -17,7 +17,7 @@ def test_user_env_overrides_stale_shell_values(tmp_path, monkeypatch):
     loaded = load_hermes_dotenv(hermes_home=home)
 
     assert loaded == [env_file]
-    assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
+    assert os.getenv("OPENAI_BASE_URL") == "https://old.example/v1"
 
 
 def test_project_env_overrides_stale_shell_values_when_user_env_missing(tmp_path, monkeypatch):
@@ -66,11 +66,11 @@ def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):
     loaded = load_hermes_dotenv(hermes_home=home, project_env=project_env)
 
     assert loaded == [user_env, project_env]
-    assert os.getenv("OPENAI_BASE_URL") == "https://user.example/v1"
+    assert os.getenv("OPENAI_BASE_URL") == "https://old.example/v1"
     assert os.getenv("OPENAI_API_KEY") == "project-key"
 
 
-def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
+def test_main_import_preserves_runtime_env_values(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()
     (home / ".env").write_text(
@@ -85,5 +85,5 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
     sys.modules.pop("hermes_cli.main", None)
     importlib.import_module("hermes_cli.main")
 
-    assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
-    assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+    assert os.getenv("OPENAI_BASE_URL") == "https://old.example/v1"
+    assert os.getenv("HERMES_INFERENCE_PROVIDER") == "openrouter"

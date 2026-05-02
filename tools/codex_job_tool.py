@@ -108,6 +108,14 @@ CODEX_JOB_SCHEMA = {
                 "type": "boolean",
                 "description": "Whether to launch a lightweight background monitor that edits the live Discord status message. Defaults true when Discord status is enabled and Codex is launched.",
             },
+            "summary_target": {
+                "type": "string",
+                "description": "Optional target for concise completion/blocker summaries back to the orchestrator chat. Defaults to the Discord home/origin channel when Discord status is enabled. Use 'local' or empty to disable.",
+            },
+            "notify_on_completion": {
+                "type": "boolean",
+                "description": "Whether the monitor should send one concise summary to summary_target when the Codex tmux session exits. Defaults true when summary_target is set.",
+            },
         },
         "required": [],
     },
@@ -468,6 +476,14 @@ def _handle_start(args: dict[str, Any]) -> str:
     sandbox = args.get("sandbox") or "workspace-write"
     launch = bool(args.get("launch", True))
     discord_enabled = bool(args.get("discord", bool(args.get("discord_parent_target") or args.get("discord_target"))))
+    summary_target = args.get("summary_target")
+    if summary_target is None and discord_enabled:
+        # In Discord gateway use, bare "discord" resolves to the configured home/origin-like channel.
+        # Callers can pass an explicit platform:chat_id target to route elsewhere.
+        summary_target = "discord"
+    if isinstance(summary_target, str) and summary_target.strip().lower() in {"", "local", "none", "false"}:
+        summary_target = None
+    notify_on_completion = bool(args.get("notify_on_completion", bool(summary_target)))
 
     job = {
         "job_id": job_id,
@@ -489,6 +505,8 @@ def _handle_start(args: dict[str, Any]) -> str:
         "log_path": str(log_path),
         "created_at": _now_iso(),
         "updated_at": _now_iso(),
+        "summary_target": summary_target,
+        "notify_on_completion": notify_on_completion,
     }
 
     try:
@@ -795,6 +813,80 @@ def _append_monitor_log(job: dict[str, Any], message: str) -> None:
         pass
 
 
+def _last_commit_summary(job: dict[str, Any]) -> str:
+    workspace = job.get("workspace_path")
+    if not workspace:
+        return ""
+    workspace_path = Path(workspace)
+    if not workspace_path.exists() or not shutil.which("git"):
+        return ""
+    try:
+        sha = subprocess.run(
+            ["git", "-C", str(workspace_path), "rev-parse", "--short", "HEAD"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        ).stdout.strip()
+        subject = subprocess.run(
+            ["git", "-C", str(workspace_path), "log", "-1", "--pretty=%s"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        ).stdout.strip()
+        return f"{sha} {subject}".strip()
+    except Exception:
+        return ""
+
+
+def _render_completion_summary(job: dict[str, Any], output: str, status: str = "exited") -> str:
+    cleaned = _clean_codex_output(output, max_chars=5000)
+    key_findings = _extract_key_findings(cleaned, max_chars=650)
+    recent = _recent_activity(cleaned, max_chars=450)
+    workspace_summary = _workspace_summary(job, max_chars=360)
+    commit = _last_commit_summary(job)
+    detail_target = job.get("discord_thread_target") or job.get("discord_parent_target") or "#codex-control thread"
+
+    message = (
+        f"**Codex job `{job['job_id']}` {status}**\n"
+        f"- **Title:** {job.get('title')}\n"
+        f"- **Model/effort:** `{job.get('model')}` / `{job.get('effort')}`\n"
+        f"- **Branch:** `{job.get('branch') or 'n/a'}`\n"
+    )
+    if commit:
+        message += f"- **Latest commit:** `{commit}`\n"
+    message += f"- **Details:** `{detail_target}`\n"
+
+    if key_findings:
+        message += f"\n**Result / key findings**\n```text\n{key_findings}\n```\n"
+    if workspace_summary:
+        message += f"\n**Workspace changes**\n```text\n{workspace_summary}\n```\n"
+    message += f"\n**Recent activity**\n```text\n{recent}\n```"
+    return _truncate_text(message, 1900)
+
+
+def _send_completion_summary(job: dict[str, Any], output: str, status: str = "exited") -> None:
+    if not job.get("notify_on_completion") or job.get("completion_summary_sent_at"):
+        return
+    target = job.get("summary_target")
+    if not target:
+        return
+    message = _render_completion_summary(job, output, status=status)
+    try:
+        result = _send_message({"action": "send", "target": target, "message": message})
+        if result.get("error"):
+            job["completion_summary_error"] = result.get("error")
+            _append_monitor_log(job, f"completion summary error: {result.get('error')}")
+            return
+        job["completion_summary_sent_at"] = _now_iso()
+        job["completion_summary_message_id"] = result.get("message_id")
+        _append_monitor_log(job, "completion summary sent")
+    except Exception as exc:
+        job["completion_summary_error"] = str(exc)
+        _append_monitor_log(job, f"completion summary exception: {exc}")
+
+
 def monitor_job(job_id: str, interval: int = 30, max_seconds: int = 60 * 60 * 6) -> None:
     started = time.time()
     while time.time() - started < max_seconds:
@@ -830,6 +922,7 @@ def monitor_job(job_id: str, interval: int = 30, max_seconds: int = 60 * 60 * 6)
         if not alive:
             job["status"] = "exited"
             job["ended_at"] = _now_iso()
+            _send_completion_summary(job, output, status="completed")
             _save_job(job)
             return
         time.sleep(interval)

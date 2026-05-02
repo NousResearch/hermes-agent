@@ -200,7 +200,7 @@ Planned fix: Apply habit limits at presentation and reminder boundaries.
     assert "**Workspace changes**" in message
     assert "README.md" in message
     assert "**Recent useful activity**" in message
-    assert len(message) <= 3900
+    assert len(message) <= 2000
 
 
 def test_monitor_status_surfaces_generic_task_summary_for_non_bug_tasks(tmp_path):
@@ -238,3 +238,117 @@ Next step: Add tests for event emission and wire the sink into app services.
     assert "Next step: Add tests for event emission" in message
     assert "**Bug / key findings**" not in message
     assert "**Recent useful activity**" in message
+
+
+def test_start_defaults_completion_summary_to_discord_home_when_discord_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    repo = _make_repo(tmp_path)
+
+    import tools.codex_job_tool as tool
+    monkeypatch.setattr(tool, "_send_message", lambda args: {"success": True, "message_id": "status-1", "chat_id": "123"})
+
+    result = json.loads(tool.codex_job_tool({
+        "action": "start",
+        "title": "Discord summary default",
+        "prompt": "Inspect only.",
+        "repo_path": str(repo),
+        "workspace_mode": "local",
+        "launch": False,
+        "discord": True,
+        "discord_target": "discord:123:456",
+    }))
+
+    assert result["success"] is True
+    assert result["summary_target"] == "discord"
+    assert result["notify_on_completion"] is True
+
+
+def test_start_can_disable_completion_summary(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    repo = _make_repo(tmp_path)
+
+    from tools.codex_job_tool import codex_job_tool
+
+    result = json.loads(codex_job_tool({
+        "action": "start",
+        "title": "No summary",
+        "prompt": "Inspect only.",
+        "repo_path": str(repo),
+        "workspace_mode": "local",
+        "launch": False,
+        "discord": False,
+        "summary_target": "local",
+    }))
+
+    assert result["success"] is True
+    assert result["summary_target"] is None
+    assert result["notify_on_completion"] is False
+
+
+def test_completion_summary_is_generic_and_short(tmp_path):
+    repo = _make_repo(tmp_path)
+    (repo / "README.md").write_text("# FocusLock\n\nChanged\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "fix: repair onboarding gate"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    from tools.codex_job_tool import _render_completion_summary
+
+    job = {
+        "job_id": "done1",
+        "title": "Critical major bug fix",
+        "workspace_path": str(repo),
+        "branch": "codex/critical-major-done1",
+        "model": "gpt-5.5",
+        "effort": "xhigh",
+        "discord_thread_target": "discord:123:456",
+    }
+    output = """
+Bug: Onboarding can mark completion before required permissions are saved.
+Severity: Major because users can reach the app with missing scheduling state.
+Root cause: The completion flag is written before persistence succeeds.
+Result: Moved completion after durable save and added a focused regression test.
+Tests: OnboardingStateTests passed.
+"""
+
+    message = _render_completion_summary(job, output, status="completed")
+
+    assert "Codex job `done1` completed" in message
+    assert "fix: repair onboarding gate" in message
+    assert "**Result / key findings**" in message
+    assert "Root cause: The completion flag" in message
+    assert "discord:123:456" in message
+    assert len(message) <= 2000
+
+
+def test_completion_summary_send_is_idempotent(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    sent = []
+
+    import tools.codex_job_tool as tool
+
+    def fake_send(args):
+        sent.append(args)
+        return {"success": True, "message_id": "msg-1"}
+
+    monkeypatch.setattr(tool, "_send_message", fake_send)
+    job = {
+        "job_id": "done2",
+        "title": "Feature task",
+        "workspace_path": str(tmp_path),
+        "branch": "codex/feature-done2",
+        "model": "gpt-5.5",
+        "effort": "xhigh",
+        "summary_target": "discord",
+        "notify_on_completion": True,
+        "monitor_log_path": str(tmp_path / "monitor.log"),
+    }
+
+    tool._send_completion_summary(job, "Result: Finished successfully", status="completed")
+    tool._send_completion_summary(job, "Result: Finished successfully", status="completed")
+
+    assert len(sent) == 1
+    assert sent[0]["target"] == "discord"
+    assert job["completion_summary_message_id"] == "msg-1"
+    assert job["completion_summary_sent_at"]

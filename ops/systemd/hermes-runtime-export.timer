@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Hermes safe runtime export every 30 minutes
+
+[Timer]
+OnBootSec=5m
+OnCalendar=*-*-* *:00,30:00
+Persistent=true
+AccuracySec=1m
+Unit=hermes-runtime-export.service
+
+[Install]
+WantedBy=timers.target

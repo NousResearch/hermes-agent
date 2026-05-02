@@ -1,0 +1,12 @@
+[Unit]
+Description=Hermes safe runtime export for audit consumption
+After=default.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/.hermes/hermes-agent
+Environment=HERMES_HOME=/home/ubuntu/.hermes
+UMask=0027
+ExecStart=/usr/bin/env bash -lc 'cd /home/ubuntu/.hermes/hermes-agent && if [ -x .venv/bin/python ]; then PY=.venv/bin/python; elif [ -x venv/bin/python ]; then PY=venv/bin/python; else echo "No Hermes repo venv found (.venv or venv)" >&2; exit 1; fi; exec "$PY" -m hermes_cli.runtime_export --output-root /var/lib/hermes-export'
+StandardOutput=journal
+StandardError=journal

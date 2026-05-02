@@ -797,21 +797,66 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
         next_run = job.get("next_run_at")
         if not next_run:
+            schedule = job.get("schedule", {})
             recovered_next = _recoverable_oneshot_run_at(
-                job.get("schedule", {}),
+                schedule,
                 now,
                 last_run_at=job.get("last_run_at"),
             )
+            recurring_recovery = False
+
+            if not recovered_next and schedule.get("kind") in ("cron", "interval"):
+                # Recurring jobs (cron/interval) that lost their next_run_at
+                # would otherwise be skipped silently on every tick forever.
+                # Self-heal by computing the next future occurrence from the
+                # schedule expression. Any outcome (success, exception, or
+                # None) is logged at WARNING so the unexpected null-state is
+                # surfaced — a healthy recurring job should never enter this
+                # branch, and a hand-edited or malformed schedule must not
+                # crash the scheduler tick.
+                kind = schedule.get("kind")
+                job_label = job.get("name", job["id"])
+                try:
+                    recovered_next = compute_next_run(schedule)
+                except Exception as exc:
+                    logger.warning(
+                        "Job '%s' (%s schedule) had no next_run_at and "
+                        "recovery failed: %s",
+                        job_label,
+                        kind,
+                        exc,
+                    )
+                    recovered_next = None
+                else:
+                    if not recovered_next:
+                        logger.warning(
+                            "Job '%s' (%s schedule) had no next_run_at and "
+                            "compute_next_run returned no future occurrence; "
+                            "job remains unprocessed this tick.",
+                            job_label,
+                            kind,
+                        )
+                recurring_recovery = bool(recovered_next)
+
             if not recovered_next:
                 continue
 
             job["next_run_at"] = recovered_next
             next_run = recovered_next
-            logger.info(
-                "Job '%s' had no next_run_at; recovering one-shot run at %s",
-                job.get("name", job["id"]),
-                recovered_next,
-            )
+            if recurring_recovery:
+                logger.warning(
+                    "Job '%s' (%s schedule) had no next_run_at; "
+                    "self-healing to next run at %s",
+                    job.get("name", job["id"]),
+                    schedule.get("kind"),
+                    recovered_next,
+                )
+            else:
+                logger.info(
+                    "Job '%s' had no next_run_at; recovering one-shot run at %s",
+                    job.get("name", job["id"]),
+                    recovered_next,
+                )
             for rj in raw_jobs:
                 if rj["id"] == job["id"]:
                     rj["next_run_at"] = recovered_next

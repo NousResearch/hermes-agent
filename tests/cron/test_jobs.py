@@ -647,6 +647,287 @@ class TestGetDueJobs:
         assert get_due_jobs() == []
         assert get_job("oneshot-stale")["next_run_at"] is None
 
+    def test_broken_cron_recurring_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch, caplog):
+        """Recurring cron jobs with null next_run_at must self-heal, not be skipped silently.
+
+        Without recovery, a job in this state stays `scheduled` + `enabled`
+        forever, never fires, never logs a signal. This was observed in the
+        wild (e.g. the jarvis-automation-loop case 2026-04-20→2026-05-01).
+        """
+        import logging
+
+        now = datetime(2026, 5, 2, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs(
+            [{
+                "id": "cron-recover",
+                "name": "Daily 5am cron",
+                "prompt": "do the thing",
+                "schedule": {"kind": "cron", "expr": "0 5 * * *", "display": "0 5 * * *"},
+                "schedule_display": "0 5 * * *",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-05-01T00:00:00+00:00",
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        # Capture logs around the call
+        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            due = get_due_jobs()
+
+        # The job's next_run_at must be populated (next 05:00 UTC after now=12:00 → tomorrow 05:00)
+        recovered = get_job("cron-recover")["next_run_at"]
+        assert recovered is not None, "next_run_at should self-heal for recurring jobs"
+        recovered_dt = datetime.fromisoformat(recovered)
+        assert recovered_dt > now, f"recovered next_run_at {recovered} should be in the future"
+
+        # Future occurrence is in the future, so the job is NOT immediately due.
+        assert [j["id"] for j in due] == [], (
+            "after self-heal, a recurring job whose next computed run is in the "
+            "future should not be returned as due on this same tick"
+        )
+
+        # Recovery is surfaced at WARNING level so silent-skip-forever is no longer silent.
+        assert any(
+            "self-healing" in record.getMessage() and record.levelno >= logging.WARNING
+            for record in caplog.records
+        ), "expected a WARNING log surfacing the recurring-job self-heal"
+
+    def test_broken_interval_recurring_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):
+        """Same self-heal applies to interval-kind schedules."""
+        now = datetime(2026, 5, 2, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs(
+            [{
+                "id": "interval-recover",
+                "name": "Hourly poll",
+                "prompt": "poll something",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                "schedule_display": "every 60m",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-05-01T00:00:00+00:00",
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        get_due_jobs()
+        recovered = get_job("interval-recover")["next_run_at"]
+        assert recovered is not None, "interval schedules must also self-heal"
+        recovered_dt = datetime.fromisoformat(recovered)
+        assert recovered_dt > now
+
+    def test_recurring_self_heal_does_not_disturb_valid_jobs(self, tmp_cron_dir, monkeypatch):
+        """The self-heal branch must not touch jobs whose next_run_at is set."""
+        now = datetime(2026, 5, 2, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        valid_next = "2026-05-03T05:00:00+00:00"
+        save_jobs(
+            [{
+                "id": "cron-healthy",
+                "name": "Healthy cron",
+                "prompt": "do the thing",
+                "schedule": {"kind": "cron", "expr": "0 5 * * *", "display": "0 5 * * *"},
+                "schedule_display": "0 5 * * *",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-05-01T00:00:00+00:00",
+                "next_run_at": valid_next,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        get_due_jobs()
+        assert get_job("cron-healthy")["next_run_at"] == valid_next, (
+            "healthy jobs must not be touched by the self-heal branch"
+        )
+
+    def test_recurring_recovery_falls_through_to_continue_when_compute_returns_none(
+        self, tmp_cron_dir, monkeypatch, caplog
+    ):
+        """If compute_next_run returns None (e.g. croniter missing in the runtime
+        env), self-heal fails gracefully — the job stays unprocessed this tick
+        rather than crashing, and a WARNING surfaces the failed-recovery state."""
+        import logging
+
+        now = datetime(2026, 5, 2, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        # Force compute_next_run to return None for this test
+        monkeypatch.setattr("cron.jobs.compute_next_run", lambda *a, **kw: None)
+
+        save_jobs(
+            [{
+                "id": "cron-uncomputable",
+                "name": "Bad schedule",
+                "prompt": "do the thing",
+                "schedule": {"kind": "cron", "expr": "0 5 * * *", "display": "0 5 * * *"},
+                "schedule_display": "0 5 * * *",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-05-01T00:00:00+00:00",
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            due = get_due_jobs()
+
+        # Should not raise, should not return the job, should not corrupt state.
+        assert due == []
+        assert get_job("cron-uncomputable")["next_run_at"] is None
+        # Failed recovery is surfaced at WARNING so the null-state is no longer silent.
+        assert any(
+            "compute_next_run returned no future occurrence" in record.getMessage()
+            and record.levelno >= logging.WARNING
+            for record in caplog.records
+        ), "expected a WARNING when compute_next_run returns None for a recurring null-state job"
+
+    def test_recurring_recovery_handles_exception_gracefully(
+        self, tmp_cron_dir, monkeypatch, caplog
+    ):
+        """Hand-edited or migration-corrupted jobs.json can produce malformed
+        schedules. compute_next_run() raises (CroniterBadCronError, KeyError, etc.)
+        on those. The scheduler tick must NOT crash — the recovery wraps the call
+        in try/except, surfaces the failure as a WARNING, and leaves the job
+        unprocessed. This protects every other due job from collateral damage
+        when one job in jobs.json has a malformed schedule."""
+        import logging
+
+        now = datetime(2026, 5, 2, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        # Job has a malformed cron expression that will make croniter raise.
+        save_jobs(
+            [{
+                "id": "cron-malformed",
+                "name": "Hand-edited bad cron",
+                "prompt": "do the thing",
+                "schedule": {"kind": "cron", "expr": "not-a-cron", "display": "not-a-cron"},
+                "schedule_display": "not-a-cron",
+                "repeat": {"times": None, "completed": 0},
+                "enabled": True,
+                "state": "scheduled",
+                "paused_at": None,
+                "paused_reason": None,
+                "created_at": "2026-05-01T00:00:00+00:00",
+                "next_run_at": None,
+                "last_run_at": None,
+                "last_status": None,
+                "last_error": None,
+                "deliver": "local",
+                "origin": None,
+            }]
+        )
+
+        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            # Must not raise — that would crash the scheduler tick.
+            due = get_due_jobs()
+
+        # Job is unprocessed; state is preserved, not corrupted.
+        assert due == []
+        assert get_job("cron-malformed")["next_run_at"] is None
+
+        # Failure surfaced as a WARNING containing the exception detail.
+        recovery_failed_warnings = [
+            r for r in caplog.records
+            if "recovery failed" in r.getMessage() and r.levelno >= logging.WARNING
+        ]
+        assert recovery_failed_warnings, (
+            "expected a WARNING log when compute_next_run raises during recovery"
+        )
+
+    def test_recurring_recovery_isolates_one_bad_job_from_others(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """A malformed job in jobs.json must not prevent other due jobs from
+        being returned. Verifies the try/except hardening is per-job, not
+        per-tick."""
+        now = datetime(2026, 5, 2, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        save_jobs(
+            [
+                {
+                    "id": "cron-malformed",
+                    "name": "Malformed",
+                    "prompt": "do the thing",
+                    "schedule": {"kind": "cron", "expr": "not-a-cron", "display": "not-a-cron"},
+                    "schedule_display": "not-a-cron",
+                    "repeat": {"times": None, "completed": 0},
+                    "enabled": True,
+                    "state": "scheduled",
+                    "paused_at": None,
+                    "paused_reason": None,
+                    "created_at": "2026-05-01T00:00:00+00:00",
+                    "next_run_at": None,
+                    "last_run_at": None,
+                    "last_status": None,
+                    "last_error": None,
+                    "deliver": "local",
+                    "origin": None,
+                },
+                {
+                    "id": "cron-healthy-due",
+                    "name": "Healthy and due",
+                    "prompt": "do the thing",
+                    "schedule": {"kind": "cron", "expr": "0 5 * * *", "display": "0 5 * * *"},
+                    "schedule_display": "0 5 * * *",
+                    "repeat": {"times": None, "completed": 0},
+                    "enabled": True,
+                    "state": "scheduled",
+                    "paused_at": None,
+                    "paused_reason": None,
+                    "created_at": "2026-05-01T00:00:00+00:00",
+                    # 5 minutes ago — within the dynamic grace window for daily
+                    "next_run_at": (now - timedelta(minutes=5)).isoformat(),
+                    "last_run_at": None,
+                    "last_status": None,
+                    "last_error": None,
+                    "deliver": "local",
+                    "origin": None,
+                },
+            ]
+        )
+
+        # Must not raise. Healthy job must still come back as due.
+        due = get_due_jobs()
+        assert [j["id"] for j in due] == ["cron-healthy-due"]
+
 
 class TestEnabledToolsets:
     def test_enabled_toolsets_stored(self, tmp_cron_dir):

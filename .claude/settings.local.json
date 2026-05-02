@@ -19,7 +19,8 @@
       "Bash(wsl *)",
       "Read(//home/renyh/.hermes/hermes-agent/.venv/bin/**)",
       "Read(//home/renyh/.hermes/hermes-agent/.venv/**)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(ls *)"
     ]
   }
 }

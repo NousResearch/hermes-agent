@@ -3850,6 +3850,31 @@ class AIAgent:
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
+        # Hermes 2.8: if task card was never finalized (early return), write failure events
+        tc = getattr(self, "_current_task_card", None)
+        if tc is not None:
+            try:
+                self._event_log.log_execution_failed(
+                    task_id=tc.task_id,
+                    session_id=self.session_id,
+                    error_type="early_return",
+                    error_message="Task ended prematurely",
+                    retryable=False,
+                )
+                self._event_log.log_status_changed(
+                    task_id=tc.task_id,
+                    session_id=self.session_id,
+                    from_status="running",
+                    to_status="failed",
+                    reason="Task ended prematurely (early return)",
+                )
+                tc.status = "failed"
+                tc.result_summary = ""
+                save_task_card(tc)
+                self._current_task_card = None
+            except Exception:
+                pass  # best-effort on early exit paths
+
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
 
@@ -14259,6 +14284,49 @@ class AIAgent:
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
 
+        # ── Hermes 2.8: Final event log entries ──
+        tc = getattr(self, "_current_task_card", None)
+        if tc is not None:
+            try:
+                if completed and not interrupted:
+                    self._event_log.log_execution_completed(
+                        task_id=tc.task_id,
+                        session_id=self.session_id,
+                        turn_count=api_call_count,
+                    )
+                    self._event_log.log_status_changed(
+                        task_id=tc.task_id,
+                        session_id=self.session_id,
+                        from_status="running",
+                        to_status="completed",
+                        reason="Task completed successfully",
+                    )
+                    tc.status = "completed"
+                    tc.result_summary = (final_response or "")[:500]
+                    save_task_card(tc)
+                else:
+                    to_status = "partial" if interrupted else "failed"
+                    self._event_log.log_execution_failed(
+                        task_id=tc.task_id,
+                        session_id=self.session_id,
+                        error_type="interrupt" if interrupted else "incomplete",
+                        error_message="Task did not complete",
+                        retryable=True,
+                    )
+                    self._event_log.log_status_changed(
+                        task_id=tc.task_id,
+                        session_id=self.session_id,
+                        from_status="running",
+                        to_status=to_status,
+                        reason="Task interrupted" if interrupted else "Task incomplete",
+                    )
+                    tc.status = to_status
+                    tc.result_summary = (final_response or "")[:500]
+                    save_task_card(tc)
+                self._current_task_card = None  # mark finalized
+            except Exception:
+                logger.warning("Failed to write completion events", exc_info=True)
+
         # Save trajectory if enabled.  ``user_message`` may be a multimodal
         # list of parts; the trajectory format wants a plain string.
         self._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
@@ -14470,48 +14538,6 @@ class AIAgent:
             )
         except Exception as exc:
             logger.warning("on_session_end hook failed: %s", exc)
-
-        # ── Hermes 2.8: Final event log entries ──
-        tc = getattr(self, "_current_task_card", None)
-        if tc is not None:
-            try:
-                if completed and not interrupted:
-                    self._event_log.log_execution_completed(
-                        task_id=tc.task_id,
-                        session_id=self.session_id,
-                        turn_count=api_call_count,
-                    )
-                    self._event_log.log_status_changed(
-                        task_id=tc.task_id,
-                        session_id=self.session_id,
-                        from_status="running",
-                        to_status="completed",
-                        reason="Task completed successfully",
-                    )
-                    tc.status = "completed"
-                    tc.result_summary = (final_response or "")[:500]
-                    save_task_card(tc)
-                elif not completed or interrupted:
-                    to_status = "partial" if interrupted else "failed"
-                    self._event_log.log_execution_failed(
-                        task_id=tc.task_id,
-                        session_id=self.session_id,
-                        error_type="interrupt" if interrupted else "incomplete",
-                        error_message=result.get("error", "Task did not complete"),
-                        retryable=True,
-                    )
-                    self._event_log.log_status_changed(
-                        task_id=tc.task_id,
-                        session_id=self.session_id,
-                        from_status="running",
-                        to_status=to_status,
-                        reason=result.get("error", "Task interrupted" if interrupted else "Task incomplete"),
-                    )
-                    tc.status = to_status
-                    tc.result_summary = (final_response or "")[:500]
-                    save_task_card(tc)
-            except Exception:
-                logger.warning("Failed to write completion events", exc_info=True)
 
         return result
 

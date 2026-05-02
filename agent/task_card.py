@@ -14,7 +14,7 @@ Design constraints (from engineering plan):
 import json
 import logging
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -111,7 +111,7 @@ class TaskCard:
             task_id=str(uuid.uuid4()),
             created_at=now,
             updated_at=now,
-            version=1,
+            version=0,
             raw_user_request=user_request,
             compiled_intent=CompiledIntent(
                 real_task=user_request,
@@ -132,13 +132,25 @@ class TaskCard:
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "TaskCard":
         intent_raw = d.get("compiled_intent", {})
-        intent = CompiledIntent(**intent_raw) if isinstance(intent_raw, dict) else CompiledIntent()
+        if isinstance(intent_raw, dict):
+            _intent_fields = {f.name for f in fields(CompiledIntent)}
+            intent = CompiledIntent(**{k: v for k, v in intent_raw.items() if k in _intent_fields})
+        else:
+            intent = CompiledIntent()
 
         plan_raw = d.get("execution_plan", {})
-        plan = ExecutionPlan(**plan_raw) if isinstance(plan_raw, dict) else ExecutionPlan()
+        if isinstance(plan_raw, dict):
+            _plan_fields = {f.name for f in fields(ExecutionPlan)}
+            plan = ExecutionPlan(**{k: v for k, v in plan_raw.items() if k in _plan_fields})
+        else:
+            plan = ExecutionPlan()
 
         ac_raw = d.get("acceptance_criteria", {})
-        ac = AcceptanceCriteria(**ac_raw) if isinstance(ac_raw, dict) else AcceptanceCriteria()
+        if isinstance(ac_raw, dict):
+            _ac_fields = {f.name for f in fields(AcceptanceCriteria)}
+            ac = AcceptanceCriteria(**{k: v for k, v in ac_raw.items() if k in _ac_fields})
+        else:
+            ac = AcceptanceCriteria()
 
         return cls(
             schema_version=d.get("schema_version", SCHEMA_VERSION),

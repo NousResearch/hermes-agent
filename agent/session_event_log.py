@@ -122,11 +122,13 @@ class EventLog:
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(str(self._db_path))
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-            self._conn.executescript(SCHEMA_SQL)
-            self._conn.commit()
+            with self._lock:
+                if self._conn is None:
+                    self._conn = sqlite3.connect(str(self._db_path))
+                    self._conn.execute("PRAGMA journal_mode=WAL")
+                    self._conn.execute("PRAGMA synchronous=NORMAL")
+                    self._conn.executescript(SCHEMA_SQL)
+                    self._conn.commit()
         return self._conn
 
     def close(self):

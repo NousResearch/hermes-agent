@@ -25,10 +25,149 @@ from agent.file_safety import get_read_block_error, is_write_denied
 from agent.redact import redact_sensitive_text
 
 ACP_MARKER_BASE_URL = "acp://copilot"
-_DEFAULT_TIMEOUT_SECONDS = 900.0
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return value
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return value
+
+
+_DEFAULT_TIMEOUT_SECONDS = _env_float("HERMES_ACP_TIMEOUT_SECONDS", 180.0)
+_MAX_DIAGNOSTIC_CHARS = _env_int("HERMES_ACP_MAX_OUTPUT_CHARS", 4000)
+_STDERR_TAIL_LINES = 80
+_STDOUT_TAIL_LINES = 80
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
+_TIMEOUT_PATTERNS = ("timed out", "timeout")
+_HTTP_500_PATTERNS = ("api error: 500", "http 500", "500 internal server error")
+_INVALID_JSON_PATTERNS = ("unexpected token", "is not valid json", "json parse", "jsondecodeerror")
+_SSE_PATTERNS = ("event:", "data:")
+_NON_RETRYABLE_PATTERNS = (
+    "401",
+    "403",
+    "429",
+    "unauthorized",
+    "forbidden",
+    "login",
+    "not authenticated",
+    "authentication",
+    "rate limit",
+    "rate-limit",
+    "permission denied",
+    "tool denied",
+    "not allowed",
+    "access denied",
+)
+
+
+class ACPInvocationError(RuntimeError):
+    def __init__(self, message: str, *, category: str, retryable: bool):
+        super().__init__(message)
+        self.category = category
+        self.retryable = retryable
+
+
+def _truncate_diagnostic(text: str, *, limit: int = _MAX_DIAGNOSTIC_CHARS) -> str:
+    if not text:
+        return ""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    marker = "\n[output truncated]"
+    cutoff = max(0, limit - len(marker))
+    return text[:cutoff].rstrip() + marker
+
+
+def _looks_like_sse_payload(text: str) -> bool:
+    lowered = text.lower()
+    return any(pattern in lowered for pattern in _SSE_PATTERNS)
+
+
+def _format_failure_diagnostics(stdout_text: str, stderr_text: str) -> str:
+    parts: list[str] = []
+    stdout_text = _truncate_diagnostic(stdout_text)
+    stderr_text = _truncate_diagnostic(stderr_text)
+    if stdout_text:
+        parts.append(f"stdout:\n{stdout_text}")
+    if stderr_text:
+        parts.append(f"stderr:\n{stderr_text}")
+    if not parts:
+        return ""
+    return "\n\nDiagnostics:\n" + "\n\n".join(parts)
+
+
+def classify_acp_failure(
+    *,
+    stdout_text: str = "",
+    stderr_text: str = "",
+    exception_text: str = "",
+    timed_out: bool = False,
+) -> tuple[str, bool, str]:
+    combined = "\n".join(part for part in (exception_text, stdout_text, stderr_text) if part).strip()
+    lowered = combined.lower()
+    diagnostics = _format_failure_diagnostics(stdout_text, stderr_text)
+
+    if timed_out or any(pattern in lowered for pattern in _TIMEOUT_PATTERNS):
+        return (
+            "timeout",
+            True,
+            "ACP subprocess timed out waiting for a response." + diagnostics,
+        )
+
+    if any(pattern in lowered for pattern in _NON_RETRYABLE_PATTERNS):
+        return (
+            "non_transient",
+            False,
+            "ACP subprocess returned a non-retryable authentication/permission/rate-limit failure." + diagnostics,
+        )
+
+    if any(pattern in lowered for pattern in _HTTP_500_PATTERNS):
+        return (
+            "http_500",
+            True,
+            "ACP subprocess returned an upstream HTTP 500/API Error 500." + diagnostics,
+        )
+
+    if any(pattern in lowered for pattern in _INVALID_JSON_PATTERNS):
+        if _looks_like_sse_payload(stdout_text) or _looks_like_sse_payload(stderr_text) or _looks_like_sse_payload(exception_text):
+            return (
+                "sse_json_mismatch",
+                True,
+                "Expected JSON but received SSE event stream. Likely CCR/upstream streaming-format mismatch. Retry once, shorten the prompt, reduce log output, or check CCR non-streaming mode." + diagnostics,
+            )
+        return (
+            "malformed_json",
+            True,
+            "ACP subprocess returned malformed JSON." + diagnostics,
+        )
+
+    return (
+        "process_error",
+        False,
+        "ACP subprocess failed before returning a valid response." + diagnostics,
+    )
 
 
 def _resolve_command() -> str:
@@ -414,6 +553,27 @@ class CopilotACPClient:
         )
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        max_attempts = 2
+        last_error: ACPInvocationError | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return self._run_prompt_once(prompt_text, timeout_seconds=timeout_seconds)
+            except ACPInvocationError as exc:
+                last_error = exc
+                if exc.retryable and attempt < max_attempts:
+                    continue
+                if exc.retryable and attempt == max_attempts:
+                    raise ACPInvocationError(
+                        f"{exc}\n\nRetried once and still failed.",
+                        category=exc.category,
+                        retryable=False,
+                    ) from exc
+                raise
+
+        assert last_error is not None
+        raise last_error
+
+    def _run_prompt_once(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
         try:
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
@@ -440,7 +600,8 @@ class CopilotACPClient:
             self._active_process = proc
 
         inbox: queue.Queue[dict[str, Any]] = queue.Queue()
-        stderr_tail: deque[str] = deque(maxlen=40)
+        stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+        stdout_tail: deque[str] = deque(maxlen=_STDOUT_TAIL_LINES)
 
         def _stdout_reader() -> None:
             if proc.stdout is None:
@@ -449,7 +610,10 @@ class CopilotACPClient:
                 try:
                     inbox.put(json.loads(line))
                 except Exception:
-                    inbox.put({"raw": line.rstrip("\n")})
+                    raw_line = line.rstrip("\n")
+                    if raw_line:
+                        stdout_tail.append(raw_line)
+                    inbox.put({"raw": raw_line})
 
         def _stderr_reader() -> None:
             if proc.stderr is None:
@@ -499,15 +663,42 @@ class CopilotACPClient:
                     continue
                 if "error" in msg:
                     err = msg.get("error") or {}
-                    raise RuntimeError(
-                        f"Copilot ACP {method} failed: {err.get('message') or err}"
+                    category, retryable, failure_message = classify_acp_failure(
+                        stdout_text="\n".join(stdout_tail).strip(),
+                        stderr_text="\n".join(stderr_tail).strip(),
+                        exception_text=f"ACP method {method} failed: {err.get('message') or err}",
+                    )
+                    raise ACPInvocationError(
+                        failure_message,
+                        category=category,
+                        retryable=retryable,
                     )
                 return msg.get("result")
 
+            stdout_text = "\n".join(stdout_tail).strip()
             stderr_text = "\n".join(stderr_tail).strip()
-            if proc.poll() is not None and stderr_text:
-                raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
-            raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
+            if proc.poll() is not None:
+                category, retryable, failure_message = classify_acp_failure(
+                    stdout_text=stdout_text,
+                    stderr_text=stderr_text,
+                    exception_text=f"ACP process exited early while waiting for {method}.",
+                )
+                raise ACPInvocationError(
+                    failure_message,
+                    category=category,
+                    retryable=retryable,
+                )
+            category, retryable, failure_message = classify_acp_failure(
+                stdout_text=stdout_text,
+                stderr_text=stderr_text,
+                exception_text=f"Timed out waiting for ACP response to {method} after {timeout_seconds:.1f}s.",
+                timed_out=True,
+            )
+            raise ACPInvocationError(
+                failure_message,
+                category=category,
+                retryable=retryable,
+            )
 
         try:
             _request(

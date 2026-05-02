@@ -107,8 +107,10 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
 
 
 @pytest.mark.asyncio
-async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sender():
+async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sender(tmp_path):
     event = _event(thread_id="topic-1")
+    media_path = tmp_path / "speech.flac"
+    media_path.write_bytes(b"flac")
     adapter = SimpleNamespace(
         name="test",
         extract_media=BasePlatformAdapter.extract_media,
@@ -122,22 +124,24 @@ async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sen
 
     await GatewayRunner._deliver_media_from_response(
         object(),
-        "MEDIA:/tmp/speech.flac",
+        f"MEDIA:{media_path}",
         event,
         adapter,
     )
 
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
-        file_path="/tmp/speech.flac",
+        file_path=str(media_path),
         metadata={"thread_id": "topic-1"},
     )
     adapter.send_voice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_document_sender():
+async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_document_sender(tmp_path):
     event = _event(thread_id="topic-1")
+    media_path = tmp_path / "speech.ogg"
+    media_path.write_bytes(b"ogg")
     adapter = SimpleNamespace(
         name="test",
         extract_media=BasePlatformAdapter.extract_media,
@@ -151,24 +155,26 @@ async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_doc
 
     await GatewayRunner._deliver_media_from_response(
         object(),
-        "MEDIA:/tmp/speech.ogg",
+        f"MEDIA:{media_path}",
         event,
         adapter,
     )
 
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
-        file_path="/tmp/speech.ogg",
+        file_path=str(media_path),
         metadata={"thread_id": "topic-1"},
     )
     adapter.send_voice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender():
+async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(tmp_path):
     """MP3 audio on Telegram must go through send_voice (which routes to
     sendAudio internally); Telegram accepts MP3 for the audio player."""
     event = _event(thread_id="topic-1")
+    media_path = tmp_path / "speech.mp3"
+    media_path.write_bytes(b"mp3")
     adapter = SimpleNamespace(
         name="test",
         extract_media=BasePlatformAdapter.extract_media,
@@ -182,14 +188,14 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
 
     await GatewayRunner._deliver_media_from_response(
         object(),
-        "MEDIA:/tmp/speech.mp3",
+        f"MEDIA:{media_path}",
         event,
         adapter,
     )
 
     adapter.send_voice.assert_awaited_once_with(
         chat_id="chat-1",
-        audio_path="/tmp/speech.mp3",
+        audio_path=str(media_path),
         metadata={"thread_id": "topic-1"},
     )
     adapter.send_document.assert_not_awaited()

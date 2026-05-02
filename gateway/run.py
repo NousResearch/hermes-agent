@@ -8346,6 +8346,26 @@ class GatewayRunner:
 
             _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
 
+            async def _send_missing_attachment_notice(path: str) -> None:
+                logger.warning(
+                    "[%s] Skipping missing post-stream media attachment: %s",
+                    adapter.name,
+                    path,
+                )
+                display_name = Path(path).name or path
+                try:
+                    await adapter.send(
+                        chat_id=event.source.chat_id,
+                        content=f"Media attachment unavailable: `{display_name}`",
+                        metadata=_thread_meta,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "[%s] Failed to send missing post-stream media fallback: %s",
+                        adapter.name,
+                        e,
+                    )
+
             from gateway.platforms.base import should_send_media_as_audio
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -8356,6 +8376,9 @@ class GatewayRunner:
             image_paths: list = []
             non_image_media: list = []
             for media_path, is_voice in media_files:
+                if not Path(media_path).is_file():
+                    await _send_missing_attachment_notice(media_path)
+                    continue
                 ext = Path(media_path).suffix.lower()
                 if ext in _IMAGE_EXTS and not is_voice:
                     image_paths.append(media_path)
@@ -8364,6 +8387,9 @@ class GatewayRunner:
 
             non_image_local: list = []
             for file_path in local_files:
+                if not Path(file_path).is_file():
+                    await _send_missing_attachment_notice(file_path)
+                    continue
                 if Path(file_path).suffix.lower() in _IMAGE_EXTS:
                     image_paths.append(file_path)
                 else:

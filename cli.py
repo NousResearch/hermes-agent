@@ -9107,7 +9107,9 @@ class HermesCLI:
                 from agent.model_metadata import get_model_context_length
                 _ctx_len = get_model_context_length(
                     self.model, base_url=self.base_url or "", api_key=self.api_key or "",
-                    config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None)
+                    provider=self.provider if hasattr(self, "provider") else "",
+                    config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None,
+                    custom_providers=getattr(self.agent, "_custom_providers", None) if self.agent else None)
                 _ctx_result = preprocess_context_references(
                     message, cwd=os.getcwd(), context_length=_ctx_len)
                 if _ctx_result.expanded or _ctx_result.blocked:

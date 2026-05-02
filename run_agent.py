@@ -1860,6 +1860,8 @@ class AIAgent:
             _custom_providers = _agent_cfg.get("custom_providers")
             if not isinstance(_custom_providers, list):
                 _custom_providers = []
+        # Store for reuse in _check_compression_model_feasibility and fallback paths.
+        self._custom_providers = _custom_providers
 
         # Check custom_providers per-model context_length
         if _config_context_length is None and _custom_providers:
@@ -1991,6 +1993,7 @@ class AIAgent:
                 config_context_length=_config_context_length,
                 provider=self.provider,
                 api_mode=self.api_mode,
+                custom_providers=_custom_providers,
             )
         self.compression_enabled = compression_enabled
 
@@ -2626,6 +2629,7 @@ class AIAgent:
                 api_key=aux_api_key,
                 config_context_length=getattr(self, "_aux_compression_context_length_config", None),
                 provider=getattr(self, "provider", ""),
+                custom_providers=getattr(self, "_custom_providers", None),
             )
 
             # Hard floor: the auxiliary compression model must have at least
@@ -7604,6 +7608,7 @@ class AIAgent:
                     self.model, base_url=self.base_url,
                     api_key=self.api_key, provider=self.provider,
                     config_context_length=getattr(self, "_config_context_length", None),
+                    custom_providers=getattr(self, "_custom_providers", None),
                 )
                 self.context_compressor.update_model(
                     model=self.model,

@@ -2844,6 +2844,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     api_key=getattr(agent, "api_key", "") or "",
                     provider=getattr(agent, "provider", "") or "",
                     config_context_length=getattr(agent, "_config_context_length", None),
+                    custom_providers=getattr(agent, "_custom_providers", None),
                 )
                 ctx = preprocess_context_references(
                     prompt,

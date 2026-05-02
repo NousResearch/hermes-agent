@@ -1376,6 +1376,7 @@ class GatewayRunner:
         await self._handle_message(event)
 
     def _resolve_session_agent_runtime(
+        self,
         *,
         source: Optional[SessionSource] = None,
         session_key: Optional[str] = None,

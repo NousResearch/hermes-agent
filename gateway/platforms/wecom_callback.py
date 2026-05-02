@@ -330,8 +330,6 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         corp_id = root.findtext("ToUserName", default=app.get("corp_id", ""))
         scoped_chat_id = self._user_app_key(corp_id, user_id)
         content = root.findtext("Content", default="").strip()
-        if not content and msg_type == "event":
-            content = "/start"
         msg_id = (
             root.findtext("MsgId")
             or f"{user_id}:{root.findtext('CreateTime', default='0')}"

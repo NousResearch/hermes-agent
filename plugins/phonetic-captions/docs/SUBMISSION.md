@@ -9,32 +9,37 @@
 
 ## One-line pitch
 
-> **SpeakAlong turns any Vietnamese teaching video into a captioned Short learners can actually speak — from Telegram message to phonetically annotated, FFmpeg-burned video in seconds, powered by Kimi K2.6.**
+> **SpeakAlong adds AI-generated phonetic captions to language teaching videos — watch, read pronunciation, speak along. Any language. Seconds, not minutes. Powered by Kimi K2.6.**
 
 ---
 
 ## Problem Statement
 
-Vietnamese language teachers creating YouTube Shorts face a painful captioning gap:
+Language teachers creating teaching shorts face a painful captioning gap:
 
-- Auto-generated captions (YouTube, CapCut) transcribe what they hear but **never add phonetic guides** — the one thing learners need most.
-- Manually writing `[humm biet]` beneath every Vietnamese word in a 60-second video takes 20–40 minutes.
-- Existing captioning tools (Descript, Captions.ai) are designed for monolingual content. They break on **code-switching** — videos that mix English narration with Vietnamese vocabulary, which is exactly how most teaching videos are structured.
-- The result: teachers either skip captions entirely or publish content that is inaccessible to beginners.
+- Auto-generated captions (YouTube, CapCut) transcribe the audio but **never add pronunciation guides** — the one thing learners need to actually *say* the words.
+- Manually adding phonetic captions to a 60-second video takes 20–40 minutes per language.
+- Existing tools (Descript, Captions.ai) are designed for monolingual content and don't handle **code-switching** — the natural mix of instruction language + target language that defines most teaching videos.
+- For tonal languages (Vietnamese, Mandarin, Thai) or diacritical systems (Korean, Arabic), the problem is even harder: transcription tools mangle tones/diacritics, and rebuilding them manually + adding pronunciation guides is prohibitively time-consuming.
+- The result: teachers either skip captions or publish inaccessible content.
+
+**Case study: Vietnamese Shorts** — but the same problem exists for Mandarin, Korean, Thai, and any language teachers want to make accessible.
 
 ---
 
 ## Solution
 
-**SpeakAlong** is a self-contained Hermes plugin that handles the full pipeline:
+**SpeakAlong** is a self-contained Hermes plugin that handles the full pipeline for any language:
 
 ```
-Video (Telegram / upload)
-  → faster-whisper  ─── local transcription, auto lang detect
-  → Kimi K2.6 (NVIDIA NIM)  ─── EN/VI classification + diacritic correction + phonetic generation
+Teaching video (Telegram / upload)
+  → faster-whisper  ─── local transcription, auto language detect
+  → Kimi K2.6 (NVIDIA NIM)  ─── language classification + diacritic restoration + phonetic generation
   → FFmpeg  ─── ASS subtitle burn-in
   → captioned_<id>.mp4  +  dashboard editor link
 ```
+
+Works with any language; demonstrated on Vietnamese.
 
 ### What makes it different
 
@@ -42,10 +47,10 @@ Video (Telegram / upload)
 |---|---|
 | **Auto language detection** | Handles code-switched audio without any configuration |
 | **Diacritic correction** | Whisper mangles Vietnamese tones (e.g. `khong biet` → `không biết`). Kimi fixes them. |
-| **English phonetic guides** | `không biết` → `[humm biet]` — plain English letters, readable by any learner |
-| **Teaching layout** | VI segments: bold main text + italic phonetic below. EN segments: clean text only. |
+| **Language-agnostic phonetics** | Generates readable phonetic guides in the student's native language (e.g. Vietnamese: `không biết` → `[humm biet]`) |
+| **Teaching layout** | Target-language segments: bold main text + italic phonetic below. English segments: clean text only. |
 | **Visual editor** | Dashboard editor with per-segment EN/VI toggles, word-split, NL edits, QA review |
-| **Telegram-native** | Full pipeline from a single chat message — no desktop app needed |
+| **Telegram-native** | Full pipeline from a single chat message — no desktop app needed (works for any language teaching channel) |
 | **Hermes plugin** | Drop-in install, no core file changes, uses Hermes model as fallback if no NVIDIA key |
 
 ---
@@ -69,16 +74,17 @@ Kimi K2.6's extended reasoning handles all four simultaneously in a single pass.
 
 **Name**: SpeakAlong  
 **Tagline**: *"Watch it. Read it. Speak it."*  
-**Alt tagline**: *"AI phonetics for videos your learners can actually speak along with."*  
-**Audience**: Vietnamese language teachers, heritage language educators, short-form content creators  
-**Tone**: Warm, learner-focused, demo-forward
+**Alt tagline**: *"AI phonetics for any language teaching video. Seconds, not minutes."*  
+**Audience**: Language teachers (any language), heritage educators, polyglot content creators, particularly those teaching tonal or diacritical languages  
+**Tone**: Warm, learner-focused, demo-forward, language-agnostic
 
 ### Key messages
 
 - "Send a video. Learners speak along." — the core loop
-- "Kimi reads the code-switching." — the AI angle
+- "Works for any language." — the generality angle
+- "Kimi handles code-switching and tones automatically." — the AI angle
 - "Edit what needs fixing, burn the rest." — the editor angle
-- "A plugin, not a fork." — the Hermes ecosystem angle
+- "Built as a Hermes plugin." — ecosystem angle
 
 ---
 
@@ -90,18 +96,18 @@ Kimi K2.6's extended reasoning handles all four simultaneously in a single pass.
 
 ### Opening (0–10s) — The Problem
 
-**Shot**: A Vietnamese teaching Short playing — no captions, mixed EN/VI audio.  
+**Shot**: A language teaching Short (Vietnamese example) playing — no captions, mixed instruction language + target language audio.  
 **Voiceover / title card**:
-> "Vietnamese teaching videos mix English and Vietnamese. Auto-captions can't add phonetic guides. Teachers spend 30 minutes doing this manually — per video."
+> "Teaching videos mix instruction and target language. Auto-captions can't add pronunciation guides. Teachers spend 30 minutes doing this manually — per video. For tonal languages, it's even harder."
 
 ---
 
 ### Act 1 — Telegram flow (10–30s)
 
-**Shot 1**: Telegram chat. Send a raw teaching video to the Hermes bot.  
+**Shot 1**: Telegram chat. Send a raw teaching video to the Hermes bot (Vietnamese example).  
 **Shot 2**: Bot replies: *"Transcribing…"* → typing indicator.  
-**Shot 3**: Bot sends back the captioned `.mp4` — captions visible in the preview.  
-**Title card overlay**: *"Kimi K2.6 → EN/VI detection → phonetic generation → FFmpeg burn"*  
+**Shot 3**: Bot sends back the captioned `.mp4` — captions visible in the preview (Vietnamese + phonetics).  
+**Title card overlay**: *"Auto language detect → Diacritic fix → Phonetic generation → FFmpeg burn (via Kimi K2.6)"*  
 **Shot 4**: Bot message includes the dashboard link: *"Edit at http://localhost:9119/captions/abc123"*
 
 ---
@@ -109,8 +115,8 @@ Kimi K2.6's extended reasoning handles all four simultaneously in a single pass.
 ### Act 2 — Dashboard editor (30–55s)
 
 **Shot 1**: Click the link → dashboard opens on the editor.  
-**Show**: Video player on left with burned captions. Segment list on right — Vietnamese segments with `VI` badge and phonetic field, English segments with `EN` badge.  
-**Shot 2**: Fix a segment — tap the phonetic field, type a correction.  
+**Show**: Video player on left with burned captions. Segment list on right — target-language segments with phonetic field, English segments clean.  
+**Shot 2**: Fix a segment — tap the phonetic field, type a correction (show Vietnamese example).  
 **Shot 3**: NL edit panel — type *"merge segments 4 and 5"* → AI proposes patch → accept → segments merged.  
 **Shot 4**: QA review — click "Review" → amber flags on two segments, green ticks on good ones.  
 **Shot 5**: Click "Re-burn" → spinner → video reloads with updated captions.
@@ -158,21 +164,22 @@ Send a clip. Learners speak along.
 
 **Ultra-short (~120 chars, add link + hashtags after):**
 ```
-Vietnamese Shorts mix EN+VI. Auto-captions miss pronunciation guides.
-Kimi K2.6 fixes that — built SpeakAlong to prove it.
+Language teachers spend 30 min adding pronunciation captions per video.
+Kimi K2.6 does it in seconds. Built SpeakAlong to prove it.
 ```
 
 ### Discord (shorter, for `#creative-hackathon-submissions`)
 
 ```
-**SpeakAlong** — AI phonetic captions for Vietnamese teaching Shorts
+**SpeakAlong** — AI phonetic captions for language teaching videos (any language)
 
-Built on Hermes + Kimi K2.6. Send a video via Telegram → Kimi classifies
-EN/VI segments, fixes diacritics, generates English pronunciation guides
+Built on Hermes + Kimi K2.6. Send a video via Telegram → Kimi auto-detects language,
+fixes transcription artifacts (tones, diacritics), generates pronunciation guides
 → FFmpeg burns them in → you get back a Short learners can actually speak along with.
 
-Includes a dashboard editor: segment editing, NL instructions, QA review,
-style presets. Fully self-contained Hermes plugin — no core file changes.
+Works for any language; demonstrated on Vietnamese. Includes dashboard editor:
+segment editing, NL instructions, QA review, style presets. Fully self-contained
+Hermes plugin — no core file changes.
 
 [demo video link]
 ```

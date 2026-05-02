@@ -414,7 +414,8 @@ class InsightsEngine:
         total_output = sum(s.get("output_tokens") or 0 for s in sessions)
         total_cache_read = sum(s.get("cache_read_tokens") or 0 for s in sessions)
         total_cache_write = sum(s.get("cache_write_tokens") or 0 for s in sessions)
-        total_tokens = total_input + total_output + total_cache_read + total_cache_write
+        total_input_with_cache = total_input + total_cache_read + total_cache_write
+        total_tokens = total_input_with_cache + total_output
         total_tool_calls = sum(s.get("tool_call_count") or 0 for s in sessions)
         total_messages = sum(s.get("message_count") or 0 for s in sessions)
 
@@ -464,6 +465,7 @@ class InsightsEngine:
             "total_output_tokens": total_output,
             "total_cache_read_tokens": total_cache_read,
             "total_cache_write_tokens": total_cache_write,
+            "total_input_with_cache_tokens": total_input_with_cache,
             "total_tokens": total_tokens,
             "estimated_cost": total_cost,
             "actual_cost": actual_cost,
@@ -761,7 +763,13 @@ class InsightsEngine:
         lines.append("  " + "─" * 56)
         lines.append(f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}")
         lines.append(f"  Tool calls:        {o['total_tool_calls']:<12,}  User messages:   {o['user_messages']:,}")
-        lines.append(f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}")
+        input_with_cache = o.get("total_input_with_cache_tokens", o.get("total_input_tokens", 0))
+        lines.append(f"  Input tokens:      {input_with_cache:<12,}  Output tokens:   {o['total_output_tokens']:,}")
+        if o.get("total_cache_read_tokens") or o.get("total_cache_write_tokens"):
+            lines.append(
+                f"  Prompt tokens:     {o['total_input_tokens']:<12,}  Cache input:     "
+                f"{(o.get('total_cache_read_tokens') or 0) + (o.get('total_cache_write_tokens') or 0):,}"
+            )
         lines.append(f"  Total tokens:      {o['total_tokens']:,}")
         if o["total_hours"] > 0:
             lines.append(f"  Active time:       ~{_format_duration(o['total_hours'] * 3600):<11}  Avg session:     ~{_format_duration(o['avg_session_duration'])}")
@@ -877,7 +885,11 @@ class InsightsEngine:
 
         # Overview
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
-        lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
+        input_with_cache = o.get("total_input_with_cache_tokens", o.get("total_input_tokens", 0))
+        lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {input_with_cache:,} / out: {o['total_output_tokens']:,})")
+        if o.get("total_cache_read_tokens") or o.get("total_cache_write_tokens"):
+            cache_input = (o.get("total_cache_read_tokens") or 0) + (o.get("total_cache_write_tokens") or 0)
+            lines.append(f"_Input includes {cache_input:,} cache tokens; prompt-only input: {o['total_input_tokens']:,}._")
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{_format_duration(o['total_hours'] * 3600)} | **Avg session:** ~{_format_duration(o['avg_session_duration'])}")
         lines.append("")

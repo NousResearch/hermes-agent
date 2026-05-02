@@ -39,7 +39,13 @@ def populated_db(db):
     db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 2 * day,))
     db.end_session("s1", end_reason="user_exit")
     db._conn.execute("UPDATE sessions SET ended_at = ? WHERE id = 's1'", (now - 2 * day + 3600,))
-    db.update_token_counts("s1", input_tokens=50000, output_tokens=15000)
+    db.update_token_counts(
+        "s1",
+        input_tokens=50000,
+        output_tokens=15000,
+        cache_read_tokens=1_000_000,
+        cache_write_tokens=200_000,
+    )
     db.append_message("s1", role="user", content="Hello, help me fix a bug")
     db.append_message("s1", role="assistant", content="Sure, let me look into that.")
     db.append_message("s1", role="assistant", content="Let me search the files.",
@@ -287,9 +293,13 @@ class TestInsightsPopulated:
 
         expected_input = 50000 + 20000 + 100000 + 10000
         expected_output = 15000 + 8000 + 40000 + 5000
+        expected_cache_input = 1_000_000 + 200_000
         assert overview["total_input_tokens"] == expected_input
         assert overview["total_output_tokens"] == expected_output
-        assert overview["total_tokens"] == expected_input + expected_output
+        assert overview["total_cache_read_tokens"] == 1_000_000
+        assert overview["total_cache_write_tokens"] == 200_000
+        assert overview["total_input_with_cache_tokens"] == expected_input + expected_cache_input
+        assert overview["total_tokens"] == expected_input + expected_output + expected_cache_input
 
     def test_overview_cost_positive(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -462,7 +472,9 @@ class TestTerminalFormatting:
 
         assert "Input tokens" in text
         assert "Output tokens" in text
-        # Cost and cache metrics are intentionally hidden (pricing was unreliable).
+        assert "Prompt tokens" in text
+        assert "Cache input" in text
+        # Cost metrics are intentionally hidden (pricing was unreliable).
         assert "Est. cost" not in text
         assert "Cache read" not in text
         assert "Cache write" not in text
@@ -515,14 +527,16 @@ class TestGatewayFormatting:
 
         assert "**" in text  # Markdown bold
 
-    def test_gateway_format_hides_cost(self, populated_db):
-        """Gateway format omits dollar figures and internal cache details."""
+    def test_gateway_format_summarizes_cache_input(self, populated_db):
+        """Gateway format includes cache tokens in input while keeping read/write internals hidden."""
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
-        assert "$" not in text
-        assert "cache" not in text.lower()
+        assert "in: 1,380,000 / out: 68,000" in text
+        assert "Input includes 1,200,000 cache tokens" in text
+        assert "cache_read" not in text
+        assert "cache_write" not in text
 
     def test_gateway_format_shows_models(self, populated_db):
         engine = InsightsEngine(populated_db)

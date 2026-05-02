@@ -105,3 +105,38 @@ class TestCronCommandLifecycle:
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
+
+    def test_status_treats_shared_runtime_lock_as_gateway_owner(self, tmp_cron_dir, monkeypatch, capsys):
+        create_job(prompt="Check server status", schedule="every 1h")
+        monkeypatch.setattr(
+            "gateway.status.get_gateway_owner_status",
+            lambda: {
+                "state": "shared_lock_active",
+                "pid": 17,
+                "message": "Gateway runtime lock is active in another namespace/container",
+            },
+        )
+
+        cron_command(Namespace(cron_command="status"))
+
+        out = capsys.readouterr().out
+        assert "cron jobs will fire automatically" in out
+        assert "another namespace/container" in out
+        assert "cron jobs will NOT fire" not in out
+
+    def test_list_does_not_warn_when_shared_runtime_lock_is_active(self, tmp_cron_dir, monkeypatch, capsys):
+        create_job(prompt="Check server status", schedule="every 1h")
+        monkeypatch.setattr(
+            "gateway.status.get_gateway_owner_status",
+            lambda: {
+                "state": "shared_lock_active",
+                "pid": 17,
+                "message": "Gateway runtime lock is active in another namespace/container",
+            },
+        )
+
+        cron_command(Namespace(cron_command="list", all=False))
+
+        out = capsys.readouterr().out
+        assert "another namespace/container" in out
+        assert "Gateway is not running" not in out

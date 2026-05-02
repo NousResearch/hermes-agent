@@ -40,6 +40,29 @@ Cron jobs are fired by the gateway's background ticker thread, which ticks every
 
 If you're expecting jobs to fire automatically, you need a running gateway (`hermes gateway` or `hermes serve`). For one-off debugging, you can manually trigger a tick with `hermes cron tick`.
 
+Run:
+
+```bash
+hermes cron status
+```
+
+`hermes cron status` checks the shared gateway runtime lock, not just locally visible PIDs. This matters in Docker or service-scope deployments where the gateway runs in another process namespace but shares the same `HERMES_HOME` volume. In that case a status like "Gateway runtime lock is active" means a scheduler owner exists even if the owner PID is not inspectable from the current shell/container.
+
+Do **not** start a second foreground gateway just because you cannot see the gateway PID locally. Multiple gateways can conflict with polling platforms such as Telegram. First inspect the supervised gateway owner and logs:
+
+```bash
+hermes cron status
+hermes gateway status --full
+hermes logs gateway -n 100
+```
+
+For container deployments, inspect the container supervisor as well:
+
+```bash
+docker ps --filter name=hermes-gateway
+docker logs hermes-gateway --tail 100
+```
+
 ### Check 4: Check the system clock and timezone
 
 Jobs use the local timezone. If your machine's clock is wrong or in a different timezone than expected, jobs will fire at the wrong times. Verify:

@@ -743,15 +743,91 @@ def clear_takeover_marker() -> None:
         pass
 
 
+def get_gateway_owner_status(pid_path: Optional[Path] = None) -> dict[str, Any]:
+    """Return runtime-owner status for the gateway scheduler.
+
+    ``get_running_pid()`` answers the narrower question "can this namespace see
+    a local gateway PID?". Cron diagnostics need a broader answer: a gateway in
+    another container/process namespace can still be the valid scheduler owner
+    when it holds the shared HERMES_HOME runtime lock. In that case the PID may
+    not be visible to ``os.kill(pid, 0)``, but the active lock means the metadata
+    must not be cleaned up as stale.
+    """
+    resolved_pid_path = pid_path or _get_pid_path()
+    resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
+    lock_active = is_gateway_runtime_lock_active(resolved_lock_path)
+    if not lock_active:
+        return {
+            "state": "not_running",
+            "pid": None,
+            "message": "No active gateway runtime lock found",
+        }
+
+    records = (
+        _read_pid_record(resolved_pid_path),
+        _read_gateway_lock_record(resolved_lock_path),
+    )
+    best_pid: Optional[int] = None
+    gateway_like_record = False
+
+    for record in records:
+        pid = _pid_from_record(record)
+        if pid is None:
+            continue
+        best_pid = pid if best_pid is None else best_pid
+        gateway_like_record = gateway_like_record or _record_looks_like_gateway(record)
+
+        try:
+            os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            if _record_looks_like_gateway(record):
+                return {
+                    "state": "shared_lock_active",
+                    "pid": pid,
+                    "message": "Gateway runtime lock is active but the PID is not inspectable from this user/service scope",
+                }
+            continue
+        except OSError:
+            continue
+
+        recorded_start = record.get("start_time")
+        current_start = _get_process_start_time(pid)
+        if recorded_start is not None and current_start is not None and current_start != recorded_start:
+            continue
+
+        if _looks_like_gateway_process(pid) or _record_looks_like_gateway(record):
+            return {
+                "state": "local_pid_running",
+                "pid": pid,
+                "message": "Gateway PID is running in this namespace",
+            }
+
+    if gateway_like_record or best_pid is not None:
+        return {
+            "state": "shared_lock_active",
+            "pid": best_pid,
+            "message": "Gateway runtime lock is active in another namespace/container",
+        }
+
+    return {
+        "state": "shared_lock_active",
+        "pid": None,
+        "message": "Gateway runtime lock is active but owner metadata is unavailable",
+    }
+
+
 def get_running_pid(
     pid_path: Optional[Path] = None,
     *,
     cleanup_stale: bool = True,
 ) -> Optional[int]:
-    """Return the PID of a running gateway instance, or ``None``.
+    """Return the PID of a locally visible running gateway instance, or ``None``.
 
-    Checks the PID file and verifies the process is actually alive.
-    Cleans up stale PID files automatically.
+    Checks the PID file and verifies the process is actually alive. Cleans up
+    stale PID files only when the gateway runtime lock is not held; an active
+    lock may belong to a gateway in another process namespace/container.
     """
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
@@ -792,7 +868,6 @@ def get_running_pid(
         if _looks_like_gateway_process(pid) or _record_looks_like_gateway(record):
             return pid
 
-    _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
     return None
 
 

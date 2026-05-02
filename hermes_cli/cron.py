@@ -38,6 +38,47 @@ def _cron_api(**kwargs):
     return json.loads(cronjob_tool(**kwargs))
 
 
+def _gateway_owner_status() -> dict:
+    from gateway import status as gateway_status
+
+    return gateway_status.get_gateway_owner_status()
+
+
+def _print_cron_gateway_notice(owner_status: dict, *, list_mode: bool = False) -> None:
+    state = owner_status.get("state")
+    pid = owner_status.get("pid")
+    message = owner_status.get("message") or "Gateway status unknown"
+
+    if state == "local_pid_running":
+        if list_mode:
+            return
+        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
+        if pid is not None:
+            print(f"  PID: {pid}")
+        return
+
+    if state == "shared_lock_active":
+        print(color("✓ Gateway runtime lock is active — cron jobs will fire automatically", Colors.GREEN))
+        print(f"  {message}")
+        if pid is not None:
+            print(f"  Owner PID from shared metadata: {pid}")
+        return
+
+    if list_mode:
+        print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
+        print(color("     Start it with: hermes gateway install", Colors.DIM))
+        print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
+        print()
+        return
+
+    print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
+    print()
+    print("  To enable automatic execution:")
+    print("    hermes gateway install    # Install as a user service")
+    print("    sudo hermes gateway install --system  # Linux servers: boot-time system service")
+    print("    hermes gateway            # Or run in foreground")
+
+
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
     from cron.jobs import list_jobs
@@ -113,12 +154,7 @@ def cron_list(show_all: bool = False):
 
         print()
 
-    from hermes_cli.gateway import find_gateway_pids
-    if not find_gateway_pids():
-        print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
-        print(color("     Start it with: hermes gateway install", Colors.DIM))
-        print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
-        print()
+    _print_cron_gateway_notice(_gateway_owner_status(), list_mode=True)
 
 
 def cron_tick():
@@ -130,21 +166,9 @@ def cron_tick():
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
-    from hermes_cli.gateway import find_gateway_pids
 
     print()
-
-    pids = find_gateway_pids()
-    if pids:
-        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
-        print(f"  PID: {', '.join(map(str, pids))}")
-    else:
-        print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
-        print()
-        print("  To enable automatic execution:")
-        print("    hermes gateway install    # Install as a user service")
-        print("    sudo hermes gateway install --system  # Linux servers: boot-time system service")
-        print("    hermes gateway            # Or run in foreground")
+    _print_cron_gateway_notice(_gateway_owner_status())
 
     print()
 

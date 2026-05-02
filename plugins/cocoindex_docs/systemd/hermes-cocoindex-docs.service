@@ -1,0 +1,15 @@
+[Unit]
+Description=Hermes CocoIndex Documents Live Indexer
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/tobi/skripte/hermes-agent
+Environment=COCOINDEX_DB=/home/tobi/.local/state/hermes/cocoindex/cocoindex.db
+Environment=HERMES_COCOINDEX_VERBOSE=1
+ExecStart=/home/tobi/skripte/hermes-agent/venv/bin/cocoindex update /home/tobi/skripte/hermes-agent/plugins/cocoindex_docs/pipeline.py -f -L
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=default.target

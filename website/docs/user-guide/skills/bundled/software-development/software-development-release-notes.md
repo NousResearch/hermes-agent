@@ -15,7 +15,7 @@ Use when drafting release notes or changelog summaries from git history. Fix the
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development\release-notes` |
+| Path | `skills/software-development/release-notes` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |

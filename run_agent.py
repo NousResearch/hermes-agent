@@ -4739,6 +4739,22 @@ class AIAgent:
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 
+        # Optional constraints file from config.yaml (constraints_path).
+        try:
+            from hermes_cli.config import load_config as _load_constraints_cfg
+            _cfg = _load_constraints_cfg() or {}
+            _constraints_path = str(_cfg.get("constraints_path", "") or "").strip()
+            if _constraints_path:
+                _cp = Path(os.path.expanduser(_constraints_path))
+                if _cp.exists() and _cp.is_file():
+                    _constraints_text = _cp.read_text(encoding="utf-8").strip()
+                    if _constraints_text:
+                        prompt_parts.append(
+                            "# Additional constraints (from constraints_path)\n" + _constraints_text
+                        )
+        except Exception:
+            pass
+
         from hermes_time import now as _hermes_now
         now = _hermes_now()
         timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
@@ -8329,11 +8345,19 @@ class AIAgent:
         ``reasoning_content`` on every assistant tool-call message; omitting
         it causes the next replay to fail with HTTP 400.
         """
+        _is_moonshot_model = False
+        try:
+            from agent.moonshot_schema import is_moonshot_model
+            _is_moonshot_model = bool(is_moonshot_model(self.model or ""))
+        except Exception:
+            _is_moonshot_model = False
+
         return (
             self.provider in {"kimi-coding", "kimi-coding-cn"}
             or base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
+            or _is_moonshot_model
         )
 
     def _needs_deepseek_tool_reasoning(self) -> bool:

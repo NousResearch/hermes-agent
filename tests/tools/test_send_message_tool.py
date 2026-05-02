@@ -623,6 +623,108 @@ class TestSendToPlatformWhatsapp:
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
 
 
+class TestSendToPlatformPluginMedia:
+    @staticmethod
+    def _register_plugin_platform(name="testmedia"):
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        platform_registry.register(
+            PlatformEntry(
+                name=name,
+                label="Test Media",
+                adapter_factory=lambda _cfg: None,
+                check_fn=lambda: True,
+                source="plugin",
+            )
+        )
+        return Platform(name)
+
+    @staticmethod
+    def _unregister_plugin_platform(platform):
+        from gateway.platform_registry import platform_registry
+
+        platform_registry.unregister(platform.value)
+        Platform._value2member_map_.pop(platform.value, None)
+        Platform._member_map_.pop(platform.name, None)
+
+    def test_plugin_platform_routes_media_through_live_adapter(self, tmp_path, monkeypatch):
+        platform = self._register_plugin_platform()
+        try:
+            image = tmp_path / "chart.png"
+            audio = tmp_path / "voice.mp3"
+            doc = tmp_path / "report.pdf"
+            image.write_bytes(b"png")
+            audio.write_bytes(b"mp3")
+            doc.write_bytes(b"pdf")
+
+            adapter = SimpleNamespace(
+                send=AsyncMock(return_value=SimpleNamespace(success=True, message_id="text-1")),
+                send_image_file=AsyncMock(return_value=SimpleNamespace(success=True, message_id="image-1")),
+                send_voice=AsyncMock(return_value=SimpleNamespace(success=True, message_id="voice-1")),
+                send_document=AsyncMock(return_value=SimpleNamespace(success=True, message_id="doc-1")),
+            )
+            runner = SimpleNamespace(adapters={platform: adapter})
+
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+            result = asyncio.run(
+                _send_to_platform(
+                    platform,
+                    SimpleNamespace(enabled=True, token=None, extra={}),
+                    "room-1",
+                    "attached",
+                    media_files=[
+                        (str(image), False),
+                        (str(audio), False),
+                        (str(doc), False),
+                    ],
+                )
+            )
+
+            assert result == {
+                "success": True,
+                "platform": "testmedia",
+                "chat_id": "room-1",
+                "message_id": "doc-1",
+            }
+            adapter.send.assert_awaited_once_with(chat_id="room-1", content="attached")
+            adapter.send_image_file.assert_awaited_once_with("room-1", str(image))
+            adapter.send_voice.assert_awaited_once_with("room-1", str(audio))
+            adapter.send_document.assert_awaited_once_with("room-1", str(doc))
+        finally:
+            self._unregister_plugin_platform(platform)
+
+    def test_plugin_platform_allows_media_only_send(self, tmp_path, monkeypatch):
+        platform = self._register_plugin_platform("testmediaonly")
+        try:
+            image = tmp_path / "chart.png"
+            image.write_bytes(b"png")
+            adapter = SimpleNamespace(
+                send=AsyncMock(return_value=SimpleNamespace(success=True, message_id="text-1")),
+                send_image_file=AsyncMock(return_value=SimpleNamespace(success=True, message_id="image-1")),
+            )
+            runner = SimpleNamespace(adapters={platform.value: adapter})
+
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+
+            result = asyncio.run(
+                _send_to_platform(
+                    platform,
+                    SimpleNamespace(enabled=True, token=None, extra={}),
+                    "room-1",
+                    "",
+                    media_files=[(str(image), False)],
+                )
+            )
+
+            assert result["success"] is True
+            assert result["message_id"] == "image-1"
+            adapter.send.assert_not_awaited()
+            adapter.send_image_file.assert_awaited_once_with("room-1", str(image))
+        finally:
+            self._unregister_plugin_platform(platform)
+
+
 class TestSendTelegramHtmlDetection:
     """Verify that messages containing HTML tags are sent with parse_mode=HTML
     and that plain / markdown messages use MarkdownV2."""

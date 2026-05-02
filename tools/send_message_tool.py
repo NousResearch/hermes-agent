@@ -436,6 +436,65 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk):
     return {"error": f"No live adapter for platform '{platform.value}'. Is the gateway running with this platform connected?"}
 
 
+def _is_plugin_platform(platform) -> bool:
+    try:
+        from gateway.platform_registry import platform_registry
+
+        entry = platform_registry.get(platform.value)
+        return bool(entry and entry.source == "plugin")
+    except Exception:
+        return False
+
+
+async def _send_plugin_media_via_adapter(platform, chat_id, chunk, media_files):
+    """Send text/media for a plugin platform through its live gateway adapter."""
+    try:
+        from gateway.run import _gateway_runner_ref
+
+        runner = _gateway_runner_ref()
+        adapter = runner.adapters.get(platform) if runner else None
+        if adapter is None and runner:
+            adapter = runner.adapters.get(platform.value)
+        if adapter is None:
+            return {
+                "error": (
+                    f"No live adapter for platform '{platform.value}'. "
+                    "Is the gateway running with this platform connected?"
+                )
+            }
+
+        last_result = None
+        if chunk.strip():
+            text_result = await adapter.send(chat_id=chat_id, content=chunk)
+            if not text_result.success:
+                return {"error": f"Plugin text send failed: {text_result.error}"}
+            last_result = text_result
+
+        for media_path, is_voice in media_files or []:
+            ext = os.path.splitext(media_path)[1].lower()
+            if ext in _IMAGE_EXTS:
+                result = await adapter.send_image_file(chat_id, media_path)
+            elif ext in _VOICE_EXTS and is_voice:
+                result = await adapter.send_voice(chat_id, media_path)
+            elif ext in _AUDIO_EXTS:
+                result = await adapter.send_voice(chat_id, media_path)
+            else:
+                result = await adapter.send_document(chat_id, media_path)
+
+            if not result.success:
+                return {"error": f"Plugin media send failed: {result.error}"}
+            last_result = result
+
+        return {
+            "success": True,
+            "platform": platform.value,
+            "chat_id": chat_id,
+            "message_id": getattr(last_result, "message_id", None),
+        }
+    except Exception as e:
+        return {"error": f"Plugin media send failed: {e}"}
+
+
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
     """Route a message to the appropriate platform sender.
 
@@ -582,6 +641,22 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chat_id,
                 chunk,
                 media_files=media_files if is_last else None,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
+    # --- Plugin platforms: route media through the live adapter interface ---
+    if media_files and _is_plugin_platform(platform):
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_plugin_media_via_adapter(
+                platform,
+                chat_id,
+                chunk,
+                media_files if is_last else [],
             )
             if isinstance(result, dict) and result.get("error"):
                 return result

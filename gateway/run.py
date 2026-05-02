@@ -1454,6 +1454,85 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
+    def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
+        """Return whether Telegram DM topic mode is active for this chat."""
+        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
+            return False
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return False
+        try:
+            return bool(
+                session_db.is_telegram_topic_mode_enabled(
+                    chat_id=str(source.chat_id),
+                    user_id=str(source.user_id),
+                )
+            )
+        except Exception:
+            logger.debug("Failed to read Telegram topic mode state", exc_info=True)
+            return False
+
+    def _is_telegram_topic_root_lobby(self, source: SessionSource) -> bool:
+        """True for the main Telegram DM when topic mode has made it a lobby."""
+        return (
+            source.platform == Platform.TELEGRAM
+            and source.chat_type == "dm"
+            and not source.thread_id
+            and self._telegram_topic_mode_enabled(source)
+        )
+
+    def _is_telegram_topic_lane(self, source: SessionSource) -> bool:
+        """True for a user-created Telegram private-chat topic lane."""
+        return (
+            source.platform == Platform.TELEGRAM
+            and source.chat_type == "dm"
+            and bool(source.thread_id)
+            and self._telegram_topic_mode_enabled(source)
+        )
+
+    def _telegram_topic_root_lobby_message(self) -> str:
+        return (
+            "This main chat is reserved for system commands.\n\n"
+            "To chat with Hermes, create a new topic using the + button in "
+            "this bot interface. Each topic works as an independent Hermes "
+            "session."
+        )
+
+    def _telegram_topic_root_new_message(self) -> str:
+        return (
+            "To start a new parallel Hermes chat, create a new topic with the "
+            "+ button in this bot interface.\n\n"
+            "Each topic is an independent Hermes session. Use /new inside a "
+            "topic only if you want to replace that topic's current session."
+        )
+
+    def _telegram_topic_new_header(self, source: SessionSource) -> Optional[str]:
+        if not self._is_telegram_topic_lane(source):
+            return None
+        return (
+            "Started a new Hermes session in this topic.\n\n"
+            "Tip: for parallel work, create a new topic with the + button "
+            "instead of using /new here. /new replaces the session attached "
+            "to the current topic."
+        )
+
+    def _record_telegram_topic_binding(
+        self,
+        source: SessionSource,
+        session_entry,
+    ) -> None:
+        """Persist the Telegram topic -> Hermes session binding for topic lanes."""
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None or not source.chat_id or not source.thread_id:
+            return
+        session_db.bind_telegram_topic(
+            chat_id=str(source.chat_id),
+            thread_id=str(source.thread_id),
+            user_id=str(source.user_id or ""),
+            session_key=session_entry.session_key,
+            session_id=session_entry.session_id,
+        )
+
     def _resolve_session_agent_runtime(
         self,
         *,
@@ -5274,7 +5353,12 @@ class GatewayRunner:
                     break
 
         if canonical == "new":
+            if self._is_telegram_topic_root_lobby(source):
+                return self._telegram_topic_root_new_message()
             return await self._handle_reset_command(event)
+
+        if canonical == "topic":
+            return await self._handle_topic_command(event)
         
         if canonical == "help":
             return await self._handle_help_command(event)
@@ -5522,6 +5606,9 @@ class GatewayRunner:
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
+
+        if self._is_telegram_topic_root_lobby(source):
+            return self._telegram_topic_root_lobby_message()
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -5798,6 +5885,22 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        if self._is_telegram_topic_lane(source):
+            try:
+                binding = self._session_db.get_telegram_topic_binding(
+                    chat_id=str(source.chat_id),
+                    thread_id=str(source.thread_id),
+                ) if self._session_db else None
+            except Exception:
+                logger.debug("Failed to read Telegram topic binding", exc_info=True)
+                binding = None
+            if binding:
+                session_entry.session_id = str(binding.get("session_id") or session_entry.session_id)
+            else:
+                try:
+                    self._record_telegram_topic_binding(source, session_entry)
+                except Exception:
+                    logger.debug("Failed to record Telegram topic binding", exc_info=True)
         if getattr(session_entry, "was_auto_reset", False):
             # Treat auto-reset as a full conversation boundary — drop every
             # session-scoped transient state so the fresh session does not
@@ -6984,11 +7087,11 @@ class GatewayRunner:
             session_info = ""
 
         if new_entry:
-            header = "✨ Session reset! Starting fresh."
+            header = self._telegram_topic_new_header(source) or "✨ Session reset! Starting fresh."
         else:
             # No existing session, just create one
             new_entry = self.session_store.get_or_create_session(source, force_new=True)
-            header = "✨ New session started!"
+            header = self._telegram_topic_new_header(source) or "✨ New session started!"
 
         # Set session title if provided with /new <title>
         _title_arg = event.get_command_args().strip()
@@ -9465,6 +9568,164 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
             return f"Compression failed: {e}"
+
+    async def _handle_topic_command(self, event: MessageEvent) -> str:
+        """Handle /topic for Telegram DM user-managed topic sessions."""
+        source = event.source
+        if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
+            return "The /topic command is only available in Telegram private chats."
+        if not self._session_db:
+            return "Session database not available."
+
+        args = event.get_command_args().strip()
+        if args:
+            if not source.thread_id:
+                return (
+                    "To restore a session, first create or open a Telegram topic "
+                    "with the + button, then send /topic <session-id> inside that topic."
+                )
+            return await self._restore_telegram_topic_session(event, args)
+
+        try:
+            self._session_db.enable_telegram_topic_mode(
+                chat_id=str(source.chat_id),
+                user_id=str(source.user_id),
+            )
+        except Exception as exc:
+            logger.exception("Failed to enable Telegram topic mode")
+            return f"Failed to enable Telegram topic mode: {exc}"
+
+        if source.thread_id:
+            try:
+                binding = self._session_db.get_telegram_topic_binding(
+                    chat_id=str(source.chat_id),
+                    thread_id=str(source.thread_id),
+                )
+            except Exception:
+                logger.debug("Failed to read Telegram topic binding", exc_info=True)
+                binding = None
+            if binding:
+                session_id = str(binding.get("session_id") or "")
+                title = None
+                try:
+                    title = self._session_db.get_session_title(session_id)
+                except Exception:
+                    title = None
+                session_label = title or "Untitled session"
+                return (
+                    "This topic is linked to:\n"
+                    f"Session: {session_label}\n"
+                    f"ID: {session_id}\n\n"
+                    "Use /new to replace this topic with a fresh session.\n"
+                    "For parallel work, create another topic with the + button."
+                )
+            return (
+                "Telegram multi-session topics are enabled.\n\n"
+                "This topic will be used as an independent Hermes session. "
+                "Use /new to replace this topic's current session. For parallel "
+                "work, create another topic with the + button."
+            )
+
+        return self._telegram_topic_root_status_message(source)
+
+    def _telegram_topic_root_status_message(self, source: SessionSource) -> str:
+        lines = [
+            "Telegram multi-session topics are enabled.",
+            "",
+            "Create new Hermes chats with the + button in this bot interface.",
+            "",
+        ]
+        try:
+            sessions = self._session_db.list_unlinked_telegram_sessions_for_user(
+                chat_id=str(source.chat_id),
+                user_id=str(source.user_id),
+                limit=10,
+            )
+        except Exception:
+            logger.debug("Failed to list unlinked Telegram sessions", exc_info=True)
+            sessions = []
+
+        if sessions:
+            lines.append("Previous unlinked sessions:")
+            for session in sessions:
+                session_id = str(session.get("id") or "")
+                title = str(session.get("title") or "Untitled session")
+                preview = str(session.get("preview") or "").strip()
+                line = f"- {title} — `{session_id}`"
+                if preview:
+                    line += f" — {preview}"
+                lines.append(line)
+            lines.extend([
+                "",
+                "To restore one:",
+                "1. Create or open a topic with the + button.",
+                "2. Send /topic <session-id> inside that topic.",
+                f"Example: Send /topic {sessions[0].get('id')} inside a topic.",
+            ])
+        else:
+            lines.extend([
+                "No previous unlinked Telegram sessions found.",
+                "",
+                "To restore a previous session later:",
+                "1. Create a new topic with the + button.",
+                "2. Open that topic.",
+                "3. Send /topic <session-id>.",
+            ])
+        return "\n".join(lines)
+
+    async def _restore_telegram_topic_session(self, event: MessageEvent, raw_session_id: str) -> str:
+        """Restore an existing Telegram-owned Hermes session into this topic."""
+        source = event.source
+        session_id = self._session_db.resolve_session_id(raw_session_id.strip())
+        if not session_id:
+            return f"Session not found: {raw_session_id.strip()}"
+
+        session = self._session_db.get_session(session_id)
+        if not session:
+            return f"Session not found: {raw_session_id.strip()}"
+        if str(session.get("source") or "") != "telegram":
+            return "That session is not a Telegram session and cannot be restored into this topic."
+        if str(session.get("user_id") or "") != str(source.user_id):
+            return "That session does not belong to this Telegram user."
+
+        linked = self._session_db.is_telegram_session_linked_to_topic(session_id=session_id)
+        current_binding = self._session_db.get_telegram_topic_binding(
+            chat_id=str(source.chat_id),
+            thread_id=str(source.thread_id),
+        )
+        if linked:
+            if not current_binding or current_binding.get("session_id") != session_id:
+                return "That session is already linked to another Telegram topic."
+
+        session_key = self._session_key_for_source(source)
+        try:
+            self._session_db.bind_telegram_topic(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+                user_id=str(source.user_id),
+                session_key=session_key,
+                session_id=session_id,
+                managed_mode="restored",
+            )
+        except ValueError as exc:
+            if "already linked" in str(exc):
+                return "That session is already linked to another Telegram topic."
+            raise
+
+        title = self._session_db.get_session_title(session_id) or session_id
+        last_assistant = None
+        try:
+            for message in reversed(self._session_db.get_messages(session_id)):
+                if message.get("role") == "assistant" and message.get("content"):
+                    last_assistant = str(message.get("content"))
+                    break
+        except Exception:
+            last_assistant = None
+
+        response = f"Session restored: {title}"
+        if last_assistant:
+            response += f"\n\nLast Hermes message:\n{last_assistant}"
+        return response
 
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""

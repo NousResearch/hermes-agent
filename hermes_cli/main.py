@@ -3403,6 +3403,26 @@ def _model_flow_named_custom(config, provider_info):
         api_key, base_url, timeout=8.0,
         api_mode=api_mode or None,
     )
+    # Fallback: many OpenAI-compatible endpoints (DashScope coding plan,
+    # custom reverse-proxies) do not expose /models. When probing fails,
+    # use the catalog declared under custom_providers[].models in
+    # config.yaml so the user still gets a multi-model picker instead of
+    # being forced to type a model name.
+    if not models:
+        try:
+            _cfg_for_fallback = load_config()
+            for _entry in (_cfg_for_fallback.get("custom_providers") or []):
+                if isinstance(_entry, dict) and _entry.get("name") == name:
+                    _models_dict = _entry.get("models")
+                    if isinstance(_models_dict, dict) and _models_dict:
+                        models = list(_models_dict.keys())
+                        print(
+                            f"  (probe failed; using {len(models)} "
+                            f"models from config.yaml)"
+                        )
+                    break
+        except Exception:
+            pass
 
     if models:
         default_idx = 0
